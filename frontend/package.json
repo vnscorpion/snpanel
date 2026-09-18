@@ -11,7 +11,7 @@
     "ace-builds": "^1.44.0",
     "lucide-react": "0.468.0",
     "react": "18.2.0",
-    "react-dom": "18.2.0",
+    "react-dom": "19.3.0",
     "vite": "8.0.13"
   },
   "engines": {
