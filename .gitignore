@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+*.db
+*.sqlite
+*.sqlite3
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.kiro/
+
+# Build artifacts
+*.bak
+*.tar.gz
+backup/
+
+# SNPanel runtime
+backend/snpanel.db
+
+# Landing page
+landing.html
+style.css
+
+# Dev / CI / tooling (not part of release)
+.codex/
+# NOT .github/ - the workflows and the dependabot config have to be committed
+# for GitHub to run them at all. The two files there today predate the rule and
+# survive only because tracked files ignore .gitignore; a *new* workflow would
+# have been skipped by `git add` without saying why.
+.ruff_cache/
+.vendor/
+skills/
+prompts/
+
+# Scripts not part of setup
+check.py
+patch*.py
+do_patch.py
+fix_include.py
+remote_fix.py
+test_ssh.py
+setup.sh
+change_IP.sh
+
+# NOT backend/tests/ - those 23 tests are part of the suite, the same as
+# backend/app/tests/. Excluding them only meant a clone could not run them.
+
+# Misc
+images.zip
+
+# Rust
+/target/
+
+# Claude Code's code index - a generated cache, not source
+.codebase-memory/

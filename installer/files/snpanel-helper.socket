@@ -1,0 +1,28 @@
+# Socket activation for the Rust privileged helper.
+#
+# The socket, not the service, is what is enabled at boot. systemd creates and
+# owns it, the helper is started on the first connection, and the socket
+# survives a helper restart - so an update can swap the binary without the API
+# ever seeing a connection refused.
+#
+# SocketGroup=snpanel plus SocketMode=0660 is the outer fence. The real check is
+# SO_PEERCRED inside the helper, which asks the kernel who the caller is rather
+# than trusting a mode bit or an environment variable. Both are present because
+# a mode bit is easy to get wrong and a kernel check is not.
+
+[Unit]
+Description=SNPanel privileged helper socket
+Documentation=file:///opt/snpanel/RUST_MIGRATION_PLAN.md
+
+[Socket]
+ListenStream=/run/snpanel/helper.sock
+SocketUser=root
+SocketGroup=snpanel
+SocketMode=0660
+# One long-lived server handling every connection, rather than a process per
+# connection: the helper is cheap to keep resident and paying a fork per nginx
+# reload is the cost the sudo model already had.
+Accept=no
+
+[Install]
+WantedBy=sockets.target

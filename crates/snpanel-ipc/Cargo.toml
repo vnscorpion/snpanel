@@ -1,0 +1,13 @@
+[package]
+name = "snpanel-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Typed request/response protocol between snpanel-api and the root helper."
+
+[dependencies]
+snpanel-core = { path = "../snpanel-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

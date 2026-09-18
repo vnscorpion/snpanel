@@ -1,0 +1,25 @@
+[package]
+name = "snpanel-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Access to the panel's SQLite database, shared with the Python implementation during the migration."
+
+[dependencies]
+snpanel-core = { path = "../snpanel-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "chrono",
+] }
+tokio = { version = "1", features = ["rt", "macros"] }
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }

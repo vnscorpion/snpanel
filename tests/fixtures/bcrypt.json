@@ -1,0 +1,36 @@
+{
+  "cases": {
+    "admin": {
+      "password": "admin-password-123",
+      "hash": "$2b$12$/I64Uo2QEROwF0nMpctzwOtLQa4.BcxvO4NIwYVvmsbhgZWThY6AS"
+    },
+    "unicode": {
+      "password": "mật-khẩu-2026",
+      "hash": "$2b$12$g9RvYMrHVEo1yA73ROxHd.XestS.ek/bVIRaMlZqQ8w.rZfCpGLxW"
+    },
+    "long_71": {
+      "password": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "hash": "$2b$12$9rsCaOMZJnr4XY9kzS8QPOI9nZE7TFVBKLaCVctjv76x3AbqNMoPS"
+    },
+    "symbols": {
+      "password": "p@$$w0rd!#%^&*()_+{}|:<>?",
+      "hash": "$2b$12$teGlrOY5q3oYCbh5XHzQXOyPwnWGQZeudMDDsqecF8cJv.eAqLtZO"
+    },
+    "cost_10": {
+      "password": "cost-ten-password",
+      "hash": "$2b$10$UTQyZ4olZJ6l6NMUZAU96OAu8cTD.c/bnSJ5VEIN3e7fU5Yx92pQy"
+    }
+  },
+  "shadow_prefixes": [
+    "$y$",
+    "$gy$",
+    "$7$",
+    "$6$",
+    "$5$"
+  ],
+  "bcrypt_prefixes": [
+    "$2a$",
+    "$2b$",
+    "$2y$"
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "snpanel-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The `snpanel` command: SSH rescue menu, status and repair."
+
+[[bin]]
+name = "snpanel"
+path = "src/main.rs"
+
+[dependencies]
+snpanel-core = { path = "../snpanel-core" }
+snpanel-osabi = { path = "../snpanel-osabi" }
+snpanel-ipc = { path = "../snpanel-ipc" }
+anyhow.workspace = true
+clap.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,30 @@
+{
+  "secret_key": "test-secret-key-at-least-32-chars-long",
+  "derived_key": "KSUanqK8jmzXU_A3EFZmpxymFJCIP0u7Yt0Uex9elMg=",
+  "cases": {
+    "simple": {
+      "plaintext": "correct horse battery",
+      "stored": "fernet:gAAAAABqrDtHAoKfURKx0QwZTirxVlHzUQaEeQ3uh6r5lz2W_g-GVMX1SoHKeM7wZfnkJbb7Q6twhAs_MGC6GJ3I_9OphCzPlo47L1O1ck1o_OYsXywAi7s="
+    },
+    "empty": {
+      "plaintext": "",
+      "stored": "fernet:gAAAAABqrDtHfTKmcsY6UD1XRA2myj5EsnLhSgITh-UuhnlWvAE_LCtT72vRPc_oXLDcS1PIfR6ufFe6DwCjNMFaWGuuo9mH-A=="
+    },
+    "unicode": {
+      "plaintext": "mật khẩu cơ sở dữ liệu ✓",
+      "stored": "fernet:gAAAAABqrDtH4myG5FWgwhYdk3k9j4w0F9hmOnHDv-WrJuOjENeN4G683B2Xg4Rb2tIDayJPUM1kOOySGZ3TWsbE5Y-fhANh9lLU1JclObcYsRxmXQmZj1XOPbJEbG8d3JoZHCu0ym6p"
+    },
+    "block_aligned": {
+      "plaintext": "0123456789abcdef",
+      "stored": "fernet:gAAAAABqrDtHSyQMiPFl9BNQM8B7o69ELvORiPegWeCmTmE3kT9VKNcqx50cdiaTE2dNuc1KPALhoj2veGxd25uDR_tUbwpnI10aQ_IAOIfuIzT1cq_vmi0="
+    },
+    "long": {
+      "plaintext": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "stored": "fernet:gAAAAABqrDtHAq-hdNGjRzCopjJ6hWNhwu-AAwsSOLEFH1SJG0haywtEZ3j47kVdRLnbgsjivhPADtdXoGFvpPv8B2BEfeZ0Y27fQf9ZsXq5MyHcWqAeioHB0Ct-IrhHs_TH3JksYj1Fc8CRSx8A2dsbFHsnBiJIZ_UleMuvI8d8KnwumzwKFbv2gJFhjt9699jHu-ZvgS8oIB7eBMOisBa1rRXx98pKVQXizvSPBsVprrhBk_aE44sMJvMAKdws31uFAiwRePtrY4NJNEvYnYa8gLwcY7yRG1P3pCkbFf3b_lKWkCaigUCpM0QRuC_In5bTTheAgAbW3sxGlE89aE7xYfIeztm6KrJ5l1PyjBUJt2AVH6RfUSKFk8EAoVYyLBsBLIeTqOPEOaUk0F3b5UVXfYWVT-cCk_KGSWtKHFSRCz4n2qlHz-37kUA_abqFzKQQIMOOp3V3EuM5V8FLwah7blu5aqRWRIlI55EyPizxX1tRDDIVq5dQJDqWehugYE01f-PzX-KowbLEzJ9rF4BJXXXgQugPm0qysPwCJokw0PL6Tvc0pO0F9_cLZ9ct4MFkH-zGfRqU0LBX3ipGHyUKLdgbuFIaf3FzUveMoZkFQJxm5eHmbJp6dC0ft68FAkI5-KfcA2EPaUSyUQIiytPX5T4DP-jb0LjFqfM3hj_7S0PFfqm7Zq7Bwo3bnVid2lybX-TXLsmXA3XNMjupEt_bPAtQuKYBeb6cUQRHDKwJC6slo18-XGY="
+    },
+    "mysql_password": {
+      "plaintext": "Str0ng!DbP@ss-2026#xyz",
+      "stored": "fernet:gAAAAABqrDtH7lbFKTvhf85CwU-iT0E7Q4qiAg8o-WcXF3a8lxfl_66YPq1nOAY_LoaoTfCcOzYJGcx8B7-7ZTgBsLv0weNyGrNdFRUkXMBIqj20VuSGAZo="
+    }
+  }
+}

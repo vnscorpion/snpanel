@@ -1,0 +1,47 @@
+{
+  "secret_key": "test-secret-key-at-least-32-chars-long",
+  "algorithm": "HS256",
+  "claim_names": {
+    "subject": "sub  (the username)",
+    "token_version": "tv",
+    "role": "role",
+    "impersonation": "imp"
+  },
+  "valid": {
+    "claims": {
+      "sub": "admin",
+      "iat": 1700000000,
+      "exp": 4102444800,
+      "jti": "fixed-jti-for-the-fixture",
+      "role": "admin",
+      "tv": 3
+    },
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjo0MTAyNDQ0ODAwLCJqdGkiOiJmaXhlZC1qdGktZm9yLXRoZS1maXh0dXJlIiwicm9sZSI6ImFkbWluIiwidHYiOjN9.dzq8fAQmyn-_CZpBN_2KwlQNCuVqCvrgfCKilzob9pg"
+  },
+  "expired": {
+    "claims": {
+      "sub": "admin",
+      "iat": 1700000000,
+      "exp": 1700000060,
+      "jti": "expired-jti",
+      "role": "admin",
+      "tv": 3
+    },
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMDYwLCJqdGkiOiJleHBpcmVkLWp0aSIsInJvbGUiOiJhZG1pbiIsInR2IjozfQ.sBTcCq_3wUodb87UDTIfdNqFhgSzVS8gt-dgq_m0ze0"
+  },
+  "impersonation": {
+    "claims": {
+      "sub": "admin",
+      "iat": 1700000000,
+      "exp": 4102444800,
+      "jti": "impersonation-jti",
+      "role": "admin",
+      "tv": 3,
+      "imp": true
+    },
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjo0MTAyNDQ0ODAwLCJqdGkiOiJpbXBlcnNvbmF0aW9uLWp0aSIsInJvbGUiOiJhZG1pbiIsInR2IjozLCJpbXAiOnRydWV9.x0rkNHapVbgmiC-Y26yh1AHh93kPgiWMnhdtuJQOKIw"
+  },
+  "wrong_key": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjo0MTAyNDQ0ODAwLCJqdGkiOiJmaXhlZC1qdGktZm9yLXRoZS1maXh0dXJlIiwicm9sZSI6ImFkbWluIiwidHYiOjN9.cUxiRaAhTyuzVXFgsTOEO2FIcvgBpPINLVhfpG-knuI"
+  }
+}

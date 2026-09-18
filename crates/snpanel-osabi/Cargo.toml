@@ -1,0 +1,13 @@
+[package]
+name = "snpanel-osabi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Per-distro paths, package managers, services and firewall backends for SNPanel."
+
+[dependencies]
+snpanel-core = { path = "../snpanel-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true

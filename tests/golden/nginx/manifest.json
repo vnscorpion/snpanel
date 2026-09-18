@@ -1,0 +1,149 @@
+[
+  {
+    "name": "wordpress_default",
+    "kwargs": {
+      "app_type": "wordpress",
+      "domain": "wordpress-default.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_default.expected"
+  },
+  {
+    "name": "php_default",
+    "kwargs": {
+      "app_type": "php",
+      "domain": "php-default.example.com"
+    },
+    "expected": "tests/golden/nginx/php_default.expected"
+  },
+  {
+    "name": "static_default",
+    "kwargs": {
+      "app_type": "static",
+      "domain": "static-default.example.com"
+    },
+    "expected": "tests/golden/nginx/static_default.expected"
+  },
+  {
+    "name": "application_default",
+    "kwargs": {
+      "app_type": "application",
+      "app_port": 3000,
+      "domain": "application-default.example.com"
+    },
+    "expected": "tests/golden/nginx/application_default.expected"
+  },
+  {
+    "name": "wordpress_waf_off",
+    "kwargs": {
+      "app_type": "wordpress",
+      "waf_enabled": false,
+      "domain": "wordpress-waf-off.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_waf_off.expected"
+  },
+  {
+    "name": "wordpress_flood",
+    "kwargs": {
+      "app_type": "wordpress",
+      "http_flood_enabled": true,
+      "domain": "wordpress-flood.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_flood.expected"
+  },
+  {
+    "name": "wordpress_aliases",
+    "kwargs": {
+      "app_type": "wordpress",
+      "aliases": [
+        "alias1.example.com",
+        "alias2.example.com"
+      ],
+      "domain": "wordpress-aliases.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_aliases.expected"
+  },
+  {
+    "name": "php_front_controller",
+    "kwargs": {
+      "app_type": "php",
+      "rewrite_mode": "front_controller",
+      "domain": "php-front-controller.example.com"
+    },
+    "expected": "tests/golden/nginx/php_front_controller.expected"
+  },
+  {
+    "name": "php_laravel",
+    "kwargs": {
+      "app_type": "php",
+      "rewrite_mode": "laravel",
+      "domain": "php-laravel.example.com"
+    },
+    "expected": "tests/golden/nginx/php_laravel.expected"
+  },
+  {
+    "name": "php_codeigniter",
+    "kwargs": {
+      "app_type": "php",
+      "rewrite_mode": "codeigniter",
+      "domain": "php-codeigniter.example.com"
+    },
+    "expected": "tests/golden/nginx/php_codeigniter.expected"
+  },
+  {
+    "name": "php_seohburl",
+    "kwargs": {
+      "app_type": "php",
+      "rewrite_mode": "seohburl",
+      "domain": "php-seohburl.example.com"
+    },
+    "expected": "tests/golden/nginx/php_seohburl.expected"
+  },
+  {
+    "name": "wordpress_php83",
+    "kwargs": {
+      "app_type": "wordpress",
+      "php_version": "8.3",
+      "domain": "wordpress-php83.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_php83.expected"
+  },
+  {
+    "name": "php_subdir_root",
+    "kwargs": {
+      "app_type": "php",
+      "document_root": "public_html/public",
+      "domain": "php-subdir-root.example.com"
+    },
+    "expected": "tests/golden/nginx/php_subdir_root.expected"
+  },
+  {
+    "name": "wordpress_custom",
+    "kwargs": {
+      "app_type": "wordpress",
+      "custom_directives": "client_max_body_size 128M;",
+      "domain": "wordpress-custom.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_custom.expected"
+  },
+  {
+    "name": "wordpress_bots",
+    "kwargs": {
+      "app_type": "wordpress",
+      "blocked_bots": [
+        "AhrefsBot",
+        "SemrushBot"
+      ],
+      "domain": "wordpress-bots.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_bots.expected"
+  },
+  {
+    "name": "application_port8080",
+    "kwargs": {
+      "app_type": "application",
+      "app_port": 8080,
+      "domain": "application-port8080.example.com"
+    },
+    "expected": "tests/golden/nginx/application_port8080.expected"
+  }
+]

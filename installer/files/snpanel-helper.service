@@ -1,0 +1,50 @@
+# The Rust privileged helper.
+#
+# This runs as root because it is the privileged side - that is its job, and
+# NT5 says the security model must not weaken. What constrains it is not a
+# reduced capability set but the protocol: every request is a typed enum whose
+# values cannot be constructed from invalid input, and there is no shell
+# anywhere in the process, so there is nothing to inject into.
+#
+# The hardening below is what can be applied without taking away something the
+# helper genuinely needs. It cannot use ProtectSystem or ProtectHome: writing
+# to /etc/nginx and managing files under /home is the work.
+
+[Unit]
+Description=SNPanel privileged helper
+Requires=snpanel-helper.socket
+After=snpanel-helper.socket network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/snpanel-helper --serve
+User=root
+Group=root
+
+# Restart on failure, but do not spin: if the helper cannot start, the panel
+# should degrade visibly rather than hammer the box.
+Restart=on-failure
+RestartSec=2s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logging goes to the journal, where the audit trail belongs.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=snpanel-helper
+
+# Hardening that costs nothing here.
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=false
+MemoryDenyWriteExecute=true
+LockPersonality=true
+# nft, systemctl, useradd and restorecon all need the real /proc.
+ProcSubset=all
+
+[Install]
+WantedBy=multi-user.target

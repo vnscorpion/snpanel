@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Two kinds of step below, and the distinction is the point of this file:
+#
+#   Blocking  - must be green, and *can* be green today. A red one is a real
+#               regression introduced by the change under test.
+#   Reporting - `continue-on-error: true`. These flag pre-existing debt (581
+#               ruff findings, ~950 bandit findings) that predates the
+#               workflow. They stay visible in the job log without turning
+#               every run red.
+#
+# The previous version had no such split, so `ruff` failed at the first step
+# and *nothing after it ever ran* - including the tests. A gate that is always
+# red teaches people to ignore it, which is the same as having no gate.
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest ruff bandit pip-audit semgrep
+
+      # --- Blocking -------------------------------------------------------
+
+      - name: Tests
+        # Was `pytest backend/tests -q || echo "No tests yet"`, which was wrong
+        # twice over: nearly all of backend/tests/ is gitignored, so the path
+        # is all but empty in a clean checkout, and `|| echo` swallowed the
+        # failure. CI reported green while running zero tests. Both paths run
+        # now - backend/app/tests is the bulk, and the one file force-added
+        # under backend/tests carries 19 tests CI has never executed.
+        run: pytest backend/app/tests backend/tests -q
+
+      - name: Compile-only sanity check
+        run: |
+          python -c "import py_compile, glob; [py_compile.compile(f, doraise=True) for f in glob.glob('backend/app/**/*.py', recursive=True)]"
+
+      - name: pip-audit
+        # Ignoring exactly the two advisories with no fixed version published.
+        # Anything else - including a new advisory against these same two
+        # packages - fails the build. Re-check when upstream ships a release:
+        #   PYSEC-2026-2858  paramiko  (no fixed version as of 2026-09-07)
+        #   PYSEC-2026-1325  ecdsa     (no fixed version; transitive)
+        run: |
+          pip-audit -r backend/requirements.txt --strict \
+            --ignore-vuln PYSEC-2026-2858 \
+            --ignore-vuln PYSEC-2026-1325
+
+      # --- Reporting ------------------------------------------------------
+
+      - name: Lint (ruff)
+        continue-on-error: true
+        run: ruff check backend/app
+
+      - name: Security scan (bandit)
+        continue-on-error: true
+        run: bandit -r backend/app -ll -q
+
+      - name: Semgrep
+        continue-on-error: true
+        run: semgrep --config=auto --error backend/app
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck on installer scripts
+        continue-on-error: true
+        uses: ludeeus/action-shellcheck@master
+        with:
+          ignore_paths: "node_modules"
+        env:
+          SHELLCHECK_OPTS: -e SC1091
+
+      - name: Parse-check every shell script
+        # Narrower than shellcheck's style rules, but blocking: a script that
+        # does not parse is broken on every server that runs it.
+        run: |
+          find installer -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+  install-smoke-test:
+    # The one test that exercises what customers actually run. A unit test
+    # cannot catch an installer that dies on an apt lock or a missing tty.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run install.sh unattended
+        # PANEL_URL supplies the hostname and port, so no prompt is reached;
+        # an IP for a hostname also pins ENABLE_SSL=no, which keeps Let's
+        # Encrypt out of CI.
+        run: sudo -E bash installer/install.sh
+        env:
+          PANEL_URL: "http://127.0.0.1:2222"
+          SNPANEL_ADMIN_PASSWORD: "ci-smoke-test-not-a-real-secret"
+
+      - name: The panel answers
+        # https, and -k: app/serve.py always terminates TLS on the panel port,
+        # with a self-signed per-hostname certificate from the SNI store. Plain
+        # http here just gets "Empty reply from server". The unit is
+        # snpanel-api.service, not snpanel.service.
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsSk https://127.0.0.1:2222/api/health; then exit 0; fi
+            sleep 2
+          done
+          echo "::error::panel never became healthy"
+          systemctl status snpanel-api --no-pager -l || true
+          journalctl -u snpanel-api -n 100 --no-pager || true
+          exit 1
+
+      - name: nginx config is valid and the stack is up
+        run: |
+          sudo nginx -t
+          # Scoped to what the installer is responsible for. A blanket
+          # `systemctl --failed` also catches units the runner image ships
+          # broken, which would make this gate flaky for reasons unrelated
+          # to the change under test.
+          for unit in snpanel-api nginx mariadb redis-server; do
+            systemctl is-active --quiet "$unit" \
+              || { echo "::error::$unit is not active"; systemctl status "$unit" --no-pager -l; exit 1; }
+          done
+          # The PHP version is the installer's choice, so match on the pattern
+          # rather than pinning 8.3 here and having to chase it later.
+          systemctl list-units 'php*-fpm.service' --state=active --plain --no-legend | grep -q . \
+            || { echo "::error::no php-fpm pool is running"; exit 1; }
+          systemctl --failed --no-pager
+
+      - name: Create a site end to end
+        # The check that exercises the parts a unit test cannot: the sudo
+        # helper trampoline, the Linux user and its site directory, MariaDB,
+        # the rendered vhost, and a per-site PHP-FPM pool.
+        run: |
+          set -euo pipefail
+          # Form-encoded, not JSON: the endpoint takes an OAuth2PasswordRequestForm.
+          token=$(curl -sSk -X POST https://127.0.0.1:2222/api/auth/login \
+            -d "username=admin&password=$SNPANEL_ADMIN_PASSWORD" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+
+          curl -fsSk -X POST https://127.0.0.1:2222/api/websites \
+            -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"domain":"ci.example.test","install_wordpress":false,"app_type":"php"}' >/dev/null
+
+          test -f /etc/nginx/conf.d/ci.example.test.conf
+          sudo nginx -t
+
+          # ...and it serves. `.test` resolves nowhere, so address the vhost
+          # by Host header rather than relying on DNS.
+          #
+          # Poll rather than ask once: the API returns as soon as the config is
+          # on disk, and the nginx reload that picks it up is debounced by
+          # about a second. A single immediate request gets HTTP 200 from the
+          # *default* site ("Welcome to nginx!"), which looks like a pass on
+          # the status code alone - so match on the page, not just on 200.
+          for _ in $(seq 1 30); do
+            curl -sS -H 'Host: ci.example.test' http://127.0.0.1/ -o /tmp/page.html || true
+            if grep -q '<title>ci.example.test</title>' /tmp/page.html; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::the site never served its own vhost"
+          echo "--- what was served instead ---"
+          head -c 500 /tmp/page.html
+          ls -l /etc/nginx/conf.d/
+          exit 1
+        env:
+          SNPANEL_ADMIN_PASSWORD: "ci-smoke-test-not-a-real-secret"
