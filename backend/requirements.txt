@@ -24,4 +24,4 @@ alembic==1.13.2
 pyotp==2.9.0
 qrcode[pil]==7.4.2
 paramiko==3.4.0
-maxminddb==3.1.1
+maxminddb==3.2.0
