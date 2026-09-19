@@ -1,0 +1,537 @@
+[
+  {
+    "name": "empty",
+    "input": "",
+    "ok": true,
+    "value": ""
+  },
+  {
+    "name": "whitespace_only",
+    "input": "   \n\t  ",
+    "ok": true,
+    "value": ""
+  },
+  {
+    "name": "simple",
+    "input": "client_max_body_size 128M;",
+    "ok": true,
+    "value": "client_max_body_size 128M;"
+  },
+  {
+    "name": "two_directives",
+    "input": "client_max_body_size 128M;\ngzip on;",
+    "ok": true,
+    "value": "client_max_body_size 128M;\ngzip on;"
+  },
+  {
+    "name": "crlf",
+    "input": "client_max_body_size 128M;\r\ngzip on;",
+    "ok": true,
+    "value": "client_max_body_size 128M;\ngzip on;"
+  },
+  {
+    "name": "nested_location",
+    "input": "location /assets {\n    expires 30d;\n}",
+    "ok": true,
+    "value": "location /assets {\n    expires 30d;\n}"
+  },
+  {
+    "name": "add_header_cache",
+    "input": "add_header Cache-Control \"public, max-age=60\" always;",
+    "ok": true,
+    "value": "add_header Cache-Control \"public, max-age=60\" always;"
+  },
+  {
+    "name": "add_header_vary",
+    "input": "add_header Vary Accept-Encoding;",
+    "ok": true,
+    "value": "add_header Vary Accept-Encoding;"
+  },
+  {
+    "name": "try_files_ok",
+    "input": "location /a {\n    try_files $uri $uri/ /index.php;\n}",
+    "ok": true,
+    "value": "location /a {\n    try_files $uri $uri/ /index.php;\n}"
+  },
+  {
+    "name": "rewrite_last",
+    "input": "rewrite ^/old/(.*)$ /new/$1 last;",
+    "ok": true,
+    "value": "rewrite ^/old/(.*)$ /new/$1 last;"
+  },
+  {
+    "name": "rewrite_break",
+    "input": "rewrite ^/old/(.*)$ /new/$1 break;",
+    "ok": true,
+    "value": "rewrite ^/old/(.*)$ /new/$1 break;"
+  },
+  {
+    "name": "rewrite_no_flag",
+    "input": "rewrite ^/old/(.*)$ /new/$1;",
+    "ok": true,
+    "value": "rewrite ^/old/(.*)$ /new/$1;"
+  },
+  {
+    "name": "comment_only",
+    "input": "# nothing to see here",
+    "ok": true,
+    "value": "# nothing to see here"
+  },
+  {
+    "name": "directive_after_comment",
+    "input": "# note\nclient_max_body_size 8M;",
+    "ok": true,
+    "value": "# note\nclient_max_body_size 8M;"
+  },
+  {
+    "name": "deep_nesting",
+    "input": "location /a {\n  location /b {\n    expires 1d;\n  }\n}",
+    "ok": true,
+    "value": "location /a {\n  location /b {\n    expires 1d;\n  }\n}"
+  },
+  {
+    "name": "unbalanced_open",
+    "input": "location /a {",
+    "ok": false,
+    "value": null,
+    "error": "Unbalanced braces in custom nginx block"
+  },
+  {
+    "name": "unbalanced_close",
+    "input": "expires 1d; }",
+    "ok": false,
+    "value": null,
+    "error": "Unbalanced braces in custom nginx block"
+  },
+  {
+    "name": "nul_byte",
+    "input": "gzip on;\u0000",
+    "ok": false,
+    "value": null,
+    "error": "Custom nginx block contains a NUL byte"
+  },
+  {
+    "name": "too_large",
+    "input": "gzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\ngzip on;\n",
+    "ok": false,
+    "value": null,
+    "error": "Custom nginx block is too large"
+  },
+  {
+    "name": "nested_server",
+    "input": "server {\n    listen 81;\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "nested_http",
+    "input": "http {\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "nested_events",
+    "input": "events {\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "nested_stream",
+    "input": "stream {\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "nested_upstream",
+    "input": "upstream backend {\n    server 127.0.0.1:1;\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "nested_upstream_at",
+    "input": "upstream @b {\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "server_inline",
+    "input": "location /a { server { } }",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "server_uppercase",
+    "input": "SERVER {\n}",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not nest server/http/events/stream/upstream blocks"
+  },
+  {
+    "name": "proxy_pass",
+    "input": "proxy_pass http://127.0.0.1:9000;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "proxy_pass_inline",
+    "input": "location /api { proxy_pass http://attacker; }",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "proxy_pass_upper",
+    "input": "PROXY_PASS http://x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "alias",
+    "input": "alias /etc;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "root",
+    "input": "root /etc;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "return",
+    "input": "return 301 https://example.com;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "include",
+    "input": "include /etc/passwd;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "load_module",
+    "input": "load_module modules/x.so;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "user",
+    "input": "user root;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "daemon",
+    "input": "daemon off;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "pid",
+    "input": "pid /tmp/x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "working_directory",
+    "input": "working_directory /tmp;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "lua_prefix",
+    "input": "lua_code_cache off;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "perl_prefix",
+    "input": "perl_modules /tmp;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "js_prefix",
+    "input": "js_import x.js;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "pcre_jit",
+    "input": "pcre_jit on;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "fastcgi_pass",
+    "input": "fastcgi_pass unix:/tmp/x.sock;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "uwsgi_pass",
+    "input": "uwsgi_pass 127.0.0.1:1;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "scgi_pass",
+    "input": "scgi_pass 127.0.0.1:1;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "grpc_pass",
+    "input": "grpc_pass 127.0.0.1:1;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "auth_basic_user_file",
+    "input": "auth_basic_user_file /etc/shadow;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "access_log",
+    "input": "access_log /etc/cron.d/x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "error_log",
+    "input": "error_log /etc/cron.d/x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "error_page",
+    "input": "error_page 404 http://attacker/;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "more_set_headers",
+    "input": "more_set_headers 'X: 1';",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "more_clear_headers",
+    "input": "more_clear_headers 'X';",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "auth_request",
+    "input": "auth_request /verify;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "sub_filter",
+    "input": "sub_filter 'a' 'b';",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "sub_filter_once",
+    "input": "sub_filter_once off;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "addition_before_body",
+    "input": "addition_before_body /x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "addition_after_body",
+    "input": "addition_after_body /x;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "ssl_certificate",
+    "input": "ssl_certificate /tmp/x.crt;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "ssl_certificate_key",
+    "input": "ssl_certificate_key /tmp/x.key;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "ssl_trusted_certificate",
+    "input": "ssl_trusted_certificate /tmp/ca.crt;",
+    "ok": false,
+    "value": null,
+    "error": "Custom block must not contain disallowed directives (proxy_pass, alias, return, ssl_certificate, ...)"
+  },
+  {
+    "name": "rootish_name",
+    "input": "root_hint 1;",
+    "ok": true,
+    "value": "root_hint 1;"
+  },
+  {
+    "name": "returnish_name",
+    "input": "returning 1;",
+    "ok": true,
+    "value": "returning 1;"
+  },
+  {
+    "name": "ssl_certificate_prefix_name",
+    "input": "ssl_certificate_by_lua 1;",
+    "ok": true,
+    "value": "ssl_certificate_by_lua 1;"
+  },
+  {
+    "name": "add_header_not_cache",
+    "input": "add_header X-Frame-Options DENY;",
+    "ok": false,
+    "value": null,
+    "error": "Custom add_header may only set cache-related headers; disallowed: X-Frame-Options"
+  },
+  {
+    "name": "add_header_malformed",
+    "input": "add_header;",
+    "ok": false,
+    "value": null,
+    "error": "Malformed or unsupported add_header directive"
+  },
+  {
+    "name": "add_header_no_value",
+    "input": "add_header Cache-Control;",
+    "ok": false,
+    "value": null,
+    "error": "Malformed or unsupported add_header directive"
+  },
+  {
+    "name": "add_header_two_bad",
+    "input": "add_header X-A 1;\nadd_header X-B 2;",
+    "ok": false,
+    "value": null,
+    "error": "Custom add_header may only set cache-related headers; disallowed: X-A, X-B"
+  },
+  {
+    "name": "add_header_mixed",
+    "input": "add_header Cache-Control \"x\";\nadd_header X-Frame-Options DENY;",
+    "ok": false,
+    "value": null,
+    "error": "Custom add_header may only set cache-related headers; disallowed: X-Frame-Options"
+  },
+  {
+    "name": "try_files_traversal",
+    "input": "try_files ../../etc/passwd =404;",
+    "ok": false,
+    "value": null,
+    "error": "Custom try_files directives must not use traversal or external URLs"
+  },
+  {
+    "name": "try_files_external",
+    "input": "try_files http://attacker/ =404;",
+    "ok": false,
+    "value": null,
+    "error": "Custom try_files directives must not use traversal or external URLs"
+  },
+  {
+    "name": "try_files_file_scheme",
+    "input": "try_files file:///etc/passwd =404;",
+    "ok": false,
+    "value": null,
+    "error": "Custom try_files directives must not use traversal or external URLs"
+  },
+  {
+    "name": "try_files_malformed",
+    "input": "try_files;",
+    "ok": false,
+    "value": null,
+    "error": "Malformed or unsupported try_files directive"
+  },
+  {
+    "name": "rewrite_external",
+    "input": "rewrite ^/(.*)$ https://attacker/$1 last;",
+    "ok": false,
+    "value": null,
+    "error": "Custom rewrite directives must target a local URI and use last or break"
+  },
+  {
+    "name": "rewrite_protocol_relative",
+    "input": "rewrite ^/(.*)$ //attacker/$1 last;",
+    "ok": false,
+    "value": null,
+    "error": "Custom rewrite directives must target a local URI and use last or break"
+  },
+  {
+    "name": "rewrite_traversal",
+    "input": "rewrite ^/(.*)$ /a/../../etc/passwd last;",
+    "ok": false,
+    "value": null,
+    "error": "Custom rewrite directives must target a local URI and use last or break"
+  },
+  {
+    "name": "rewrite_bad_flag",
+    "input": "rewrite ^/(.*)$ /new/$1 redirect;",
+    "ok": false,
+    "value": null,
+    "error": "Custom rewrite directives must target a local URI and use last or break"
+  },
+  {
+    "name": "rewrite_malformed",
+    "input": "rewrite;",
+    "ok": false,
+    "value": null,
+    "error": "Malformed or unsupported rewrite directive"
+  },
+  {
+    "name": "rewrite_relative_target",
+    "input": "rewrite ^/(.*)$ new/$1 last;",
+    "ok": false,
+    "value": null,
+    "error": "Custom rewrite directives must target a local URI and use last or break"
+  }
+]

@@ -94,7 +94,14 @@ server, not only in the source.
 ### 4.1 Crate layout
 
 Workspace members today: `snpanel-core`, `snpanel-osabi`, `snpanel-ipc`,
-`snpanel-cli`, `snpanel-db`, `snpanel-helper`, `snpanel-api`, `xtask`.
+`snpanel-cli`, `snpanel-db`, `snpanel-helper`, `snpanel-nginx`, `snpanel-api`,
+`xtask`.
+
+`snpanel-nginx` was added when Stage C started, because twelve of the twenty
+`websites` write endpoints do nothing but rewrite a vhost, and the rendering
+is the same work each time. It is its own crate rather than a module in
+`snpanel-api` so that C19 - the contract that says the bytes must match - has
+somewhere to live that does not depend on an HTTP framework.
 
 Added when its stage starts, so CI never builds an empty shell:
 

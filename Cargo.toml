@@ -4,6 +4,7 @@ members = [
     "crates/snpanel-core",
     "crates/snpanel-osabi",
     "crates/snpanel-ipc",
+    "crates/snpanel-nginx",
     "crates/snpanel-cli",
     "crates/snpanel-db",
     "crates/snpanel-helper",
