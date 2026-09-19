@@ -250,6 +250,38 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// `site-runtime-delete`: remove a site's PHP pools, then the site itself.
+///
+/// Source: the `site-runtime-delete` arm. Pools first: removing the tree
+/// while a pool still points at it leaves FPM workers holding a document root
+/// that no longer exists, and the next request to that socket fails in a way
+/// that names neither the site nor the deletion.
+pub fn runtime_delete(user: &PanelUsername, path: &SitePath) -> HelperResponse {
+    if let Err(r) = guard(path) {
+        return r;
+    }
+    // The shell hashes the path *after* `readlink -m`, so the resolution has
+    // to happen here too or the pool name will not match what is on disk.
+    let resolved = std::fs::canonicalize(path.as_path())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.as_str().to_string());
+
+    let removed = super::php::delete_site_pools(user.as_str(), &resolved);
+
+    if let Err(e) = std::fs::remove_dir_all(path.as_path()) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("removing {}: {e}", path.as_path().display()),
+            );
+        }
+    }
+    HelperResponse::with_stdout(format!(
+        "removed {} pool file(s) and the site tree\n",
+        removed.len()
+    ))
+}
+
 /// Where WP-CLI is installed. Named once so the two verbs cannot disagree.
 const WP_CLI: &str = "/usr/local/bin/wp";
 

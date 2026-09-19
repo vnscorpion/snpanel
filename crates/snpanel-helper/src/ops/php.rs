@@ -240,6 +240,55 @@ fn write_ini(path: &std::path::Path, body: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Every pool file belonging to one site, across every installed PHP version.
+///
+/// Source: `site_php_pool_glob`. The prefix is what identifies the site; the
+/// suffix is the PHP version, so a site that has been moved between versions
+/// may have more than one.
+fn site_pool_prefix(user: &str, resolved_site_path: &str) -> String {
+    format!(
+        "snpanel-{user}-{}-",
+        snpanel_core::types::site_hash(resolved_site_path)
+    )
+}
+
+/// `delete_site_php_pools`: remove a site's pools and reload what served them.
+///
+/// Reload rather than restart, and failures ignored, exactly as the bash has
+/// it: a pool that is already gone is not an error, and an FPM that will not
+/// reload is a separate problem from the site being deleted.
+pub fn delete_site_pools(user: &str, resolved_site_path: &str) -> Vec<String> {
+    let prefix = site_pool_prefix(user, resolved_site_path);
+    let mut removed = Vec::new();
+
+    let Ok(versions) = std::fs::read_dir("/etc/php") else {
+        return removed;
+    };
+    for entry in versions.flatten() {
+        let version = entry.file_name().to_string_lossy().into_owned();
+        let pool_dir = entry.path().join("fpm/pool.d");
+        let Ok(files) = std::fs::read_dir(&pool_dir) else {
+            continue;
+        };
+        let mut touched = false;
+        for file in files.flatten() {
+            let name = file.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix)
+                && name.ends_with(".conf")
+                && std::fs::remove_file(file.path()).is_ok()
+            {
+                removed.push(name);
+                touched = true;
+            }
+        }
+        if touched {
+            let service = format!("php{version}-fpm");
+            let _ = crate::exec::run(&["systemctl", "reload", &service]);
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -83,6 +83,32 @@ pub enum ParseError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Domain(String);
 
+/// The twelve hex characters that identify a site in its PHP-FPM pool name.
+///
+/// Source: `site_php_pool_glob` and `ensure_php_pool`, which both compute
+///
+/// ```text
+/// printf '%s' "$target" | sha256sum | awk '{print substr($1, 1, 12)}'
+/// ```
+///
+/// Must stay byte-identical. The pool files it names already exist on every
+/// installed server: a different hash does not produce a wrong name, it
+/// produces a name that matches nothing, so deleting a site would leave its
+/// pool running with the old document root still open.
+///
+/// `resolved_path` is the site root after symlink resolution, because that is
+/// what the shell hashes - `readlink -m` runs before `sha256sum`.
+pub fn site_hash(resolved_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(resolved_path.as_bytes());
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    hex[..12].to_string()
+}
+
 impl Domain {
     pub fn parse(raw: &str) -> Result<Self, ParseError> {
         let normalized = raw.trim().to_ascii_lowercase();
@@ -790,6 +816,56 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The pool hash must equal what the shell computes, not merely look like
+    /// a hash.
+    ///
+    /// Compared against the real pipeline rather than a constant, because a
+    /// constant is only as good as the person who pasted it, and the cost of
+    /// being wrong is a pool file that no longer matches its site.
+    #[test]
+    fn the_pool_hash_matches_the_shell_pipeline() {
+        use std::process::Command;
+
+        for path in [
+            "/home/bp_site/example.com",
+            "/home/u1/a-very-long.domain.example.co.uk",
+            "/home/x/site with spaces",
+        ] {
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg("printf '%s' \"$1\" | sha256sum | awk '{print substr($1, 1, 12)}'")
+                .arg("sh")
+                .arg(path)
+                .output();
+
+            let Ok(out) = out else {
+                eprintln!("skipped: no shell to compare against");
+                return;
+            };
+            let expected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert!(
+                expected.len() == 12,
+                "sha256sum is not available here, so this proves nothing: {expected:?}"
+            );
+            assert_eq!(
+                site_hash(path),
+                expected,
+                "the pool name for {path} would not match what is on disk"
+            );
+        }
+    }
+
+    /// Twelve hex characters, and the same answer every time.
+    #[test]
+    fn the_pool_hash_is_stable_and_the_right_width() {
+        let a = site_hash("/home/bp_site/example.com");
+        let b = site_hash("/home/bp_site/example.com");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 12);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, site_hash("/home/bp_site/example.net"));
+    }
+
     use super::*;
 
     #[test]

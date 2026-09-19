@@ -378,14 +378,28 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// NOTE: this still carries a `domain`, and its caller does not have one.
+    ///
+    /// `site_users.ensure_site_runtime` passes a `root_path` read from the
+    /// database, and `site-runtime-move` exists because that path can change,
+    /// so deriving `/home/<user>/<domain>` would be a guess. Left as declared
+    /// rather than changed speculatively - see `SiteRuntimeDelete`, which had
+    /// the same shape and needed a `SitePath` the moment it was implemented.
     SiteRuntimeEnsure {
         user: PanelUsername,
         domain: Domain,
         php: PhpVersion,
     },
+    /// The site root as a path, not derived from a domain.
+    ///
+    /// The caller passes `root_path` from the database, and this feeds a
+    /// recursive delete: deriving the location instead of being told it would
+    /// remove the wrong directory for any site that has been moved. A
+    /// `SitePath` is `require_managed_path` expressed as a type - absolute,
+    /// traversal-free, under `/home/<user>/`.
     SiteRuntimeDelete {
         user: PanelUsername,
-        domain: Domain,
+        path: SitePath,
     },
     SiteFileWrite {
         path: SitePath,
