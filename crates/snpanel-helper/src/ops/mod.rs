@@ -220,6 +220,13 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::Wp { args } => site::wp(args),
+        HelperRequest::WpSite { user: u, php, args } => site::wp_site(u, *php, args),
+        HelperRequest::SitePopulate {
+            user: u,
+            root,
+            source,
+        } => site::populate(u, root, source),
         HelperRequest::SiteFileInstall {
             user: u,
             root,

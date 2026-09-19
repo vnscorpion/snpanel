@@ -458,6 +458,33 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// Run WP-CLI as the web user.
+    ///
+    /// `args` is a vector, not a string: there is no shell here to quote for.
+    Wp {
+        args: Vec<String>,
+    },
+    /// Run WP-CLI as a site's own user, under that site's PHP.
+    ///
+    /// `php` is the version the *site* runs, which is not always what `php`
+    /// points at. A site on 8.4 driven by the 8.3 CLI has no mysqli, and
+    /// every `wp core update` fails on it.
+    WpSite {
+        user: PanelUsername,
+        php: Option<PhpVersion>,
+        args: Vec<String>,
+    },
+    /// Replace a site's tree from a panel-staged directory.
+    ///
+    /// Used by the importer and by a full-user restore. The source has to sit
+    /// in the panel's staging area: this deletes the site's contents before
+    /// copying, so a source that turned out to be somewhere else would be
+    /// discovered far too late.
+    SitePopulate {
+        user: PanelUsername,
+        root: SitePath,
+        source: String,
+    },
     /// Move a panel-staged upload into a site, as the site's user.
     ///
     /// `staged` is a path under the panel's upload staging area rather than
@@ -612,6 +639,9 @@ impl HelperRequest {
             Self::SiteLogsReadMany { .. } => "site-logs-read-many",
             Self::SiteDocumentRootEnsure { .. } => "site-document-root-ensure",
             Self::SiteFileInstall { .. } => "site-file-install",
+            Self::SitePopulate { .. } => "site-populate",
+            Self::Wp { .. } => "wp",
+            Self::WpSite { .. } => "wp-site",
             Self::SslCertInfo { .. } => "ssl-cert-info",
             Self::PanelSslSelfsigned { .. } => "panel-ssl-selfsigned",
             Self::PanelSslDomains => "panel-ssl-domains",

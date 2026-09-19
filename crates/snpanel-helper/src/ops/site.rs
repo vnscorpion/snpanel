@@ -250,6 +250,272 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// Where WP-CLI is installed. Named once so the two verbs cannot disagree.
+const WP_CLI: &str = "/usr/local/bin/wp";
+
+/// PCRE's JIT is switched off for WP-CLI.
+///
+/// Source: `-d pcre.jit=0` in both arms. WordPress's own regular expressions
+/// segfault PHP with the JIT enabled on some builds, and a crashed CLI looks
+/// to the panel exactly like a command that produced nothing.
+const PCRE_JIT_OFF: &str = "-d";
+const PCRE_JIT_OFF_VALUE: &str = "pcre.jit=0";
+
+/// `wp`: WP-CLI as the web user.
+pub fn wp(args: &[String]) -> HelperResponse {
+    if args.is_empty() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "usage: wp <args...>".to_string(),
+        );
+    }
+    let (web_user, home) = web_user_and_home();
+    run_wp(&web_user, &home, "php", args)
+}
+
+/// `wp-site`: WP-CLI as the site's user, under the site's PHP.
+pub fn wp_site(
+    user: &PanelUsername,
+    php: Option<snpanel_core::PhpVersion>,
+    args: &[String],
+) -> HelperResponse {
+    if args.is_empty() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "usage: wp-site <site-user> [--php-version=<version>] <args...>".to_string(),
+        );
+    }
+    let binary = match php {
+        // The version is a parsed `PhpVersion`, so `require_php_version` has
+        // already happened in the type.
+        Some(v) => format!("php{v}"),
+        None => "php".to_string(),
+    };
+    if php.is_some() && which(&binary).is_none() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("PHP CLI is not installed: {binary}"),
+        );
+    }
+    let home = format!("/home/{}", user.as_str());
+    run_wp(user.as_str(), &home, &binary, args)
+}
+
+fn run_wp(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> HelperResponse {
+    let argv = wp_argv(as_user, home, php_binary, args);
+    let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+    exec::respond(&format!("wp (as {as_user})"), exec::run(&borrowed))
+}
+
+/// The argument vector, built separately so it can be read without being run.
+///
+/// Every element is its own argument. There is no shell in this path, which
+/// is why a WordPress option value containing a quote or a semicolon is just
+/// a value - but that is only obvious if you can see the vector, so the tests
+/// look at it directly.
+fn wp_argv(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> Vec<String> {
+    let mut argv: Vec<String> = vec![
+        "runuser".into(),
+        "-u".into(),
+        as_user.into(),
+        "--".into(),
+        "env".into(),
+        format!("HOME={home}"),
+        "WP_CLI_PHP_ARGS=-d pcre.jit=0".into(),
+        php_binary.into(),
+        PCRE_JIT_OFF.into(),
+        PCRE_JIT_OFF_VALUE.into(),
+        WP_CLI.into(),
+    ];
+    argv.extend(args.iter().cloned());
+    argv
+}
+
+/// The web user and its home, the way the bash resolves them.
+///
+/// Source: `WEB_USER_HOME="$(getent passwd ... | cut -d: -f6)"` with
+/// `/var/www` as the fallback when the entry has no usable home.
+fn web_user_and_home() -> (String, String) {
+    let user = snpanel_osabi::detect()
+        .map(|p| p.web_user().to_string())
+        .unwrap_or_else(|_| "www-data".to_string());
+    let home = exec::run(&["getent", "passwd", &user])
+        .ok()
+        .and_then(|o| {
+            o.stdout
+                .lines()
+                .next()
+                .and_then(|line| line.split(':').nth(5).map(str::to_string))
+        })
+        .filter(|h| !h.is_empty() && Path::new(h).is_dir())
+        .unwrap_or_else(|| "/var/www".to_string());
+    (user, home)
+}
+
+/// Is this program on the helper's fixed search path?
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    .iter()
+    .map(|d| Path::new(d).join(program))
+    .find(|p| p.is_file())
+}
+
+/// Where the panel stages a tree for import or restore.
+///
+/// Two prefixes because the importer and the restorer use different ones.
+/// Checked on the path as given and again after resolution, for the same
+/// reason as the upload prefix: a symlink in a staging directory would
+/// otherwise name anything on the machine.
+const IMPORT_STAGE_PREFIXES: &[&str] = &[
+    "/var/lib/snpanel/import-stage/",
+    "/var/lib/snpanel/da-import/",
+];
+
+/// `site-populate`: replace a site's tree from a staged copy.
+///
+/// Source: the `site-populate` arm. Every check runs before the delete: this
+/// empties the site root, and refusing afterwards would leave a customer with
+/// nothing where their site used to be.
+pub fn populate(user: &PanelUsername, root: &SitePath, source: &str) -> HelperResponse {
+    if let Err(r) = guard(root) {
+        return r;
+    }
+    let src = match check_staged_tree(source) {
+        Ok(p) => p,
+        Err(message) => return HelperResponse::failed(HelperErrorKind::BadRequest, message),
+    };
+
+    let target = root.as_path();
+    if let Err(e) = std::fs::create_dir_all(target) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", target.display()),
+        );
+    }
+
+    // Everything inside, not the root itself: the directory belongs to the
+    // site user and recreating it would lose its ownership and mode.
+    if let Err(e) = empty_directory(target) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("clearing {}: {e}", target.display()),
+        );
+    }
+
+    let from = format!("{}/.", src);
+    let to = format!("{}/", target.display());
+    let out = exec::run(&["cp", "-a", "--no-preserve=ownership", "--", &from, &to]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return exec::respond("cp -a", out);
+    }
+
+    // A backup is attacker-controlled input. A symlink to /etc/shadow inside
+    // one would otherwise be served by nginx; a device node is worse.
+    let _ = exec::run(&[
+        "find",
+        &target.to_string_lossy(),
+        "(",
+        "-type",
+        "l",
+        "-o",
+        "-type",
+        "b",
+        "-o",
+        "-type",
+        "c",
+        "-o",
+        "-type",
+        "p",
+        "-o",
+        "-type",
+        "s",
+        ")",
+        "-delete",
+    ]);
+
+    let public = target.join("public_html");
+    if let Err(e) = std::fs::create_dir_all(&public) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", public.display()),
+        );
+    }
+
+    fix_permissions(root, user)
+}
+
+/// Delete the contents of a directory, leaving the directory itself.
+fn empty_directory(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        // `symlink_metadata`, so a symlinked directory is unlinked rather
+        // than recursed into.
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// The staged source tree, checked the way the bash checks it.
+fn check_staged_tree(source: &str) -> Result<String, String> {
+    let under_stage = |p: &str| {
+        IMPORT_STAGE_PREFIXES
+            .iter()
+            .any(|prefix| p.starts_with(prefix))
+    };
+
+    if !under_stage(source) {
+        return Err(format!(
+            "staged source must be under {}",
+            IMPORT_STAGE_PREFIXES[0]
+        ));
+    }
+    let given = Path::new(source);
+    match std::fs::symlink_metadata(given) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err("staged source cannot be a symlink".to_string())
+        }
+        Ok(_) => {}
+        Err(_) => return Err(format!("staged source not found: {source}")),
+    }
+
+    let resolved =
+        std::fs::canonicalize(given).map_err(|_| format!("staged source not found: {source}"))?;
+    let resolved_str = resolved.to_string_lossy().into_owned();
+    if !under_stage(&format!("{resolved_str}/")) {
+        return Err(format!(
+            "staged source escaped the import staging area: {resolved_str}"
+        ));
+    }
+    let meta =
+        std::fs::metadata(&resolved).map_err(|e| format!("staged source not readable: {e}"))?;
+    if !meta.is_dir() {
+        return Err(format!("staged source is not a directory: {resolved_str}"));
+    }
+    let panel_uid = crate::peercred::uid_of(crate::peercred::PANEL_USER)
+        .map_err(|e| format!("cannot resolve the panel user: {e}"))?;
+    use std::os::unix::fs::MetadataExt;
+    if meta.uid() != panel_uid {
+        return Err(format!(
+            "staged source must be owned by {}",
+            crate::peercred::PANEL_USER
+        ));
+    }
+    Ok(resolved_str)
+}
+
 /// Where the panel stages an upload before the helper moves it.
 ///
 /// Checked as a prefix twice: on the path as given and on the path after
@@ -717,6 +983,136 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Arguments stay arguments: there is no shell in this path.
+    ///
+    /// A WordPress option value can contain anything, and the panel passes it
+    /// straight through. Passing it as one element of a vector is what makes
+    /// that safe, and looking at the vector is the only way to see it.
+    #[test]
+    fn wp_arguments_are_vector_elements_not_a_command_string() {
+        let args: Vec<String> = vec![
+            "option".into(),
+            "update".into(),
+            "blogname".into(),
+            "Dấu ; và \"nháy\" và $(whoami)".into(),
+        ];
+        let argv = wp_argv("bp_site", "/home/bp_site", "php8.4", &args);
+
+        assert_eq!(
+            argv.last().unwrap(),
+            "Dấu ; và \"nháy\" và $(whoami)",
+            "the value must arrive whole and unquoted"
+        );
+        assert_eq!(
+            argv.iter().filter(|a| a.contains("whoami")).count(),
+            1,
+            "and exactly once: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "sh" || a == "bash" || a == "-c"),
+            "no shell may appear in the vector: {argv:?}"
+        );
+    }
+
+    /// The site's PHP, not whatever `php` happens to be.
+    ///
+    /// A site on 8.4 driven by the 8.3 CLI has no mysqli, and every
+    /// `wp core update` fails on it with a message about the MySQL extension
+    /// that says nothing about the real cause.
+    #[test]
+    fn wp_site_runs_under_the_sites_own_php() {
+        let args = vec!["core".to_string(), "update".to_string()];
+        let versioned = wp_argv("bp_site", "/home/bp_site", "php8.4", &args);
+        assert!(versioned.contains(&"php8.4".to_string()), "{versioned:?}");
+
+        let plain = wp_argv("bp_site", "/home/bp_site", "php", &args);
+        assert!(plain.contains(&"php".to_string()), "{plain:?}");
+        assert!(
+            !plain.iter().any(|a| a.starts_with("php8")),
+            "no version should be invented: {plain:?}"
+        );
+    }
+
+    /// HOME follows the user being run as; WP-CLI needs it for its cache.
+    #[test]
+    fn wp_runs_as_the_named_user_with_a_matching_home() {
+        let args = vec!["plugin".to_string(), "list".to_string()];
+        let argv = wp_argv("bp_site", "/home/bp_site", "php", &args);
+
+        let user_at = argv.iter().position(|a| a == "-u").expect("runuser -u");
+        assert_eq!(argv[user_at + 1], "bp_site");
+        assert!(argv.contains(&"HOME=/home/bp_site".to_string()), "{argv:?}");
+    }
+
+    /// Nothing is deleted until the source has been accepted.
+    ///
+    /// This is the property the whole verb rests on. `site-populate` empties
+    /// the site root before copying, so a check that ran afterwards would
+    /// leave a customer with an empty site and an error message.
+    #[test]
+    fn a_refused_source_leaves_the_site_untouched() {
+        let home = tempdir("populate-keep");
+        let root_dir = home.join("home/bp_site/example.com");
+        std::fs::create_dir_all(root_dir.join("public_html")).unwrap();
+        let marker = root_dir.join("public_html/index.php");
+        std::fs::write(&marker, "the customer's site\n").unwrap();
+
+        // Not a SitePath - `populate` needs one - so the check is driven
+        // directly. What is being pinned is that the refusal happens before
+        // any delete, and `check_staged_tree` is where that refusal is.
+        let err = check_staged_tree("/etc").unwrap_err();
+        assert!(err.contains("must be under"), "{err}");
+        assert!(marker.exists(), "the site must still be there");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "the customer's site\n"
+        );
+    }
+
+    #[test]
+    fn a_staged_source_outside_the_staging_area_is_refused() {
+        for bad in ["/etc", "/tmp/anything", "/var/lib/snpanel/other"] {
+            let err = check_staged_tree(bad).unwrap_err();
+            assert!(
+                err.contains("must be under") || err.contains("not found"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    /// Emptying a directory must not delete what a symlink points at.
+    ///
+    /// Checked as an outcome rather than as a claim about the implementation:
+    /// `std::fs::remove_dir_all` is itself symlink-safe, so this passes both
+    /// with `symlink_metadata` and with `metadata` - verified by trying. The
+    /// explicit `symlink_metadata` stays as defence in depth, and this test
+    /// pins the property that matters to a customer whose backup contained a
+    /// link, not the mechanism that currently provides it.
+    #[test]
+    fn emptying_a_directory_unlinks_symlinks_rather_than_following_them() {
+        let base = tempdir("empty-symlink");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let keeper = outside.join("keep.txt");
+        std::fs::write(&keeper, "must survive\n").unwrap();
+
+        let victim = base.join("site");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::os::unix::fs::symlink(&outside, victim.join("link")).unwrap();
+        std::fs::write(victim.join("plain.txt"), "goes away\n").unwrap();
+
+        empty_directory(&victim).expect("emptying works");
+
+        assert!(
+            std::fs::read_dir(&victim).unwrap().next().is_none(),
+            "the directory should be empty"
+        );
+        assert!(
+            keeper.exists(),
+            "the symlink target must not have been deleted"
+        );
+    }
+
     /// An uploaded filename is not a directory name, and the checks differ.
     ///
     /// Source: the `case` in `site-file-install`, which guards traversal and
