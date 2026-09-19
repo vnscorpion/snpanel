@@ -19,8 +19,13 @@ use std::path::{Component, Path, PathBuf};
 use snpanel_core::Domain;
 
 mod custom;
+mod edits;
 mod writer;
 pub use custom::{CustomDirectives, CustomError};
+pub use edits::{
+    domain_from_vhost, ensure_custom_include_position, replace_bot_block, replace_http_flood_block,
+    replace_waf_block,
+};
 pub use writer::{blocked_bots_in_vhost, plan_rewrite, vhost_path, VhostPlan};
 
 /// The templates are compiled in rather than read at run time.
@@ -520,7 +525,7 @@ pub fn render_vhost(input: &VhostInput<'_>, env: &VhostEnv) -> Result<String, Re
         .render(context)
         .map_err(|e| RenderError::Template(e.to_string()))?;
 
-    let rendered = replace_bot_block(&rendered, input.blocked_bots)?;
+    let rendered = carry_or_replace_bot_block(&rendered, input.blocked_bots)?;
     let rendered = if input.ssl_cert_path.is_some() || input.ssl_key_path.is_some() {
         apply_manual_ssl_config(
             &rendered,
@@ -542,7 +547,7 @@ pub fn render_vhost(input: &VhostInput<'_>, env: &VhostEnv) -> Result<String, Re
 }
 
 /// Source: `_http_flood_challenge_block`.
-fn http_flood_challenge_block() -> String {
+pub(crate) fn http_flood_challenge_block() -> String {
     let challenge_html = concat!(
         r#"<!doctype html><html><head><meta charset="utf-8">"#,
         r#"<meta name="viewport" content="width=device-width,initial-scale=1">"#,
@@ -647,7 +652,7 @@ const BOT_BEGIN: &str = "    # SNPANEL BOT BLOCK BEGIN";
 const BOT_END: &str = "    # SNPANEL BOT BLOCK END";
 
 /// Source: `_bot_block`.
-fn bot_block(bots: &[String]) -> String {
+pub(crate) fn bot_block(bots: &[String]) -> String {
     let alternation: Vec<String> = bots.iter().map(|b| regex_escape(b)).collect();
     format!(
         "{BOT_BEGIN}\n    if ($http_user_agent ~* \"({})\") {{ return 403; }}\n{BOT_END}",
@@ -655,13 +660,18 @@ fn bot_block(bots: &[String]) -> String {
     )
 }
 
-/// Source: `_replace_bot_block`.
+/// Source: `_replace_bot_block`, as a *render* calls it.
 ///
-/// `None` keeps whatever the file already blocks, which is the Python's
-/// contract: the callers that rebuild a vhost do not all know about bot
-/// lists, and without it every full rewrite silently dropped the block.
-fn replace_bot_block(content: &str, bots: Option<&[String]>) -> Result<String, RenderError> {
-    let cleaned = strip_bot_block(content);
+/// Named apart from [`edits::replace_bot_block`] because the two differ in
+/// the case that matters: this one takes `None` to mean "keep whatever the
+/// file already blocks", which is the Python's contract for a rewrite - the
+/// callers that rebuild a vhost do not all know about bot lists, and without
+/// it every full rewrite silently dropped the block. The edit always sets.
+fn carry_or_replace_bot_block(
+    content: &str,
+    bots: Option<&[String]>,
+) -> Result<String, RenderError> {
+    let cleaned = edits::strip_marked_block(content, BOT_BEGIN, BOT_END);
     let Some(bots) = bots else {
         return Ok(format!("{}\n", cleaned.trim_end()));
     };
@@ -711,31 +721,8 @@ fn replace_bot_block(content: &str, bots: Option<&[String]>) -> Result<String, R
     invalid("Cannot find server block for bot blocking directives")
 }
 
-/// Source: the `\n?    # SNPANEL BOT BLOCK BEGIN\n.*?\n    # SNPANEL BOT BLOCK END`
-/// substitution - non-greedy, so it removes each block separately.
-fn strip_bot_block(content: &str) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut rest = content;
-    while let Some(begin) = rest.find(BOT_BEGIN) {
-        let Some(end_rel) = rest[begin..].find(BOT_END) else {
-            break;
-        };
-        let end = begin + end_rel + BOT_END.len();
-        // The pattern starts with an optional newline before the marker.
-        let cut = if begin > 0 && rest.as_bytes()[begin - 1] == b'\n' {
-            begin - 1
-        } else {
-            begin
-        };
-        out.push_str(&rest[..cut]);
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 /// Source: `re.search(r"server\s*\{", cleaned)` - the end of the match.
-fn find_server_brace(content: &str) -> Option<usize> {
+pub(crate) fn find_server_brace(content: &str) -> Option<usize> {
     let bytes = content.as_bytes();
     let mut i = 0;
     while let Some(at) = content[i..].find("server") {
