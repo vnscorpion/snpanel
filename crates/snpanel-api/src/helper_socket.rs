@@ -213,12 +213,8 @@ pub fn stderr_of(response: &HelperResponse) -> String {
 mod tests {
     use super::*;
 
-    /// The environment is process-wide, so these run under one lock rather
-    /// than racing each other through the same variable.
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_verbs<T>(value: Option<&str>, body: impl FnOnce() -> T) -> T {
-        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::testenv::lock();
         let previous = std::env::var_os("SNPANEL_HELPER_VERBS");
         match value {
             Some(v) => std::env::set_var("SNPANEL_HELPER_VERBS", v),

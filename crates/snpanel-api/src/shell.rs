@@ -322,11 +322,23 @@ mod tests {
         assert!(r.ok());
     }
 
+    // The guard has to be held across the await: the await is exactly when
+    // the environment must stay put. Each `#[tokio::test]` gets its own
+    // runtime, so there is no other task on it waiting for this lock and
+    // nothing to deadlock against.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn no_helper_and_no_fallback_is_a_reported_failure() {
         // Python raises RuntimeError here, which reaches the user as a 500.
         // Returning a *successful* result would be far worse than an error:
         // the panel would report that it had opened a port when nothing ran.
+        // Under the same lock as the transport tests. `use_helper()` reads a
+        // process-global variable, so every test that writes one has to take
+        // the same lock or they interleave - which this one did, clearing
+        // SNPANEL_USE_HELPER underneath a transport test and sending it down
+        // the sudo path. It passed locally and on Debian and failed on
+        // AlmaLinux, which is what a race looks like from the outside.
+        let _guard = crate::testenv::lock();
         std::env::set_var("SNPANEL_USE_HELPER", "false");
         let r = privileged(false, "firewall-enable", &[], None, None).await;
         std::env::remove_var("SNPANEL_USE_HELPER");
@@ -390,8 +402,6 @@ mod tests {
     // socket that answers rather than against the shape of the code. The
     // environment is process-wide, so they share one lock.
 
-    static TRANSPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// A helper that is not the helper: it reads one line and answers with
     /// whatever it was told to answer.
     async fn fake_helper(path: std::path::PathBuf, reply: &'static str) {
@@ -415,7 +425,7 @@ mod tests {
 
     impl Env {
         fn new(name: &str) -> Self {
-            let guard = TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
+            let guard = crate::testenv::lock();
             let dir = std::env::temp_dir()
                 .join(format!("snpanel-shell-test-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);

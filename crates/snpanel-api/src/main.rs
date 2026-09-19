@@ -40,6 +40,8 @@ mod state;
 mod storage;
 mod strangler;
 mod system;
+#[cfg(test)]
+mod testenv;
 mod tls;
 mod updates;
 
