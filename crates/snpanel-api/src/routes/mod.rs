@@ -9,6 +9,7 @@ pub mod auth;
 pub mod databases;
 pub mod firewall;
 pub mod health;
+pub mod maintenance;
 pub mod malware;
 pub mod packages;
 pub mod panel_settings;
@@ -41,6 +42,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(websites::router())
         .merge(waf::router())
         .merge(terminal::router())
+        .merge(maintenance::router())
         .merge(malware::router())
         .merge(panel_settings::router())
 }
@@ -62,6 +64,9 @@ pub const PORTED_PREFIXES: &[&str] = &[
     "/api/malware",
     // Partially ported: some methods on these paths still reach Python.
     "/api/databases",
+    // Partially ported: the file manager's reads. Everything else under
+    // /api/maintenance - backups, restore, PHP, cron - still reaches Python.
+    "/api/maintenance",
     // Partially ported: some methods on these paths still reach Python.
     "/api/users",
     "/api/websites",
