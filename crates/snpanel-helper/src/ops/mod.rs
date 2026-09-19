@@ -221,6 +221,13 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteAppRename { user: u, from, to } => siteapp::rename(u, from, to),
+        HelperRequest::SiteAppExport { user: u, app, dest } => siteapp::export(u, app, dest),
+        HelperRequest::SiteAppImport {
+            user: u,
+            app,
+            source,
+        } => siteapp::import(u, app, source),
         HelperRequest::SiteAppDirEnsure { user: u, app } => siteapp::dir_ensure(u, app),
         HelperRequest::SiteAppDelete { user: u, app } => siteapp::delete(u, app),
         HelperRequest::SiteAppPull { image } => siteapp::pull(image),

@@ -411,6 +411,27 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Rename an application, moving its directory with it.
+    SiteAppRename {
+        user: PanelUsername,
+        from: AppName,
+        to: AppName,
+    },
+    /// Everything an application owns, in one tar.
+    ///
+    /// `dest` must be under the backup root; the helper writes it as root, so
+    /// a path that could leave that tree would be a way to write anywhere.
+    SiteAppExport {
+        user: PanelUsername,
+        app: AppName,
+        dest: String,
+    },
+    /// Restore an application from an export.
+    SiteAppImport {
+        user: PanelUsername,
+        app: AppName,
+        source: String,
+    },
     /// Create an application's directory under its owner's home.
     SiteAppDirEnsure {
         user: PanelUsername,
@@ -736,6 +757,9 @@ impl HelperRequest {
             Self::SiteAppPull { .. } => "site-app-pull",
             Self::SiteAppDelete { .. } => "site-app-delete",
             Self::SiteAppDirEnsure { .. } => "site-app-dir-ensure",
+            Self::SiteAppImport { .. } => "site-app-import",
+            Self::SiteAppExport { .. } => "site-app-export",
+            Self::SiteAppRename { .. } => "site-app-rename",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",
