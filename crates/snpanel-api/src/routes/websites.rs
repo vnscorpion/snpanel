@@ -22,9 +22,10 @@
 //! a customer who deletes WordPress by FTP would otherwise leave the panel
 //! claiming it is still there.
 
+use axum::extract::Request;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::permissions;
@@ -32,7 +33,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::auth::CurrentUser;
-use crate::errors::{internal_error, not_enough_permissions, not_found};
+use crate::errors::{bad_request, internal_error, not_enough_permissions, not_found};
+use crate::shell;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -49,6 +51,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/websites/{website_id}/nginx-config",
             get(nginx_config).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/logs",
+            get(logs).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/nginx-custom",
+            put(set_nginx_custom).fallback(crate::fallback),
         )
 }
 
@@ -375,6 +385,319 @@ fn is_domain(value: &str) -> bool {
 /// stripped, and exactly one trailing newline.
 fn normalise_config(text: &str) -> String {
     format!("{}\n", text.replace("\r\n", "\n").trim())
+}
+
+// ---------------------------------------------------------------------------
+// Stage C: the first of the write endpoints
+// ---------------------------------------------------------------------------
+
+/// Read the vhost on disk, or `None` if the site has none yet.
+///
+/// The panel writes this file directly - `/etc/nginx` is root's, but the
+/// installer gives the `snpanel` account an ACL on the sites directory, and
+/// the Python has always written it with a plain `write_text`. Only the test
+/// and the reload go through the helper.
+async fn read_vhost(state: &AppState, domain: &str) -> Option<String> {
+    let path = vhost_path(state, domain)?;
+    tokio::fs::read_to_string(path).await.ok()
+}
+
+/// Write a planned vhost, test it, and roll back if nginx refuses it.
+///
+/// The rollback is the point. `nginx -t` checks the whole configuration, so a
+/// file this request wrote can be rejected because of something in it - and
+/// leaving it there means the *next* reload, for any site on the box, fails
+/// too. The Python restores the previous bytes for exactly that reason.
+async fn apply_vhost(state: &AppState, plan: &snpanel_nginx::VhostPlan) -> Result<(), Response> {
+    if state.settings.command_dry_run {
+        return Ok(());
+    }
+    if let Err(e) = tokio::fs::write(&plan.path, &plan.content).await {
+        tracing::error!("writing {} failed: {e}", plan.path.display());
+        return Err(internal_error());
+    }
+    let test = shell::privileged(false, "nginx-test", &[], None, Some(&["nginx", "-t"])).await;
+    if !test.ok() {
+        // Put back what was there, or remove a file this request created.
+        match &plan.previous {
+            Some(old) => {
+                let _ = tokio::fs::write(&plan.path, old).await;
+            }
+            None => {
+                let _ = tokio::fs::remove_file(&plan.path).await;
+            }
+        }
+        return Err(bad_request(test.failure_detail("nginx -t failed").trim()));
+    }
+    let _ = shell::privileged(
+        false,
+        "nginx-reload",
+        &[],
+        None,
+        Some(&["bash", "-lc", "nginx -t && systemctl reload nginx"]),
+    )
+    .await;
+    Ok(())
+}
+
+/// Source: `get_website_log` - which is not `_get_authorized_website`: it
+/// looks the site up first and only then decides, so an id that does not
+/// exist is a 404 for an administrator and for a customer alike.
+async fn logs(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let kind = params
+        .get("kind")
+        .cloned()
+        .unwrap_or_else(|| "access".to_string());
+    if kind != "access" && kind != "error" {
+        return crate::errors::validation_error(vec![json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["query", "kind"],
+            "msg": "String should match pattern '^(access|error)$'",
+            "input": kind,
+            "ctx": { "pattern": "^(access|error)$" },
+        })]);
+    }
+    let lines_raw = params
+        .get("lines")
+        .cloned()
+        .unwrap_or_else(|| "200".to_string());
+    let lines: i64 = match lines_raw.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return crate::errors::validation_error(vec![json!({
+                "type": "int_parsing",
+                "loc": ["query", "lines"],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": lines_raw,
+            })])
+        }
+    };
+    if !(1..=5000).contains(&lines) {
+        let (kind_name, msg, ctx) = if lines < 1 {
+            (
+                "greater_than_equal",
+                "Input should be greater than or equal to 1",
+                json!({ "ge": 1 }),
+            )
+        } else {
+            (
+                "less_than_equal",
+                "Input should be less than or equal to 5000",
+                json!({ "le": 5000 }),
+            )
+        };
+        return crate::errors::validation_error(vec![json!({
+            "type": kind_name,
+            "loc": ["query", "lines"],
+            "msg": msg,
+            "input": lines_raw,
+            "ctx": ctx,
+        })]);
+    }
+
+    let website = match state.db.websites().by_id(website_id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("website lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    if website.owner_id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return not_enough_permissions();
+    }
+
+    let path = format!("/var/log/nginx/{}.{kind}.log", website.domain);
+    let lines_arg = lines.to_string();
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-log-read",
+        &[&website.domain, &kind, &lines_arg],
+        None,
+        Some(&["tail", "-n", &lines_arg, &path]),
+    )
+    .await;
+
+    // Source: the helper says so on stderr rather than failing, because "no
+    // log yet" is the normal state of a site nobody has visited.
+    let missing = result.stderr.contains("SNPANEL_LOG_MISSING=1");
+    if !result.ok() && !missing {
+        return bad_request(result.failure_detail("Cannot read log file").trim());
+    }
+    axum::Json(json!({
+        "domain": website.domain,
+        "kind": kind,
+        "path": path,
+        "lines": lines,
+        "content": result.stdout,
+        "exists": !missing,
+    }))
+    .into_response()
+}
+
+/// Source: `set_website_nginx_custom` -> `nginx.update_custom_block`.
+///
+/// The snippet goes into its own include file, not into the vhost; what the
+/// vhost gets is the `include` line, positioned after `location /` and before
+/// the static-asset location. nginx picks the first matching prefix location,
+/// so a customer's `location /assets` has to be seen before the catch-all.
+async fn set_nginx_custom(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(raw) = payload.get("nginx_custom") else {
+        return crate::errors::missing_field("nginx_custom", payload.clone());
+    };
+    let Some(text) = raw.as_str() else {
+        return crate::errors::string_type("nginx_custom", raw);
+    };
+
+    let website = match state.db.websites().by_id(website_id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("website lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    if website.owner_id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return not_enough_permissions();
+    }
+
+    let validated = match snpanel_nginx::CustomDirectives::validate(text) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+
+    if !state.settings.command_dry_run {
+        let Some(existing) = read_vhost(&state, &website.domain).await else {
+            return bad_request(&format!(
+                "/etc/nginx/sites-available/{}.conf",
+                website.domain
+            ));
+        };
+        let positioned =
+            match snpanel_nginx::ensure_custom_include_position(&existing, &website.domain) {
+                Ok(p) => p,
+                Err(e) => return bad_request(&e.to_string()),
+            };
+        let write = shell::privileged(
+            false,
+            "nginx-custom-write",
+            &[&website.domain],
+            Some(validated.as_str()),
+            None,
+        )
+        .await;
+        if !write.ok() {
+            return bad_request(
+                write
+                    .failure_detail("Cannot write the custom nginx block")
+                    .trim(),
+            );
+        }
+        if positioned != existing {
+            let plan = snpanel_nginx::VhostPlan {
+                path: vhost_path(&state, &website.domain).expect("a validated domain"),
+                content: positioned,
+                previous: Some(existing),
+                custom_include: validated.as_str().to_string(),
+                custom_include_path: String::new(),
+            };
+            if let Err(r) = apply_vhost(&state, &plan).await {
+                return r;
+            }
+        } else {
+            let test =
+                shell::privileged(false, "nginx-test", &[], None, Some(&["nginx", "-t"])).await;
+            if !test.ok() {
+                return bad_request(test.failure_detail("nginx -t failed").trim());
+            }
+            let _ = shell::privileged(
+                false,
+                "nginx-reload",
+                &[],
+                None,
+                Some(&["bash", "-lc", "nginx -t && systemctl reload nginx"]),
+            )
+            .await;
+        }
+    }
+
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_nginx_custom(website.id, validated.as_str())
+        .await
+    {
+        tracing::error!("storing the custom nginx block failed: {e}");
+        return internal_error();
+    }
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "update_nginx_custom",
+        &website.domain,
+    )
+    .await;
+
+    match state.db.websites().by_id(website.id).await {
+        Ok(Some(updated)) => single(&state, updated).await,
+        _ => internal_error(),
+    }
+}
+
+/// One website in the `WebsiteOut` shape, with the same two corrections the
+/// listing makes: a certificate that appeared on disk turns the flag on, and
+/// a WordPress install is detected rather than remembered.
+async fn single(state: &AppState, website: snpanel_db::Website) -> Response {
+    let aliases = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let probe = website.clone();
+    let (live_cert, wordpress) = match tokio::task::spawn_blocking(move || {
+        (has_live_certificate(&probe), has_wordpress_install(&probe))
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("the website filesystem checks panicked: {e}");
+            return internal_error();
+        }
+    };
+    let ssl_enabled = if !website.ssl_enabled && live_cert {
+        if let Err(e) = state.db.websites().set_ssl_enabled(website.id, true).await {
+            tracing::warn!("could not record a certificate found on disk: {e}");
+        }
+        true
+    } else {
+        website.ssl_enabled
+    };
+    axum::Json(website_json(&website, &aliases, wordpress, ssl_enabled)).into_response()
 }
 
 #[cfg(test)]

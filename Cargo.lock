@@ -2148,6 +2148,7 @@ dependencies = [
  "snpanel-core",
  "snpanel-db",
  "snpanel-ipc",
+ "snpanel-nginx",
  "snpanel-osabi",
  "thiserror 2.0.20",
  "tokio",
