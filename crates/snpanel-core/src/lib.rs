@@ -22,8 +22,8 @@ pub mod types;
 
 pub use error::{Result, SnpanelError};
 pub use types::{
-    AppName, DocumentRoot, Domain, Email, IpOrCidr, PanelUsername, ParseError, PhpVersion, Port,
-    SecretString, SitePath,
+    AppName, DockerImage, DocumentRoot, Domain, Email, IpOrCidr, PanelUsername, ParseError,
+    PhpVersion, Port, SecretString, SitePath,
 };
 
 /// The version of the panel this build corresponds to.

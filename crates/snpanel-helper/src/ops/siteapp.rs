@@ -234,6 +234,194 @@ pub fn volume_usage(user: &PanelUsername) -> HelperResponse {
     HelperResponse::with_stdout(format!("{total}\n"))
 }
 
+/// Source: `app_env_file`.
+///
+/// Deliberately outside the customer's home. Inside it, the file was
+/// reachable through the file manager, went into every site backup, and the
+/// permission pass in update.sh handed ownership back to the site user on the
+/// next update. Nothing but root needs to read it: systemd loads
+/// `EnvironmentFile` before dropping privileges.
+fn env_file(user: &PanelUsername, app: &AppName) -> String {
+    format!(
+        "/var/lib/snpanel/apps/{}-{}.env",
+        user.as_str(),
+        app.as_str()
+    )
+}
+
+/// `site-app-dir-ensure`: the application's directory, hardened.
+///
+/// Source: `ensure_app_directory`. The home has to exist first - creating an
+/// apps directory under a home that is not there would make one owned by
+/// nobody, in a place the customer's SFTP cannot reach.
+pub fn dir_ensure(user: &PanelUsername, app: &AppName) -> HelperResponse {
+    let home = format!("/home/{}", user.as_str());
+    if !std::path::Path::new(&home).is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("home directory missing for {user}"),
+        );
+    }
+    let apps_root = format!("{home}/apps");
+    let target = app_directory(user, app);
+
+    for dir in [&apps_root, &target] {
+        let out = exec::run(&["install", "-d", "-m", "0750", dir]);
+        if !matches!(&out, Ok(o) if o.ok()) {
+            return exec::respond("install -d", out);
+        }
+        let owner = format!("{}:{}", user.as_str(), super::user::SITES_GROUP);
+        let _ = exec::run(&["chown", &owner, dir]);
+        let _ = exec::run(&["chmod", "0750", dir]);
+        for flag in ["a-s", "-t"] {
+            let _ = exec::run(&["chmod", flag, dir]);
+        }
+    }
+    HelperResponse::with_stdout(format!("{target}\n"))
+}
+
+/// `site-app-delete`: remove the runtime, keep the code.
+///
+/// Source: the `site-app-delete` arm, including its closing comment. The
+/// application directory is deliberately left alone - removing a runtime is
+/// not a request to delete somebody's work, and a customer who redeploys
+/// expects their files to still be there.
+pub fn delete(user: &PanelUsername, app: &AppName) -> HelperResponse {
+    let unit = unit_name(user, app);
+    let service = format!("{unit}.service");
+
+    let _ = exec::run(&["systemctl", "disable", "--now", &service]);
+    let _ = std::fs::remove_file(format!("/etc/systemd/system/{service}"));
+    let _ = exec::run(&["systemctl", "daemon-reload"]);
+
+    if docker_present() {
+        let file = compose_file(user, app);
+        if std::path::Path::new(&file).is_file() {
+            let dir = app_directory(user, app);
+            let project = container_name(user, app);
+            let _ = exec::run(&[
+                "docker",
+                "compose",
+                "-f",
+                &file,
+                "--project-directory",
+                &dir,
+                "-p",
+                &project,
+                "down",
+                "--volumes",
+            ]);
+        }
+        let _ = exec::run(&["docker", "rm", "-f", &container_name(user, app)]);
+    }
+
+    let _ = std::fs::remove_file(env_file(user, app));
+    let _ = std::fs::remove_file(compose_file(user, app));
+
+    HelperResponse::with_stdout(format!("removed {unit}\n"))
+}
+
+/// `site-app-pull`: fetch a container image.
+///
+/// The reference is a `DockerImage`, so it cannot begin with a dash or
+/// contain a `..` component - `docker pull` would read the first as a flag.
+pub fn pull(image: &snpanel_core::DockerImage) -> HelperResponse {
+    if !docker_present() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "Docker is not installed; run docker-install first".to_string(),
+        );
+    }
+    exec::respond(
+        &format!("docker pull {image}"),
+        exec::run(&["timeout", "900", "docker", "pull", "--", image.as_str()]),
+    )
+}
+
+/// Where a given Node major version lives.
+///
+/// Source: `resolve_node_bin_dir`. The panel's own copy first, then the
+/// system one - but only if it is actually that major version, because
+/// running an application's install with the wrong Node is how a native
+/// module gets built against the wrong ABI.
+fn node_bin_dir(major: u8) -> Option<String> {
+    let own = format!("/opt/snpanel/node/{major}/bin");
+    if std::path::Path::new(&format!("{own}/node")).is_file() {
+        return Some(own);
+    }
+    if std::path::Path::new("/usr/bin/node").is_file() {
+        if let Ok(out) = exec::run(&[
+            "/usr/bin/node",
+            "-p",
+            "process.versions.node.split(\".\")[0]",
+        ]) {
+            if out.stdout.trim() == major.to_string() {
+                return Some("/usr/bin".to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `site-app-install-deps`: `npm install` for a node application.
+///
+/// Two things are load-bearing. It runs as the application's owner, not root.
+/// And it runs with `env -i`: a postinstall script is a customer's code, and
+/// the helper's environment is not something to hand it. The timeout is there
+/// because a runaway postinstall would otherwise hold a worker forever.
+pub fn install_deps(user: &PanelUsername, app: &AppName, node_major: u8) -> HelperResponse {
+    if !(10..=99).contains(&node_major) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("invalid node major version: {node_major}"),
+        );
+    }
+    let ensured = dir_ensure(user, app);
+    if !ensured.ok {
+        return ensured;
+    }
+    let dir = app_directory(user, app);
+    if !std::path::Path::new(&format!("{dir}/package.json")).is_file() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("no package.json in {app}"),
+        );
+    }
+    let Some(bin) = node_bin_dir(node_major) else {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("Node {node_major} is not installed; run node-install {node_major} first"),
+        );
+    };
+
+    let home = format!("HOME=/home/{}", user.as_str());
+    let path = format!("PATH={bin}:/usr/local/bin:/usr/bin:/bin");
+    let npm = format!("{bin}/npm");
+    exec::respond(
+        "npm install",
+        exec::run(&[
+            "timeout",
+            "900",
+            "runuser",
+            "-u",
+            user.as_str(),
+            "--",
+            "env",
+            "-i",
+            &home,
+            &path,
+            "NODE_ENV=production",
+            &npm,
+            "install",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+            "--prefix",
+            &dir,
+        ]),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

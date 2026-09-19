@@ -221,6 +221,14 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteAppDirEnsure { user: u, app } => siteapp::dir_ensure(u, app),
+        HelperRequest::SiteAppDelete { user: u, app } => siteapp::delete(u, app),
+        HelperRequest::SiteAppPull { image } => siteapp::pull(image),
+        HelperRequest::SiteAppInstallDeps {
+            user: u,
+            app,
+            node_major,
+        } => siteapp::install_deps(u, app, *node_major),
         HelperRequest::SiteAppControl {
             user: u,
             app,

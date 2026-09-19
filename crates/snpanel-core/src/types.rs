@@ -50,6 +50,8 @@ pub const PUBLIC_DIR: &str = "public_html";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ParseError {
+    #[error("invalid container image reference: {0}")]
+    DockerImage(String),
     #[error("invalid application name: {0}")]
     AppName(String),
     #[error("invalid domain: {0}")]
@@ -84,6 +86,86 @@ pub enum ParseError {
 /// reaches the filesystem and nginx.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Domain(String);
+
+/// A container image reference.
+///
+/// Source: `require_docker_image`. The character set is
+/// `registry/name[:tag][@sha256:...]`, and on top of it a leading dash and a
+/// `..` component are refused - not for tidiness, but because `docker pull`
+/// would read `-rm` as a flag and `a/../b` as somewhere else.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct DockerImage(String);
+
+impl DockerImage {
+    pub fn parse(raw: &str) -> Result<Self, ParseError> {
+        let err = || ParseError::DockerImage(raw.to_string());
+        if raw.starts_with('-') || raw.contains("..") {
+            return Err(err());
+        }
+        let (rest, digest) = match raw.split_once("@sha256:") {
+            Some((r, d)) => (r, Some(d)),
+            None => (raw, None),
+        };
+        if let Some(d) = digest {
+            if d.len() != 64
+                || !d
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err(err());
+            }
+        }
+        let (name, tag) = match rest.rsplit_once(':') {
+            // A colon in the registry part is a port, not a tag: only treat
+            // it as a tag when what follows has no slash.
+            Some((n, t)) if !t.contains('/') => (n, Some(t)),
+            _ => (rest, None),
+        };
+        if let Some(t) = tag {
+            if t.is_empty()
+                || t.len() > 127
+                || !t
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            {
+                return Err(err());
+            }
+        }
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.len() > 160 {
+            return Err(err());
+        }
+        if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
+            return Err(err());
+        }
+        if !bytes.iter().all(|&b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'.' | b'_' | b'/' | b'-' | b':')
+        }) {
+            return Err(err());
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DockerImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for DockerImage {
+    type Error = ParseError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
 
 /// A site application's name.
 ///
@@ -867,6 +949,53 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What a container image reference may be, and what it may not.
+    ///
+    /// The refusals are the point. `-rm` and `a/../b` both pass a naive
+    /// character check and are both terrible things to hand `docker pull`.
+    #[test]
+    fn a_docker_image_reference_cannot_be_read_as_a_flag() {
+        for good in [
+            "nginx",
+            "nginx:1.27",
+            "library/nginx:alpine",
+            "ghcr.io/owner/name:v1.2.3",
+            "registry.example.com:5000/team/app:latest",
+            "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                DockerImage::parse(good).is_ok(),
+                "{good:?} is an ordinary reference"
+            );
+        }
+
+        for (bad, why) in [
+            ("-rm", "docker would read this as a flag"),
+            ("--privileged", "so would this"),
+            ("a/../b", "a traversal component"),
+            ("..", "just a traversal"),
+            ("", "empty"),
+            ("Nginx", "uppercase is not valid in a repository name"),
+            ("nginx latest", "a space"),
+            ("nginx:", "an empty tag"),
+            ("nginx@sha256:short", "a truncated digest"),
+            ("nginx;rm -rf /", "a semicolon"),
+        ] {
+            assert!(
+                DockerImage::parse(bad).is_err(),
+                "{bad:?} must be refused ({why})"
+            );
+        }
+    }
+
+    /// An application name and an image reference are different shapes and
+    /// must not be interchangeable.
+    #[test]
+    fn an_app_name_is_not_an_image_reference() {
+        assert!(AppName::parse("ghcr.io/owner/name").is_err());
+        assert!(DockerImage::parse("my-app").is_ok());
+    }
+
     /// The pool hash must equal what the shell computes, not merely look like
     /// a hash.
     ///

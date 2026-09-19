@@ -17,7 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
-    AppName, Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString, SitePath,
+    AppName, DockerImage, Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString,
+    SitePath,
 };
 
 /// The socket the helper listens on, created by systemd socket activation.
@@ -410,6 +411,30 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Create an application's directory under its owner's home.
+    SiteAppDirEnsure {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Remove an application's runtime, leaving its files.
+    ///
+    /// The unit, the compose project, the container and the env file go. The
+    /// directory does not: removing a runtime never implies removing
+    /// somebody's code.
+    SiteAppDelete {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Pull a container image.
+    SiteAppPull {
+        image: DockerImage,
+    },
+    /// `npm install` for a node application, as its owner.
+    SiteAppInstallDeps {
+        user: PanelUsername,
+        app: AppName,
+        node_major: u8,
+    },
     /// Start, stop or query a site application's systemd unit.
     ///
     /// `action` is an enum rather than a string: the bash allowlists eight
@@ -707,6 +732,10 @@ impl HelperRequest {
             Self::SiteAppComposePs { .. } => "site-app-compose-ps",
             Self::SiteAppLogs { .. } => "site-app-logs",
             Self::SiteAppControl { .. } => "site-app-control",
+            Self::SiteAppInstallDeps { .. } => "site-app-install-deps",
+            Self::SiteAppPull { .. } => "site-app-pull",
+            Self::SiteAppDelete { .. } => "site-app-delete",
+            Self::SiteAppDirEnsure { .. } => "site-app-dir-ensure",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",
