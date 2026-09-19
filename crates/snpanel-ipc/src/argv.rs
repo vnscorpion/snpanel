@@ -136,9 +136,7 @@ fn node_major_of(raw: &str) -> Result<u8, InvocationError> {
 
 /// Source: `^[A-Za-z0-9._@/-]{1,120}$`, the start argument of a node app.
 fn start_argument(raw: &str) -> Result<String, InvocationError> {
-    let ok = |b: u8| {
-        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'/' | b'-')
-    };
+    let ok = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'/' | b'-');
     if raw.is_empty() || raw.len() > 120 || !raw.bytes().all(ok) {
         return Err(InvocationError::invalid(format!(
             "invalid start argument: {raw}"
@@ -247,7 +245,11 @@ impl HelperRequest {
                     "restart" => ServiceAction::Restart,
                     "reload" => ServiceAction::Reload,
                     "status" | "is-active" => ServiceAction::Status,
-                    other => return Err(InvocationError::invalid(format!("action not allowed: {other}"))),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "action not allowed: {other}"
+                        )))
+                    }
                 };
                 HelperRequest::ServiceControl { service, action }
             }
@@ -296,7 +298,11 @@ impl HelperRequest {
                 let protocol = match rest.get(1).map(String::as_str) {
                     None | Some("tcp") => Protocol::Tcp,
                     Some("udp") => Protocol::Udp,
-                    Some(other) => return Err(InvocationError::invalid(format!("invalid protocol: {other}"))),
+                    Some(other) => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid protocol: {other}"
+                        )))
+                    }
                 };
                 HelperRequest::FirewallAllowPort { port, protocol }
             }
@@ -306,7 +312,12 @@ impl HelperRequest {
             },
             ("firewall-delete", 1) | ("ufw-delete", 1) => match rest[0].parse::<u32>() {
                 Ok(id) => HelperRequest::FirewallDelete { id },
-                Err(_) => return Err(InvocationError::invalid(format!("invalid rule id: {}", rest[0]))),
+                Err(_) => {
+                    return Err(InvocationError::invalid(format!(
+                        "invalid rule id: {}",
+                        rest[0]
+                    )))
+                }
             },
 
             ("panel-user-ensure", 1) => match PanelUsername::parse(&rest[0]) {
@@ -329,7 +340,9 @@ impl HelperRequest {
                 };
                 let mut password = String::new();
                 if std::io::Read::read_to_string(&mut std::io::stdin(), &mut password).is_err() {
-                    return Err(InvocationError::invalid("could not read the password from stdin"));
+                    return Err(InvocationError::invalid(
+                        "could not read the password from stdin",
+                    ));
                 }
                 HelperRequest::PanelUserPassword {
                     username,
@@ -350,7 +363,9 @@ impl HelperRequest {
                     "access" => LogKind::Access,
                     "error" => LogKind::Error,
                     other => {
-                        return Err(InvocationError::invalid(format!("invalid log kind: {other}")))
+                        return Err(InvocationError::invalid(format!(
+                            "invalid log kind: {other}"
+                        )))
                     }
                 };
                 let lines = rest[2].parse::<u32>().unwrap_or(200);
@@ -369,7 +384,9 @@ impl HelperRequest {
                     "access" => LogKind::Access,
                     "error" => LogKind::Error,
                     other => {
-                        return Err(InvocationError::invalid(format!("invalid log kind: {other}")))
+                        return Err(InvocationError::invalid(format!(
+                            "invalid log kind: {other}"
+                        )))
                     }
                 };
                 HelperRequest::SiteLogClear { domain, kind }
@@ -415,7 +432,11 @@ impl HelperRequest {
                 let enabled = match rest[1].as_str() {
                     "1" => true,
                     "0" => false,
-                    other => return Err(InvocationError::invalid(format!("opcache switch must be 0 or 1, got {other}"))),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "opcache switch must be 0 or 1, got {other}"
+                        )))
+                    }
                 };
                 HelperRequest::PhpOpcacheSet { version, enabled }
             }
@@ -432,7 +453,11 @@ impl HelperRequest {
                     "off" => CrsMode::Off,
                     "detect" => CrsMode::Detect,
                     "block" => CrsMode::Block,
-                    other => return Err(InvocationError::invalid(format!("invalid CRS mode: {other}"))),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid CRS mode: {other}"
+                        )))
+                    }
                 };
                 HelperRequest::WafCrsMode { mode }
             }
@@ -500,7 +525,11 @@ impl HelperRequest {
                 let mode = match rest.get(3).map(String::as_str) {
                     None | Some("0644") => FileMode::FILE,
                     Some("0640") => FileMode::SENSITIVE,
-                    Some(other) => return Err(InvocationError::invalid(format!("invalid file mode: {other}"))),
+                    Some(other) => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid file mode: {other}"
+                        )))
+                    }
                 };
                 HelperRequest::SiteFileWrite {
                     path,
@@ -519,7 +548,10 @@ impl HelperRequest {
                 };
                 // Three to five octal digits, as the bash accepts.
                 let raw = rest[3].as_str();
-                if raw.len() < 3 || raw.len() > 5 || !raw.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+                if raw.len() < 3
+                    || raw.len() > 5
+                    || !raw.bytes().all(|b| (b'0'..=b'7').contains(&b))
+                {
                     return Err(InvocationError::invalid(format!("invalid mode: {raw}")));
                 }
                 let mode = match u32::from_str_radix(raw, 8) {
@@ -554,7 +586,9 @@ impl HelperRequest {
                 for (i, arg) in rest[1..].iter().enumerate() {
                     if arg.contains('@') {
                         if i + 2 != rest.len() {
-                            return Err(InvocationError::invalid("email must be the final certbot-issue argument"));
+                            return Err(InvocationError::invalid(
+                                "email must be the final certbot-issue argument",
+                            ));
                         }
                         match snpanel_core::Email::parse(arg) {
                             Ok(e) => email = Some(e),
@@ -587,302 +621,315 @@ impl HelperRequest {
             // Everything the Rust helper does not implement yet is handed to the
             // bash one. This is what makes the cutover safe: the panel calls one
             // path, and each operation moves to Rust independently.
-    
-        // --- the site operations Stage A implemented -----------------------
-        //
-        // The bash is the contract here: the panel already calls it with these
-        // argument positions, so the mapping accepts exactly them. Where the
-        // bash re-derives a safety check per arm, the typed request carries a
-        // value that already guarantees it, and `site_path_from` is that
-        // check expressed once.
-        ("site-logs-read-many", n) if n >= 3 => {
-            // <access|error> <lines> <domain>...
-            let kind = match rest[0].as_str() {
-                "access" => LogKind::Access,
-                "error" => LogKind::Error,
-                other => {
-                    return Err(InvocationError::invalid(format!("invalid log kind: {other}")))
-                }
-            };
-            let lines = lines_or(rest.get(1), 200)?;
-            let mut domains = Vec::with_capacity(rest.len() - 2);
-            for raw in &rest[2..] {
-                domains.push(
-                    snpanel_core::Domain::parse(raw)
-                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
-                );
-            }
-            HelperRequest::SiteLogsReadMany {
-                domains,
-                kind,
-                lines,
-            }
-        }
-        ("site-document-root-ensure", 3) => {
-            // <site-user> <site-root> <relative-path>
-            let root = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SiteDocumentRootEnsure {
-                user: user_of(&rest[0])?,
-                root,
-                relative: rest[2].clone(),
-            }
-        }
-        ("site-file-install", 4) => {
-            // <site-user> <site-root> <relative-path> <staged-path>
-            let root = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SiteFileInstall {
-                user: user_of(&rest[0])?,
-                root,
-                relative: rest[2].clone(),
-                staged: rest[3].clone(),
-            }
-        }
-        ("site-populate", 3) => {
-            // <site-user> <site-root> <staged-source-dir>
-            let root = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SitePopulate {
-                user: user_of(&rest[0])?,
-                root,
-                source: rest[2].clone(),
-            }
-        }
-        ("site-runtime-delete", 2) => {
-            // <site-user> <path>. The path is checked against the user here
-            // because it feeds a recursive delete on the other side.
-            let path = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SiteRuntimeDelete {
-                user: user_of(&rest[0])?,
-                path,
-            }
-        }
-        ("site-runtime-ensure", 3) => {
-            // <site-user> <path> <php-version|none>
-            let path = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SiteRuntimeEnsure {
-                user: user_of(&rest[0])?,
-                path,
-                php: php_or_none(&rest[2])?,
-            }
-        }
-        ("site-runtime-move", 4) => {
-            // <site-user> <old-path> <new-path> <php-version|none>
-            //
-            // The old path is not checked against the new owner: a site can
-            // move between accounts, and the bash reads the old owner out of
-            // the path for exactly that reason.
-            let from = SitePath::parse(&rest[1])
-                .map_err(|e| InvocationError::invalid(e.to_string()))?;
-            let to = site_path_from(&rest[0], &rest[2], None).map_err(InvocationError::invalid)?;
-            HelperRequest::SiteRuntimeMove {
-                user: user_of(&rest[0])?,
-                from,
-                to,
-                php: php_or_none(&rest[3])?,
-            }
-        }
-        ("site-archive-extract", 7) => {
-            // <site-user> <site-root> <archive> <destination> <zip|tar.gz>
-            // <max-items> <max-bytes>
-            let root = site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
-            let kind = match rest[4].as_str() {
-                "zip" => ArchiveKind::Zip,
-                "tar.gz" => ArchiveKind::TarGz,
-                other => {
-                    return Err(InvocationError::invalid(format!(
-                        "unsupported archive type: {other}"
-                    )))
-                }
-            };
-            let max_items = rest[5].parse::<u32>().map_err(|_| {
-                InvocationError::invalid(format!("invalid archive limits: {}", rest[5]))
-            })?;
-            let max_bytes = rest[6].parse::<u64>().map_err(|_| {
-                InvocationError::invalid(format!("invalid archive limits: {}", rest[6]))
-            })?;
-            HelperRequest::SiteArchiveExtract {
-                user: user_of(&rest[0])?,
-                root,
-                archive_relative: rest[2].clone(),
-                destination_relative: rest[3].clone(),
-                kind,
-                max_items,
-                max_bytes,
-            }
-        }
 
-        // --- WP-CLI --------------------------------------------------------
-        ("wp", n) if n >= 1 => HelperRequest::Wp {
-            args: rest.to_vec(),
-        },
-        ("wp-site", n) if n >= 2 => {
-            // <site-user> [--php-version=<version>] <args...>
+            // --- the site operations Stage A implemented -----------------------
             //
-            // The version is the *site's*, not whatever `php` points at: a
-            // site on 8.4 driven by the 8.3 CLI has no mysqli, and every
-            // `wp core update` on it fails.
-            let user = user_of(&rest[0])?;
-            let (php, args) = match rest[1].strip_prefix("--php-version=") {
-                Some(version) => (
-                    Some(
-                        snpanel_core::PhpVersion::parse(version)
-                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
-                    ),
-                    &rest[2..],
-                ),
-                None => (None, &rest[1..]),
-            };
-            if args.is_empty() {
-                return Err(InvocationError::invalid(
-                    "usage: wp-site <site-user> [--php-version=<version>] <args...>",
-                ));
-            }
-            HelperRequest::WpSite {
-                user,
-                php,
-                args: args.to_vec(),
-            }
-        }
-
-        // --- site applications ---------------------------------------------
-        ("site-app-control", 3) => {
-            let action = match rest[2].as_str() {
-                "start" => AppAction::Start,
-                "stop" => AppAction::Stop,
-                "restart" => AppAction::Restart,
-                "status" => AppAction::Status,
-                "is-active" => AppAction::IsActive,
-                "is-enabled" => AppAction::IsEnabled,
-                "enable" => AppAction::Enable,
-                "disable" => AppAction::Disable,
-                other => {
-                    return Err(InvocationError::invalid(format!("action not allowed: {other}")))
-                }
-            };
-            HelperRequest::SiteAppControl {
-                user: user_of(&rest[0])?,
-                app: app_of(&rest[1])?,
-                action,
-            }
-        }
-        ("site-app-logs", 2) | ("site-app-logs", 3) => HelperRequest::SiteAppLogs {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-            lines: lines_or(rest.get(2), 200)?,
-        },
-        ("site-app-compose-ps", 2) => HelperRequest::SiteAppComposePs {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-        },
-        ("site-app-compose-pull", 2) => HelperRequest::SiteAppComposePull {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-        },
-        ("site-app-volume-usage", 1) => HelperRequest::SiteAppVolumeUsage {
-            user: user_of(&rest[0])?,
-        },
-        ("site-app-dir-ensure", 2) => HelperRequest::SiteAppDirEnsure {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-        },
-        ("site-app-delete", 2) => HelperRequest::SiteAppDelete {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-        },
-        ("site-app-pull", 1) => HelperRequest::SiteAppPull {
-            image: DockerImage::parse(&rest[0])
-                .map_err(|e| InvocationError::invalid(e.to_string()))?,
-        },
-        ("site-app-install-deps", 3) => HelperRequest::SiteAppInstallDeps {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-            node_major: node_major_of(&rest[2])?,
-        },
-        ("site-app-rename", 3) => HelperRequest::SiteAppRename {
-            user: user_of(&rest[0])?,
-            from: app_of(&rest[1])?,
-            to: app_of(&rest[2])?,
-        },
-        ("site-app-export", 3) => HelperRequest::SiteAppExport {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-            dest: rest[2].clone(),
-        },
-        ("site-app-import", 3) => HelperRequest::SiteAppImport {
-            user: user_of(&rest[0])?,
-            app: app_of(&rest[1])?,
-            source: rest[2].clone(),
-        },
-        ("site-app-write", n) if n >= 3 => {
-            // <owner-user> <name> <node|docker|compose> [--flag=value ...]
-            //
-            // `compose` writes a second file and resolves bind mounts, and is
-            // deliberately not ported (plan §8, Stage A). It must reach the
-            // bash, so it is *unmapped* rather than invalid - the difference
-            // decides whether the call falls through or is refused.
-            let user = user_of(&rest[0])?;
-            let app = app_of(&rest[1])?;
-            let mut flags = AppFlags::default();
-            for flag in &rest[3..] {
-                let Some((name, value)) = flag.split_once('=') else {
-                    return Err(InvocationError::invalid(format!(
-                        "unknown site-app-write option: {flag}"
-                    )));
-                };
-                match name {
-                    "--port" => flags.port = Some(value),
-                    "--memory" => flags.memory = value,
-                    "--node-major" => flags.node_major = Some(value),
-                    "--exec" => flags.exec = Some(value),
-                    "--arg" => flags.arg = value,
-                    "--image" => flags.image = Some(value),
-                    "--container-port" => flags.container_port = value,
-                    "--cpus" => flags.cpus = value,
-                    _ => {
+            // The bash is the contract here: the panel already calls it with these
+            // argument positions, so the mapping accepts exactly them. Where the
+            // bash re-derives a safety check per arm, the typed request carries a
+            // value that already guarantees it, and `site_path_from` is that
+            // check expressed once.
+            ("site-logs-read-many", n) if n >= 3 => {
+                // <access|error> <lines> <domain>...
+                let kind = match rest[0].as_str() {
+                    "access" => LogKind::Access,
+                    "error" => LogKind::Error,
+                    other => {
                         return Err(InvocationError::invalid(format!(
-                            "unknown site-app-write option: {flag}"
+                            "invalid log kind: {other}"
                         )))
                     }
+                };
+                let lines = lines_or(rest.get(1), 200)?;
+                let mut domains = Vec::with_capacity(rest.len() - 2);
+                for raw in &rest[2..] {
+                    domains.push(
+                        snpanel_core::Domain::parse(raw)
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    );
+                }
+                HelperRequest::SiteLogsReadMany {
+                    domains,
+                    kind,
+                    lines,
                 }
             }
-            let runtime = match rest[2].as_str() {
-                "node" => AppRuntime::Node {
-                    node_major: node_major_of(flags.node_major.unwrap_or(""))?,
-                    exec: match flags.exec.unwrap_or("") {
-                        "node" => NodeExec::Node,
-                        "npm" => NodeExec::Npm,
-                        "npx" => NodeExec::Npx,
-                        "yarn" => NodeExec::Yarn,
-                        other => {
+            ("site-document-root-ensure", 3) => {
+                // <site-user> <site-root> <relative-path>
+                let root =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SiteDocumentRootEnsure {
+                    user: user_of(&rest[0])?,
+                    root,
+                    relative: rest[2].clone(),
+                }
+            }
+            ("site-file-install", 4) => {
+                // <site-user> <site-root> <relative-path> <staged-path>
+                let root =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SiteFileInstall {
+                    user: user_of(&rest[0])?,
+                    root,
+                    relative: rest[2].clone(),
+                    staged: rest[3].clone(),
+                }
+            }
+            ("site-populate", 3) => {
+                // <site-user> <site-root> <staged-source-dir>
+                let root =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SitePopulate {
+                    user: user_of(&rest[0])?,
+                    root,
+                    source: rest[2].clone(),
+                }
+            }
+            ("site-runtime-delete", 2) => {
+                // <site-user> <path>. The path is checked against the user here
+                // because it feeds a recursive delete on the other side.
+                let path =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SiteRuntimeDelete {
+                    user: user_of(&rest[0])?,
+                    path,
+                }
+            }
+            ("site-runtime-ensure", 3) => {
+                // <site-user> <path> <php-version|none>
+                let path =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SiteRuntimeEnsure {
+                    user: user_of(&rest[0])?,
+                    path,
+                    php: php_or_none(&rest[2])?,
+                }
+            }
+            ("site-runtime-move", 4) => {
+                // <site-user> <old-path> <new-path> <php-version|none>
+                //
+                // The old path is not checked against the new owner: a site can
+                // move between accounts, and the bash reads the old owner out of
+                // the path for exactly that reason.
+                let from = SitePath::parse(&rest[1])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?;
+                let to =
+                    site_path_from(&rest[0], &rest[2], None).map_err(InvocationError::invalid)?;
+                HelperRequest::SiteRuntimeMove {
+                    user: user_of(&rest[0])?,
+                    from,
+                    to,
+                    php: php_or_none(&rest[3])?,
+                }
+            }
+            ("site-archive-extract", 7) => {
+                // <site-user> <site-root> <archive> <destination> <zip|tar.gz>
+                // <max-items> <max-bytes>
+                let root =
+                    site_path_from(&rest[0], &rest[1], None).map_err(InvocationError::invalid)?;
+                let kind = match rest[4].as_str() {
+                    "zip" => ArchiveKind::Zip,
+                    "tar.gz" => ArchiveKind::TarGz,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "unsupported archive type: {other}"
+                        )))
+                    }
+                };
+                let max_items = rest[5].parse::<u32>().map_err(|_| {
+                    InvocationError::invalid(format!("invalid archive limits: {}", rest[5]))
+                })?;
+                let max_bytes = rest[6].parse::<u64>().map_err(|_| {
+                    InvocationError::invalid(format!("invalid archive limits: {}", rest[6]))
+                })?;
+                HelperRequest::SiteArchiveExtract {
+                    user: user_of(&rest[0])?,
+                    root,
+                    archive_relative: rest[2].clone(),
+                    destination_relative: rest[3].clone(),
+                    kind,
+                    max_items,
+                    max_bytes,
+                }
+            }
+
+            // --- WP-CLI --------------------------------------------------------
+            ("wp", n) if n >= 1 => HelperRequest::Wp {
+                args: rest.to_vec(),
+            },
+            ("wp-site", n) if n >= 2 => {
+                // <site-user> [--php-version=<version>] <args...>
+                //
+                // The version is the *site's*, not whatever `php` points at: a
+                // site on 8.4 driven by the 8.3 CLI has no mysqli, and every
+                // `wp core update` on it fails.
+                let user = user_of(&rest[0])?;
+                let (php, args) = match rest[1].strip_prefix("--php-version=") {
+                    Some(version) => (
+                        Some(
+                            snpanel_core::PhpVersion::parse(version)
+                                .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                        ),
+                        &rest[2..],
+                    ),
+                    None => (None, &rest[1..]),
+                };
+                if args.is_empty() {
+                    return Err(InvocationError::invalid(
+                        "usage: wp-site <site-user> [--php-version=<version>] <args...>",
+                    ));
+                }
+                HelperRequest::WpSite {
+                    user,
+                    php,
+                    args: args.to_vec(),
+                }
+            }
+
+            // --- site applications ---------------------------------------------
+            ("site-app-control", 3) => {
+                let action = match rest[2].as_str() {
+                    "start" => AppAction::Start,
+                    "stop" => AppAction::Stop,
+                    "restart" => AppAction::Restart,
+                    "status" => AppAction::Status,
+                    "is-active" => AppAction::IsActive,
+                    "is-enabled" => AppAction::IsEnabled,
+                    "enable" => AppAction::Enable,
+                    "disable" => AppAction::Disable,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "action not allowed: {other}"
+                        )))
+                    }
+                };
+                HelperRequest::SiteAppControl {
+                    user: user_of(&rest[0])?,
+                    app: app_of(&rest[1])?,
+                    action,
+                }
+            }
+            ("site-app-logs", 2) | ("site-app-logs", 3) => HelperRequest::SiteAppLogs {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+                lines: lines_or(rest.get(2), 200)?,
+            },
+            ("site-app-compose-ps", 2) => HelperRequest::SiteAppComposePs {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+            },
+            ("site-app-compose-pull", 2) => HelperRequest::SiteAppComposePull {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+            },
+            ("site-app-volume-usage", 1) => HelperRequest::SiteAppVolumeUsage {
+                user: user_of(&rest[0])?,
+            },
+            ("site-app-dir-ensure", 2) => HelperRequest::SiteAppDirEnsure {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+            },
+            ("site-app-delete", 2) => HelperRequest::SiteAppDelete {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+            },
+            ("site-app-pull", 1) => HelperRequest::SiteAppPull {
+                image: DockerImage::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+            },
+            ("site-app-install-deps", 3) => HelperRequest::SiteAppInstallDeps {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+                node_major: node_major_of(&rest[2])?,
+            },
+            ("site-app-rename", 3) => HelperRequest::SiteAppRename {
+                user: user_of(&rest[0])?,
+                from: app_of(&rest[1])?,
+                to: app_of(&rest[2])?,
+            },
+            ("site-app-export", 3) => HelperRequest::SiteAppExport {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+                dest: rest[2].clone(),
+            },
+            ("site-app-import", 3) => HelperRequest::SiteAppImport {
+                user: user_of(&rest[0])?,
+                app: app_of(&rest[1])?,
+                source: rest[2].clone(),
+            },
+            ("site-app-write", n) if n >= 3 => {
+                // <owner-user> <name> <node|docker|compose> [--flag=value ...]
+                //
+                // `compose` writes a second file and resolves bind mounts, and is
+                // deliberately not ported (plan §8, Stage A). It must reach the
+                // bash, so it is *unmapped* rather than invalid - the difference
+                // decides whether the call falls through or is refused.
+                let user = user_of(&rest[0])?;
+                let app = app_of(&rest[1])?;
+                let mut flags = AppFlags::default();
+                for flag in &rest[3..] {
+                    let Some((name, value)) = flag.split_once('=') else {
+                        return Err(InvocationError::invalid(format!(
+                            "unknown site-app-write option: {flag}"
+                        )));
+                    };
+                    match name {
+                        "--port" => flags.port = Some(value),
+                        "--memory" => flags.memory = value,
+                        "--node-major" => flags.node_major = Some(value),
+                        "--exec" => flags.exec = Some(value),
+                        "--arg" => flags.arg = value,
+                        "--image" => flags.image = Some(value),
+                        "--container-port" => flags.container_port = value,
+                        "--cpus" => flags.cpus = value,
+                        _ => {
                             return Err(InvocationError::invalid(format!(
-                                "invalid start command: {other}"
+                                "unknown site-app-write option: {flag}"
                             )))
                         }
-                    },
-                    arg: start_argument(flags.arg)?,
-                },
-                "docker" => AppRuntime::Docker {
-                    image: DockerImage::parse(flags.image.unwrap_or(""))
-                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
-                    container_port: Port::parse(flags.container_port)
-                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
-                    cpus_centi: cpus_centi(flags.cpus)?,
-                },
-                "compose" => return Err(InvocationError::unmapped(op)),
-                other => {
-                    return Err(InvocationError::invalid(format!("invalid runtime: {other}")))
+                    }
                 }
-            };
-            HelperRequest::SiteAppWrite {
-                user,
-                app,
-                runtime,
-                port: Port::parse(flags.port.unwrap_or(""))
-                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
-                memory_mb: memory_mb(flags.memory)?,
+                let runtime = match rest[2].as_str() {
+                    "node" => AppRuntime::Node {
+                        node_major: node_major_of(flags.node_major.unwrap_or(""))?,
+                        exec: match flags.exec.unwrap_or("") {
+                            "node" => NodeExec::Node,
+                            "npm" => NodeExec::Npm,
+                            "npx" => NodeExec::Npx,
+                            "yarn" => NodeExec::Yarn,
+                            other => {
+                                return Err(InvocationError::invalid(format!(
+                                    "invalid start command: {other}"
+                                )))
+                            }
+                        },
+                        arg: start_argument(flags.arg)?,
+                    },
+                    "docker" => AppRuntime::Docker {
+                        image: DockerImage::parse(flags.image.unwrap_or(""))
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                        container_port: Port::parse(flags.container_port)
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                        cpus_centi: cpus_centi(flags.cpus)?,
+                    },
+                    "compose" => return Err(InvocationError::unmapped(op)),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid runtime: {other}"
+                        )))
+                    }
+                };
+                HelperRequest::SiteAppWrite {
+                    user,
+                    app,
+                    runtime,
+                    port: Port::parse(flags.port.unwrap_or(""))
+                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    memory_mb: memory_mb(flags.memory)?,
+                }
             }
-        }
 
-        _ => return Err(InvocationError::unmapped(op)),
+            _ => return Err(InvocationError::unmapped(op)),
         };
         Ok(request)
     }
@@ -920,7 +967,10 @@ mod tests {
         // argument refused here getting a second hearing from a looser parser
         // is how a rejected path gets in anyway.
         let e = map(&["site-app-control", "alice", "app", "sudo"]).expect_err("bad action");
-        assert!(!e.is_unmapped(), "a refused argument must not fall through: {e:?}");
+        assert!(
+            !e.is_unmapped(),
+            "a refused argument must not fall through: {e:?}"
+        );
         assert!(e.to_string().contains("action not allowed"), "{e}");
     }
 
@@ -936,13 +986,17 @@ mod tests {
         })
         .expect_err("not ported");
         assert!(e.is_unmapped());
-        assert!(!touched.get(), "stdin was read before delegating to the bash");
+        assert!(
+            !touched.get(),
+            "stdin was read before delegating to the bash"
+        );
     }
 
     #[test]
     fn a_verb_that_carries_a_payload_does_read_stdin() {
-        let request = HelperRequest::from_argv(&argv(&["cron-write"]), || b"* * * * * true\n".to_vec())
-            .expect("mapped");
+        let request =
+            HelperRequest::from_argv(&argv(&["cron-write"]), || b"* * * * * true\n".to_vec())
+                .expect("mapped");
         match request {
             HelperRequest::CronWrite { content, .. } => {
                 assert_eq!(content, "* * * * * true\n");
@@ -960,22 +1014,85 @@ mod tests {
         // meant the panel's own call shape reached the bash for all of them.
         let cases: &[&[&str]] = &[
             &["mkdir-site", "/home/alice/example.com"],
-            &["rm-site", "alice", "/home/alice/example.com", "/home/alice/example.com"],
+            &[
+                "rm-site",
+                "alice",
+                "/home/alice/example.com",
+                "/home/alice/example.com",
+            ],
             &["fix-permissions", "/home/alice/example.com", "alice"],
             &["site-path-fix", "/home/alice/example.com", "alice"],
             &["site-log-read", "example.com", "access", "50"],
             &["site-log-clear", "example.com", "error"],
-            &["site-logs-read-many", "access", "50", "example.com", "two.example.com"],
-            &["site-document-root-ensure", "alice", "/home/alice/example.com", "public_html"],
-            &["site-file-install", "alice", "/home/alice/example.com", "index.php", "/tmp/snpanel-upload-x/f"],
-            &["site-populate", "alice", "/home/alice/example.com", "/var/lib/snpanel/import/x"],
+            &[
+                "site-logs-read-many",
+                "access",
+                "50",
+                "example.com",
+                "two.example.com",
+            ],
+            &[
+                "site-document-root-ensure",
+                "alice",
+                "/home/alice/example.com",
+                "public_html",
+            ],
+            &[
+                "site-file-install",
+                "alice",
+                "/home/alice/example.com",
+                "index.php",
+                "/tmp/snpanel-upload-x/f",
+            ],
+            &[
+                "site-populate",
+                "alice",
+                "/home/alice/example.com",
+                "/var/lib/snpanel/import/x",
+            ],
             &["site-runtime-delete", "alice", "/home/alice/example.com"],
-            &["site-runtime-ensure", "alice", "/home/alice/example.com", "8.3"],
-            &["site-runtime-ensure", "alice", "/home/alice/example.com", "none"],
-            &["site-runtime-move", "alice", "/home/bob/old.com", "/home/alice/new.com", "8.3"],
-            &["site-archive-extract", "alice", "/home/alice/example.com", "a.zip", "dest", "zip", "1000", "0"],
-            &["site-file-write", "alice", "/home/alice/example.com", "index.php"],
-            &["site-chmod", "alice", "/home/alice/example.com", "/home/alice/example.com/x", "0644"],
+            &[
+                "site-runtime-ensure",
+                "alice",
+                "/home/alice/example.com",
+                "8.3",
+            ],
+            &[
+                "site-runtime-ensure",
+                "alice",
+                "/home/alice/example.com",
+                "none",
+            ],
+            &[
+                "site-runtime-move",
+                "alice",
+                "/home/bob/old.com",
+                "/home/alice/new.com",
+                "8.3",
+            ],
+            &[
+                "site-archive-extract",
+                "alice",
+                "/home/alice/example.com",
+                "a.zip",
+                "dest",
+                "zip",
+                "1000",
+                "0",
+            ],
+            &[
+                "site-file-write",
+                "alice",
+                "/home/alice/example.com",
+                "index.php",
+            ],
+            &[
+                "site-chmod",
+                "alice",
+                "/home/alice/example.com",
+                "/home/alice/example.com/x",
+                "0644",
+            ],
             &["wp", "core", "version"],
             &["wp-site", "alice", "--php-version=8.3", "core", "version"],
             &["wp-site", "alice", "core", "version"],
@@ -990,19 +1107,40 @@ mod tests {
             &["site-app-pull", "nginx:1.27"],
             &["site-app-install-deps", "alice", "myapp", "22"],
             &["site-app-rename", "alice", "myapp", "yourapp"],
-            &["site-app-export", "alice", "myapp", "/var/backups/snpanel/a.tar"],
-            &["site-app-import", "alice", "myapp", "/var/backups/snpanel/a.tar"],
-            &["site-app-write", "alice", "myapp", "node", "--port=21001", "--node-major=22", "--exec=npm", "--arg=start"],
-            &["site-app-write", "alice", "myapp", "docker", "--port=21001", "--image=nginx:1.27"],
+            &[
+                "site-app-export",
+                "alice",
+                "myapp",
+                "/var/backups/snpanel/a.tar",
+            ],
+            &[
+                "site-app-import",
+                "alice",
+                "myapp",
+                "/var/backups/snpanel/a.tar",
+            ],
+            &[
+                "site-app-write",
+                "alice",
+                "myapp",
+                "node",
+                "--port=21001",
+                "--node-major=22",
+                "--exec=npm",
+                "--arg=start",
+            ],
+            &[
+                "site-app-write",
+                "alice",
+                "myapp",
+                "docker",
+                "--port=21001",
+                "--image=nginx:1.27",
+            ],
         ];
         for case in cases {
             let result = HelperRequest::from_argv(&argv(case), || b"payload".to_vec());
-            assert!(
-                result.is_ok(),
-                "{:?} did not map: {:?}",
-                case,
-                result.err()
-            );
+            assert!(result.is_ok(), "{:?} did not map: {:?}", case, result.err());
         }
     }
 
@@ -1011,8 +1149,14 @@ mod tests {
         // It writes a second file and resolves bind mounts, and is
         // deliberately not ported. Unmapped, not invalid: it has to reach the
         // bash or a customer's compose application stops being deployable.
-        let e = map(&["site-app-write", "alice", "myapp", "compose", "--port=21001"])
-            .expect_err("not ported");
+        let e = map(&[
+            "site-app-write",
+            "alice",
+            "myapp",
+            "compose",
+            "--port=21001",
+        ])
+        .expect_err("not ported");
         assert!(e.is_unmapped(), "compose must fall through, got {e:?}");
     }
 
@@ -1031,21 +1175,42 @@ mod tests {
     fn a_move_may_leave_another_users_home_but_must_arrive_in_the_named_ones() {
         // A site can move between accounts, so the old path is not checked
         // against the new owner - but the new path is.
-        assert!(map(&["site-runtime-move", "alice", "/home/bob/s.com", "/home/alice/s.com", "none"]).is_ok());
-        let e = map(&["site-runtime-move", "alice", "/home/bob/s.com", "/home/bob/s.com", "none"])
-            .expect_err("arriving in bob's home");
+        assert!(map(&[
+            "site-runtime-move",
+            "alice",
+            "/home/bob/s.com",
+            "/home/alice/s.com",
+            "none"
+        ])
+        .is_ok());
+        let e = map(&[
+            "site-runtime-move",
+            "alice",
+            "/home/bob/s.com",
+            "/home/bob/s.com",
+            "none",
+        ])
+        .expect_err("arriving in bob's home");
         assert!(e.to_string().contains("does not belong to"), "{e}");
     }
 
     #[test]
     fn cpu_limits_become_hundredths_exactly() {
         let request = map(&[
-            "site-app-write", "alice", "myapp", "docker",
-            "--port=21001", "--image=nginx:1.27", "--cpus=1.5",
+            "site-app-write",
+            "alice",
+            "myapp",
+            "docker",
+            "--port=21001",
+            "--image=nginx:1.27",
+            "--cpus=1.5",
         ])
         .expect("mapped");
         match request {
-            HelperRequest::SiteAppWrite { runtime: AppRuntime::Docker { cpus_centi, .. }, .. } => {
+            HelperRequest::SiteAppWrite {
+                runtime: AppRuntime::Docker { cpus_centi, .. },
+                ..
+            } => {
                 assert_eq!(cpus_centi, 150);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -1056,15 +1221,25 @@ mod tests {
     fn the_memory_range_the_bash_enforces_is_enforced_here() {
         for bad in ["8", "32768", "abc"] {
             let e = map(&[
-                "site-app-write", "alice", "myapp", "docker",
-                "--port=21001", "--image=nginx:1.27", &format!("--memory={bad}"),
+                "site-app-write",
+                "alice",
+                "myapp",
+                "docker",
+                "--port=21001",
+                "--image=nginx:1.27",
+                &format!("--memory={bad}"),
             ])
             .expect_err("out of range");
             assert!(!e.is_unmapped(), "{bad} must be refused, not delegated");
         }
         assert!(map(&[
-            "site-app-write", "alice", "myapp", "docker",
-            "--port=21001", "--image=nginx:1.27", "--memory=64",
+            "site-app-write",
+            "alice",
+            "myapp",
+            "docker",
+            "--port=21001",
+            "--image=nginx:1.27",
+            "--memory=64",
         ])
         .is_ok());
     }
@@ -1080,12 +1255,20 @@ mod tests {
     #[test]
     fn an_unknown_site_app_write_flag_is_refused_rather_than_ignored() {
         let e = map(&[
-            "site-app-write", "alice", "myapp", "docker",
-            "--port=21001", "--image=nginx:1.27", "--privileged=1",
+            "site-app-write",
+            "alice",
+            "myapp",
+            "docker",
+            "--port=21001",
+            "--image=nginx:1.27",
+            "--privileged=1",
         ])
         .expect_err("unknown flag");
         assert!(!e.is_unmapped());
-        assert!(e.to_string().contains("unknown site-app-write option"), "{e}");
+        assert!(
+            e.to_string().contains("unknown site-app-write option"),
+            "{e}"
+        );
     }
 
     #[test]

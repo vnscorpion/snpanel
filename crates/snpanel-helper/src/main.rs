@@ -318,7 +318,6 @@ fn cli(args: &[String]) -> ExitCode {
         Err(e) => return fail(&e.to_string()),
     };
 
-
     let ctx = Context::from_system();
     audit::log_request(&request, current_uid(), std::process::id() as i32);
     let response = ops::dispatch(&request, &ctx);
