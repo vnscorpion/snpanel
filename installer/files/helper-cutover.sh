@@ -244,6 +244,14 @@ rollback)
         systemctl disable --now "$SOCKET_UNIT" >/dev/null 2>&1
         note "$SOCKET_UNIT disabled and stopped"
     fi
+    # Stopping the unit leaves the socket file behind. The API decides whether
+    # to try the socket by asking whether the path exists, so a stale one
+    # costs a refused connection on every privileged call before it falls
+    # back - correct, and pure waste.
+    if [[ -S "$SOCKET_PATH" ]]; then
+        rm -f "$SOCKET_PATH"
+        note "removed the stale socket at $SOCKET_PATH"
+    fi
     systemctl stop "$SERVICE_UNIT" >/dev/null 2>&1
     rm -f "$DROPIN"
     systemctl daemon-reload

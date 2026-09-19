@@ -349,9 +349,31 @@ never written. The report is `helper-cutover.sh status`, and it prints what a
 reboot comes back to - `is-enabled`, not `is-active` - because that is the
 distinction the API cutover got wrong.
 
-**Exit:** a live installation answers site verbs from Rust, the bash helper is
-installed but not called for them, **a reboot comes back in the same state**,
-and `helper-cutover.sh status` says so.
+**Exit:** reached, on a Debian 13 installed from the published `main` and cut
+over with the shipped script. Measured on the box, not inferred:
+
+| what the exit asks | what was measured |
+| --- | --- |
+| a live installation answers site verbs from Rust | `--help` through the panel's own `sudo` path reports 73 of the bash helper's 112, and all 31 site verbs answer without being handed back |
+| the bash is installed but not called for them | a site verb writes an audit line from the Rust helper; `docker-status` logs "not ported yet; delegating to the bash helper" |
+| **a reboot comes back in the same state** | the container was powered off and started: helper, fallback, extractor, `enabled=enabled active=active`, the allowlist, and a round trip that answers - all identical |
+| the status command says so | `helper-cutover.sh status`, which prints `is-enabled` rather than `is-active` |
+
+The panel served HTTP 200 throughout, including on the bash during a rollback.
+
+**Rollback was run, not just printed.** A rollback nobody has executed is a
+promise nobody has checked, and the machine it gets run on is one that is
+already going wrong. It put the bash back, the panel kept serving, and a
+re-install restored the cutover. It also left the socket file behind, which
+cost a refused connection on every privileged call until the next install -
+correct behaviour, pure waste - so it removes it now.
+
+Three things this stage found that had nothing to do with it, each recorded in
+its own commit: a minimal Debian has no `sudo` and the installer's package
+list did not ask for one; an update wrote the bash helper over the Rust one on
+every run; and `PanelUsername::parse` normalised where the Python validates,
+so `site-runtime-ensure UPPER /home/UPPER/x` created a directory outside the
+home of the account that owned it.
 
 ### Stage C — the routers that sit on `site`
 
