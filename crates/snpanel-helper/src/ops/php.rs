@@ -289,8 +289,492 @@ pub fn delete_site_pools(user: &str, resolved_site_path: &str) -> Vec<String> {
     removed
 }
 
+/// What the helper writes into a pool file.
+///
+/// Source: the `PHP_FPM_*` variables `calculate_php_fpm_pool_tuning` sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolTuning {
+    pub max_children: u64,
+    pub idle_timeout: u64,
+    pub max_requests: u64,
+    pub request_terminate_timeout: u64,
+}
+
+/// Overrides an administrator may set, each one optional.
+///
+/// Source: `php_fpm_tuning_value`, which reads the environment and then the
+/// panel's `.env`. Resolving them is the caller's job; this takes the answer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PoolTuningOverrides {
+    pub worker_mb: Option<u64>,
+    pub max_children: Option<u64>,
+    pub idle_timeout: Option<u64>,
+    pub max_requests: Option<u64>,
+    pub request_terminate_timeout: Option<u64>,
+}
+
+const DEFAULT_WORKER_MB: u64 = 128;
+const DEFAULT_REQUEST_TERMINATE_TIMEOUT: u64 = 300;
+
+/// Source: `positive_int_or_default`. A value outside the range is clamped
+/// rather than refused, which is what the shell does - an administrator who
+/// asks for 10000 workers gets the cap, not an error at site-creation time.
+fn clamped(value: Option<u64>, default: u64, min: u64, max: u64) -> u64 {
+    value.unwrap_or(default).clamp(min, max)
+}
+
+/// Source: `php_fpm_reserved_memory_mb`. How much RAM is kept away from PHP.
+fn reserved_memory_mb(total_mb: u64) -> u64 {
+    let mut reserve = if total_mb <= 1024 {
+        (total_mb * 45 / 100).max(448)
+    } else if total_mb <= 2048 {
+        (total_mb * 35 / 100).max(640)
+    } else if total_mb <= 4096 {
+        (total_mb * 30 / 100).max(896)
+    } else if total_mb <= 8192 {
+        (total_mb * 25 / 100).max(1280)
+    } else {
+        (total_mb * 20 / 100).max(2048)
+    };
+    // Saturating: the shell works on signed integers and would produce a
+    // negative here for a machine with under 128 MB, which then trips the
+    // floor below. The floor is what matters, so the subtraction is made
+    // safe rather than reproduced literally.
+    if reserve > total_mb.saturating_sub(128) {
+        reserve = total_mb.saturating_sub(128);
+    }
+    reserve.max(128)
+}
+
+/// Source: `calculate_php_fpm_pool_tuning`.
+///
+/// `pool_count` includes the pool being written, as `php_fpm_pool_count`
+/// counts it. The divisor is the integer square root of that count: a machine
+/// with many sites gives each one a smaller share, but not linearly, because
+/// they are not all busy at once.
+pub fn pool_tuning(
+    total_mb: u64,
+    cpu_count: u64,
+    pool_count: u64,
+    overrides: PoolTuningOverrides,
+) -> PoolTuning {
+    let worker_mb = clamped(overrides.worker_mb, DEFAULT_WORKER_MB, 32, 1024);
+    let reserve_mb = reserved_memory_mb(total_mb);
+    let budget_mb = total_mb.saturating_sub(reserve_mb).max(worker_mb);
+
+    let global_children = (budget_mb / worker_mb).max(1);
+
+    let mut divisor = 1u64;
+    while divisor * divisor < pool_count {
+        divisor += 1;
+    }
+    let mut children = (global_children / divisor).max(1);
+
+    let mut cpu_cap = cpu_count * 4;
+    if total_mb >= 3072 {
+        cpu_cap = cpu_count * 6;
+    }
+    if total_mb >= 8192 {
+        cpu_cap = cpu_count * 8;
+    }
+    cpu_cap = cpu_cap.clamp(2, 96);
+
+    let (floor, profile_cap, idle_default, requests_default) = if total_mb <= 1024 {
+        (1u64, 4u64, 10u64, 300u64)
+    } else if total_mb <= 2048 {
+        (2, 8, 15, 400)
+    } else if total_mb <= 4096 {
+        (3, 14, 20, 500)
+    } else if total_mb <= 8192 {
+        (4, 24, 30, 750)
+    } else {
+        (6, 48, 45, 1000)
+    };
+
+    children = children.max(floor).min(cpu_cap).min(profile_cap);
+    if let Some(forced) = overrides.max_children {
+        children = forced.clamp(1, 512);
+    }
+
+    PoolTuning {
+        max_children: children,
+        idle_timeout: clamped(overrides.idle_timeout, idle_default, 5, 300),
+        max_requests: clamped(overrides.max_requests, requests_default, 50, 10_000),
+        request_terminate_timeout: clamped(
+            overrides.request_terminate_timeout,
+            DEFAULT_REQUEST_TERMINATE_TIMEOUT,
+            30,
+            3600,
+        ),
+    }
+}
+
+/// The pool name for a site: `snpanel-<user>-<site hash>-<php version>`.
+///
+/// The version suffix has its dots replaced, because a dot in a pool name is
+/// legal but makes the socket path harder to read and the shell wrote it this
+/// way first.
+pub fn pool_name(user: &str, resolved_site_path: &str, php: PhpVersion) -> String {
+    format!(
+        "snpanel-{user}-{}-{}",
+        snpanel_core::types::site_hash(resolved_site_path),
+        php.to_string().replace('.', "_")
+    )
+}
+
+/// The body of a pool file.
+///
+/// Built separately from writing it so the tests can read what would be
+/// written. Source: the heredoc in `ensure_php_pool`.
+#[allow(clippy::too_many_arguments)]
+pub fn pool_body(
+    pool_name: &str,
+    user: &str,
+    site_root: &str,
+    web_user: &str,
+    web_group: &str,
+    tuning: PoolTuning,
+) -> String {
+    let sess_dir = format!("/var/lib/php/sessions/{user}");
+    let upload_dir = format!("/var/lib/php/uploads/{user}");
+    format!(
+        "[{pool_name}]\n\
+         user = {user}\n\
+         group = {user}\n\
+         listen = /run/php/{pool_name}.sock\n\
+         listen.owner = {web_user}\n\
+         listen.group = {web_group}\n\
+         listen.mode = 0660\n\
+         ; SNPanel auto-tunes these values from RAM, CPU and managed pool count.\n\
+         ; Optional overrides: SNPANEL_PHP_FPM_WORKER_MB, SNPANEL_PHP_FPM_MAX_CHILDREN,\n\
+         ; SNPANEL_PHP_FPM_IDLE_TIMEOUT, SNPANEL_PHP_FPM_MAX_REQUESTS,\n\
+         ; SNPANEL_PHP_FPM_REQUEST_TERMINATE_TIMEOUT.\n\
+         pm = ondemand\n\
+         pm.max_children = {children}\n\
+         pm.process_idle_timeout = {idle}s\n\
+         pm.max_requests = {requests}\n\
+         request_terminate_timeout = {terminate}s\n\
+         chdir = /\n\
+         php_admin_value[open_basedir] = {site_root}:{sess_dir}:{upload_dir}:/usr/share/php\n\
+         php_admin_value[upload_tmp_dir] = {upload_dir}\n\
+         php_admin_value[session.save_path] = {sess_dir}\n",
+        children = tuning.max_children,
+        idle = tuning.idle_timeout,
+        requests = tuning.max_requests,
+        terminate = tuning.request_terminate_timeout,
+    )
+}
+
+/// How many SNPanel pools this machine has, counting the one about to be
+/// written if it does not exist yet.
+///
+/// Source: `php_fpm_pool_count`.
+fn pool_count(current_pool: &std::path::Path) -> u64 {
+    let mut count = 0u64;
+    if let Ok(versions) = std::fs::read_dir("/etc/php") {
+        for entry in versions.flatten() {
+            let dir = entry.path().join("fpm/pool.d");
+            let Ok(files) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().into_owned();
+                if name.starts_with("snpanel-") && name.ends_with(".conf") {
+                    count += 1;
+                }
+            }
+        }
+    }
+    if !current_pool.exists() {
+        count += 1;
+    }
+    count.max(1)
+}
+
+/// The per-user session and upload directories.
+///
+/// Source: `ensure_php_runtime_dirs`. The modes are the point: 0700 for
+/// sessions so no other site can read them, and 2700 with the sites group
+/// setgid for uploads so a file keeps a group nginx can read after WordPress
+/// moves it.
+fn ensure_runtime_dirs(user: &str) -> HelperResponse {
+    let sess = format!("/var/lib/php/sessions/{user}");
+    let uploads = format!("/var/lib/php/uploads/{user}");
+    let sites_group = super::user::SITES_GROUP;
+
+    let out = crate::exec::run(&["install", "-d", "-o", user, "-g", user, "-m", "0700", &sess]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return crate::exec::respond("install -d (sessions)", out);
+    }
+    let out = crate::exec::run(&[
+        "install",
+        "-d",
+        "-o",
+        user,
+        "-g",
+        sites_group,
+        "-m",
+        "2700",
+        &uploads,
+    ]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return crate::exec::respond("install -d (uploads)", out);
+    }
+    let _ = crate::exec::run(&["chmod", "g+s", &uploads]);
+    HelperResponse::ok()
+}
+
+/// `ensure_php_pool`: write a site's pool file and reload FPM.
+pub fn ensure_site_pool(
+    user: &str,
+    resolved_site_path: &str,
+    php: PhpVersion,
+    overrides: PoolTuningOverrides,
+) -> HelperResponse {
+    let name = pool_name(user, resolved_site_path, php);
+    let dir = PathBuf::from(format!("/etc/php/{php}/fpm/pool.d"));
+    if !dir.is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("no PHP-FPM pool directory for {php}: {}", dir.display()),
+        );
+    }
+    let file = dir.join(format!("{name}.conf"));
+
+    let dirs = ensure_runtime_dirs(user);
+    if !dirs.ok {
+        return dirs;
+    }
+
+    let (web_user, web_group) = snpanel_osabi::detect()
+        .map(|p| (p.web_user().to_string(), p.web_group().to_string()))
+        .unwrap_or_else(|_| ("www-data".to_string(), "www-data".to_string()));
+
+    let tuning = pool_tuning(total_memory_mb(), cpu_count(), pool_count(&file), overrides);
+    let body = pool_body(
+        &name,
+        user,
+        resolved_site_path,
+        &web_user,
+        &web_group,
+        tuning,
+    );
+    if let Err(e) = write_ini(&file, &body) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {}: {e}", file.display()),
+        );
+    }
+    crate::exec::respond(
+        &format!("systemctl reload php{php}-fpm"),
+        crate::exec::run(&["systemctl", "reload", &format!("php{php}-fpm")]),
+    )
+}
+
+/// Total RAM in MiB, from /proc/meminfo.
+///
+/// Source: `php_fpm_total_memory_mb`. A machine that will not say falls back
+/// to 1024, which puts the tuning in its most conservative tier rather than
+/// its most generous.
+fn total_memory_mb() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<u64>().ok())
+        })
+        .map(|kb| kb / 1024)
+        .unwrap_or(1024)
+}
+
+/// Source: `php_fpm_cpu_count`. One, if the machine will not say.
+fn cpu_count() -> u64 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1)
+}
+
+/// The administrator's tuning overrides, from the environment and the panel's
+/// `.env`.
+///
+/// Source: `php_fpm_tuning_value`, which checks the shell variable first and
+/// then `env_get`. The environment wins for the same reason it does there: it
+/// is how an operator tries a value without editing a file the updater
+/// rewrites.
+pub fn tuning_overrides() -> PoolTuningOverrides {
+    let dotenv = std::fs::read_to_string("/opt/snpanel/backend/.env")
+        .map(|text| snpanel_core::config::parse_dotenv(&text))
+        .unwrap_or_default();
+
+    let get = |key: &str| -> Option<u64> {
+        std::env::var(key)
+            .ok()
+            .or_else(|| dotenv.get(key).cloned())
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse::<u64>().ok())
+    };
+
+    PoolTuningOverrides {
+        worker_mb: get("SNPANEL_PHP_FPM_WORKER_MB"),
+        max_children: get("SNPANEL_PHP_FPM_MAX_CHILDREN"),
+        idle_timeout: get("SNPANEL_PHP_FPM_IDLE_TIMEOUT"),
+        max_requests: get("SNPANEL_PHP_FPM_MAX_REQUESTS"),
+        request_terminate_timeout: get("SNPANEL_PHP_FPM_REQUEST_TERMINATE_TIMEOUT"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The ported tuning must equal the shell's, across every tier.
+    ///
+    /// Driven by extracting the arithmetic from the helper and running it
+    /// with fixed inputs, because the bash reads RAM and CPU from the machine
+    /// and one machine only ever exercises one tier.
+    #[test]
+    fn the_tuning_matches_the_shell_across_every_tier() {
+        use std::process::Command;
+
+        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../installer/files/snpanel-helper.sh");
+        let Ok(source) = std::fs::read_to_string(&helper) else {
+            panic!("the helper script must be readable to compare against");
+        };
+
+        // The three functions the calculation needs, lifted out with their
+        // dependencies. Extracted rather than sourced: the helper refuses to
+        // run without root and a panel installation.
+        let mut extracted = String::new();
+        for name in [
+            "positive_int_or_default",
+            "php_fpm_reserved_memory_mb",
+            "calculate_php_fpm_pool_tuning",
+        ] {
+            let start = source
+                .find(&format!("\n{name}() {{"))
+                .unwrap_or_else(|| panic!("{name} not found in the helper"));
+            let end = source[start..]
+                .find("\n}\n")
+                .unwrap_or_else(|| panic!("{name} has no end"));
+            extracted.push_str(&source[start..start + end + 3]);
+        }
+
+        // Stubs for the three values the real functions read from the
+        // machine, so the inputs can be chosen.
+        let harness = r#"
+php_fpm_total_memory_mb() { printf '%s\n' "$T"; }
+php_fpm_cpu_count() { printf '%s\n' "$C"; }
+php_fpm_pool_count() { printf '%s\n' "$P"; }
+php_fpm_tuning_value() { printf '%s\n' "$2"; }
+PHP_FPM_DEFAULT_WORKER_MB=128
+PHP_FPM_DEFAULT_REQUEST_TERMINATE_TIMEOUT=300
+calculate_php_fpm_pool_tuning ""
+printf '%s %s %s %s\n' "$PHP_FPM_MAX_CHILDREN" "$PHP_FPM_PROCESS_IDLE_TIMEOUT" \
+  "$PHP_FPM_MAX_REQUESTS" "$PHP_FPM_REQUEST_TERMINATE_TIMEOUT"
+"#;
+
+        let cases: &[(u64, u64, u64)] = &[
+            (512, 1, 1),
+            (1024, 1, 1),
+            (1024, 2, 4),
+            (2048, 2, 1),
+            (2048, 4, 9),
+            (4096, 4, 1),
+            (4096, 8, 16),
+            (8192, 8, 1),
+            (8192, 16, 25),
+            (16384, 16, 1),
+            (16384, 32, 100),
+            (65536, 64, 400),
+        ];
+
+        for &(total_mb, cpus, pools) in cases {
+            let out = Command::new("bash")
+                .arg("-c")
+                .arg(format!("{extracted}\n{harness}"))
+                .env("T", total_mb.to_string())
+                .env("C", cpus.to_string())
+                .env("P", pools.to_string())
+                .output()
+                .expect("bash must be available to compare against");
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let got: Vec<u64> = line
+                .split_whitespace()
+                .map(|v| {
+                    v.parse().unwrap_or_else(|_| {
+                        panic!(
+                            "bad shell output {line:?}: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        )
+                    })
+                })
+                .collect();
+            assert_eq!(got.len(), 4, "shell produced {line:?}");
+
+            let mine = pool_tuning(total_mb, cpus, pools, PoolTuningOverrides::default());
+            assert_eq!(
+                (
+                    mine.max_children,
+                    mine.idle_timeout,
+                    mine.max_requests,
+                    mine.request_terminate_timeout
+                ),
+                (got[0], got[1], got[2], got[3]),
+                "tuning differs for {total_mb} MB, {cpus} CPUs, {pools} pools"
+            );
+        }
+    }
+
+    /// An override is clamped, not obeyed blindly, and not refused.
+    ///
+    /// Source: `positive_int_or_default`. An administrator who asks for
+    /// 10,000 workers gets the cap - failing site creation instead would be
+    /// a worse answer to a typo.
+    #[test]
+    fn overrides_are_clamped_into_range() {
+        let huge = PoolTuningOverrides {
+            max_children: Some(10_000),
+            ..Default::default()
+        };
+        assert_eq!(pool_tuning(4096, 4, 1, huge).max_children, 512);
+
+        let tiny = PoolTuningOverrides {
+            max_children: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(pool_tuning(4096, 4, 1, tiny).max_children, 1);
+    }
+
+    /// The pool body carries the three things that keep sites apart.
+    #[test]
+    fn the_pool_body_isolates_the_site() {
+        let tuning = pool_tuning(4096, 4, 1, PoolTuningOverrides::default());
+        let body = pool_body(
+            "snpanel-bp_site-abc123def456-8_4",
+            "bp_site",
+            "/home/bp_site/example.com",
+            "www-data",
+            "www-data",
+            tuning,
+        );
+
+        assert!(
+            body.contains("php_admin_value[open_basedir] = /home/bp_site/example.com:"),
+            "open_basedir must pin the site: {body}"
+        );
+        assert!(
+            body.contains("php_admin_value[session.save_path] = /var/lib/php/sessions/bp_site"),
+            "sessions must be per-user, not shared in /tmp: {body}"
+        );
+        assert!(body.contains("listen.mode = 0660"), "{body}");
+        assert!(body.contains("listen.group = www-data"), "{body}");
+        assert!(
+            body.contains("user = bp_site") && body.contains("group = bp_site"),
+            "the pool runs as the site's user: {body}"
+        );
+    }
+
     use super::*;
 
     #[test]

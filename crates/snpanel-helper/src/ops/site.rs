@@ -250,6 +250,95 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// `site-runtime-ensure`: make a site's directories and pool exist.
+///
+/// Source: the `site-runtime-ensure` arm.
+pub fn runtime_ensure(
+    user: &PanelUsername,
+    path: &SitePath,
+    php: Option<snpanel_core::PhpVersion>,
+) -> HelperResponse {
+    if let Err(r) = guard(path) {
+        return r;
+    }
+    let home = super::user::ensure(user, None);
+    if !home.ok {
+        return home;
+    }
+
+    let root = path.as_path();
+    if let Err(message) = migrate_public_to_public_html(root) {
+        return HelperResponse::failed(HelperErrorKind::Internal, message);
+    }
+
+    let public_html = root.join("public_html");
+    if let Err(e) = std::fs::create_dir_all(&public_html) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", public_html.display()),
+        );
+    }
+    let hardened = harden_dir_path(root, &public_html, user);
+    if !hardened.ok {
+        return hardened;
+    }
+    let fixed = fix_permissions(path, user);
+    if !fixed.ok {
+        return fixed;
+    }
+
+    match php {
+        None => HelperResponse::ok(),
+        Some(version) => {
+            // The pool name hashes the resolved path, as the shell does.
+            let resolved = std::fs::canonicalize(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.as_str().to_string());
+            super::php::ensure_site_pool(
+                user.as_str(),
+                &resolved,
+                version,
+                super::php::tuning_overrides(),
+            )
+        }
+    }
+}
+
+/// Rename `public` to `public_html`, but only when nothing would be lost.
+///
+/// Source: the two branches in the bash. Sites arriving from an importer that
+/// used `public` need the rename; a site that already has a populated
+/// `public_html` must not be overwritten by an older copy of itself, so the
+/// second branch only fires when `public_html` is empty.
+fn migrate_public_to_public_html(root: &Path) -> Result<(), String> {
+    let public = root.join("public");
+    let public_html = root.join("public_html");
+    if !public.is_dir() {
+        return Ok(());
+    }
+    let rename = |from: &Path, to: &Path| {
+        std::fs::rename(from, to)
+            .map_err(|e| format!("renaming {} to {}: {e}", from.display(), to.display()))
+    };
+
+    if !public_html.exists() {
+        return rename(&public, &public_html);
+    }
+    if public_html.is_dir() {
+        let empty = std::fs::read_dir(&public_html)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
+        if empty {
+            std::fs::remove_dir(&public_html)
+                .map_err(|e| format!("removing the empty {}: {e}", public_html.display()))?;
+            return rename(&public, &public_html);
+        }
+    }
+    // `public_html` exists and has content: leave both alone. Overwriting it
+    // with `public` would replace a live site with whatever the importer left.
+    Ok(())
+}
+
 /// `site-runtime-delete`: remove a site's PHP pools, then the site itself.
 ///
 /// Source: the `site-runtime-delete` arm. Pools first: removing the tree
@@ -1015,6 +1104,74 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// `public` becomes `public_html` when there is nothing to lose.
+    #[test]
+    fn public_is_renamed_when_public_html_is_absent() {
+        let root = tempdir("migrate-absent");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("public/index.php"), "imported\n").unwrap();
+
+        migrate_public_to_public_html(&root).expect("the rename works");
+
+        assert!(!root.join("public").exists(), "public should be gone");
+        assert_eq!(
+            std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
+            "imported\n"
+        );
+    }
+
+    /// ...and when `public_html` exists but is empty.
+    #[test]
+    fn public_is_renamed_over_an_empty_public_html() {
+        let root = tempdir("migrate-empty");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("public/index.php"), "imported\n").unwrap();
+        std::fs::create_dir_all(root.join("public_html")).unwrap();
+
+        migrate_public_to_public_html(&root).expect("the rename works");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
+            "imported\n"
+        );
+    }
+
+    /// But a live site is never overwritten by an importer's copy.
+    ///
+    /// This is the branch worth testing. `public_html` with content is what
+    /// nginx is serving; `public` may be an older export that happened to
+    /// arrive in the same tree. Replacing one with the other silently would
+    /// roll a customer's site back.
+    #[test]
+    fn a_populated_public_html_is_left_alone() {
+        let root = tempdir("migrate-populated");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("public/index.php"), "the old export\n").unwrap();
+        std::fs::create_dir_all(root.join("public_html")).unwrap();
+        std::fs::write(root.join("public_html/index.php"), "the live site\n").unwrap();
+
+        migrate_public_to_public_html(&root).expect("no error, no change");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
+            "the live site\n",
+            "the served site must survive"
+        );
+        assert!(
+            root.join("public").is_dir(),
+            "and the other directory is left for someone to look at"
+        );
+    }
+
+    /// No `public` at all is not an error; most sites are in this state.
+    #[test]
+    fn a_site_without_public_is_untouched() {
+        let root = tempdir("migrate-none");
+        std::fs::create_dir_all(root.join("public_html")).unwrap();
+        migrate_public_to_public_html(&root).expect("nothing to do");
+        assert!(root.join("public_html").is_dir());
+    }
+
     /// Arguments stay arguments: there is no shell in this path.
     ///
     /// A WordPress option value can contain anything, and the panel passes it

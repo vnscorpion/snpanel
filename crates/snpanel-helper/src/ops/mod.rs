@@ -220,6 +220,9 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteRuntimeEnsure { user: u, path, php } => {
+            site::runtime_ensure(u, path, *php)
+        }
         HelperRequest::SiteRuntimeDelete { user: u, path } => site::runtime_delete(u, path),
         HelperRequest::Wp { args } => site::wp(args),
         HelperRequest::WpSite { user: u, php, args } => site::wp_site(u, *php, args),
@@ -309,21 +312,26 @@ mod tests {
 
     #[test]
     fn an_unported_operation_names_itself() {
-        use snpanel_core::{Domain, PanelUsername, PhpVersion};
+        use snpanel_core::{PanelUsername, SitePath};
 
+        // `TerminalExec` is the last variant with a wire type and no
+        // implementation. When it gets one, this test will stop compiling
+        // and should be pointed at whatever is unported then - or deleted,
+        // if nothing is.
         let ctx = Context::default();
         let resp = dispatch(
-            &HelperRequest::SiteRuntimeEnsure {
+            &HelperRequest::TerminalExec {
                 user: PanelUsername::parse("bp_site").unwrap(),
-                domain: Domain::parse("example.com").unwrap(),
-                php: PhpVersion::parse("8.4").unwrap(),
+                cwd: SitePath::parse("/home/bp_site/example.com").unwrap(),
+                argv: snpanel_ipc::AllowlistedArgv::parse("ls", vec![]).unwrap(),
+                budget_secs: 60,
             },
             &ctx,
         );
         assert!(!resp.ok);
         let err = resp.error.unwrap();
         assert_eq!(err.kind, HelperErrorKind::NotFound);
-        assert!(err.message.contains("site-runtime-ensure"));
+        assert!(err.message.contains("terminal-exec"));
         assert!(err.message.contains("snpanel-helper.sh"));
     }
 

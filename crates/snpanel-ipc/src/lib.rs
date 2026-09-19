@@ -378,17 +378,15 @@ pub enum HelperRequest {
     },
 
     // --- site ---
-    /// NOTE: this still carries a `domain`, and its caller does not have one.
+    /// The site root as a path, and the PHP version it runs - if any.
     ///
-    /// `site_users.ensure_site_runtime` passes a `root_path` read from the
-    /// database, and `site-runtime-move` exists because that path can change,
-    /// so deriving `/home/<user>/<domain>` would be a guess. Left as declared
-    /// rather than changed speculatively - see `SiteRuntimeDelete`, which had
-    /// the same shape and needed a `SitePath` the moment it was implemented.
+    /// `php` is optional because the caller sends the string "none" for a
+    /// site with no PHP. A static site gets no pool, rather than a pool for a
+    /// version that is not installed.
     SiteRuntimeEnsure {
         user: PanelUsername,
-        domain: Domain,
-        php: PhpVersion,
+        path: SitePath,
+        php: Option<PhpVersion>,
     },
     /// The site root as a path, not derived from a domain.
     ///
