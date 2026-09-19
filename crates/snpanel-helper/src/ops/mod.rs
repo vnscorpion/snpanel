@@ -220,6 +220,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteFileInstall {
+            user: u,
+            root,
+            relative,
+            staged,
+        } => site::file_install(u, root, relative, staged),
         HelperRequest::SiteDocumentRootEnsure {
             user: u,
             root,

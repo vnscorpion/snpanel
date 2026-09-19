@@ -250,6 +250,197 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// Where the panel stages an upload before the helper moves it.
+///
+/// Checked as a prefix twice: on the path as given and on the path after
+/// resolution. A symlink under this directory would otherwise name anything
+/// on the machine, and the helper runs as root.
+const UPLOAD_STAGE_PREFIX: &str = "/tmp/snpanel-upload-";
+
+/// `site-file-install`: move a staged upload into a site.
+///
+/// Source: the `site-file-install` arm. The order is the bash's: everything
+/// is checked before anything is created, and the staged file is removed only
+/// after the move has succeeded.
+pub fn file_install(
+    user: &PanelUsername,
+    root: &SitePath,
+    relative: &str,
+    staged: &str,
+) -> HelperResponse {
+    if let Err(r) = guard(root) {
+        return r;
+    }
+    if let Err(message) = check_upload_relative(relative) {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, message);
+    }
+
+    let joined = root.as_path().join(relative);
+    let target = match SitePath::parse(&joined.to_string_lossy()) {
+        Ok(p) => p,
+        Err(_) => {
+            return HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!("path outside the site: {}", joined.display()),
+            )
+        }
+    };
+    if !target.as_path().starts_with(root.as_path()) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("path outside the site: {target}"),
+        );
+    }
+    // Writing through a symlink would put the bytes wherever it points.
+    if std::fs::symlink_metadata(target.as_path())
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("refusing to write through a symlink: {target}"),
+        );
+    }
+
+    let source = match check_staged_upload(staged) {
+        Ok(p) => p,
+        Err(message) => return HelperResponse::failed(HelperErrorKind::BadRequest, message),
+    };
+
+    let Some(parent) = target.as_path().parent() else {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("no parent directory for {target}"),
+        );
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", parent.display()),
+        );
+    }
+    let hardened = harden_dir_path(root.as_path(), parent, user);
+    if !hardened.ok {
+        return hardened;
+    }
+
+    // Into place via a temporary name in the same directory, so a reader
+    // never sees a half-written file at the destination.
+    let base = target
+        .as_path()
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(".{base}.snpanel-install-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+
+    let owner = format!("{}:{}", user.as_str(), SITES_GROUP);
+    let out = exec::run(&[
+        "install",
+        "-o",
+        user.as_str(),
+        "-g",
+        SITES_GROUP,
+        "-m",
+        "0644",
+        "--",
+        &source,
+        &tmp.to_string_lossy(),
+    ]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        let _ = std::fs::remove_file(&tmp);
+        return exec::respond(&format!("install -o {owner}"), out);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, target.as_path()) {
+        let _ = std::fs::remove_file(&tmp);
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("moving into {target}: {e}"),
+        );
+    }
+    // Only now: the staged copy is the one thing that could put this back.
+    let _ = std::fs::remove_file(&source);
+    HelperResponse::ok()
+}
+
+/// The relative path of an uploaded file.
+///
+/// Deliberately looser than [`check_relative`]. A document root is a name an
+/// administrator types, so it is restricted to `[A-Za-z0-9._-]`; an uploaded
+/// file is named by whoever uploaded it, and real filenames have spaces,
+/// brackets and non-ASCII in them. Tightening this to match would refuse
+/// ordinary uploads. Source: the `case` in the `site-file-install` arm.
+fn check_upload_relative(relative: &str) -> Result<(), String> {
+    let bad = |why: &str| Err(format!("unsafe relative path: {relative} ({why})"));
+    if relative.is_empty() {
+        return bad("empty");
+    }
+    if relative.starts_with('/') {
+        return bad("absolute");
+    }
+    if relative.contains('\n') || relative.contains('\0') {
+        return bad("control character");
+    }
+    if relative == ".."
+        || relative.starts_with("../")
+        || relative.ends_with("/..")
+        || relative.contains("/../")
+    {
+        return bad("traversal");
+    }
+    Ok(())
+}
+
+/// The staged upload, checked the way the bash checks it.
+///
+/// Returns the resolved path. Every step here is a boundary: without them a
+/// caller names a file outside the staging area, or a symlink to one, or a
+/// file somebody else planted, and the helper copies it into a site as root.
+fn check_staged_upload(staged: &str) -> Result<String, String> {
+    if !staged.starts_with(UPLOAD_STAGE_PREFIX) {
+        return Err(format!("invalid staged upload path: {staged}"));
+    }
+    let given = Path::new(staged);
+    match std::fs::symlink_metadata(given) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err("staged upload cannot be a symlink".to_string())
+        }
+        Ok(_) => {}
+        Err(_) => return Err(format!("staged upload not found: {staged}")),
+    }
+
+    let resolved =
+        std::fs::canonicalize(given).map_err(|_| format!("staged upload not found: {staged}"))?;
+    let resolved_str = resolved.to_string_lossy().into_owned();
+    // Checked again after resolving: the prefix test above was on the name,
+    // and a path can leave the staging area on the way to a real file.
+    if !resolved_str.starts_with(UPLOAD_STAGE_PREFIX) {
+        return Err(format!(
+            "staged upload escaped the staging area: {resolved_str}"
+        ));
+    }
+    let meta =
+        std::fs::metadata(&resolved).map_err(|e| format!("staged upload not readable: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "staged upload is not a regular file: {resolved_str}"
+        ));
+    }
+    // Owned by the panel, so a file planted in /tmp by somebody else is
+    // refused even when it has the right name.
+    let panel_uid = crate::peercred::uid_of(crate::peercred::PANEL_USER)
+        .map_err(|e| format!("cannot resolve the panel user: {e}"))?;
+    use std::os::unix::fs::MetadataExt;
+    if meta.uid() != panel_uid {
+        return Err(format!(
+            "staged upload must be owned by {}",
+            crate::peercred::PANEL_USER
+        ));
+    }
+    Ok(resolved_str)
+}
+
 /// `site-document-root-ensure`: create the document root, harden the way down.
 ///
 /// Source: the `site-document-root-ensure` arm and `harden_site_dir_path`.
@@ -526,6 +717,120 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// An uploaded filename is not a directory name, and the checks differ.
+    ///
+    /// Source: the `case` in `site-file-install`, which guards traversal and
+    /// newlines and nothing else. Real uploads are called things like
+    /// "Bản sao (2).pdf"; restricting this to `[A-Za-z0-9._-]` the way a
+    /// document root is restricted would refuse them.
+    #[test]
+    fn an_uploaded_filename_may_contain_anything_but_traversal() {
+        for good in [
+            "notes.txt",
+            "public_html/Bản sao (2).pdf",
+            "public_html/my file [final].zip",
+            "a b/c d.txt",
+        ] {
+            assert!(
+                check_upload_relative(good).is_ok(),
+                "{good:?} is an ordinary upload"
+            );
+        }
+        for bad in [
+            "",
+            "/etc/passwd",
+            "..",
+            "../x",
+            "a/../../etc",
+            "a/..",
+            "a\nb",
+        ] {
+            assert!(
+                check_upload_relative(bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+    }
+
+    /// A staged path outside the upload area is refused on its name alone.
+    #[test]
+    fn a_staged_path_outside_the_upload_area_is_refused() {
+        let err = check_staged_upload("/etc/passwd").unwrap_err();
+        assert!(err.contains("invalid staged upload path"), "{err}");
+    }
+
+    /// ...and a symlink inside it is refused before it is followed.
+    ///
+    /// Without this a caller stages a link to anything on the box and the
+    /// helper, running as root, copies it into a site.
+    #[test]
+    fn a_symlinked_staged_upload_is_refused() {
+        let dir = upload_dir("symlink");
+        let secret = dir.join("secret");
+        std::fs::write(&secret, "a password\n").unwrap();
+        let link = dir.join("upload");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let err = check_staged_upload(&link.to_string_lossy()).unwrap_err();
+        assert!(err.contains("cannot be a symlink"), "{err}");
+    }
+
+    /// A file somebody else put there is refused even with the right name.
+    ///
+    /// The suite runs as root, so a file it creates is owned by root rather
+    /// than by the panel user - which is exactly the case this rejects.
+    #[test]
+    fn a_staged_upload_owned_by_someone_else_is_refused() {
+        let dir = upload_dir("owner");
+        let planted = dir.join("upload");
+        std::fs::write(&planted, "not from the panel\n").unwrap();
+
+        // Decide the premise instead of accepting either outcome. An `Ok(_)`
+        // arm here would pass on exactly the failure this test exists to
+        // catch - which it did, until the check was disabled on purpose and
+        // the suite stayed green.
+        let panel_uid = crate::peercred::uid_of(crate::peercred::PANEL_USER)
+            .expect("the panel user must exist for this test to mean anything");
+        // SAFETY: getuid cannot fail.
+        let mine = unsafe { libc::getuid() };
+        assert_ne!(
+            mine, panel_uid,
+            "this process is the panel user, so the file it just wrote is \
+             legitimately owned by it and the refusal cannot be observed"
+        );
+
+        let err = check_staged_upload(&planted.to_string_lossy())
+            .expect_err("a file this process owns is not a panel upload");
+        assert!(
+            err.contains("must be owned by"),
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    /// A directory is not an upload.
+    #[test]
+    fn a_staged_directory_is_refused() {
+        let dir = upload_dir("dir");
+        let inner = dir.join("upload");
+        std::fs::create_dir_all(&inner).unwrap();
+        let err = check_staged_upload(&inner.to_string_lossy()).unwrap_err();
+        assert!(
+            err.contains("not a regular file") || err.contains("must be owned by"),
+            "{err}"
+        );
+    }
+
+    /// A staging directory with the required prefix.
+    fn upload_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(format!(
+            "{UPLOAD_STAGE_PREFIX}test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// The character set, which is the half `SitePath` does not check.
     #[test]
     fn a_relative_document_root_is_restricted_to_safe_characters() {

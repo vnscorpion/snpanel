@@ -458,6 +458,17 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// Move a panel-staged upload into a site, as the site's user.
+    ///
+    /// `staged` is a path under the panel's upload staging area rather than
+    /// anywhere on disk: the helper re-checks it after resolution, because a
+    /// symlink placed there would otherwise name any file on the machine.
+    SiteFileInstall {
+        user: PanelUsername,
+        root: SitePath,
+        relative: String,
+        staged: String,
+    },
     /// Create a site's document root and harden every directory down to it.
     ///
     /// `relative` is a path *fragment* under the site root, not a path: the
@@ -600,6 +611,7 @@ impl HelperRequest {
             Self::SiteLogClear { .. } => "site-log-clear",
             Self::SiteLogsReadMany { .. } => "site-logs-read-many",
             Self::SiteDocumentRootEnsure { .. } => "site-document-root-ensure",
+            Self::SiteFileInstall { .. } => "site-file-install",
             Self::SslCertInfo { .. } => "ssl-cert-info",
             Self::PanelSslSelfsigned { .. } => "panel-ssl-selfsigned",
             Self::PanelSslDomains => "panel-ssl-domains",
