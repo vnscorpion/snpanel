@@ -250,6 +250,96 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// `site-runtime-move`: move a site and rebuild its runtime at the new path.
+///
+/// Source: the `site-runtime-move` arm. The old pool goes first: its name
+/// hashes the old path, so after the move nothing would match it, and it
+/// would keep serving with `open_basedir` pointing at a directory that is no
+/// longer there.
+pub fn runtime_move(
+    user: &PanelUsername,
+    from: &SitePath,
+    to: &SitePath,
+    php: Option<snpanel_core::PhpVersion>,
+) -> HelperResponse {
+    if let Err(r) = guard(to) {
+        return r;
+    }
+    let home = super::user::ensure(user, None);
+    if !home.ok {
+        return home;
+    }
+
+    if from.as_path() != to.as_path() {
+        if to.as_path().exists() {
+            return HelperResponse::failed(
+                // The bash refuses this with `deny`, which is a bad
+                // request; the protocol has no distinct Conflict kind.
+                HelperErrorKind::BadRequest,
+                format!("target path already exists: {to}"),
+            );
+        }
+        // The old owner, taken from the old path rather than assumed to be
+        // the new one: a site can move between accounts.
+        let old_user = from.user().as_str().to_string();
+        let old_resolved = std::fs::canonicalize(from.as_path())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| from.as_str().to_string());
+        let _ = super::php::delete_site_pools(&old_user, &old_resolved);
+
+        if let Some(parent) = to.as_path().parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return HelperResponse::failed(
+                    HelperErrorKind::Internal,
+                    format!("creating {}: {e}", parent.display()),
+                );
+            }
+        }
+        if let Err(e) = std::fs::rename(from.as_path(), to.as_path()) {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("moving {from} to {to}: {e}"),
+            );
+        }
+    }
+
+    let root = to.as_path();
+    // The simple branch only - see `migrate_public_to_public_html`.
+    if let Err(message) = migrate_public_to_public_html(root, false) {
+        return HelperResponse::failed(HelperErrorKind::Internal, message);
+    }
+    let public_html = root.join("public_html");
+    if let Err(e) = std::fs::create_dir_all(&public_html) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", public_html.display()),
+        );
+    }
+    let hardened = harden_dir_path(root, &public_html, user);
+    if !hardened.ok {
+        return hardened;
+    }
+    let fixed = fix_permissions(to, user);
+    if !fixed.ok {
+        return fixed;
+    }
+
+    match php {
+        None => HelperResponse::ok(),
+        Some(version) => {
+            let resolved = std::fs::canonicalize(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| to.as_str().to_string());
+            super::php::ensure_site_pool(
+                user.as_str(),
+                &resolved,
+                version,
+                super::php::tuning_overrides(),
+            )
+        }
+    }
+}
+
 /// `site-runtime-ensure`: make a site's directories and pool exist.
 ///
 /// Source: the `site-runtime-ensure` arm.
@@ -267,7 +357,7 @@ pub fn runtime_ensure(
     }
 
     let root = path.as_path();
-    if let Err(message) = migrate_public_to_public_html(root) {
+    if let Err(message) = migrate_public_to_public_html(root, true) {
         return HelperResponse::failed(HelperErrorKind::Internal, message);
     }
 
@@ -310,7 +400,10 @@ pub fn runtime_ensure(
 /// used `public` need the rename; a site that already has a populated
 /// `public_html` must not be overwritten by an older copy of itself, so the
 /// second branch only fires when `public_html` is empty.
-fn migrate_public_to_public_html(root: &Path) -> Result<(), String> {
+fn migrate_public_to_public_html(
+    root: &Path,
+    replace_empty_public_html: bool,
+) -> Result<(), String> {
     let public = root.join("public");
     let public_html = root.join("public_html");
     if !public.is_dir() {
@@ -324,7 +417,10 @@ fn migrate_public_to_public_html(root: &Path) -> Result<(), String> {
     if !public_html.exists() {
         return rename(&public, &public_html);
     }
-    if public_html.is_dir() {
+    // Only `site-runtime-ensure` does this. The `move` arm in the bash has
+    // the simple branch alone, and quietly gaining this one would change
+    // what happens to a moved site that has both directories.
+    if replace_empty_public_html && public_html.is_dir() {
         let empty = std::fs::read_dir(&public_html)
             .map(|mut d| d.next().is_none())
             .unwrap_or(false);
@@ -1104,6 +1200,60 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The move keeps the simple rename only.
+    ///
+    /// With `replace_empty_public_html` false, a site that has both
+    /// directories keeps both - which is what the bash's `move` arm does,
+    /// and differs from its `ensure` arm on purpose.
+    #[test]
+    fn the_move_does_not_replace_an_empty_public_html() {
+        let root = tempdir("move-simple");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(root.join("public/index.php"), "moved\n").unwrap();
+        std::fs::create_dir_all(root.join("public_html")).unwrap();
+
+        migrate_public_to_public_html(&root, false).expect("no error");
+
+        assert!(
+            root.join("public").is_dir(),
+            "the move arm leaves `public` alone when public_html exists"
+        );
+        assert!(
+            root.join("public_html").is_dir(),
+            "and leaves public_html alone too"
+        );
+
+        // The ensure arm, on the same tree, does merge them.
+        migrate_public_to_public_html(&root, true).expect("no error");
+        assert_eq!(
+            std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
+            "moved\n"
+        );
+    }
+
+    /// The old pool is named after where the site was, not where it is going.
+    ///
+    /// A site moving between accounts is the case that makes this matter: a
+    /// pool named after the new owner matches nothing, so the real pool keeps
+    /// running with `open_basedir` pointing at a directory that has moved.
+    #[test]
+    fn the_old_pool_name_follows_the_old_owner_and_path() {
+        let from = SitePath::parse("/home/old_user/example.com").unwrap();
+        let to = SitePath::parse("/home/new_user/example.com").unwrap();
+
+        assert_eq!(from.user().as_str(), "old_user");
+        assert_eq!(to.user().as_str(), "new_user");
+
+        // The pool name is built from the owner and the path, and both differ
+        // across the move, so the two names must not coincide.
+        let php = snpanel_core::PhpVersion::parse("8.4").unwrap();
+        let old_name = super::super::php::pool_name(from.user().as_str(), from.as_str(), php);
+        let new_name = super::super::php::pool_name(to.user().as_str(), to.as_str(), php);
+        assert_ne!(old_name, new_name);
+        assert!(old_name.starts_with("snpanel-old_user-"), "{old_name}");
+        assert!(new_name.starts_with("snpanel-new_user-"), "{new_name}");
+    }
+
     /// `public` becomes `public_html` when there is nothing to lose.
     #[test]
     fn public_is_renamed_when_public_html_is_absent() {
@@ -1111,7 +1261,7 @@ mod tests {
         std::fs::create_dir_all(root.join("public")).unwrap();
         std::fs::write(root.join("public/index.php"), "imported\n").unwrap();
 
-        migrate_public_to_public_html(&root).expect("the rename works");
+        migrate_public_to_public_html(&root, true).expect("the rename works");
 
         assert!(!root.join("public").exists(), "public should be gone");
         assert_eq!(
@@ -1128,7 +1278,7 @@ mod tests {
         std::fs::write(root.join("public/index.php"), "imported\n").unwrap();
         std::fs::create_dir_all(root.join("public_html")).unwrap();
 
-        migrate_public_to_public_html(&root).expect("the rename works");
+        migrate_public_to_public_html(&root, true).expect("the rename works");
 
         assert_eq!(
             std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
@@ -1150,7 +1300,7 @@ mod tests {
         std::fs::create_dir_all(root.join("public_html")).unwrap();
         std::fs::write(root.join("public_html/index.php"), "the live site\n").unwrap();
 
-        migrate_public_to_public_html(&root).expect("no error, no change");
+        migrate_public_to_public_html(&root, true).expect("no error, no change");
 
         assert_eq!(
             std::fs::read_to_string(root.join("public_html/index.php")).unwrap(),
@@ -1168,7 +1318,7 @@ mod tests {
     fn a_site_without_public_is_untouched() {
         let root = tempdir("migrate-none");
         std::fs::create_dir_all(root.join("public_html")).unwrap();
-        migrate_public_to_public_html(&root).expect("nothing to do");
+        migrate_public_to_public_html(&root, true).expect("nothing to do");
         assert!(root.join("public_html").is_dir());
     }
 

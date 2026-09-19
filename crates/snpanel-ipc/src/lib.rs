@@ -378,6 +378,16 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Move a site's tree, taking its PHP pool with it.
+    ///
+    /// `from` carries its own user: a site can move between accounts, and the
+    /// pool to remove is named after where it was, not where it is going.
+    SiteRuntimeMove {
+        user: PanelUsername,
+        from: SitePath,
+        to: SitePath,
+        php: Option<PhpVersion>,
+    },
     /// The site root as a path, and the PHP version it runs - if any.
     ///
     /// `php` is optional because the caller sends the string "none" for a
@@ -626,6 +636,7 @@ impl HelperRequest {
             Self::CertbotRenew { .. } => "certbot-renew",
             Self::CertbotDelete { .. } => "certbot-delete",
             Self::SiteRuntimeEnsure { .. } => "site-runtime-ensure",
+            Self::SiteRuntimeMove { .. } => "site-runtime-move",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",

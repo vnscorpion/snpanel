@@ -240,14 +240,14 @@ reached.
 
 ### Stage A - the helper's `site` domain
 
-**16 of 31 verbs are answered by Rust (51%).** Measured from `op_name()` and
+**17 of 31 verbs are answered by Rust (54%).** Measured from `op_name()` and
 the dispatch table, not counted by hand:
 
 | | |
 |---|---|
-| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure`, `site-file-install`, `site-populate`, `wp`, `wp-site`, `site-runtime-delete`, `site-runtime-ensure` |
+| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure`, `site-file-install`, `site-populate`, `wp`, `wp-site`, `site-runtime-delete`, `site-runtime-ensure`, `site-runtime-move` |
 | variant declared, no implementation | none in this domain; `TerminalExec` is the last one anywhere |
-| not started | 14, of which **13 are `site-app-*`**; only `site-archive-extract` and `site-runtime-move` remain outside that group |
+| not started | 14, of which **13 are `site-app-*`**; `site-archive-extract` is the only one left outside that group |
 
 Two things the measurement corrected in this plan.
 

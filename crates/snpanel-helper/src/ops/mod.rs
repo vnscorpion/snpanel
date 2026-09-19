@@ -220,6 +220,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteRuntimeMove {
+            user: u,
+            from,
+            to,
+            php,
+        } => site::runtime_move(u, from, to, *php),
         HelperRequest::SiteRuntimeEnsure { user: u, path, php } => {
             site::runtime_ensure(u, path, *php)
         }
