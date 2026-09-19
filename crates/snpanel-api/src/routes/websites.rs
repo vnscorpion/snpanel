@@ -59,6 +59,10 @@ pub fn router() -> Router<AppState> {
                 .fallback(crate::fallback),
         )
         .route(
+            "/websites/{website_id}/waf",
+            axum::routing::patch(set_waf).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/logs",
             get(logs).fallback(crate::fallback),
         )
@@ -408,6 +412,26 @@ async fn read_vhost(state: &AppState, domain: &str) -> Option<String> {
     tokio::fs::read_to_string(path).await.ok()
 }
 
+/// Source: `nginx._write_backup` - `<vhost>.conf.bak`, written through a
+/// temporary file in the same directory so the backup is never a half-written
+/// file, and `0640` because it is a copy of a root-owned config.
+///
+/// Best effort: the Python lets a backup failure through to the write, and a
+/// site must not become uneditable because the directory filled up.
+async fn write_vhost_backup(path: &std::path::Path, previous: &str) {
+    let Some(dir) = path.parent() else { return };
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return;
+    };
+    let temp = dir.join(format!(".{name}.bak-{}", std::process::id()));
+    if tokio::fs::write(&temp, previous).await.is_err() {
+        return;
+    }
+    let _ = tokio::fs::set_permissions(&temp, std::os::unix::fs::PermissionsExt::from_mode(0o640))
+        .await;
+    let _ = tokio::fs::rename(&temp, path.with_extension("conf.bak")).await;
+}
+
 /// Write a planned vhost, test it, and roll back if nginx refuses it.
 ///
 /// The rollback is the point. `nginx -t` checks the whole configuration, so a
@@ -417,6 +441,14 @@ async fn read_vhost(state: &AppState, domain: &str) -> Option<String> {
 async fn apply_vhost(state: &AppState, plan: &snpanel_nginx::VhostPlan) -> Result<(), Response> {
     if state.settings.command_dry_run {
         return Ok(());
+    }
+    // Source: `_write_backup(target, existing)`, which every vhost writer in
+    // the Python calls before it overwrites. This was missing: the rollback
+    // below restores the previous bytes when `nginx -t` refuses, but a write
+    // that *succeeds* and turns out to be wrong later left an administrator
+    // with nothing to go back to.
+    if let Some(previous) = &plan.previous {
+        write_vhost_backup(&plan.path, previous).await;
     }
     if let Err(e) = tokio::fs::write(&plan.path, &plan.content).await {
         tracing::error!("writing {} failed: {e}", plan.path.display());
@@ -1120,6 +1152,174 @@ async fn delete_alias(
     )
     .await;
     axum::Json(json!({ "ok": true })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// the WAF switch
+// ---------------------------------------------------------------------------
+
+/// Source: `panel_settings.crs_mode()` - the server-wide OWASP CRS mode.
+///
+/// Read straight from the settings file rather than through the whole of
+/// `current_settings`, for the reason the Python gives: this is consulted on
+/// every vhost and site-rule render, and refreshing a malware scan status to
+/// get one string would be a poor trade.
+fn server_crs_mode() -> String {
+    let dir = std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into());
+    std::fs::read_to_string(std::path::Path::new(&dir).join("panel-settings.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("crs_mode")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase()
+}
+
+/// Source: `api.waf.may_manage_waf`, which needs the caller's package.
+async fn may_manage_waf(state: &AppState, current: &CurrentUser) -> bool {
+    // The package flag, when there is a package to read it from. A row that
+    // cannot be read is not a refusal: the Python's `getattr(package,
+    // "waf_enabled", True)` defaults the same way, and so does an account with
+    // no package at all.
+    let flag = match current.user.package_id {
+        Some(id) => match state.db.packages().by_id(id).await {
+            Ok(Some(package)) => Some(package.waf_enabled),
+            _ => None,
+        },
+        None => None,
+    };
+    crate::waf::may_manage_waf(&current.user.role, flag)
+}
+
+/// Source: `nginx.update_waf_block` - swap the WAF block in this site's vhost.
+///
+/// Under `COMMAND_DRY_RUN` the Python renders the replacement against a stub
+/// server block and returns without touching anything, which is why a dry run
+/// does not need the file to exist.
+async fn update_waf_block(state: &AppState, domain: &str, enabled: bool) -> Result<(), Response> {
+    if state.settings.command_dry_run {
+        return Ok(());
+    }
+    let Some(path) = vhost_path(state, domain) else {
+        return Err(bad_request("Invalid domain"));
+    };
+    let Some(existing) = read_vhost(state, domain).await else {
+        // Source: `raise FileNotFoundError(str(target))`, which the router
+        // catches alongside ValueError and turns into a 400.
+        return Err(bad_request(&path.to_string_lossy()));
+    };
+    // `waf_engine` is whether nginx has the ModSecurity module at all. A
+    // block that turns the WAF on where the module is absent does not fail
+    // safe - it fails `nginx -t`, and the next reload takes every site down.
+    let engine = crate::system::waf_engine_available();
+    let updated = match snpanel_nginx::replace_waf_block(&existing, enabled, Some(domain), engine) {
+        Ok(text) => text,
+        Err(e) => return Err(bad_request(&e.to_string())),
+    };
+    apply_vhost(
+        state,
+        &snpanel_nginx::VhostPlan {
+            path,
+            content: updated,
+            previous: Some(existing),
+            custom_include: String::new(),
+            custom_include_path: String::new(),
+        },
+    )
+    .await
+}
+
+/// Source: `set_website_waf`.
+///
+/// The order is the Python's and it is not arbitrary: the rule file is written
+/// first, then the vhost block that includes it, and only then the column. A
+/// vhost that points at a rule file which was never written fails `nginx -t`,
+/// and a column that says "on" for a site whose vhost was never changed is a
+/// customer told they are protected when they are not.
+async fn set_waf(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if !may_manage_waf(&state, &current).await {
+        return crate::errors::error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Your hosting package does not include WAF settings",
+        );
+    }
+    let Some(raw) = payload.get("waf_enabled") else {
+        return crate::errors::missing_field("waf_enabled", payload.clone());
+    };
+    let Some(waf_enabled) = raw.as_bool() else {
+        return crate::errors::bool_parsing("waf_enabled", raw);
+    };
+
+    // `sync_website_rules` renders from the site's **stored** flags, not from
+    // the one being set. That is the Python's behaviour: the rule file is
+    // brought up to date, and whether nginx loads it is what the block below
+    // decides.
+    let result = match crate::waf::sync_website_rules(
+        state.settings.command_dry_run,
+        &website,
+        &server_crs_mode(),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if !result.ok() {
+        return bad_request(result.failure_detail("Could not write WAF rules").trim());
+    }
+    if let Err(r) = update_waf_block(&state, &website.domain, waf_enabled).await {
+        return r;
+    }
+
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_waf_enabled(website.id, waf_enabled)
+        .await
+    {
+        tracing::error!("storing the WAF flag failed: {e}");
+        return internal_error();
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "update_waf",
+        &website.domain,
+    )
+    .await;
+
+    match state.db.websites().by_id(website.id).await {
+        Ok(Some(fresh)) => single(&state, fresh).await,
+        Ok(None) => not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("re-reading the website failed: {e}");
+            internal_error()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,9 +6,10 @@
 //!
 //! `/rules` is worth porting on its own account: it is what the WAF page opens
 //! with, and it is three helper calls plus a catalogue the panel holds in
-//! code. The catalogue was generated from the Python's own `DEFAULT_RULES`
-//! rather than retyped - eight entries of prose that go straight into an API
-//! response, where a typo is a difference nobody would ever notice by reading.
+//! code. That catalogue now lives in [`crate::waf`] with the rule bodies
+//! beside it, generated from the Python's own `DEFAULT_RULES` rather than
+//! retyped - eight entries of prose that go straight into an API response,
+//! where a typo is a difference nobody would ever notice by reading.
 
 use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
@@ -27,61 +28,6 @@ pub fn router() -> Router<AppState> {
         .route("/waf/status", get(status).fallback(crate::fallback))
         .route("/waf/rules", get(rules).fallback(crate::fallback))
 }
-
-/// Source: `waf.DEFAULT_RULES`, as `default_rule_definitions()` projects it -
-/// the identifying fields only, never the rule bodies.
-///
-/// Generated from the Python list (`id`, `category`, `title`, `description`).
-const DEFAULT_RULE_DEFINITIONS: &[(&str, &str, &str, &str)] = &[
-    (
-        "php-sensitive-files",
-        "PHP",
-        "PHP sensitive files",
-        "Blocks direct probes for PHP app secrets, Composer metadata, git data, and phpinfo files.",
-    ),
-    (
-        "php-path-traversal",
-        "PHP",
-        "Path traversal",
-        "Blocks ../ and encoded traversal probes in URLs and query arguments.",
-    ),
-    (
-        "php-runtime-probes",
-        "PHP",
-        "PHP runtime probes",
-        "Blocks direct probes for common PHP webshell names and old PHPUnit RCE paths.",
-    ),
-    (
-        "laravel-sensitive-files",
-        "Laravel",
-        "Laravel sensitive files",
-        "Blocks probes for Laravel environment files, logs, artisan, and cached PHP config.",
-    ),
-    (
-        "laravel-ignition-rce",
-        "Laravel",
-        "Laravel Ignition RCE probes",
-        "Blocks direct probes for the old Laravel Ignition execute-solution endpoint.",
-    ),
-    (
-        "wordpress-sensitive-files",
-        "WordPress",
-        "WordPress sensitive files",
-        "Blocks wp-config probes, uploads PHP execution probes, and internal WordPress PHP paths.",
-    ),
-    (
-        "wordpress-xmlrpc-author-scan",
-        "WordPress",
-        "WordPress author scans",
-        "Blocks ?author= enumeration scans while leaving XML-RPC compatibility to site policy.",
-    ),
-    (
-        "wordpress-install-upgrade",
-        "WordPress",
-        "WordPress installer probes",
-        "Blocks direct access to WordPress installation scripts after deployment.",
-    ),
-];
 
 fn require_admin(current: &CurrentUser) -> Result<(), Response> {
     if permissions::has_role(&current.user.role, Role::Admin) {
@@ -160,15 +106,22 @@ async fn rules(State(state): State<AppState>, req: Request) -> Response {
     .into_response()
 }
 
+/// Source: `waf.default_rule_definitions()` - the identifying fields only,
+/// never the rule bodies.
+///
+/// Projected from [`crate::waf::DEFAULT_RULES`], which is the one table. This
+/// module used to keep a second four-field copy for exactly this response,
+/// and two catalogues of the same eight rules is a drift waiting to happen -
+/// the kind where the WAF page names a rule the renderer no longer writes.
 fn rule_definitions() -> Vec<Value> {
-    DEFAULT_RULE_DEFINITIONS
+    crate::waf::DEFAULT_RULES
         .iter()
-        .map(|(id, category, title, description)| {
+        .map(|rule| {
             json!({
-                "id": id,
-                "category": category,
-                "title": title,
-                "description": description,
+                "id": rule.id,
+                "category": rule.category,
+                "title": rule.title,
+                "description": rule.description,
                 // Always true: the projection hard-codes it, because these are
                 // the rules a site gets unless it turns one off.
                 "enabled_default": true,
@@ -222,10 +175,10 @@ mod tests {
     fn the_identifiers_are_unique() {
         // They are what a site's "rule off" toggle stores, so a duplicate
         // would silently disable two rules at once.
-        let ids: std::collections::BTreeSet<&str> = DEFAULT_RULE_DEFINITIONS
+        let ids: std::collections::BTreeSet<&str> = crate::waf::DEFAULT_RULES
             .iter()
-            .map(|(id, _, _, _)| *id)
+            .map(|rule| rule.id)
             .collect();
-        assert_eq!(ids.len(), DEFAULT_RULE_DEFINITIONS.len());
+        assert_eq!(ids.len(), crate::waf::DEFAULT_RULES.len());
     }
 }

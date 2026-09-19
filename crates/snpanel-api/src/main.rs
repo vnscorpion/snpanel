@@ -50,6 +50,7 @@ mod system;
 mod testenv;
 mod tls;
 mod updates;
+mod waf;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
