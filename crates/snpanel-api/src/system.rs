@@ -361,6 +361,62 @@ pub fn panel_installed() -> bool {
     Path::new("/opt/snpanel/backend/.env").exists()
 }
 
+/// Source: `panel_ipv6.is_enabled` - whether the vhosts on this machine carry
+/// IPv6 listen directives. A marker file, not a probe of the network: the
+/// question is what the configuration says, not what the kernel has.
+pub fn ipv6_enabled() -> bool {
+    let marker = std::env::var("SNPANEL_IPV6_MARKER")
+        .unwrap_or_else(|_| "/etc/snpanel/ipv6-enabled".to_string());
+    std::path::Path::new(&marker).exists()
+}
+
+/// Source: `nginx.waf_engine_available`.
+///
+/// `modsecurity on;` is not a harmless no-op when the module is missing:
+/// nginx rejects its **entire** configuration with `unknown directive`, and
+/// that is not confined to the site being written - the next reload anywhere
+/// takes down every site on the machine.
+///
+/// The cheap half is the Debian package's load file. The rest reads the
+/// configuration directly, because `nginx -V` reports what nginx was compiled
+/// with rather than what it loads, and `nginx -T` exits before printing
+/// anything when it cannot open the error log - which the panel's account
+/// cannot.
+pub fn waf_engine_available() -> bool {
+    const MODULE_CONF: &str = "/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf";
+    if std::path::Path::new(MODULE_CONF).exists() {
+        return true;
+    }
+    // Source: `MODULE_CONFIG_PATTERNS` - every file that may legally carry a
+    // `load_module`, which is only valid in the main context. All are
+    // world-readable, which is what lets an unprivileged process answer this.
+    let mut candidates: Vec<std::path::PathBuf> =
+        vec![std::path::PathBuf::from("/etc/nginx/nginx.conf")];
+    for dir in ["/etc/nginx/modules-enabled", "/usr/share/nginx/modules"] {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "conf")),
+            );
+        }
+    }
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("load_module") && trimmed.to_lowercase().contains("modsecurity")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

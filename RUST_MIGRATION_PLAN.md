@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **81 of 211** | 38% |
+| API endpoints answered by Rust | **84 of 211** | 39% |
 | Routers served whole | 4 of 17 | `auth`, `firewall`, `packages`, `updates` |
 | Routers served in part | 9 | the strangler proxies the rest of each |
 | Routers untouched | 4 | `maintenance`, `provisioning`, `site_apps`, `deps` |
@@ -516,7 +516,7 @@ two-process concern rather than a one-process one.
 | `chown`, `cloudflare`, `daemon`, `fastcgi`, `fix`, `http`, `mariadb`, `mkdir`, `rm`, `service` | 1 each | — |
 | `ssl` | 1 | yes |
 
-The shortest honest statement of the distance: **130 of 211 endpoints and
+The shortest honest statement of the distance: **127 of 211 endpoints and
 9,944 lines of bash remain**, the helper is the gate on most of it, and the
 mechanism that makes each step ordinary is already built and serving real
 traffic.

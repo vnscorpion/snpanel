@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::auth::CurrentUser;
-use crate::errors::{bad_request, internal_error, not_enough_permissions, not_found};
+use crate::errors::{bad_request, conflict, internal_error, not_enough_permissions, not_found};
 use crate::shell;
 use crate::state::AppState;
 
@@ -42,7 +42,11 @@ pub fn router() -> Router<AppState> {
         .route("/websites", get(list).fallback(crate::fallback))
         .route(
             "/websites/{website_id}/aliases",
-            get(aliases).fallback(crate::fallback),
+            get(aliases).post(create_alias).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/aliases/{alias_id}",
+            axum::routing::delete(delete_alias).fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/nginx-custom",
@@ -50,7 +54,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/websites/{website_id}/nginx-config",
-            get(nginx_config).fallback(crate::fallback),
+            get(nginx_config)
+                .put(set_nginx_config)
+                .fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/logs",
@@ -700,6 +706,422 @@ async fn single(state: &AppState, website: snpanel_db::Website) -> Response {
     axum::Json(website_json(&website, &aliases, wordpress, ssl_enabled)).into_response()
 }
 
+// ---------------------------------------------------------------------------
+// rewriting a site's vhost, and the alias screens that need it
+// ---------------------------------------------------------------------------
+
+/// Source: `site_users.site_php_fpm_socket` - the per-site pool, named after
+/// the resolved root so two sites of the same user do not share one.
+fn site_fpm_socket(website: &snpanel_db::Website, php_version: Option<&str>) -> Option<String> {
+    let user = website.linux_user.as_deref().filter(|u| !u.is_empty())?;
+    let version = php_version.filter(|v| !v.is_empty())?;
+    let resolved = std::fs::canonicalize(&website.root_path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| website.root_path.clone());
+    let hash = snpanel_core::types::site_hash(&resolved);
+    Some(format!(
+        "/run/php/snpanel-{user}-{hash}-{}.sock",
+        version.replace('.', "_")
+    ))
+}
+
+/// Source: `_alias_domains` and `_redirect_domains` - sorted by domain, split
+/// by mode, with anything unrecognised treated as an alias.
+fn domains_by_mode(aliases: &[snpanel_db::WebsiteAlias], mode: &str) -> Vec<String> {
+    let mut rows: Vec<&snpanel_db::WebsiteAlias> = aliases.iter().collect();
+    rows.sort_by(|a, b| a.domain.cmp(&b.domain));
+    rows.iter()
+        .filter(|a| {
+            let m = if a.mode.is_empty() { "alias" } else { &a.mode };
+            m == mode
+        })
+        .map(|a| a.domain.clone())
+        .collect()
+}
+
+/// What a rewrite may override, as `_rewrite_website_vhost`'s keyword
+/// arguments do.
+#[derive(Default)]
+struct RewriteOverrides {
+    aliases: Option<Vec<String>>,
+    redirects: Option<Vec<String>>,
+    custom_directives: Option<String>,
+}
+
+/// Source: `_rewrite_website_vhost` followed by `nginx.rewrite_vhost`.
+///
+/// The overrides matter because the caller often knows something the database
+/// does not yet: an alias that has been added inside this transaction and is
+/// not committed, for instance.
+async fn rewrite_website_vhost(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    overrides: RewriteOverrides,
+) -> Result<String, Response> {
+    let aliases_rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let aliases = overrides
+        .aliases
+        .unwrap_or_else(|| domains_by_mode(&aliases_rows, "alias"));
+    let redirects = overrides
+        .redirects
+        .unwrap_or_else(|| domains_by_mode(&aliases_rows, "redirect"));
+    let custom_text = overrides
+        .custom_directives
+        .unwrap_or_else(|| website.nginx_custom.clone());
+    let custom = snpanel_nginx::CustomDirectives::validate(&custom_text)
+        .map_err(|e| bad_request(&e.to_string()))?;
+
+    let app_type = if website.app_type.is_empty() {
+        "wordpress"
+    } else {
+        &website.app_type
+    };
+    // Source: `runtime_php_version` - a static or proxied site gets no pool.
+    let runtime_php = matches!(app_type, "wordpress" | "php")
+        .then_some(website.php_version.as_str())
+        .filter(|v| !v.is_empty());
+    let socket = site_fpm_socket(website, runtime_php);
+
+    let rewrite_mode = if website.nginx_rewrite_mode.is_empty() {
+        "none"
+    } else {
+        &website.nginx_rewrite_mode
+    };
+    let document_root = if website.document_root.is_empty() {
+        "public_html"
+    } else {
+        &website.document_root
+    };
+
+    // Source: `_rewrite_ssl_kwargs` - a manual certificate is passed through;
+    // a borrowed one (cloudflare, shared) is resolved from its source domain,
+    // which is not ported yet, so those fall back to no explicit paths and
+    // `preserve_existing_ssl` keeps whatever certbot left in the file.
+    let (cert, key, ca) = if website.ssl_mode == "manual" {
+        (
+            website.ssl_cert_path.clone(),
+            website.ssl_key_path.clone(),
+            website.ssl_ca_path.clone(),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    let root_path = std::path::PathBuf::from(&website.root_path);
+    let mut input = snpanel_nginx::VhostInput::new(&website.domain, &root_path, &custom);
+    input.app_type = app_type;
+    input.php_version = runtime_php;
+    input.php_fpm_socket_override = socket.as_deref();
+    input.waf_enabled = website.waf_enabled;
+    input.http_flood_enabled = website.http_flood_enabled;
+    input.http_flood_config = snpanel_nginx::HttpFloodConfig::from_text(&website.http_flood_config);
+    input.document_root = document_root;
+    input.rewrite_mode = Some(rewrite_mode);
+    input.ssl_cert_path = cert.as_deref();
+    input.ssl_key_path = key.as_deref();
+    input.ssl_ca_path = ca.as_deref();
+    input.aliases = &aliases;
+    input.redirects = &redirects;
+
+    let env = snpanel_nginx::VhostEnv {
+        ipv6: crate::system::ipv6_enabled(),
+        waf_engine: crate::system::waf_engine_available(),
+        default_php_version: state.settings.default_php_version.clone(),
+        home_root: std::path::PathBuf::from("/home"),
+    };
+    let sites = std::path::PathBuf::from(&state.settings.nginx_sites_available);
+    let existing = read_vhost(state, &website.domain).await;
+    let plan = snpanel_nginx::plan_rewrite(&input, &env, &sites, existing.as_deref(), true)
+        .map_err(|e| bad_request(&e.to_string()))?;
+
+    // The customer's snippet goes to its own include file, through the helper.
+    if !state.settings.command_dry_run {
+        let write = shell::privileged(
+            false,
+            "nginx-custom-write",
+            &[&website.domain],
+            Some(plan.custom_include.as_str()),
+            None,
+        )
+        .await;
+        if !write.ok() {
+            return Err(bad_request(
+                write.failure_detail("Cannot write Nginx config").trim(),
+            ));
+        }
+    }
+    apply_vhost(state, &plan).await?;
+    Ok(plan.path.to_string_lossy().into_owned())
+}
+
+/// Source: `ssl.cert_info` - read through the helper, because
+/// `/etc/letsencrypt/live` is root's.
+async fn cert_sans(state: &AppState, domain: &str) -> Vec<String> {
+    let probe = format!("echo 'no cert info for {domain}'; exit 1");
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "ssl-cert-info",
+        &[domain],
+        None,
+        Some(&["bash", "-lc", &probe]),
+    )
+    .await;
+    if !result.ok() {
+        return Vec::new();
+    }
+    for line in result.stdout.lines() {
+        if let Some(value) = line.strip_prefix("sans=") {
+            return value
+                .trim()
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Source: `ssl._hostname_matches` - an exact name, or a wildcard that covers
+/// exactly one more label.
+fn hostname_matches(domain: &str, pattern: &str) -> bool {
+    if pattern == domain {
+        return true;
+    }
+    let Some(suffix) = pattern.strip_prefix('*') else {
+        return false;
+    };
+    if !pattern.starts_with("*.") {
+        return false;
+    }
+    domain.ends_with(suffix) && domain.matches('.').count() == suffix.matches('.').count()
+}
+
+/// Source: `ssl.cert_covers`.
+fn cert_covers(sans: &[String], domain: &str) -> bool {
+    let target = domain.trim().to_ascii_lowercase();
+    sans.iter()
+        .map(|n| n.trim().to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .any(|n| hostname_matches(&target, &n))
+}
+
+/// Source: `_sync_alias_ssl_flags`.
+///
+/// `issue_ssl` can succeed overall while dropping one requested name - bad or
+/// not-yet-pointed DNS, through certbot's `--allow-subset-of-names` - and a
+/// plain "Added alias" toast then tells the administrator nothing went wrong
+/// for that name, even though it still has no working certificate.
+async fn sync_alias_ssl_flags(state: &AppState, website: &snpanel_db::Website) {
+    if website.ssl_mode != "letsencrypt" {
+        return;
+    }
+    let sans = cert_sans(state, &website.domain).await;
+    let aliases = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    for alias in aliases {
+        let covered = !sans.is_empty() && cert_covers(&sans, &alias.domain);
+        if covered != alias.ssl_enabled {
+            if let Err(e) = state
+                .db
+                .websites()
+                .alias_set_ssl_enabled(alias.id, covered)
+                .await
+            {
+                tracing::warn!("could not record alias certificate coverage: {e}");
+            }
+        }
+    }
+}
+
+/// Source: `set_website_nginx_config`, which refuses every call.
+///
+/// Ported as the 405 it is. The route exists so the frontend gets the message
+/// rather than a 404, and the message is the whole behaviour.
+async fn set_nginx_config() -> Response {
+    (
+        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        axum::Json(json!({
+            "detail": "The main Nginx vhost is managed by SNPanel. Use Custom Nginx instead."
+        })),
+    )
+        .into_response()
+}
+
+/// Source: `create_website_alias`.
+async fn create_alias(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let Some(domain_raw) = payload.get("domain") else {
+        return crate::errors::missing_field("domain", payload.clone());
+    };
+    let Some(domain) = domain_raw.as_str() else {
+        return crate::errors::string_type("domain", domain_raw);
+    };
+    let mode = payload
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("alias")
+        .to_string();
+
+    // Source: `payload.domain == website.domain or _hostname_conflicts(...)`.
+    if domain == website.domain {
+        return conflict("Domain alias already exists");
+    }
+    match state.db.websites().hostname_taken(domain, None, None).await {
+        Ok(true) => return conflict("Domain alias already exists"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!("hostname conflict check failed: {e}");
+            return internal_error();
+        }
+    }
+
+    let created = match state
+        .db
+        .websites()
+        .alias_create(website.id, domain, &mode)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!("creating an alias failed: {e}");
+            return internal_error();
+        }
+    };
+
+    // The vhost is rewritten with the new name already in the list. If that
+    // fails the alias goes again - the Python rolls its transaction back, and
+    // leaving a row whose name nginx does not serve would be worse than
+    // refusing.
+    let rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let overrides = RewriteOverrides {
+        aliases: Some(domains_by_mode(&rows, "alias")),
+        redirects: Some(domains_by_mode(&rows, "redirect")),
+        custom_directives: None,
+    };
+    if let Err(r) = rewrite_website_vhost(&state, &website, overrides).await {
+        let _ = state
+            .db
+            .websites()
+            .alias_delete(website.id, created.id)
+            .await;
+        return r;
+    }
+    // No certificate is issued here, and that is the same split DirectAdmin
+    // uses: adding a domain wires it into nginx now, and a certificate that
+    // covers it is an explicit step on the SSL page. Issuing one here would
+    // make this request's success depend on that domain's DNS being ready
+    // this second.
+    sync_alias_ssl_flags(&state, &website).await;
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "create_website_alias",
+        &website.domain,
+    )
+    .await;
+    axum::Json(alias_json(&created)).into_response()
+}
+
+/// Source: `delete_website_alias`.
+async fn delete_alias(
+    State(state): State<AppState>,
+    Path((website_id, alias_id)): Path<(i64, i64)>,
+    req: Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let alias = match state.db.websites().alias_by_id(website.id, alias_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return not_found("Alias not found"),
+        Err(e) => {
+            tracing::error!("alias lookup failed: {e}");
+            return internal_error();
+        }
+    };
+
+    let rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let keep = |mode: &str| -> Vec<String> {
+        domains_by_mode(&rows, mode)
+            .into_iter()
+            .filter(|d| d != &alias.domain)
+            .collect()
+    };
+    let overrides = RewriteOverrides {
+        aliases: Some(keep("alias")),
+        redirects: Some(keep("redirect")),
+        custom_directives: None,
+    };
+    // nginx first: a row removed from a vhost that still serves the name is
+    // recoverable; a name nginx still claims with no row behind it is not.
+    if let Err(r) = rewrite_website_vhost(&state, &website, overrides).await {
+        return r;
+    }
+    match state.db.websites().alias_delete(website.id, alias_id).await {
+        Ok(true) => {}
+        Ok(false) => return not_found("Alias not found"),
+        Err(e) => {
+            tracing::error!("deleting an alias failed: {e}");
+            return internal_error();
+        }
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "delete_website_alias",
+        &website.domain,
+    )
+    .await;
+    axum::Json(json!({ "ok": true })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,5 +1311,62 @@ mod tests {
         let v = website_json(&website(), &[], false, false);
         assert_eq!(v["panel_username"], Value::Null);
         assert_eq!(v["panel_password"], Value::Null);
+    }
+
+    /// A wildcard rule got slightly wrong is either a site the panel calls
+    /// unprotected when it is not, or - worse - one it reports as covered
+    /// when the browser will disagree. The answers come from the real
+    /// `ssl._hostname_matches` and `ssl.cert_covers`.
+    #[test]
+    fn certificate_coverage_agrees_with_python() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/hostname_match.json");
+        let corpus: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the hostname corpus"))
+                .expect("the corpus parses");
+
+        let matches = corpus["matches"].as_array().expect("the match cases");
+        assert!(matches.len() > 50, "the corpus shrank to {}", matches.len());
+        let mut failures: Vec<String> = Vec::new();
+        for case in matches {
+            let domain = case["domain"].as_str().unwrap_or("");
+            let pattern = case["pattern"].as_str().unwrap_or("");
+            let want = case["result"].as_bool().unwrap_or(false);
+            let got = hostname_matches(domain, pattern);
+            if got != want {
+                failures.push(format!(
+                    "{domain:?} vs {pattern:?}: python {want}, rust {got}"
+                ));
+            }
+        }
+
+        let covers = corpus["covers"].as_array().expect("the cover cases");
+        for case in covers {
+            let Some(want) = case["result"].as_bool() else {
+                continue; // Python raised; not a case this compares.
+            };
+            let sans: Vec<String> = case["sans"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let domain = case["domain"].as_str().unwrap_or("");
+            let got = cert_covers(&sans, domain);
+            if got != want {
+                failures.push(format!(
+                    "cert_covers({sans:?}, {domain:?}): python {want}, rust {got}"
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} disagree:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }

@@ -248,6 +248,21 @@ impl<'a> WebsiteRepo<'a> {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Source: `_sync_alias_ssl_flags` - whether the certificate that exists
+    /// right now covers this alias.
+    ///
+    /// The column already existed and was never read or written anywhere,
+    /// which is how a certbot run that silently dropped one requested name
+    /// still showed "Added alias" with nothing wrong.
+    pub async fn alias_set_ssl_enabled(&self, alias_id: i64, enabled: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE website_aliases SET ssl_enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(alias_id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Source: `_hostname_conflicts` over `_reserved_hostnames`.
     ///
     /// The reserved set is every website's domain *and* its `www.` form, plus
