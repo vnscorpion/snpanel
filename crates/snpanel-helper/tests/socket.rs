@@ -21,6 +21,29 @@ fn helper_binary() -> PathBuf {
     dir.join("snpanel-helper")
 }
 
+/// A check that could not run here - and whether that is acceptable.
+///
+/// Every test in this file guards on something the machine may not provide:
+/// root, a helper that starts, a client that can drop privileges. On a
+/// developer's box those guards are right; it is not root and should not be.
+/// In CI they are not. The job runs as root in a container built for these
+/// tests, so a skip there is coverage quietly disappearing - which is exactly
+/// what had happened: the helper will not serve without the `snpanel` account,
+/// no container had it, and three of the four tests below had never run
+/// anywhere that would notice.
+#[track_caller]
+fn skip(reason: &str) {
+    if std::env::var_os("CI").is_some() {
+        panic!(
+            "this check must not be skipped in CI, and was: {reason}\n\
+             Either the container is missing something the workflow should \
+             set up, or the guard is wrong. Do not relax the guard to make \
+             this pass."
+        );
+    }
+    eprintln!("skipped: {reason}");
+}
+
 fn is_root() -> bool {
     // SAFETY: getuid cannot fail.
     unsafe { libc::getuid() == 0 }
@@ -107,7 +130,7 @@ fn socket_path(name: &str) -> PathBuf {
 #[test]
 fn an_unported_operation_reports_the_missing_bash_fallback() {
     if !is_root() {
-        eprintln!("skipped: the CLI path requires root");
+        skip("the CLI path requires root");
         return;
     }
     // `site-runtime-ensure` is deliberately not ported; on a machine with no
@@ -137,12 +160,12 @@ fn an_unported_operation_reports_the_missing_bash_fallback() {
 #[test]
 fn a_well_formed_request_gets_a_structured_answer() {
     if !is_root() {
-        eprintln!("skipped: needs root to run the helper");
+        skip("needs root to run the helper");
         return;
     }
     let sock = socket_path("ok");
     let Some(server) = start_server(sock.clone()) else {
-        eprintln!("skipped: could not start the helper");
+        skip("could not start the helper - does the `snpanel` user exist?");
         return;
     };
 
@@ -159,12 +182,12 @@ fn a_well_formed_request_gets_a_structured_answer() {
 #[test]
 fn a_malformed_request_is_refused_without_killing_the_server() {
     if !is_root() {
-        eprintln!("skipped: needs root");
+        skip("needs root");
         return;
     }
     let sock = socket_path("malformed");
     let Some(server) = start_server(sock.clone()) else {
-        eprintln!("skipped: could not start the helper");
+        skip("could not start the helper - does the `snpanel` user exist?");
         return;
     };
 
@@ -197,12 +220,12 @@ fn a_malformed_request_is_refused_without_killing_the_server() {
 #[test]
 fn an_unauthorised_uid_is_refused_by_the_kernel_check() {
     if !is_root() {
-        eprintln!("skipped: needs root to drop privileges");
+        skip("needs root to drop privileges");
         return;
     }
     let sock = socket_path("peercred");
     let Some(server) = start_server(sock.clone()) else {
-        eprintln!("skipped: could not start the helper");
+        skip("could not start the helper - does the `snpanel` user exist?");
         return;
     };
     // The socket mode would stop this too; loosen it so the test proves that
@@ -224,18 +247,25 @@ print(s.recv(65536).decode(), end="")
         sock = server.socket.to_str().unwrap()
     );
 
-    let out = Command::new("python3")
-        .arg("-c")
-        .arg(&script)
-        .output()
-        .expect("python3 available");
+    // Skipped rather than panicked when python3 is missing. This test is
+    // about the helper refusing an unprivileged peer; dying because the
+    // container has no interpreter tells nobody anything about that, and it
+    // is what turned two matrix entries red. CI installs python3 so the check
+    // does run - a test that always skips is not a test.
+    let out = match Command::new("python3").arg("-c").arg(&script).output() {
+        Ok(out) => out,
+        Err(e) => {
+            skip(&format!("python3 is not available to run the client ({e})"));
+            return;
+        }
+    };
 
     let reply = String::from_utf8_lossy(&out.stdout);
     if reply.trim().is_empty() {
-        eprintln!(
-            "skipped: could not run the unprivileged client ({})",
+        skip(&format!(
+            "could not run the unprivileged client ({})",
             String::from_utf8_lossy(&out.stderr)
-        );
+        ));
         return;
     }
 

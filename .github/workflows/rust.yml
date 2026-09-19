@@ -36,13 +36,34 @@ jobs:
         if: startsWith(matrix.distro, 'ubuntu') || startsWith(matrix.distro, 'debian')
         run: |
           apt-get update
+          # python3 is needed by crates/snpanel-helper/tests/socket.rs, which
+          # connects to the helper socket as an unprivileged user to check that
+          # the peer-credential check refuses it. The AlmaLinux image ships
+          # python3 already (dnf is written in it), so leaving it out here made
+          # one matrix entry pass and the other two fail on a test that has
+          # nothing to do with the distribution.
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl pkg-config git nftables
+            build-essential ca-certificates curl pkg-config git nftables python3
+
+      - name: Create the panel's service account (Debian family)
+        if: startsWith(matrix.distro, 'ubuntu') || startsWith(matrix.distro, 'debian')
+        # `snpanel-helper --serve` refuses to start without it: peercred's
+        # PANEL_USER is the account it authorises, and there is nothing to
+        # authorise against if it cannot be resolved. Without this the helper
+        # socket tests take their skip branch and the privilege-boundary check
+        # has never run - silently - in any job.
+        run: useradd --system --no-create-home --shell /usr/sbin/nologin snpanel
 
       - name: Install prerequisites (RHEL family)
         if: startsWith(matrix.distro, 'almalinux')
         run: |
-          dnf install -y gcc ca-certificates curl pkgconf-pkg-config git nftables
+          dnf install -y gcc ca-certificates curl pkgconf-pkg-config git nftables shadow-utils
+
+      - name: Create the panel's service account (RHEL family)
+        if: startsWith(matrix.distro, 'almalinux')
+        # Same reason as the Debian family: without this account the helper
+        # will not serve and the socket tests skip rather than run.
+        run: useradd --system --no-create-home --shell /sbin/nologin snpanel
 
       - uses: actions/checkout@v4
 
