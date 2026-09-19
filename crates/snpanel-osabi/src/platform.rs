@@ -18,7 +18,6 @@ pub enum Family {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Distro {
     Ubuntu2404,
-    Ubuntu2604,
     Debian13,
     AlmaLinux10,
 }
@@ -27,7 +26,6 @@ impl Distro {
     pub fn pretty(&self) -> &'static str {
         match self {
             Self::Ubuntu2404 => "Ubuntu 24.04",
-            Self::Ubuntu2604 => "Ubuntu 26.04",
             Self::Debian13 => "Debian 13",
             Self::AlmaLinux10 => "AlmaLinux 10",
         }

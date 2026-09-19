@@ -165,9 +165,8 @@ fn check_platform(report: &mut Report) -> Option<Box<dyn Platform>> {
         }
         Err(e) => {
             report.push(
-                Finding::new("os", Severity::Fail, e.to_string()).with_remedy(
-                    "SNPanel supports Ubuntu 24.04, Ubuntu 26.04, Debian 13 and AlmaLinux 10",
-                ),
+                Finding::new("os", Severity::Fail, e.to_string())
+                    .with_remedy("SNPanel supports Ubuntu 24.04, Debian 13 and AlmaLinux 10"),
             );
             None
         }

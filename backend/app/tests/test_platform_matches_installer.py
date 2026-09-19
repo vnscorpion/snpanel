@@ -146,7 +146,6 @@ def gate_verdict(tmp_path, os_id: str, version: str) -> str:
 
 @pytest.mark.parametrize(("os_id", "version"), [
     ("ubuntu", "24.04"),
-    ("ubuntu", "26.04"),
     ("debian", "13"),
     ("debian", "12"),
     ("almalinux", "10.2"),   # a point release is not a different platform
@@ -160,6 +159,12 @@ def test_the_supported_platforms_are_accepted(tmp_path, os_id, version):
 @pytest.mark.parametrize(("os_id", "version"), [
     ("ubuntu", "22.04"),
     ("ubuntu", "25.10"),     # an interim release is not an LTS
+    # Ported, then withdrawn on 19 September 2026. Ondrej's PPA publishes no
+    # `resolute` suite, so the only PHP on it is the distribution's 8.5, and a
+    # panel that cannot install the version a customer's site runs is not
+    # support. Asserted here rather than just deleted, so that restoring it
+    # has to be a decision somebody makes on purpose.
+    ("ubuntu", "26.04"),
     ("debian", "11"),        # oldoldstable; 12 and 13 are supported now
     ("almalinux", "9.4"),    # EL9 is not EL10; Remi and Valkey both differ
     ("fedora", "41"),
@@ -168,12 +173,12 @@ def test_the_supported_platforms_are_accepted(tmp_path, os_id, version):
 def test_everything_else_is_refused(tmp_path, os_id, version):
     assert gate_verdict(tmp_path, os_id, version) == "REFUSED"
 
-# --- PHP differs by Ubuntu release ------------------------------------------
+# --- where Ubuntu's PHP comes from ------------------------------------------
 #
-# 24.04 gets 8.3 and 8.4 from Ondrej's PPA. 26.04 cannot: the PPA has no
-# `resolute` suite, and the distribution carries 8.5 and nothing else. Asking
-# for 8.3 there fails on every package name, so the versions have to come from
-# the release rather than from a constant at the top of the installer.
+# 24.04 gets 8.3 and 8.4 from Ondrej's PPA, and it is the only Ubuntu the gate
+# still accepts. The versions are read from the platform table rather than from
+# a constant at the top of the installer, which is what made adding and then
+# removing a release a table edit instead of a hunt.
 
 
 def php_values_for(tmp_path, version: str) -> dict[str, str]:
@@ -201,13 +206,17 @@ def test_2404_takes_php_from_the_ppa(tmp_path):
     assert values["ppa"] == "yes"
 
 
-def test_2604_takes_php_from_the_distribution(tmp_path):
-    # The PPA has no resolute suite. Adding it anyway would give an empty
-    # repository and then fail on every package name.
-    values = php_values_for(tmp_path, "26.04")
-    assert values["versions"] == "8.5"
-    assert values["default"] == "8.5"
-    assert values["ppa"] == "no"
+def test_no_second_ubuntu_release_is_silently_given_2404s_php(tmp_path):
+    """A release the gate refuses must not reach the PHP table at all.
+
+    The danger in removing a platform is a half-removal: the gate says no
+    while some later `case` still has a default arm that answers for it. If
+    26.04 ever reached this table again it would be handed 8.3 and 8.4 from
+    Ondrej's PPA - package names that do not exist on that release - and the
+    failure would surface as apt errors during an install rather than as a
+    clear refusal at the start.
+    """
+    assert gate_verdict(tmp_path, "ubuntu", "26.04") == "REFUSED"
 
 
 def test_the_installer_only_adds_the_ppa_where_it_exists():

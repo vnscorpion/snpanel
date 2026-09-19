@@ -28,7 +28,6 @@ jobs:
       matrix:
         distro:
           - ubuntu:24.04
-          - ubuntu:26.04
           - debian:13
           - almalinux:10
 
@@ -118,4 +117,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo install cargo-audit --locked
-      - run: cargo audit
+      # Ignoring exactly one advisory, for a crate that is not in any binary.
+      # `rsa` is pulled into Cargo.lock by sqlx-mysql; snpanel-db takes sqlx
+      # with default-features = false and the sqlite driver only, so
+      # `cargo tree -i rsa --target all` prints nothing at all. cargo audit
+      # reads the lockfile, which lists what could resolve rather than what
+      # gets compiled, so it flags it anyway. There is no fixed version
+      # published and nothing to switch to - the MySQL driver is already off.
+      # Drop this the day sqlx stops locking it, or the day anything here
+      # enables the MySQL driver, because then it stops being theoretical:
+      #   RUSTSEC-2023-0071  rsa  Marvin Attack (no fixed version as of 2026-09-19)
+      - run: cargo audit --ignore RUSTSEC-2023-0071

@@ -1,7 +1,10 @@
-//! Ubuntu 24.04, Ubuntu 26.04 and Debian 13.
+//! Ubuntu 24.04 and Debian 13.
 //!
-//! The three share almost every path; they differ in where PHP comes from
+//! The two share almost every path; they differ in where PHP comes from
 //! (Ondrej PPA is Ubuntu-only, Debian needs Sury) and in their CPU baseline.
+//!
+//! Ubuntu 26.04 was implemented here and removed: Ondrej's PPA publishes no
+//! `resolute` suite, so the only PHP on it is the distribution's 8.5.
 
 use std::path::PathBuf;
 
@@ -93,12 +96,6 @@ macro_rules! debian_family {
 debian_family!(
     Ubuntu2404,
     Distro::Ubuntu2404,
-    PhpRepo::Ondrej,
-    CpuBaseline::V2
-);
-debian_family!(
-    Ubuntu2604,
-    Distro::Ubuntu2604,
     PhpRepo::Ondrej,
     CpuBaseline::V2
 );

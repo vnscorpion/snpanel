@@ -43,9 +43,12 @@ backup/
 # SNPanel runtime
 backend/snpanel.db
 
-# Landing page
-landing.html
-style.css
+# Landing page. Anchored with a leading slash: an unanchored `style.css`
+# matches at every depth, and it quietly kept frontend/src/style.css - the
+# panel's own stylesheet, imported by App.jsx - out of the repository, so a
+# clean clone could not build the frontend at all.
+/landing.html
+/style.css
 
 # Dev / CI / tooling (not part of release)
 .codex/

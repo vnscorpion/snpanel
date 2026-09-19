@@ -3,8 +3,9 @@ starlette==1.6.0
 uvicorn[standard]==0.30.1
 # 2.0.30 predates Python 3.13's `__firstlineno__` class attribute and raises
 # "Can't replace canonical symbol for '__firstlineno__'" on import, which stops
-# the panel dead on Ubuntu 26.04 (Python 3.14). Same 2.0 series, so no API
-# change; verified on 3.14 and re-run against the suite on 3.12.
+# the panel dead on any Python 3.13 or newer - Debian 13 ships 3.13. Same 2.0
+# series, so no API change; verified on 3.13 and 3.14, and the suite re-run
+# on 3.12.
 sqlalchemy==2.0.54
 pydantic-settings==2.3.1
 email-validator==2.1.1
@@ -14,7 +15,7 @@ bcrypt==4.0.1
 passlib[bcrypt]==1.7.4
 # Python 3.13 removed the crypt module (PEP 594). This binds the system
 # libcrypt so shadow hashes - including yescrypt, which passlib cannot do -
-# still verify on Ubuntu 26.04 and later. Unused on 3.12 and earlier.
+# still verify on Debian 13 and any later Python. Unused on 3.12 and earlier.
 legacycrypt==0.3
 python-multipart==0.0.32
 jinja2==3.1.6

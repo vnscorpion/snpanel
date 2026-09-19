@@ -76,14 +76,16 @@ of this file for why that matters.
 
 ## System requirements
 
-- Ubuntu 24.04 / 26.04 LTS, Debian 12 / 13, or AlmaLinux 10 (clean install recommended)
+- Ubuntu 24.04 LTS, Debian 12 / 13, or AlmaLinux 10 (clean install recommended)
   - **Debian 13 carries the most PHP versions.** Its packages come from
     packages.sury.org, which publishes 7.4 through 8.5 for trixie, so the panel
     can offer more versions there than anywhere else.
-  - On Ubuntu 26.04 the PHP version is **8.5**, from the distribution. Ondrej's
-    PPA has no `resolute` suite, so 8.3 and 8.4 are not available there; the
-    installer picks the versions the release can actually provide rather than
-    asking for a fixed pair.
+  - **Ubuntu 26.04 is not supported.** It was ported and then withdrawn:
+    Ondrej's PPA publishes no `resolute` suite, so the only PHP available on
+    it is the distribution's 8.5. A panel that cannot install the PHP version
+    a customer's site runs on is not support, and claiming it would mean the
+    first honest test happened on somebody's server. This will be revisited
+    when the PPA publishes for the release.
   - On AlmaLinux the installer enables EPEL and Remi, and PHP comes from
     Remi's `php83`/`php84` packages. Two panel features are unavailable
     there and say so rather than failing quietly: the nginx ModSecurity

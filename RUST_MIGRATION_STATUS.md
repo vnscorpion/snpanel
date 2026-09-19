@@ -1092,9 +1092,14 @@ The answer that survived is the one nginx itself uses: read `nginx.conf` and the
 `test_crs_needs_an_engine.py` pins them to each other - including the disabled
 -module case, which is the one only the guard test found.
 
-## Ubuntu 26.04
+## Ubuntu 26.04 (withdrawn)
 
-The third platform, and the one that found the most. `resolute` is Ubuntu
+**Support for Ubuntu 26.04 was removed on 19 September 2026.** It is out of the
+installer's gate, out of the Rust platform table, and out of the CI matrix. The
+section is kept because most of what it records was never about 26.04: four of
+the fixes below are in the product today and protect every platform.
+
+The third platform tried, and the one that found the most. `resolute` is Ubuntu
 26.04 LTS, released 23 April 2026; the container was built from the archive and
 every value below measured on it.
 
@@ -1368,9 +1373,16 @@ with: Remi gives 8.3 and 8.4 on AlmaLinux 10, and Ondrej gives 8.3 and 8.4 on
 Ubuntu 24.04. Both were installed and verified in this project. 26.04 is simply
 newer than its PHP packaging.
 
-**Ubuntu 26.04 is parked here by decision**, not abandoned: the port works, the
-panel runs, and the single-version limitation is the reason to come back to it
-later rather than to keep pushing now.
+**Ubuntu 26.04 support has been withdrawn.** The port worked and the panel ran,
+but working is not the same as supportable: a panel whose whole job includes
+choosing a site's PHP version cannot offer exactly one, and the one it offers -
+8.5 - is newer than most application code in use. Keeping the claim would have
+meant the first honest test of it happened on a customer's server.
+
+What would bring it back is a single fact changing: Ondrej's PPA publishing a
+`resolute` suite. At that point the platform table needs one entry restored and
+the refusal test in `crates/snpanel-osabi/src/detect.rs` inverted, both of which
+are small because the rest of the port is still here and still correct.
 
 ## Debian 13
 

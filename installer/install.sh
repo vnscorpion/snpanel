@@ -21,7 +21,7 @@ source /etc/os-release
 case "${ID:-}" in
   ubuntu)
     case "${VERSION_ID:-}" in
-      24.04|26.04) OS_PRECHECK=ok ;;
+      24.04) OS_PRECHECK=ok ;;
       *) OS_PRECHECK=no ;;
     esac
     ;;
@@ -39,7 +39,7 @@ case "${ID:-}" in
     ;;
 esac
 if [[ "${OS_PRECHECK}" != "ok" ]]; then
-  echo "This installer supports Ubuntu 24.04/26.04, Debian 12/13 and AlmaLinux 10"
+  echo "This installer supports Ubuntu 24.04, Debian 12/13 and AlmaLinux 10"
   echo "Current OS: ${PRETTY_NAME:-unknown}"
   exit 1
 fi

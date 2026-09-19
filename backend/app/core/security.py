@@ -6,7 +6,8 @@ try:
     import crypt as unix_crypt
 except ImportError:  # crypt is Unix-only, and PEP 594 removed it in Python 3.13
     try:
-        # Ubuntu 26.04 ships Python 3.14. Without a replacement,
+        # Debian 13 ships Python 3.13, the release that removed it.
+        # Without a replacement,
         # verify_shadow_password would return False for every input and any
         # account holding a shadow hash - every account imported from another
         # panel - would be locked out with "incorrect password".

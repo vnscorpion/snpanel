@@ -41,6 +41,11 @@ rollback() {
     echo
     echo "!! rolling back to the Python front door"
     systemctl stop snpanel-rust snpanel-upstream 2>/dev/null
+    # Boot state, not just the running state: a rollback that leaves the
+    # machine booting into the Rust front door has not rolled anything back.
+    systemctl disable snpanel-rust snpanel-upstream 2>/dev/null
+    systemctl enable snpanel-api 2>/dev/null
+    systemctl reset-failed snpanel-api 2>/dev/null
     systemctl start snpanel-api
     sleep 2
     curl -sk -o /dev/null -w '   panel is back: HTTP %{http_code}\n' --max-time 10 \
@@ -137,7 +142,14 @@ curl -sk -o /dev/null -w '  https://127.0.0.1:2222/api/health -> HTTP %{http_cod
 
 echo
 echo "=== moving Python to loopback :8000 ==="
+# Disabled as well as stopped. snpanel-api has Restart=always and cannot bind
+# :2222 once Rust holds it, so leaving it enabled means a reboot - or any
+# stray `systemctl start` - puts it into a three-second failure loop that
+# never ends. Stopping it only postpones that.
+systemctl disable snpanel-api 2>/dev/null
 systemctl stop snpanel-api
+systemctl reset-failed snpanel-api 2>/dev/null
+systemctl enable snpanel-upstream 2>/dev/null
 systemctl start snpanel-upstream
 for _ in $(seq 1 60); do
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:8000/api/health)
@@ -155,6 +167,9 @@ off=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://$ip:8000/api/h
 
 echo
 echo "=== starting the Rust front door on :2222 ==="
+# Enabled before it is started, so that a machine which reboots between these
+# two lines still comes back with the front door it was given.
+systemctl enable snpanel-rust 2>/dev/null
 systemctl start snpanel-rust
 for _ in $(seq 1 60); do
     code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 https://127.0.0.1:2222/api/health)

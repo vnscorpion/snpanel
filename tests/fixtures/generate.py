@@ -218,6 +218,19 @@ def gen_nginx_golden() -> None:
         print(f"  SKIP: cannot import the backend ({type(exc).__name__}: {exc})", file=sys.stderr)
         return
 
+    # Pin the engine check. `render_vhost` asks the machine whether nginx has
+    # the ModSecurity module, because emitting `modsecurity on;` where it does
+    # not makes nginx reject its entire configuration. That is right for a
+    # running server and wrong for a fixture: the golden files would say one
+    # thing when generated on a box with the module and another on a bare CI
+    # runner, and they are the contract the Rust port is diffed against.
+    #
+    # What the contract captures is the template's output with the WAF on, so
+    # that is what is pinned here. The `wordpress_waf_off` case still covers
+    # the other branch - it switches the WAF off through the caller's own
+    # argument, which is a decision rather than an accident of the host.
+    nginx.waf_engine_available = lambda: True
+
     # Capture what `render_vhost` actually passes to each template. This is
     # the input the minijinja port must accept, and guessing it from reading
     # the templates would leave out anything computed in Python (the flood

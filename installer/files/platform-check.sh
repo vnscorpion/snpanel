@@ -47,7 +47,7 @@ for candidate in /etc/phpMyAdmin /etc/phpmyadmin; do
 done
 
 # Which PHP versions exist is a property of the machine, not a constant. Ubuntu
-# 24.04 has 8.3 and 8.4 from Ondrej's PPA, 26.04 carries only 8.5, and EL gets
+# 24.04 has 8.3 and 8.4 from Ondrej's PPA, Debian 13 more than either, and EL gets
 # 8.3 and 8.4 from Remi. Hardcoding 8.4 here would have this check report a
 # correctly installed 26.04 as missing its PHP.
 PHP_PRESENT=()

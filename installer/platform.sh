@@ -35,8 +35,8 @@ detect_platform() {
   case "${OS_ID}" in
     ubuntu)
       case "${VERSION_ID:-}" in
-        24.04|26.04) ;;
-        *) fail "Only Ubuntu 24.04 and 26.04 are supported. Current OS: ${OS_PRETTY}" ;;
+        24.04) ;;
+        *) fail "Only Ubuntu 24.04 is supported. Current OS: ${OS_PRETTY}" ;;
       esac
       platform_debian
       ;;
@@ -80,25 +80,16 @@ platform_debian() {
   # libnginx-mod-http-modsecurity is packaged on Debian/Ubuntu.
   WAF_AVAILABLE="yes"
 
-  # PHP differs by release, and not cosmetically.
+  # Ubuntu gets PHP from Ondrej\'s PPA, which is where 8.3 and 8.4 come from.
   #
-  # 24.04 gets PHP from Ondrej\'s PPA, which is where 8.3 and 8.4 come from.
-  # 26.04 cannot: the PPA has no `resolute` suite - checked against the PPA
-  # itself, where the newest is noble - so PHP comes from the distribution,
-  # which carries 8.5 and nothing else. Asking for 8.3 there would fail on
-  # every package.
-  case "${VERSION_ID:-}" in
-    26.04)
-      PHP_FROM_PPA="no"
-      PLATFORM_PHP_VERSIONS="8.5"
-      PLATFORM_PHP_DEFAULT="8.5"
-      ;;
-    *)
-      PHP_FROM_PPA="yes"
-      PLATFORM_PHP_VERSIONS="8.3 8.4"
-      PLATFORM_PHP_DEFAULT="8.4"
-      ;;
-  esac
+  # Only 24.04 reaches here. 26.04 was tried and dropped: the PPA publishes no
+  # `resolute` suite - checked against the PPA itself, where the newest is
+  # noble - so the only PHP available there is the distribution's 8.5, and a
+  # panel that cannot install the version a customer's site runs is not
+  # support. Revisit when the PPA publishes for it.
+  PHP_FROM_PPA="yes"
+  PLATFORM_PHP_VERSIONS="8.3 8.4"
+  PLATFORM_PHP_DEFAULT="8.4"
 
   BASE_PACKAGES=(
     ca-certificates curl gnupg git composer

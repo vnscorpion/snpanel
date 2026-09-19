@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::debian::{Debian13, Ubuntu2404, Ubuntu2604};
+use crate::debian::{Debian13, Ubuntu2404};
 use crate::platform::{CpuBaseline, Platform};
 use crate::rhel::AlmaLinux10;
 
@@ -90,7 +90,6 @@ pub fn platform_for(os: &OsRelease) -> Result<Box<dyn Platform>, OsError> {
     let major = os.version_id.split('.').next().unwrap_or("");
     match (os.id.as_str(), os.version_id.as_str(), major) {
         ("ubuntu", "24.04", _) => Ok(Box::new(Ubuntu2404)),
-        ("ubuntu", "26.04", _) => Ok(Box::new(Ubuntu2604)),
         ("debian", "13", _) => Ok(Box::new(Debian13)),
         // Rocky, RHEL and Oracle 10 share the AlmaLinux layout exactly, so
         // they get the same impl. Plan §8 Phase 7 lists this as an extension;
@@ -190,10 +189,9 @@ PRETTY_NAME="AlmaLinux 10.0 (Purple Lion)"
     }
 
     #[test]
-    fn detects_all_four_supported_distros() {
+    fn detects_every_supported_distro() {
         let cases = [
             (UBUNTU_2404, Distro::Ubuntu2404),
-            (UBUNTU_2604, Distro::Ubuntu2604),
             (DEBIAN_13, Distro::Debian13),
             (ALMA_10, Distro::AlmaLinux10),
         ];
@@ -201,6 +199,30 @@ PRETTY_NAME="AlmaLinux 10.0 (Purple Lion)"
             let p = platform_for(&OsRelease::parse(text)).expect("supported");
             assert_eq!(p.distro(), expected);
         }
+    }
+
+    #[test]
+    fn ubuntu_2604_is_refused_rather_than_guessed_at() {
+        // Kept as a real captured os-release, not an invented one: the point
+        // is that a machine which genuinely reports 26.04 is turned away,
+        // where before it was accepted and then could not install PHP 8.3 or
+        // 8.4 because Ondrej's PPA has no `resolute` suite. Silently falling
+        // back to the 24.04 table would be worse than refusing - it would
+        // name packages that do not exist on the machine.
+        // Matched rather than `expect_err`: the Ok side is a `Box<dyn
+        // Platform>`, which has no Debug for the panic message to print.
+        let msg = match platform_for(&OsRelease::parse(UBUNTU_2604)) {
+            Ok(p) => panic!("26.04 should be refused, got {}", p.distro().pretty()),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("ubuntu"),
+            "the message should name the id: {msg}"
+        );
+        assert!(
+            msg.contains("26.04"),
+            "the message should name the version: {msg}"
+        );
     }
 
     #[test]
@@ -304,7 +326,6 @@ PRETTY_NAME="AlmaLinux 10.0 (Purple Lion)"
     fn php_repo_per_distro() {
         let cases = [
             (UBUNTU_2404, PhpRepo::Ondrej),
-            (UBUNTU_2604, PhpRepo::Ondrej),
             (DEBIAN_13, PhpRepo::Sury),
             (ALMA_10, PhpRepo::Remi),
         ];

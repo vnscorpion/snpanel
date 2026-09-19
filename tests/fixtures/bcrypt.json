@@ -2,23 +2,23 @@
   "cases": {
     "admin": {
       "password": "admin-password-123",
-      "hash": "$2b$12$/I64Uo2QEROwF0nMpctzwOtLQa4.BcxvO4NIwYVvmsbhgZWThY6AS"
+      "hash": "$2b$12$K7LXcKuzIZIXKr/KAHi.3eZ/am05Hkt5D2VaV4ArKSubZ.ucWx9WS"
     },
     "unicode": {
       "password": "mật-khẩu-2026",
-      "hash": "$2b$12$g9RvYMrHVEo1yA73ROxHd.XestS.ek/bVIRaMlZqQ8w.rZfCpGLxW"
+      "hash": "$2b$12$wH0XQA18ohDRfSo7bINIquN6yGYW7eyoaUhyepMj6omN/IXa4hWzm"
     },
     "long_71": {
       "password": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-      "hash": "$2b$12$9rsCaOMZJnr4XY9kzS8QPOI9nZE7TFVBKLaCVctjv76x3AbqNMoPS"
+      "hash": "$2b$12$3wZwQMt.WMtks0a4wBbx/eb3Hc0qGt6.Eb6tuiIu3nHhJX3QRWmQS"
     },
     "symbols": {
       "password": "p@$$w0rd!#%^&*()_+{}|:<>?",
-      "hash": "$2b$12$teGlrOY5q3oYCbh5XHzQXOyPwnWGQZeudMDDsqecF8cJv.eAqLtZO"
+      "hash": "$2b$12$.ARG6nSdrz6JTQ8Pum1pP.fgmceRXmRdL1KEDeJQqTL1iJLyzk2pK"
     },
     "cost_10": {
       "password": "cost-ten-password",
-      "hash": "$2b$10$UTQyZ4olZJ6l6NMUZAU96OAu8cTD.c/bnSJ5VEIN3e7fU5Yx92pQy"
+      "hash": "$2b$10$liWB/b090JO2eX8O8nOXmuDrzmTq2myZ0fHSQOVMXm1ZnD0XU/iYK"
     }
   },
   "shadow_prefixes": [
