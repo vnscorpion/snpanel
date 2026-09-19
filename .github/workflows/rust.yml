@@ -65,7 +65,7 @@ jobs:
         # will not serve and the socket tests skip rather than run.
         run: useradd --system --no-create-home --shell /sbin/nologin snpanel
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
@@ -96,7 +96,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup component add rustfmt
       - run: cargo fmt --all --check
 
@@ -107,7 +107,7 @@ jobs:
     name: fixtures match Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -136,7 +136,7 @@ jobs:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo install cargo-audit --locked
       # Ignoring exactly one advisory, for a crate that is not in any binary.
       # `rsa` is pulled into Cargo.lock by sqlx-mysql; snpanel-db takes sqlx
