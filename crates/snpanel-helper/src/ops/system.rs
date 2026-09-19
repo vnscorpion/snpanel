@@ -105,12 +105,83 @@ mod tests {
         assert_eq!(r.error.unwrap().kind, HelperErrorKind::NotFound);
     }
 
+    /// Will [`exec::run`] find a `systemctl` to spawn?
+    ///
+    /// Asked because the answer changes which behaviour is correct, not to
+    /// excuse a failure. Every supported server has systemd; the containers
+    /// the CI matrix builds in do not, except AlmaLinux's, which ships it as
+    /// part of the base image.
+    ///
+    /// The directories below are `exec::run`'s own, not this process's
+    /// `PATH`: `run` clears the environment and sets a fixed search path, so
+    /// what the caller's shell exports makes no difference to what it finds.
+    /// Reading the wrong one gives a test that agrees with itself and
+    /// disagrees with the code.
+    fn systemctl_present() -> bool {
+        [
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/usr/sbin",
+            "/usr/bin",
+            "/sbin",
+            "/bin",
+        ]
+        .iter()
+        .any(|d| std::path::Path::new(d).join("systemctl").exists())
+    }
+
     #[test]
     fn status_reports_state_rather_than_failing() {
         // A unit that does not exist is "inactive"/"unknown", which is an
         // answer, not an error the caller should see as a fault.
+        if !systemctl_present() {
+            // Not lost coverage: exactly one of this pair runs on any given
+            // machine, and the other one asserts the answer that is correct
+            // here. A bare `assert!(systemctl_present())` would simply move
+            // the red from one container to the same container.
+            eprintln!(
+                "no systemctl here; covered by \
+                 status_without_systemd_says_so_rather_than_reporting_inactive"
+            );
+            return;
+        }
         let svc = ServiceName::parse("nginx").unwrap();
         let r = service_control(&svc, ServiceAction::Status);
         assert!(r.ok, "is-active must report, not fail");
+    }
+
+    #[test]
+    fn the_presence_check_agrees_with_what_exec_can_actually_spawn() {
+        // The guard decides which of the two status tests applies, so it has
+        // to answer the same question `exec::run` does. The first version
+        // read this process's `PATH` and was simply wrong - `run` clears the
+        // environment - which let a local experiment "confirm" a branch the
+        // code never took.
+        let can_spawn = exec::run(&["systemctl", "--version"]).is_ok();
+        assert_eq!(
+            systemctl_present(),
+            can_spawn,
+            "systemctl_present() and exec::run disagree about whether \
+             systemctl can be run here"
+        );
+    }
+
+    #[test]
+    fn status_without_systemd_says_so_rather_than_reporting_inactive() {
+        // The other half, and the one that matters for honesty: with no
+        // systemctl the caller must get an error, not an empty report. An
+        // empty report reads as "inactive", which would have the panel
+        // claiming it checked a service it had no way to check.
+        if systemctl_present() {
+            return;
+        }
+        let svc = ServiceName::parse("nginx").unwrap();
+        let r = service_control(&svc, ServiceAction::Status);
+        assert!(!r.ok, "with no systemctl this must not look like a report");
+        assert_eq!(
+            r.error.as_ref().map(|e| e.kind),
+            Some(HelperErrorKind::Internal),
+            "and it must say why"
+        );
     }
 }
