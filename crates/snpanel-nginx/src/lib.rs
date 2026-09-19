@@ -19,7 +19,9 @@ use std::path::{Component, Path, PathBuf};
 use snpanel_core::Domain;
 
 mod custom;
+mod writer;
 pub use custom::{CustomDirectives, CustomError};
+pub use writer::{blocked_bots_in_vhost, plan_rewrite, vhost_path, VhostPlan};
 
 /// The templates are compiled in rather than read at run time.
 ///
@@ -219,7 +221,7 @@ impl HttpFloodConfig {
 // ---------------------------------------------------------------------------
 
 /// Source: `_safe_domain`.
-fn safe_domain(domain: &str) -> Result<String, RenderError> {
+pub(crate) fn safe_domain(domain: &str) -> Result<String, RenderError> {
     match Domain::parse(domain.trim()) {
         Ok(d) => Ok(d.as_str().to_string()),
         Err(_) => invalid("Invalid domain"),
@@ -227,7 +229,7 @@ fn safe_domain(domain: &str) -> Result<String, RenderError> {
 }
 
 /// Source: `_safe_alias_domains` - validated, de-duplicated, order kept.
-fn safe_alias_domains(aliases: &[String]) -> Result<Vec<String>, RenderError> {
+pub(crate) fn safe_alias_domains(aliases: &[String]) -> Result<Vec<String>, RenderError> {
     let mut out: Vec<String> = Vec::new();
     for alias in aliases {
         let safe = safe_domain(alias)?;
@@ -618,13 +620,22 @@ pub fn normalize_blocked_bots(raw: &[String]) -> Result<Vec<String>, RenderError
     Ok(bots)
 }
 
-/// Source: `re.escape` as CPython 3.7+ implements it - everything outside
-/// `[A-Za-z0-9_]` and ASCII whitespace is backslash-escaped.
+/// Source: `re.escape`, as CPython 3.7+ implements it.
+///
+/// Not "escape everything that is not alphanumeric". CPython translates one
+/// fixed set - `()[]{}?*+-|^$\.&~#` and the five whitespace characters - and
+/// leaves everything else alone. The difference shows up in real bot names:
+/// Python writes `Mozilla/5\.0` and `Sogou\ web\ spider/4\.0`, escaping the
+/// spaces and not the slashes. Guessing the rule produced exactly the
+/// opposite, and only a fixture carrying a name with a space in it said so.
 fn regex_escape(value: &str) -> String {
+    const SPECIAL: &[char] = &[
+        '(', ')', '[', ']', '{', '}', '?', '*', '+', '-', '|', '^', '$', '\\', '.', '&', '~', '#',
+        ' ', '\t', '\n', '\r', '\x0b', '\x0c',
+    ];
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
-        let special = !(c.is_ascii_alphanumeric() || c == '_' || (c as u32) >= 0x80);
-        if special && !matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c') {
+        if SPECIAL.contains(&c) {
             out.push('\\');
         }
         out.push(c);
@@ -917,7 +928,7 @@ fn redirect_vhost_blocks(
 }
 
 /// Source: `_append_redirect_vhosts`.
-fn append_redirect_vhosts(
+pub(crate) fn append_redirect_vhosts(
     content: &str,
     safe_domain: &str,
     redirects: &[String],
