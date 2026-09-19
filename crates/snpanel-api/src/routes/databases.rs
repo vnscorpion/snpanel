@@ -1,8 +1,12 @@
 //! `/api/databases` - ported from `api/databases.py`, in part.
 //!
-//! Creating, deleting and re-passwording a database all drive MariaDB through
-//! the helper, and downloading one streams a `mysqldump`. Those stay with
-//! Python until the helper's MariaDB surface is finished; the rest is here.
+//! Deleting and re-passwording a database drive MariaDB, and downloading one
+//! runs a `mysqldump`. That note used to say they were waiting on "the
+//! helper's MariaDB surface"; they were not. `mariadb._run_sql` calls
+//! `shell.run`, not `shell.privileged` - the panel runs `mysql` itself with
+//! the credentials the installer put in its `~/.my.cnf`. No helper is
+//! involved and none needs to be, so they are here. Creating a database
+//! still is not: it also provisions a user and a package quota.
 //!
 //! Two things in the ported half are worth reading twice.
 //!
@@ -35,6 +39,18 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/databases", get(list).fallback(crate::fallback))
+        .route(
+            "/databases/{database_id}",
+            axum::routing::delete(delete_database).fallback(crate::fallback),
+        )
+        .route(
+            "/databases/{database_id}/password",
+            post(change_password).fallback(crate::fallback),
+        )
+        .route(
+            "/databases/{database_id}/download",
+            get(download_database).fallback(crate::fallback),
+        )
         .route(
             "/databases/phpmyadmin-sso/{token}",
             get(consume_sso).fallback(crate::fallback),
@@ -215,6 +231,154 @@ async fn consume_sso(Path(token): Path<String>, req: Request) -> Response {
     // proxy or a browser keeping a copy of it is the one thing that must not
     // happen to a one-shot credential.
     ([("cache-control", "no-store")], axum::Json(data)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// the three that drive MariaDB
+// ---------------------------------------------------------------------------
+
+/// Source: `change_database_password`.
+///
+/// The new password is stored encrypted with the panel's key, the same way
+/// the create path stores it: the panel has to be able to hand it to
+/// phpMyAdmin later, so it is reversible by design and the key is what keeps
+/// it safe.
+async fn change_password(
+    State(state): State<AppState>,
+    Path(database_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let item = match accessible(&state, &current, database_id).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(raw) = payload.get("password") else {
+        return crate::errors::missing_field("password", payload.clone());
+    };
+    let Some(password) = raw.as_str() else {
+        return crate::errors::string_type("password", raw);
+    };
+
+    if let Err(e) = crate::mariadb::change_database_password(&item.db_user, password).await {
+        return match e {
+            crate::mariadb::SqlError::Invalid(m) => crate::errors::bad_request(&m),
+            crate::mariadb::SqlError::Failed(m) => {
+                tracing::error!("changing a database password failed: {m}");
+                internal_error()
+            }
+        };
+    }
+    let encrypted = snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, password);
+    if let Err(e) = state.db.databases().set_password(item.id, &encrypted).await {
+        tracing::error!("storing the database password failed: {e}");
+        return internal_error();
+    }
+    axum::Json(json!({ "ok": true, "db_user": item.db_user })).into_response()
+}
+
+/// Source: `delete_database_record`.
+///
+/// MariaDB first, the row second, and the order is the Python's. A row
+/// removed while the database still exists leaves storage nobody can see; a
+/// database dropped while the row remains shows the customer something that
+/// is not there, and the next create can collide with the name.
+async fn delete_database(
+    State(state): State<AppState>,
+    Path(database_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let item = match accessible(&state, &current, database_id).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Err(e) = crate::mariadb::drop_database(&item.db_name, &item.db_user).await {
+        tracing::error!("deleting a MariaDB database or user failed: {e}");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "detail": format!("MariaDB error: {e}") })),
+        )
+            .into_response();
+    }
+    if let Err(e) = state.db.databases().delete(item.id).await {
+        tracing::error!("deleting the database record failed: {e}");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "detail": "Panel database error" })),
+        )
+            .into_response();
+    }
+    axum::Json(json!({ "ok": true })).into_response()
+}
+
+/// Source: `download_database` - a `mysqldump` to a temporary file, sent as
+/// an attachment and removed afterwards.
+async fn download_database(
+    State(state): State<AppState>,
+    Path(database_id): Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let item = match accessible(&state, &current, database_id).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let temp = std::env::temp_dir().join(format!(
+        "{}-{}-{}.sql",
+        item.db_name,
+        std::process::id(),
+        item.id
+    ));
+    let temp_str = temp.to_string_lossy().into_owned();
+    if let Err(e) = crate::mariadb::export_database(&item.db_name, &temp_str).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return match e {
+            crate::mariadb::SqlError::Invalid(m) => crate::errors::bad_request(&m),
+            crate::mariadb::SqlError::Failed(m) => {
+                tracing::error!("exporting a database failed: {m}");
+                internal_error()
+            }
+        };
+    }
+    let bytes = match tokio::fs::read(&temp).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("reading the export failed: {e}");
+            let _ = tokio::fs::remove_file(&temp).await;
+            return internal_error();
+        }
+    };
+    // The Python removes it in a background task after the response is sent.
+    // Reading it into memory first and removing it now reaches the same end
+    // with no window where a temp file survives a crash.
+    let _ = tokio::fs::remove_file(&temp).await;
+
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/sql".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}.sql\"", item.db_name),
+            ),
+        ],
+        axum::body::Body::from(bytes),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

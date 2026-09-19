@@ -31,6 +31,7 @@ mod errors;
 mod files;
 mod helper_socket;
 mod malware;
+mod mariadb;
 mod middleware;
 mod panel_urls;
 mod php;

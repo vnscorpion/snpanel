@@ -75,6 +75,27 @@ impl<'a> DatabaseRepo<'a> {
         Ok(query.fetch_all(self.pool).await?)
     }
 
+    /// Source: `change_database_password` - the column, after MariaDB has
+    /// taken the change. Stored encrypted; the panel hands it to phpMyAdmin
+    /// later, so it is reversible by design and the key is what protects it.
+    pub async fn set_password(&self, id: i64, encrypted: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE database_accounts SET db_password = ? WHERE id = ?")
+            .bind(encrypted)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `delete_database_record`.
+    pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM database_accounts WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn by_id(&self, id: i64) -> Result<Option<DatabaseAccount>, DbError> {
         Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
             "SELECT {COLUMNS} FROM database_accounts WHERE id = ?"
