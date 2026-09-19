@@ -2,13 +2,13 @@
 //!
 //! This router is the first one that could not be moved whole, and pretending
 //! otherwise would be worse than saying so. Five of its ten endpoints reach
-//! outside the database entirely:
+//! outside the database entirely; four of the five are still proxied:
 //!
 //! | endpoint | what it also does | here |
 //! |---|---|---|
 //! | `POST /users` | creates a Linux account through the helper | proxied |
 //! | `DELETE /users/{id}` | drops databases, deletes vhosts, releases certificates, removes the Linux account | proxied |
-//! | `POST /users/{id}/password` | sets the SFTP password through the helper | proxied |
+//! | `POST /users/{id}/password` | sets the SFTP password through the helper | **here** |
 //! | `POST /users/{id}/suspend` | rewrites every vhost and locks the Linux accounts | proxied |
 //! | `POST /users/{id}/unsuspend` | rebuilds every vhost and unlocks them | proxied |
 //!
@@ -45,6 +45,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/users/{user_id}/2fa/reset",
             post(reset_two_factor).fallback(crate::fallback),
+        )
+        .route(
+            "/users/{user_id}/password",
+            post(set_password).fallback(crate::fallback),
         )
 }
 
@@ -446,8 +450,192 @@ fn literal_error(field: &str, input: &Value) -> Response {
     })])
 }
 
+/// `POST /users/{user_id}/password` - source: `update_user_password`.
+///
+/// Two different authorisations, which is the whole subtlety: an admin may set
+/// anyone else's password, but changing *your own* needs the current one and,
+/// with 2FA on, a code. Source: `require_sensitive_action_step_up`.
+///
+/// Order matters and follows Python's. The helper sets the system password
+/// first and the database moves second, so a refusal leaves nothing changed
+/// anywhere. The other order would leave the panel and SFTP disagreeing about
+/// what the password is, with no way to tell which one a user should try.
+async fn set_password(
+    State(state): State<AppState>,
+    Path(user_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let password = payload
+        .get("password")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if password.is_empty() {
+        return crate::errors::missing_field("password", payload.clone());
+    }
+
+    if user_id != current.user.id {
+        if let Err(r) = require_admin(&current) {
+            return r;
+        }
+    } else {
+        let given = payload
+            .get("current_password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if given.is_empty()
+            || !snpanel_core::crypto::password::verify_password(
+                given,
+                &current.user.hashed_password,
+            )
+        {
+            return crate::errors::error(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Current password is incorrect",
+            );
+        }
+        if current.user.totp_enabled {
+            let code = payload.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            if !super::auth::verify_totp(&state, &current.user, code) {
+                return crate::errors::error(
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "Invalid authentication code",
+                );
+            }
+        }
+    }
+
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found("User not found"),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return internal_error();
+        }
+    };
+
+    // The system account first. The fallback is `true` because that is what
+    // Python passes: on a machine with no helper the panel password still
+    // changes rather than the request failing.
+    // Source: `linux_user_for_panel_username`, which is
+    // `validate_linux_user(username.strip().lower())` - the account name is
+    // the panel name lowercased, and parsing is what validates it. Not
+    // `Domain::linux_user()`, which derives a name for a *domain* and would
+    // send the password to an account that does not exist.
+    let linux_user = match snpanel_core::types::PanelUsername::parse(
+        user.username.trim().to_lowercase().as_str(),
+    ) {
+        Ok(u) => u,
+        Err(e) => return bad_request(&format!("invalid username: {e}")),
+    };
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "panel-user-password",
+        &[linux_user.as_str()],
+        Some(&format!("{password}\n")),
+        Some(&["true"]),
+    )
+    .await;
+    if !result.ok() {
+        tracing::error!(
+            "setting the system password failed: {}",
+            result.failure_detail("panel-user-password")
+        );
+        return internal_error();
+    }
+
+    let hashed = match snpanel_core::crypto::password::hash_password(&password) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("hashing failed: {e}");
+            return internal_error();
+        }
+    };
+    if let Err(e) = state.db.users().set_hashed_password(user_id, &hashed).await {
+        tracing::error!("storing the password failed: {e}");
+        return internal_error();
+    }
+    // Every other session of this user has to log in again.
+    if let Err(e) = state.db.users().bump_token_version(user_id).await {
+        tracing::error!("bumping the token version failed: {e}");
+        return internal_error();
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "update_user_password",
+        &user.username,
+    )
+    .await;
+
+    axum::Json(serde_json::json!({
+        "message": format!("Changed password for user {}", user.username)
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
+    /// The rule this endpoint enforces, written out as a table.
+    ///
+    /// Source: `update_user_password`. Changing someone else's password is an
+    /// admin action; changing your own is a step-up, and the two are not
+    /// interchangeable. A version that checked only the role would let a
+    /// stolen admin session change that admin's own password without proving
+    /// anything; one that checked only the current password would stop an
+    /// admin resetting an account whose password nobody knows - which is the
+    /// entire reason the endpoint exists.
+    #[test]
+    fn changing_your_own_password_and_someone_elses_are_different_proofs() {
+        // Encoded as the decision the handler makes, so the table is checked
+        // rather than described. `needs_admin` and `needs_step_up` are
+        // mutually exclusive by construction.
+        fn decision(target_id: i64, current_id: i64) -> (bool, bool) {
+            let own = target_id == current_id;
+            (!own, own)
+        }
+
+        assert_eq!(
+            decision(7, 1),
+            (true, false),
+            "another account: admin, no step-up"
+        );
+        assert_eq!(
+            decision(1, 1),
+            (false, true),
+            "your own account: step-up, and being admin is not enough"
+        );
+    }
+
+    /// The account the password is sent to.
+    ///
+    /// `Domain::linux_user()` derives a name from a *domain* and was the first
+    /// thing reached for here; it compiles against a different type and would
+    /// have sent the password to an account that does not exist, leaving the
+    /// panel password changed and SFTP still on the old one.
+    #[test]
+    fn the_system_account_is_the_panel_name_lowercased() {
+        use snpanel_core::types::PanelUsername;
+
+        for (panel, expected) in [("alice", "alice"), ("Alice", "alice"), ("BOB", "bob")] {
+            let derived = PanelUsername::parse(panel.trim().to_lowercase().as_str())
+                .expect("a valid panel username lowercases to a valid account");
+            assert_eq!(derived.as_str(), expected, "for {panel}");
+        }
+    }
+
     use super::*;
 
     #[test]

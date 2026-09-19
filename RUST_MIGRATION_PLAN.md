@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **53 of 211** | 25% |
+| API endpoints answered by Rust | **54 of 211** | 25% |
 | Routers served whole | 4 of 17 | `auth`, `firewall`, `packages`, `updates` |
 | Routers served in part | 9 | the strangler proxies the rest of each |
 | Routers untouched | 4 | `maintenance`, `provisioning`, `site_apps`, `deps` |
@@ -275,7 +275,7 @@ installed on new installations.
 
 ### Stage E — the remaining routers
 
-`waf` (16 left), `malware` (11), `panel_settings` (8), `users` (5),
+`waf` (16 left), `malware` (11), `panel_settings` (8), `users` (4),
 `databases` (4), `addons` (2), `services` (1), `terminal` (1), then
 `provisioning` (13) and `site_apps` (10), which need the `docker` domain.
 
@@ -369,7 +369,7 @@ two-process concern rather than a one-process one.
 | `chown`, `cloudflare`, `daemon`, `fastcgi`, `fix`, `http`, `mariadb`, `mkdir`, `rm`, `service` | 1 each | — |
 | `ssl` | 1 | yes |
 
-The shortest honest statement of the distance: **158 of 211 endpoints and
+The shortest honest statement of the distance: **157 of 211 endpoints and
 9,944 lines of bash remain**, the helper is the gate on most of it, and the
 mechanism that makes each step ordinary is already built and serving real
 traffic.

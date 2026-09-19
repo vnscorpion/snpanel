@@ -197,7 +197,10 @@ fn issue_login_session(
 ///
 /// Spaces are stripped because authenticator apps display `123 456` and people
 /// paste what they see.
-fn verify_totp(state: &AppState, user: &User, code: &str) -> bool {
+/// Shared with `users::set_password`, which needs the same check for its
+/// step-up. One implementation, so the two cannot drift on what counts as
+/// a valid window.
+pub(crate) fn verify_totp(state: &AppState, user: &User, code: &str) -> bool {
     let Some(stored) = user.totp_secret.as_deref() else {
         return false;
     };
