@@ -200,6 +200,7 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
                 &stream,
                 &HelperResponse::failed(HelperErrorKind::NotAuthorised, e.to_string()),
             );
+            drain_after_refusal(&stream);
             return;
         }
     };
@@ -216,6 +217,7 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
             &stream,
             &HelperResponse::failed(HelperErrorKind::NotAuthorised, e.to_string()),
         );
+        drain_after_refusal(&stream);
         return;
     }
 
@@ -258,6 +260,32 @@ fn respond_to(stream: &UnixStream, response: &HelperResponse) -> std::io::Result
     out.push(b'\n');
     (&mut &*stream).write_all(&out)?;
     Ok(())
+}
+
+/// Give a refused caller time to finish its request and read the answer.
+///
+/// A refusal is decided from the peer's credentials, before the request is
+/// read - so the client is usually still writing when the decision is made.
+/// Dropping the stream there closes both directions, the client's `write`
+/// gets EPIPE, and it never sees the refusal already waiting in its receive
+/// buffer. It would report a broken pipe for what was an authorisation
+/// decision, which is exactly the distinction this protocol exists to make.
+///
+/// Bounded in time and in bytes on purpose: the peer here is one that has
+/// just been told no.
+fn drain_after_refusal(stream: &UnixStream) {
+    use std::io::Read;
+
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let mut sink = [0u8; 4096];
+    let mut total = 0usize;
+    while total < 64 * 1024 {
+        match (&mut &*stream).read(&mut sink) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(_) => break,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

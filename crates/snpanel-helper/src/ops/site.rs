@@ -250,6 +250,149 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// `site-document-root-ensure`: create the document root, harden the way down.
+///
+/// Source: the `site-document-root-ensure` arm and `harden_site_dir_path`.
+/// `relative` is a fragment under the site root rather than a path, so the
+/// caller names a directory and never a destination.
+pub fn document_root_ensure(
+    user: &PanelUsername,
+    root: &SitePath,
+    relative: &str,
+) -> HelperResponse {
+    if let Err(r) = guard(root) {
+        return r;
+    }
+    if let Err(message) = check_relative(relative) {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, message);
+    }
+
+    // Built from the root rather than taken from the caller, and re-parsed so
+    // the result has to satisfy the same "under /home/<user>" rule the root
+    // did. A fragment that somehow escaped would fail here rather than be
+    // created.
+    let joined = root.as_path().join(relative);
+    let target = match SitePath::parse(&joined.to_string_lossy()) {
+        Ok(p) => p,
+        Err(_) => {
+            return HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!("document root outside the site: {}", joined.display()),
+            )
+        }
+    };
+    if !target.as_path().starts_with(root.as_path()) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("document root outside the site: {target}"),
+        );
+    }
+
+    if let Err(e) = std::fs::create_dir_all(target.as_path()) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", target.as_path().display()),
+        );
+    }
+    harden_dir_path(root.as_path(), target.as_path(), user)
+}
+
+/// The character set the bash accepts for a relative document root.
+///
+/// Source: `^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$` plus its explicit rejection
+/// of `.` and `..` components. Lexical path checks let a name with a space, a
+/// quote or a newline through; this does not, because such a name survives
+/// the path layer and then surprises whatever builds a command from it later.
+fn check_relative(relative: &str) -> Result<(), String> {
+    let bad = |why: &str| Err(format!("unsafe relative path: {relative} ({why})"));
+    if relative.is_empty() || relative.starts_with('/') || relative.ends_with('/') {
+        return bad("must be a non-empty fragment");
+    }
+    for part in relative.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return bad("empty or traversing component");
+        }
+        if !part
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return bad("character outside [A-Za-z0-9._-]");
+        }
+    }
+    Ok(())
+}
+
+/// One directory: owner, ACL, mode, and no setgid or sticky bit.
+///
+/// Source: `harden_site_dir`. The setgid strip matters more than it looks: a
+/// directory that keeps it makes everything created inside inherit its group,
+/// which quietly undoes the ownership this is setting.
+fn harden_dir(path: &Path, user: &PanelUsername) -> HelperResponse {
+    let target = path.to_string_lossy().into_owned();
+    let owner = format!("{}:{}", user.as_str(), SITES_GROUP);
+    let out = exec::run(&["chown", &owner, &target]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return exec::respond("chown", out);
+    }
+    let _ = exec::run(&["setfacl", "-b", &target]);
+    let _ = exec::run(&["setfacl", "-k", &target]);
+    let mode = format!("{DIR_MODE:o}");
+    let out = exec::run(&["chmod", &mode, &target]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return exec::respond("chmod", out);
+    }
+    for flag in ["a-s", "-t"] {
+        let _ = exec::run(&["chmod", flag, &target]);
+    }
+    HelperResponse::ok()
+}
+
+/// Harden the site root and every directory between it and `target`.
+///
+/// Source: `harden_site_dir_path`. Walking the whole way down is the point:
+/// a document root of `public_html/app/current` is only reachable if each
+/// directory above it is traversable, and only safe if none of them is
+/// writable by anyone else.
+fn harden_dir_path(root: &Path, target: &Path, user: &PanelUsername) -> HelperResponse {
+    // Every check before any change. The bash denies an out-of-root target
+    // and a missing directory before it chowns anything, and the order is
+    // worth keeping: otherwise a refused call still leaves the site root
+    // chowned and chmodded on its way out, and the caller is told whatever
+    // the chown said instead of what was actually wrong.
+    let Ok(rest) = target.strip_prefix(root) else {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("{} is not under {}", target.display(), root.display()),
+        );
+    };
+    if !target.is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("site directory does not exist: {}", target.display()),
+        );
+    }
+
+    let r = harden_dir(root, user);
+    if !r.ok {
+        return r;
+    }
+    let mut current = root.to_path_buf();
+    for part in rest.components() {
+        current.push(part);
+        if !current.is_dir() {
+            return HelperResponse::failed(
+                HelperErrorKind::NotFound,
+                format!("site directory does not exist: {}", current.display()),
+            );
+        }
+        let r = harden_dir(&current, user);
+        if !r.ok {
+            return r;
+        }
+    }
+    HelperResponse::ok()
+}
+
 /// `site-logs-read-many`: one spawn for every site's log.
 ///
 /// Source: `read_site_logs_many`. The format is a contract with the caller,
@@ -383,6 +526,78 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The character set, which is the half `SitePath` does not check.
+    #[test]
+    fn a_relative_document_root_is_restricted_to_safe_characters() {
+        for good in ["public_html", "public_html/public", "app-1.2_beta/dist"] {
+            assert!(check_relative(good).is_ok(), "{good} should be accepted");
+        }
+
+        for (bad, why) in [
+            ("", "empty"),
+            ("/public_html", "absolute"),
+            ("public_html/", "trailing slash"),
+            ("..", "traversal"),
+            ("public_html/../../etc", "traversal inside"),
+            ("public_html/./x", "a dot component"),
+            ("public html", "a space"),
+            ("public_html\nx", "a newline"),
+            ("pub\"lic", "a quote"),
+            ("public;rm -rf /", "a semicolon"),
+            ("public$(whoami)", "a substitution"),
+        ] {
+            assert!(
+                check_relative(bad).is_err(),
+                "{bad:?} should be refused ({why})"
+            );
+        }
+    }
+
+    /// The refusal says which fragment and why, because an administrator who
+    /// picked a directory name with a space in it gets this back and has to
+    /// be able to act on it.
+    #[test]
+    fn the_refusal_names_the_fragment() {
+        let err = check_relative("public html").unwrap_err();
+        assert!(err.contains("public html"), "{err}");
+        assert!(err.contains("character outside"), "{err}");
+    }
+
+    /// The walk refuses a target outside the root rather than hardening
+    /// whatever it was handed.
+    #[test]
+    fn hardening_refuses_a_target_outside_the_site_root() {
+        let user = PanelUsername::parse("bp_site").unwrap();
+        let resp = harden_dir_path(
+            Path::new("/home/bp_site/example.com"),
+            Path::new("/etc"),
+            &user,
+        );
+        assert!(!resp.ok);
+        let err = resp.error.expect("a reason");
+        assert_eq!(err.kind, HelperErrorKind::BadRequest);
+        assert!(err.message.contains("/etc"), "{}", err.message);
+    }
+
+    /// A missing directory in the middle is named, not created.
+    ///
+    /// Source: `harden_site_dir_path`, which denies with "site directory does
+    /// not exist". Creating it here instead would harden a path the caller
+    /// never asked for.
+    #[test]
+    fn hardening_names_the_first_missing_directory() {
+        let root = tempdir("harden-missing");
+        let target = root.join("a/b");
+        let user = PanelUsername::parse("bp_site").unwrap();
+
+        let resp = harden_dir_path(&root, &target, &user);
+        assert!(!resp.ok);
+        let err = resp.error.expect("a reason");
+        assert_eq!(err.kind, HelperErrorKind::NotFound);
+        assert!(err.message.contains("does not exist"), "{}", err.message);
+        assert!(!target.exists(), "it must not have been created");
+    }
+
     /// The shape the caller parses, not just the content.
     ///
     /// Source: `read_site_logs_many` and `waf.read_access_logs_many`. A

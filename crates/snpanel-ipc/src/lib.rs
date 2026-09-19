@@ -458,6 +458,15 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// Create a site's document root and harden every directory down to it.
+    ///
+    /// `relative` is a path *fragment* under the site root, not a path: the
+    /// helper builds the target itself so a caller cannot name somewhere else.
+    SiteDocumentRootEnsure {
+        user: PanelUsername,
+        root: SitePath,
+        relative: String,
+    },
     /// Every named site's log in one round trip.
     ///
     /// The reply is not JSON: each site contributes a `\x1f<domain>\n` header
@@ -590,6 +599,7 @@ impl HelperRequest {
             Self::SiteLogRead { .. } => "site-log-read",
             Self::SiteLogClear { .. } => "site-log-clear",
             Self::SiteLogsReadMany { .. } => "site-logs-read-many",
+            Self::SiteDocumentRootEnsure { .. } => "site-document-root-ensure",
             Self::SslCertInfo { .. } => "ssl-cert-info",
             Self::PanelSslSelfsigned { .. } => "panel-ssl-selfsigned",
             Self::PanelSslDomains => "panel-ssl-domains",

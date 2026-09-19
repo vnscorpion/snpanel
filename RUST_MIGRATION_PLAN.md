@@ -240,14 +240,14 @@ reached.
 
 ### Stage A - the helper's `site` domain
 
-**9 of 31 verbs are answered by Rust (29%).** Measured from `op_name()` and
+**10 of 31 verbs are answered by Rust (32%).** Measured from `op_name()` and
 the dispatch table, not counted by hand:
 
 | | |
 |---|---|
-| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix` |
+| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure` |
 | variant declared, no implementation | `site-runtime-ensure`, `site-runtime-delete` |
-| not started | 20, of which **13 are `site-app-*`** |
+| not started | 19, of which **13 are `site-app-*`** |
 
 Two things the measurement corrected in this plan.
 

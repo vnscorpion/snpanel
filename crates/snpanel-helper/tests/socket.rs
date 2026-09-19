@@ -236,11 +236,18 @@ fn an_unauthorised_uid_is_refused_by_the_kernel_check() {
     // Connect as nobody, from a child process.
     let script = format!(
         r#"
-import socket, json, sys, os
+import socket, json, sys, os, time
 os.setgid(65534); os.setuid(65534)
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(10)
 s.connect({sock:?})
+# Deliberately pause between connecting and sending. The server decides from
+# the peer's credentials alone, so by now it has already written its refusal;
+# if it closed the socket at that point this send raises EPIPE and the
+# refusal - sitting in the receive buffer - is never read. That was a rare
+# flake until the server learned to drain instead of closing, and sleeping
+# here makes the client lose the race every time instead of one run in ten.
+time.sleep(0.05)
 s.sendall(b'{{"version":1,"request":{{"op":"firewall-status"}}}}\n')
 print(s.recv(65536).decode(), end="")
 "#,

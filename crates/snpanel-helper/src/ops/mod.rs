@@ -220,6 +220,11 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteDocumentRootEnsure {
+            user: u,
+            root,
+            relative,
+        } => site::document_root_ensure(u, root, relative),
         HelperRequest::SiteLogsReadMany {
             domains,
             kind,
