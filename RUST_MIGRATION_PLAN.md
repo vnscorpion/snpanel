@@ -368,6 +368,27 @@ re-install restored the cutover. It also left the socket file behind, which
 cost a refused connection on every privileged call until the next install -
 correct behaviour, pure waste - so it removes it now.
 
+**The socket was demonstrated end to end**, with the Rust front door in place
+and sudo's own journal as the witness - it is written by sudo, not by anything
+this change touches. The same request, the same box, one line of configuration
+different:
+
+| allowlist | `GET /api/firewall/status` | sudo invocations for `firewall-*` |
+| --- | --- | --- |
+| `site-*,wp,wp-site` | HTTP 200 | 2 |
+| `site-*,wp,wp-site,firewall-*` | HTTP 200 | **0** |
+
+The helper answered both times. That is the per-verb cutover working: an
+operation moves from sudo to a socket that checks the caller's credentials,
+the response does not change, and the move is one line and a restart to undo.
+
+The first attempt at this reported the opposite, and the reason is worth
+keeping. It deployed a `snpanel-api` built the previous day, before the socket
+transport existed, and correctly observed that the socket was not being used -
+there was no socket code in the binary. The differential was sound and the
+artefact was wrong, which is not something a test can tell you. The deploy
+script now refuses a binary older than the sources.
+
 Three things this stage found that had nothing to do with it, each recorded in
 its own commit: a minimal Debian has no `sudo` and the installer's package
 list did not ask for one; an update wrote the bash helper over the Rust one on
