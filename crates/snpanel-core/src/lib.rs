@@ -22,7 +22,7 @@ pub mod types;
 
 pub use error::{Result, SnpanelError};
 pub use types::{
-    DocumentRoot, Domain, Email, IpOrCidr, PanelUsername, ParseError, PhpVersion, Port,
+    AppName, DocumentRoot, Domain, Email, IpOrCidr, PanelUsername, ParseError, PhpVersion, Port,
     SecretString, SitePath,
 };
 

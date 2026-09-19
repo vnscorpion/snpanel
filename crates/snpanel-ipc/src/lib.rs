@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
-    Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString, SitePath,
+    AppName, Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString, SitePath,
 };
 
 /// The socket the helper listens on, created by systemd socket activation.
@@ -44,6 +44,38 @@ pub enum ServiceAction {
     Restart,
     Reload,
     Status,
+}
+
+/// What may be done to a site application's unit.
+///
+/// Source: the `is_in` allowlist in `site-app-control`. Eight actions, and no
+/// way to express a ninth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppAction {
+    Start,
+    Stop,
+    Restart,
+    Status,
+    IsActive,
+    IsEnabled,
+    Enable,
+    Disable,
+}
+
+impl AppAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Status => "status",
+            Self::IsActive => "is-active",
+            Self::IsEnabled => "is-enabled",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
 }
 
 /// Which of a site's two nginx logs.
@@ -378,6 +410,39 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Start, stop or query a site application's systemd unit.
+    ///
+    /// `action` is an enum rather than a string: the bash allowlists eight
+    /// verbs, and the point of a type here is that the ninth cannot be
+    /// expressed.
+    SiteAppControl {
+        user: PanelUsername,
+        app: AppName,
+        action: AppAction,
+    },
+    /// The last lines of a site application's journal.
+    SiteAppLogs {
+        user: PanelUsername,
+        app: AppName,
+        lines: u32,
+    },
+    /// The state of a compose application's containers.
+    SiteAppComposePs {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Pull the images a compose application uses.
+    SiteAppComposePull {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Total bytes in a user's Docker named volumes.
+    ///
+    /// They live under /var/lib/docker, which the panel user cannot read, so
+    /// without this a customer's container data is invisible to the quota.
+    SiteAppVolumeUsage {
+        user: PanelUsername,
+    },
     /// Move a site's tree, taking its PHP pool with it.
     ///
     /// `from` carries its own user: a site can move between accounts, and the
@@ -637,6 +702,11 @@ impl HelperRequest {
             Self::CertbotDelete { .. } => "certbot-delete",
             Self::SiteRuntimeEnsure { .. } => "site-runtime-ensure",
             Self::SiteRuntimeMove { .. } => "site-runtime-move",
+            Self::SiteAppVolumeUsage { .. } => "site-app-volume-usage",
+            Self::SiteAppComposePull { .. } => "site-app-compose-pull",
+            Self::SiteAppComposePs { .. } => "site-app-compose-ps",
+            Self::SiteAppLogs { .. } => "site-app-logs",
+            Self::SiteAppControl { .. } => "site-app-control",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",

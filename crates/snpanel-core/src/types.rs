@@ -50,6 +50,8 @@ pub const PUBLIC_DIR: &str = "public_html";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ParseError {
+    #[error("invalid application name: {0}")]
+    AppName(String),
     #[error("invalid domain: {0}")]
     Domain(String),
     #[error("invalid panel username: {0}")]
@@ -82,6 +84,55 @@ pub enum ParseError {
 /// reaches the filesystem and nginx.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Domain(String);
+
+/// A site application's name.
+///
+/// Source: `require_app_name`, `^[a-z0-9]([a-z0-9_-]{0,30}[a-z0-9])?$`. It is
+/// a type rather than a string because the same value becomes a systemd unit
+/// name, a Docker project name and a directory under the owner's home: three
+/// places where a stray slash, space or leading dash means something.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct AppName(String);
+
+impl AppName {
+    pub fn parse(raw: &str) -> Result<Self, ParseError> {
+        let err = || ParseError::AppName(raw.to_string());
+        let bytes = raw.as_bytes();
+        if bytes.is_empty() || bytes.len() > 32 {
+            return Err(err());
+        }
+        let ok_edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        let ok_middle = |b: u8| ok_edge(b) || b == b'_' || b == b'-';
+        if !ok_edge(bytes[0]) {
+            return Err(err());
+        }
+        if bytes.len() > 1 && !ok_edge(bytes[bytes.len() - 1]) {
+            return Err(err());
+        }
+        if !bytes.iter().all(|&b| ok_middle(b)) {
+            return Err(err());
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AppName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for AppName {
+    type Error = ParseError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
 
 /// The twelve hex characters that identify a site in its PHP-FPM pool name.
 ///

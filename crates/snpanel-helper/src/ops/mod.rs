@@ -21,6 +21,7 @@ pub mod nginx;
 pub mod php;
 pub mod selinux;
 pub mod site;
+pub mod siteapp;
 pub mod ssl;
 pub mod system;
 pub mod user;
@@ -220,6 +221,19 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteAppControl {
+            user: u,
+            app,
+            action,
+        } => siteapp::control(u, app, *action),
+        HelperRequest::SiteAppLogs {
+            user: u,
+            app,
+            lines,
+        } => siteapp::logs(u, app, *lines),
+        HelperRequest::SiteAppComposePs { user: u, app } => siteapp::compose_ps(u, app),
+        HelperRequest::SiteAppComposePull { user: u, app } => siteapp::compose_pull(u, app),
+        HelperRequest::SiteAppVolumeUsage { user: u } => siteapp::volume_usage(u),
         HelperRequest::SiteRuntimeMove {
             user: u,
             from,
