@@ -25,6 +25,7 @@
 #![allow(clippy::result_large_err)]
 
 mod auth;
+mod backups;
 mod client;
 mod errors;
 mod files;

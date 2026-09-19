@@ -15,6 +15,9 @@ snpanel-core = { path = "../snpanel-core" }
 snpanel-db = { path = "../snpanel-db" }
 snpanel-ipc = { path = "../snpanel-ipc" }
 snpanel-nginx = { path = "../snpanel-nginx" }
+# Reading a backup's manifest out of its archive.
+tar.workspace = true
+flate2.workspace = true
 snpanel-osabi = { path = "../snpanel-osabi" }
 
 anyhow.workspace = true

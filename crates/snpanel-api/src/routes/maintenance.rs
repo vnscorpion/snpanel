@@ -25,6 +25,7 @@ use snpanel_core::permissions;
 use std::collections::HashMap;
 
 use crate::auth::CurrentUser;
+use crate::backups;
 use crate::errors::{bad_request, internal_error, not_found};
 use crate::files;
 use crate::shell;
@@ -59,6 +60,32 @@ pub fn router() -> Router<AppState> {
         .route(
             "/maintenance/files/delete",
             post(delete_entries).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backups/{website_id}",
+            get(list_site_backups)
+                .delete(delete_site_backup)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backups/{website_id}/download",
+            get(download_site_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-backups/{user_id}",
+            get(list_account_backups).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-backups-download",
+            get(download_account_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-backups",
+            axum::routing::delete(delete_account_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-restore-backups",
+            get(list_restore_backups).fallback(crate::fallback),
         )
 }
 
@@ -743,4 +770,279 @@ async fn delete_entries(State(state): State<AppState>, req: axum::extract::Reque
     )
     .await;
     axum::Json(json!({ "deleted": deleted })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// backups: finding, downloading and removing archives
+// ---------------------------------------------------------------------------
+
+/// A file as an attachment, the way Starlette's `FileResponse` sends one.
+async fn attachment(path: &std::path::Path, media_type: Option<&str>) -> Response {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string());
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("reading {} failed: {e}", path.display());
+            return internal_error();
+        }
+    };
+    let media = media_type.unwrap_or_else(|| mime_for(&name));
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, media.to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        Body::from(bytes),
+    )
+        .into_response()
+}
+
+/// Source: `get_backup_user` - the account whose backups these are.
+async fn backup_user(
+    state: &AppState,
+    current: &CurrentUser,
+    user_id: i64,
+) -> Result<snpanel_db::User, Response> {
+    let user = state
+        .db
+        .users()
+        .by_id(user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("user lookup failed: {e}");
+            internal_error()
+        })?
+        .ok_or_else(|| not_found("User not found"))?;
+    if user.id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return Err(crate::errors::not_enough_permissions());
+    }
+    Ok(user)
+}
+
+/// Source: `list_backups`.
+async fn list_site_backups(
+    State(state): State<AppState>,
+    AxumPath(website_id): AxumPath<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let items = backups::list_backups(
+        &state.settings.backup_root,
+        &website.domain,
+        state.settings.command_dry_run,
+    );
+    axum::Json(json!({ "items": items })).into_response()
+}
+
+/// Source: `download_backup`.
+async fn download_site_backup(
+    State(state): State<AppState>,
+    AxumPath(website_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let Some(file) = params.get("backup_file") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "backup_file"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    match backups::backup_path(&state.settings.backup_root, &website.domain, file) {
+        Ok(path) => attachment(&path, Some("application/gzip")).await,
+        Err(_) => not_found("Backup not found"),
+    }
+}
+
+/// Source: `delete_backup`.
+async fn delete_site_backup(
+    State(state): State<AppState>,
+    AxumPath(website_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let Some(file) = params.get("backup_file") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "backup_file"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    match backups::delete_backup(&state.settings.backup_root, &website.domain, file) {
+        Ok(deleted) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "delete_backup",
+                &website.domain,
+            )
+            .await;
+            axum::Json(json!({ "deleted": deleted })).into_response()
+        }
+        Err(_) => not_found("Backup not found"),
+    }
+}
+
+/// Source: `list_user_backups` - the account's own archives, plus the
+/// uploaded ones when an administrator is asking.
+async fn list_account_backups(
+    State(state): State<AppState>,
+    AxumPath(user_id): AxumPath<i64>,
+    current: CurrentUser,
+) -> Response {
+    let user = match backup_user(&state, &current, user_id).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let mut items = match backups::list_user_backups(
+        &state.settings.backup_root,
+        &user.username,
+        state.settings.command_dry_run,
+    ) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if permissions::is_admin_role(&current.user.role) {
+        let root = state.settings.backup_root.clone();
+        let username = user.username.clone();
+        let dry_run = state.settings.command_dry_run;
+        // Reading a manifest out of each archive is blocking work, and there
+        // may be a lot of them.
+        let uploaded = tokio::task::spawn_blocking(move || {
+            backups::list_uploaded_user_backups(&root, Some(&username), dry_run)
+        })
+        .await
+        .unwrap_or_default();
+        for item in uploaded {
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+    }
+    axum::Json(json!({ "items": items })).into_response()
+}
+
+/// Source: `download_user_backup`.
+async fn download_account_backup(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    if !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    let Some(file) = params.get("backup_file") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "backup_file"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    match backups::user_backup_path(&state.settings.backup_root, file) {
+        Ok(path) => attachment(&path, Some("application/gzip")).await,
+        Err(_) => not_found("Backup not found"),
+    }
+}
+
+/// Source: `delete_user_backup`.
+async fn delete_account_backup(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    let Some(file) = params.get("backup_file") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "backup_file"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    match backups::delete_user_backup(&state.settings.backup_root, file) {
+        Ok(deleted) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "delete_user_backup",
+                "user",
+            )
+            .await;
+            axum::Json(json!({ "deleted": deleted })).into_response()
+        }
+        Err(_) => not_found("Backup not found"),
+    }
+}
+
+/// Source: `list_user_restore_backups` - the uploads waiting to be restored,
+/// each described from its own manifest.
+async fn list_restore_backups(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    let root = state.settings.backup_root.clone();
+    let dry_run = state.settings.command_dry_run;
+    let directory = backups::user_restore_dir(&root)
+        .to_string_lossy()
+        .into_owned();
+    let items = tokio::task::spawn_blocking(move || {
+        if dry_run {
+            return Vec::new();
+        }
+        let dir = backups::user_restore_dir(&root);
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut paths: Vec<String> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.to_string_lossy().ends_with(".tar.gz"))
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            paths.sort();
+            paths.reverse();
+            for path in paths {
+                out.push(backups::describe_user_backup(&root, &path));
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+    axum::Json(json!({ "directory": directory, "items": items })).into_response()
 }
