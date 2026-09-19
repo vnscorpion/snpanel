@@ -123,10 +123,14 @@ install)
     cp -a "$LIVE" "$BACKUP_DIR/snpanel-helper.bash.$(date -u +%Y%m%dT%H%M%SZ)"
     note "backed up the bash helper to $BACKUP_DIR"
 
+    # root:snpanel 0750 is what install.sh and update.sh put on the live path,
+    # and what update.sh now puts on the fallback. Matching it means the
+    # cutover does not silently change who may read either file, and an
+    # update afterwards does not change it back.
     mv "$LIVE" "$BASH_HELPER"
-    chown root:root "$BASH_HELPER"
+    chown root:snpanel "$BASH_HELPER"
     chmod 0750 "$BASH_HELPER"
-    install -o root -g root -m 0750 "$RUST_BIN" "$LIVE"
+    install -o root -g snpanel -m 0750 "$RUST_BIN" "$LIVE"
 
     if ! "$LIVE" --help >/dev/null 2>&1; then
         mv -f "$BASH_HELPER" "$LIVE"
@@ -246,7 +250,7 @@ rollback)
 
     if [[ -f "$BASH_HELPER" ]]; then
         mv -f "$BASH_HELPER" "$LIVE"
-        chown root:root "$LIVE"
+        chown root:snpanel "$LIVE"
         chmod 0750 "$LIVE"
         note "$LIVE is the bash helper again"
     else

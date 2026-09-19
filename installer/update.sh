@@ -1249,8 +1249,22 @@ if [[ -f "$SOURCE_DIR/installer/files/snpanel-helper.sh" ]]; then
   log "Refreshing /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel"
   update_progress 40 "runtime" "Refreshing panel helper and runtime"
   if id -u snpanel >/dev/null 2>&1; then
-    install -m 0750 -o root -g snpanel "$SOURCE_DIR/installer/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
-    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
+    # Where the bash helper goes depends on whether the Rust cutover has
+    # been done. After it, /usr/local/sbin/snpanel-helper is the Rust binary
+    # and the bash one lives beside it as the fallback the binary execs.
+    #
+    # Writing the bash over the live path here would silently revert the
+    # cutover on every update - the same shape as the API cutover calling
+    # `start` and never `enable`, which a reboot undid and nobody noticed for
+    # 71 restarts. The axis is different and the failure is identical: a
+    # change that survives until the next routine thing happens.
+    helper_target=/usr/local/sbin/snpanel-helper
+    if [[ -f /usr/local/sbin/snpanel-helper.sh ]]; then
+      helper_target=/usr/local/sbin/snpanel-helper.sh
+      log "  the Rust helper is in place; refreshing the bash fallback instead"
+    fi
+    install -m 0750 -o root -g snpanel "$SOURCE_DIR/installer/files/snpanel-helper.sh" "$helper_target"
+    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" "$helper_target"
     install -m 0440 -o root -g root  "$SOURCE_DIR/installer/files/snpanel-sudoers"   /etc/sudoers.d/snpanel
     visudo -c -f /etc/sudoers.d/snpanel >/dev/null
     sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper wp --info >/dev/null
