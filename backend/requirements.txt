@@ -11,7 +11,7 @@ pydantic-settings==2.3.1
 email-validator==2.1.1
 python-jose[cryptography]==3.5.0
 redis==7.4.0
-bcrypt==4.0.1
+bcrypt==5.0.0
 passlib[bcrypt]==1.7.4
 # Python 3.13 removed the crypt module (PEP 594). This binds the system
 # libcrypt so shadow hashes - including yescrypt, which passlib cannot do -
