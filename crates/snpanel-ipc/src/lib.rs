@@ -934,6 +934,15 @@ pub enum HelperErrorKind {
     /// The command exceeded its budget.
     Timeout,
     NotFound,
+    /// The helper has no implementation for this request.
+    ///
+    /// Not a refusal, and the distinction is load-bearing. Every other kind
+    /// is the helper deciding about a request; this one is the helper saying
+    /// which implementation serves it - the bash still does. The panel is
+    /// meant to fall through on it, which is safe precisely because it
+    /// carries no decision: it is only ever produced by a request whose enum
+    /// variant has no arm, long after the arguments were parsed and accepted.
+    NotImplemented,
     Internal,
 }
 

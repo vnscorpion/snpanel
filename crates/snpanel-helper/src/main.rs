@@ -51,18 +51,35 @@ fn main() -> ExitCode {
     }
 }
 
+/// How many of the bash helper's verbs this binary answers, and how many
+/// there are.
+///
+/// Printed by `--help`, which is what an operator reads during a cutover to
+/// decide what has moved. It is checked against both files by
+/// `the_help_text_counts_are_the_measured_ones`, because the previous figure
+/// was hardcoded and went twenty-four verbs stale without anything noticing.
+const ANSWERED_VERBS: usize = 73;
+const BASH_VERBS: usize = 112;
+
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
     println!("  snpanel-helper --serve            listen on {SOCKET_PATH}");
     println!("  snpanel-helper <op> [args...]     run one operation directly\n");
-    println!("Operations implemented in Rust (61 of the bash helper's 111):");
+    println!("Operations answered by Rust ({ANSWERED_VERBS} of the bash helper's {BASH_VERBS}):");
     for line in [
         "  firewall-*      apply, flush, status, list, migrate-nft, allow-ip,",
         "                  deny-ip, allow-port, panel-allow-port, delete,",
         "                  enable, disable",
         "  nginx-*         test, reload, custom-write, custom-delete",
         "  panel-user-*    ensure, delete, password (password on stdin)",
-        "  site-*          mkdir, rm, file-write, chmod, log-read, log-clear",
+        "  site-*          mkdir, rm, path-fix, file-write, file-install, chmod,",
+        "                  log-read, log-clear, logs-read-many, document-root-ensure,",
+        "                  populate, archive-extract, runtime-ensure, runtime-move,",
+        "                  runtime-delete",
+        "  site-app-*      write (node, docker), control, logs, delete, dir-ensure,",
+        "                  rename, pull, install-deps, export, import, volume-usage,",
+        "                  compose-ps, compose-pull",
+        "  wp, wp-site",
         "  fix-permissions",
         "  certbot-*       issue, renew, delete;  ssl-cert-info",
         "  panel-ssl-*     selfsigned, domains;   panel-sni-sync",
@@ -406,4 +423,66 @@ fn is_root() -> bool {
 fn current_uid() -> u32 {
     // SAFETY: getuid cannot fail.
     unsafe { libc::getuid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two numbers in `--help` are the measured ones.
+    ///
+    /// They were hardcoded, and by the time Stage B started they were wrong by
+    /// twenty-four verbs - at exactly the moment an operator reads them to
+    /// decide what has moved. Recounted here from the two files that decide
+    /// it: the bash helper's `case` labels, and the mapping's match arms.
+    ///
+    /// Counting the mapping's *arms* rather than its quoted strings matters.
+    /// An arm holds argument literals too - "0640", "tcp", "start" - and
+    /// counting those gave 92, which is not a number of verbs at all. Only a
+    /// string that is also a `case` label in the bash counts.
+    #[test]
+    fn the_help_text_counts_are_the_measured_ones() {
+        const BASH: &str = include_str!("../../../installer/files/snpanel-helper.sh");
+        const MAPPING: &str = include_str!("../../../crates/snpanel-ipc/src/argv.rs");
+
+        // `  <verb>)` at the top level of the helper's case statement.
+        let verbs: Vec<&str> = BASH
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("  ")?;
+                let name = rest.strip_suffix(')')?;
+                let ok = !name.is_empty()
+                    && name.starts_with(|c: char| c.is_ascii_lowercase())
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+                ok.then_some(name)
+            })
+            .collect();
+
+        let mapping = match MAPPING.find("pub fn from_argv") {
+            Some(at) => &MAPPING[at..],
+            None => panic!("from_argv is not in the mapping any more"),
+        };
+        let mapping = match mapping.find("#[cfg(test)]") {
+            Some(at) => &mapping[..at],
+            None => mapping,
+        };
+
+        let answered = verbs
+            .iter()
+            .filter(|v| mapping.contains(&format!("(\"{v}\"")))
+            .count();
+
+        assert_eq!(
+            verbs.len(),
+            BASH_VERBS,
+            "the bash helper has {} verbs, --help says {BASH_VERBS}",
+            verbs.len()
+        );
+        assert_eq!(
+            answered, ANSWERED_VERBS,
+            "the mapping answers {answered} of them, --help says {ANSWERED_VERBS}"
+        );
+    }
 }

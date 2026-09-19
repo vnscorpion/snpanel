@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use snpanel_ipc::{Envelope, HelperRequest, HelperResponse, SOCKET_PATH};
+use snpanel_ipc::{Envelope, HelperErrorKind, HelperRequest, HelperResponse, SOCKET_PATH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -165,6 +165,22 @@ pub async fn call_at(
         Ok(result) => result,
         Err(_) => Err(TransportError::Timeout),
     }
+}
+
+/// Whether the helper answered "I have no implementation for this".
+///
+/// This is the one response that is allowed to fall through to sudo, and it
+/// is worth being precise about why that is not a hole in the rule that a
+/// refusal is never retried.
+///
+/// `NotImplemented` is produced in exactly one place: the catch-all of the
+/// dispatch table, reached when a request's enum variant has no arm. By then
+/// the request has already been parsed and every value in it accepted. The
+/// helper is not deciding about the call; it is saying which implementation
+/// serves it, and today that is still `snpanel-helper.sh`. Nothing a caller
+/// can put in a request turns a `NotAuthorised` or a `BadRequest` into this.
+pub fn not_implemented(response: &HelperResponse) -> bool {
+    matches!(&response.error, Some(e) if e.kind == HelperErrorKind::NotImplemented)
 }
 
 /// The exit status a command-line caller would have seen.

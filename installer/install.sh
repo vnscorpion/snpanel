@@ -448,7 +448,13 @@ install_ioncube_loader() {
   # It is a commercial-code loader; nothing in the panel needs it.
   local attempt
   for attempt in 1 2 3; do
-    if curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$archive"; then
+    # --speed-limit/--speed-time abort a transfer that has stalled rather
+    # than spending the whole budget on a connection delivering a few KB/s.
+    # Without them three attempts at 300s each is fifteen minutes of an
+    # install stopped on a component that is optional - measured, on this
+    # CDN, twice.
+    if curl -fsSL --connect-timeout 10 --max-time 300 \
+            --speed-limit 10240 --speed-time 30 "$url" -o "$archive"; then
       break
     fi
     if [ "$attempt" -eq 3 ]; then
@@ -898,8 +904,16 @@ MYCNF
 
   # The file and the account have to agree. They did not, once, and the symptom
   # was a 500 from every database page rather than anything pointing here.
-  if ! sudo -u snpanel env HOME="$APP_DIR" mariadb -e "SELECT 1" >/dev/null 2>&1; then
-    fail "the panel cannot authenticate to MariaDB with the credentials just written to ${APP_DIR}/.my.cnf"
+  # Say what actually failed. This probe runs the client through sudo, so it
+  # reports "bad credentials" for a missing sudo, an unreadable file or a
+  # server that is not listening - and it did, for half an hour, on a box
+  # where the credentials were perfectly good and sudo was not installed.
+  if ! command -v sudo >/dev/null 2>&1; then
+    fail "sudo is not installed; the panel runs every privileged action through it"
+  fi
+  local probe
+  if ! probe=$(sudo -u snpanel env HOME="$APP_DIR" mariadb -e "SELECT 1" 2>&1); then
+    fail "the panel cannot reach MariaDB as the snpanel user: ${probe}"
   fi
 }
 

@@ -350,7 +350,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::MaldetStatus => waf::maldet_status(),
 
         other => HelperResponse::failed(
-            HelperErrorKind::NotFound,
+            HelperErrorKind::NotImplemented,
             format!(
                 "'{}' is not implemented in the Rust helper yet; \
                  it is still served by snpanel-helper.sh",
@@ -389,7 +389,10 @@ mod tests {
         );
         assert!(!resp.ok);
         let err = resp.error.unwrap();
-        assert_eq!(err.kind, HelperErrorKind::NotFound);
+        // Its own kind, not NotFound. The panel falls through to the bash on
+        // this one and on nothing else, so it must not be confusable with the
+        // thirty-eight places that mean a file or a unit was not there.
+        assert_eq!(err.kind, HelperErrorKind::NotImplemented);
         assert!(err.message.contains("terminal-exec"));
         assert!(err.message.contains("snpanel-helper.sh"));
     }
@@ -410,5 +413,71 @@ mod tests {
         let ctx = Context::from_system();
         assert!(ctx.panel_port > 0);
         assert!(!ctx.ssh_ports.is_empty());
+    }
+
+    /// Every request the mapping can build must have a dispatch arm.
+    ///
+    /// The gap this guards is invisible from the command line. There, a verb
+    /// the mapping does not know is handed to the bash before dispatch is
+    /// reached, so the two tables can disagree without anything going wrong.
+    /// Over the socket there is no such step: a mapped verb with no arm comes
+    /// back as `NotImplemented`, and while the panel falls through on that,
+    /// it does so after a round trip and a log line for an operation that was
+    /// never going to be served here.
+    ///
+    /// The sets agree today - measured, 73 of the bash helper's 112 verbs
+    /// and no gaps. (92 was the count of quoted strings in the mapping's
+    /// arms, which includes argument literals; it is not a verb count.)
+    /// Nothing keeps
+    /// them agreeing except this.
+    #[test]
+    fn every_variant_the_mapping_builds_has_a_dispatch_arm() {
+        const MAPPING: &str = include_str!("../../../snpanel-ipc/src/argv.rs");
+        const DISPATCH: &str = include_str!("mod.rs");
+
+        /// The variant names after `HelperRequest::`, up to the test module.
+        fn variants(source: &str) -> std::collections::BTreeSet<String> {
+            let body = match source.find("#[cfg(test)]") {
+                Some(at) => &source[..at],
+                None => source,
+            };
+            // Comment lines do not count. Without this a variant named only
+            // in a doc comment would read as dispatched, and the guard would
+            // be satisfied by prose.
+            let code: String = body
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut found = std::collections::BTreeSet::new();
+            let needle = "HelperRequest::";
+            let mut rest = code.as_str();
+            while let Some(at) = rest.find(needle) {
+                rest = &rest[at + needle.len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                if !name.is_empty() {
+                    found.insert(name);
+                }
+            }
+            found
+        }
+
+        let mapped = variants(MAPPING);
+        let dispatched = variants(DISPATCH);
+        assert!(
+            mapped.len() > 80,
+            "the mapping scan found only {} variants; the scan is broken, not the code",
+            mapped.len()
+        );
+
+        let missing: Vec<_> = mapped.difference(&dispatched).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "the mapping builds these with no dispatch arm, so the socket would \
+             answer NotImplemented where the bash answers today: {missing:?}"
+        );
     }
 }

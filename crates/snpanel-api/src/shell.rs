@@ -147,6 +147,14 @@ pub async fn privileged(
         let payload = stdin.map(|s| s.as_bytes().to_vec()).unwrap_or_default();
         match HelperRequest::from_argv(&invocation, move || payload) {
             Ok(request) => match helper_socket::call(&request).await {
+                // The helper has no arm for it. Not a refusal - see
+                // `helper_socket::not_implemented` - so the bash answers.
+                Ok(response) if helper_socket::not_implemented(&response) => {
+                    tracing::debug!(
+                        op = command,
+                        "no implementation in the helper; the bash answers it"
+                    );
+                }
                 Ok(response) => {
                     return CommandResult {
                         command: quote_argv(&invocation),
@@ -516,5 +524,39 @@ mod tests {
         assert_eq!(result.returncode, 2, "{result:?}");
         assert!(result.stderr.contains("action not allowed"), "{result:?}");
         assert_ne!(result.stdout, "SHOULD NOT BE SEEN");
+    }
+
+    #[tokio::test]
+    async fn a_helper_with_no_arm_for_the_verb_lets_the_bash_have_it() {
+        // The one answer that falls through. It is produced only by the
+        // dispatch catch-all, after the request has been parsed and accepted,
+        // so it carries no decision about the caller.
+        let env = Env::new("notimpl");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":false,"stdout":"","stderr":"","error":{"kind":"not-implemented","message":"still served by snpanel-helper.sh"}}"#,
+        )
+        .await;
+
+        let result = privileged(false, "nginx-test", &[], None, None).await;
+        // It did not return the helper's answer: it went on to the sudo path,
+        // which has no sudo to run here and says so.
+        assert!(!result.stderr.contains("still served by"), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn being_told_the_caller_is_not_authorised_is_final() {
+        // The security-critical half of the same branch. If this fell through
+        // to sudo, failing the peer-credential check would be a way past it.
+        let env = Env::new("notauth");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":false,"stdout":"","stderr":"","error":{"kind":"not-authorised","message":"caller uid 1001 is not the panel user"}}"#,
+        )
+        .await;
+
+        let result = privileged(false, "nginx-test", &[], None, None).await;
+        assert_eq!(result.returncode, 2, "{result:?}");
+        assert!(result.stderr.contains("not the panel user"), "{result:?}");
     }
 }
