@@ -19,26 +19,37 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **87 of 211** | 41% |
-| Routers served whole | 4 of 17 | `auth`, `firewall`, `packages`, `updates` |
-| Routers served in part | 9 | the strangler proxies the rest of each |
-| Routers untouched | 4 | `maintenance`, `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **0% deployed** | 93 IPC variants defined, 117 shell verbs still serving |
+| API endpoints answered by Rust | **90 of 211** | 43% |
+| Routers served whole | 6 of 17 | `addons`, `auth`, `firewall`, `packages`, `terminal`, `updates` |
+| Routers served in part | 8 | the strangler proxies the rest of each |
+| Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
+| Privileged helper | **deployed** | 63 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
 Two of those lines are easy to misread.
 
-**"13 of 17 routers have a Rust module" is not 76% done.** It is 25%. Most
-routers have a module that answers a handful of their endpoints and hands the
-rest to Python. `maintenance` alone is 67 endpoints — 32% of the whole
-surface — with no Rust at all.
+**"14 of 17 routers have a Rust module" is not 82% done.** It is 43%. Most
+routers have a module that answers some of their endpoints and hands the rest
+to Python. `maintenance` alone is 67 endpoints — 32% of the whole surface —
+and 42 of them are still Python's.
 
-**The helper is designed but not deployed.** `snpanel-ipc` defines 93 request
-variants and `snpanel-helper` implements six domains, but what runs on a live
-server is 6,030 lines of bash, and nothing in the API talks to the Rust helper
-yet. This is the largest gap between what the repository looks like and what a
-customer's machine runs.
+**The helper is deployed, and that is not the same as finished.** Stage B put
+`snpanel-helper` on a live Debian 13 behind a socket-activated unit and proved
+it carries real traffic: all 31 site verbs answered by Rust, two power cycles
+identical, a rollback run and re-install restored, and an A/B that took the
+panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
+of the 105 verbs the panel's Python calls, 63 are answered over the socket and
+42 still fall through to 5,993 lines of bash. Falling through is the design,
+not a fault — but it is why a router can be "ported" and still be standing on
+bash underneath, and `terminal-exec` is the newest example.
+
+A third line is worth stating because it is easy to over-read in the other
+direction: `snpanel-ipc` defines 133 request variants and the argv layer maps
+83 verb names, which is more than the 63 above. Three of those names
+(`firewall-migrate-nft`, `selinux-port-add`, `selinux-restore-site`) have no
+caller in Python and no arm in the bash helper. They are Rust-side surface
+running ahead of its callers, not coverage.
 
 ---
 

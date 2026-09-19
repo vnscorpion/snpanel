@@ -26,12 +26,14 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 pub mod backups;
 pub mod databases;
 pub mod packages;
-pub mod users;
+pub mod site_apps;
+mod users;
 pub mod websites;
 
 pub use backups::{BackupSchedule, BackupScheduleRepo, SftpTarget, SftpTargetRepo};
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
+pub use site_apps::{SiteAppRepo, SiteAppRow};
 pub use users::{AuditEntry, AuditRepo, RevokedTokenRepo, User, UserFields, UserRepo};
 pub use websites::{Website, WebsiteAlias, WebsiteRepo};
 
@@ -157,6 +159,10 @@ impl Database {
 
     pub fn websites(&self) -> WebsiteRepo<'_> {
         WebsiteRepo::new(&self.pool)
+    }
+
+    pub fn site_apps(&self) -> SiteAppRepo<'_> {
+        SiteAppRepo::new(&self.pool)
     }
 
     /// Does the Python schema look present?

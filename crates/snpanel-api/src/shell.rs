@@ -127,6 +127,35 @@ pub async fn privileged(
     stdin: Option<&str>,
     fallback: Option<&[&str]>,
 ) -> CommandResult {
+    privileged_timed(dry_run, command, args, stdin, fallback, None).await
+}
+
+/// [`privileged`] with the wall-clock budget the Python's `timeout=` argument
+/// gives it.
+///
+/// Source: `ShellRunner.run(..., timeout=...)`. When it fires the Python does
+/// not raise - with `check=False` it returns returncode **124**, whatever the
+/// command managed to print before the kill, and `Command timed out after Ns`
+/// on the end of stderr. All three matter: `terminal.exec_command` reads the
+/// 124, and a customer whose Composer install was killed at fifteen minutes
+/// wants the log up to that point, not a blank box.
+///
+/// The budget covers the child process, as it does in Python. It is not
+/// applied to the helper socket, which has its own; the socket path returns
+/// before this is reached.
+///
+/// Nothing else has been given a budget yet. Every other ported call site
+/// still runs without one, which is the same gap this fixes here - it is
+/// recorded in the plan rather than fixed blind, because each Python call
+/// site has its own number and guessing them is worse than not having them.
+pub async fn privileged_timed(
+    dry_run: bool,
+    command: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+    fallback: Option<&[&str]>,
+    timeout: Option<u64>,
+) -> CommandResult {
     // Plan §4.2: the socket first, sudo behind it.
     //
     // The three outcomes are deliberately not alike. A verb the mapping does
@@ -251,18 +280,78 @@ pub async fn privileged(
         }
     }
 
-    match child.wait_with_output().await {
-        Ok(out) => CommandResult {
+    // Both pipes are drained by their own task, so a command that fills one
+    // of them cannot wedge waiting for a reader that is blocked on the other.
+    // `wait_with_output` did this internally; it is spelled out here because
+    // the timeout needs to kill the child and then still collect what the
+    // readers got, which is the partial output Python returns.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(pipe) = out_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let err_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(pipe) = err_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    let mut timed_out = false;
+    let status = match timeout {
+        Some(seconds) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(seconds), child.wait()).await
+            {
+                Ok(result) => result.ok(),
+                Err(_) => {
+                    // Python's `subprocess.run` kills the child and then
+                    // collects what was captured. Killing closes this end of
+                    // the pipes, which is what lets the readers below finish.
+                    let _ = child.kill().await;
+                    timed_out = true;
+                    None
+                }
+            }
+        }
+        None => child.wait().await.ok(),
+    };
+
+    let stdout = String::from_utf8_lossy(&out_task.await.unwrap_or_default()).into_owned();
+    let mut stderr = String::from_utf8_lossy(&err_task.await.unwrap_or_default()).into_owned();
+
+    if timed_out {
+        // Source: `f"Command timed out after {timeout:g}s"`, appended after a
+        // newline. The 124 is what `exec_command` reads to tell a kill from a
+        // command that simply failed.
+        let seconds = timeout.unwrap_or(0);
+        stderr.push_str(&format!("\nCommand timed out after {seconds}s"));
+        return CommandResult {
             command: quoted,
-            returncode: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            returncode: 124,
+            stdout,
+            stderr,
+        };
+    }
+
+    match status {
+        Some(status) => CommandResult {
+            command: quoted,
+            returncode: status.code().unwrap_or(-1),
+            stdout,
+            stderr,
         },
-        Err(e) => CommandResult {
+        None => CommandResult {
             command: quoted,
             returncode: -1,
             stdout: String::new(),
-            stderr: format!("could not read the helper's output: {e}"),
+            stderr: "could not read the helper's output".to_string(),
         },
     }
 }
@@ -346,6 +435,57 @@ mod tests {
         assert_ne!(r.returncode, 0, "a refusal must not look like a success");
         assert!(r.stderr.contains("firewall-enable"), "{}", r.stderr);
         assert!(!r.ok());
+    }
+
+    /// A budget that fires has to look like Python's: exit 124, the message on
+    /// the end of stderr, and - the part that is easy to drop - whatever the
+    /// command printed before it was killed.
+    ///
+    /// A customer whose fifteen-minute Composer install is killed gets the log
+    /// up to that point from the Python. A port that returned an empty box
+    /// would be a worse panel that passed every test about exit codes.
+    #[tokio::test]
+    async fn a_budget_that_fires_looks_exactly_like_the_pythons() {
+        let _env = crate::testenv::EnvGuard::set(&[("SNPANEL_USE_HELPER", "false")]);
+        let r = privileged_timed(
+            false,
+            "terminal-exec",
+            &[],
+            None,
+            Some(&["bash", "-c", "echo partial; sleep 30"]),
+            Some(1),
+        )
+        .await;
+
+        assert_eq!(r.returncode, 124, "stderr was: {}", r.stderr);
+        assert_eq!(r.stdout, "partial\n", "the output before the kill is lost");
+        assert!(
+            r.stderr.ends_with("\nCommand timed out after 1s"),
+            "stderr was: {:?}",
+            r.stderr
+        );
+    }
+
+    /// The other half: a command that finishes inside its budget is not
+    /// touched by it. Worth its own test because a timeout bolted onto a
+    /// process wait is just as easy to get wrong in the direction that kills
+    /// healthy commands.
+    #[tokio::test]
+    async fn a_command_that_finishes_in_time_is_untouched() {
+        let _env = crate::testenv::EnvGuard::set(&[("SNPANEL_USE_HELPER", "false")]);
+        let r = privileged_timed(
+            false,
+            "terminal-exec",
+            &[],
+            None,
+            Some(&["bash", "-c", "echo out; echo err >&2; exit 3"]),
+            Some(30),
+        )
+        .await;
+
+        assert_eq!(r.returncode, 3);
+        assert_eq!(r.stdout, "out\n");
+        assert_eq!(r.stderr, "err\n");
     }
 
     #[test]

@@ -23,3 +23,41 @@ static ENV: Mutex<()> = Mutex::new(());
 pub fn lock() -> MutexGuard<'static, ()> {
     ENV.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// The lock, plus the variables a test sets, put back on the way out.
+///
+/// Held as a field rather than as a `let _guard` binding because a
+/// `MutexGuard` is not `Send`: clippy refuses one held across an await point,
+/// and an async test that writes the environment needs both the lock and the
+/// await.
+///
+/// Dropping restores the environment even when the test panics, which a
+/// `remove_var` after the assertions does not - that leaves the variable set
+/// for every test that runs afterwards and turns one failure into several.
+pub struct EnvGuard {
+    _guard: MutexGuard<'static, ()>,
+    names: Vec<String>,
+}
+
+impl EnvGuard {
+    pub fn set(vars: &[(&str, &str)]) -> Self {
+        let guard = lock();
+        let mut names = Vec::new();
+        for (name, value) in vars {
+            std::env::set_var(name, value);
+            names.push((*name).to_string());
+        }
+        Self {
+            _guard: guard,
+            names,
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for name in &self.names {
+            std::env::remove_var(name);
+        }
+    }
+}

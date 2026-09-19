@@ -1,0 +1,256 @@
+{
+ "cases": [
+  {
+   "command": "php artisan migrate",
+   "php_version": "8.4",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=8.4 php artisan migrate",
+   "stderr": ""
+  },
+  {
+   "command": "php artisan migrate --force",
+   "php_version": null,
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 php artisan migrate --force",
+   "stderr": ""
+  },
+  {
+   "command": "composer install --no-dev -o",
+   "php_version": "8.3",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=8.3 composer install --no-dev -o",
+   "stderr": ""
+  },
+  {
+   "command": "wp core update --allow-root",
+   "php_version": "8.2",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=8.2 wp core update --allow-root",
+   "stderr": ""
+  },
+  {
+   "command": "wp option update blogname \"My Site\"",
+   "php_version": "8.4",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=8.4 wp option update blogname 'My Site'",
+   "stderr": ""
+  },
+  {
+   "command": "npm run build",
+   "php_version": null,
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 npm run build",
+   "stderr": ""
+  },
+  {
+   "command": "ls -la",
+   "php_version": "8.4",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=60 --php-version=8.4 ls -la",
+   "stderr": ""
+  },
+  {
+   "command": "echo hello",
+   "php_version": "8.4",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=60 --php-version=8.4 echo hello",
+   "stderr": ""
+  },
+  {
+   "command": "",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Empty command"
+  },
+  {
+   "command": "   ",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Empty command"
+  },
+  {
+   "command": "bash -c 'id'",
+   "php_version": "8.4",
+   "exit_code": 126,
+   "stdout": "",
+   "stderr": "Command not allowed. Allowed commands: artisan, awk, basename, cat, cd, chmod, chown, clear, composer, cp, curl, date, df, diff, dirname, du, echo, file, find, git, grep, head, id, less, ls, mkdir, mv, node, npm, npx, php, phpunit, printenv, pwd, realpath, rm, rmdir, sed, sort, stat, tail, tar, touch, uname, uniq, unzip, wc, wget, which, whoami, wp, yarn, zip"
+  },
+  {
+   "command": "sudo id",
+   "php_version": "8.4",
+   "exit_code": 126,
+   "stdout": "",
+   "stderr": "Command not allowed. Allowed commands: artisan, awk, basename, cat, cd, chmod, chown, clear, composer, cp, curl, date, df, diff, dirname, du, echo, file, find, git, grep, head, id, less, ls, mkdir, mv, node, npm, npx, php, phpunit, printenv, pwd, realpath, rm, rmdir, sed, sort, stat, tail, tar, touch, uname, uniq, unzip, wc, wget, which, whoami, wp, yarn, zip"
+  },
+  {
+   "command": "python3 -c 'print(1)'",
+   "php_version": "8.4",
+   "exit_code": 126,
+   "stdout": "",
+   "stderr": "Command not allowed. Allowed commands: artisan, awk, basename, cat, cd, chmod, chown, clear, composer, cp, curl, date, df, diff, dirname, du, echo, file, find, git, grep, head, id, less, ls, mkdir, mv, node, npm, npx, php, phpunit, printenv, pwd, realpath, rm, rmdir, sed, sort, stat, tail, tar, touch, uname, uniq, unzip, wc, wget, which, whoami, wp, yarn, zip"
+  },
+  {
+   "command": "cd /tmp",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "cd is handled by the interactive terminal session"
+  },
+  {
+   "command": "php 'unterminated",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Invalid command syntax: No closing quotation"
+  },
+  {
+   "command": "php \"unterminated",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Invalid command syntax: No closing quotation"
+  },
+  {
+   "command": "php \\",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Invalid command syntax: No escaped character"
+  },
+  {
+   "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "php_version": "8.4",
+   "exit_code": 2,
+   "stdout": "",
+   "stderr": "Command is too long; max 4096 characters"
+  },
+  {
+   "command": "php -v",
+   "php_version": "8",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 php -v",
+   "stderr": ""
+  },
+  {
+   "command": "php -v",
+   "php_version": "8.x",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 php -v",
+   "stderr": ""
+  },
+  {
+   "command": "php -v",
+   "php_version": "",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 php -v",
+   "stderr": ""
+  },
+  {
+   "command": "php -v",
+   "php_version": "8.4.1",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 php -v",
+   "stderr": ""
+  },
+  {
+   "command": "php -v",
+   "php_version": "08.04",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=08.04 php -v",
+   "stderr": ""
+  },
+  {
+   "command": "grep -rn 'needle here' .",
+   "php_version": null,
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=60 grep -rn 'needle here' .",
+   "stderr": ""
+  },
+  {
+   "command": "php -d memory_limit=512M /usr/local/bin/wp cron event run --due-now",
+   "php_version": "8.4",
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 --php-version=8.4 php -d memory_limit=512M /usr/local/bin/wp cron event run --due-now",
+   "stderr": ""
+  },
+  {
+   "command": "tar -czf 'my backup.tar.gz' public_html",
+   "php_version": null,
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=900 tar -czf 'my backup.tar.gz' public_html",
+   "stderr": ""
+  },
+  {
+   "command": "echo ''",
+   "php_version": null,
+   "exit_code": 0,
+   "stdout": "DRY RUN: sudo -n /usr/local/sbin/snpanel-helper terminal-exec alice /home/alice/example.com/public_html --timeout=60 echo ''",
+   "stderr": ""
+  },
+  {
+   "command": "ls",
+   "linux_user": "",
+   "php_version": null,
+   "exit_code": 1,
+   "stdout": "",
+   "stderr": "Website has no runtime user configured"
+  }
+ ],
+ "budgets": {
+  "artisan": 900,
+  "awk": 60,
+  "basename": 60,
+  "cat": 60,
+  "cd": 60,
+  "chmod": 60,
+  "chown": 60,
+  "clear": 60,
+  "composer": 900,
+  "cp": 60,
+  "curl": 900,
+  "date": 60,
+  "df": 60,
+  "diff": 60,
+  "dirname": 60,
+  "du": 60,
+  "echo": 60,
+  "file": 60,
+  "find": 60,
+  "git": 900,
+  "grep": 60,
+  "head": 60,
+  "id": 60,
+  "less": 60,
+  "ls": 60,
+  "mkdir": 60,
+  "mv": 60,
+  "node": 900,
+  "npm": 900,
+  "npx": 900,
+  "php": 900,
+  "phpunit": 900,
+  "printenv": 60,
+  "pwd": 60,
+  "realpath": 60,
+  "rm": 60,
+  "rmdir": 60,
+  "sed": 60,
+  "sort": 60,
+  "stat": 60,
+  "tail": 60,
+  "tar": 900,
+  "touch": 60,
+  "uname": 60,
+  "uniq": 60,
+  "unzip": 900,
+  "wc": 60,
+  "wget": 900,
+  "which": 60,
+  "whoami": 60,
+  "wp": 900,
+  "yarn": 900,
+  "zip": 900
+ }
+}

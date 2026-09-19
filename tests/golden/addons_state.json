@@ -1,0 +1,234 @@
+{
+ "writes": [
+  {
+   "label": "install",
+   "raw": "{\n  \"application\": {\n    \"installed\": true,\n    \"installed_at\": \"2026-09-19T18:18:00+00:00\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "normalised": "{\n  \"application\": {\n    \"installed\": true,\n    \"installed_at\": \"<when>\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "state": [
+    {
+     "slug": "application",
+     "name": "Application",
+     "version": "1.0.0",
+     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "details": [
+      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
+      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
+      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+     ],
+     "notes": [
+      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
+      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+     ],
+     "keeps_data_on_uninstall": true,
+     "installed": true,
+     "installed_version": "1.0.0",
+     "installed_at": "2026-09-19T18:18:00+00:00"
+    }
+   ]
+  },
+  {
+   "label": "uninstall",
+   "raw": "{\n  \"application\": {\n    \"installed\": false,\n    \"installed_at\": \"2026-09-19T18:18:00+00:00\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "normalised": "{\n  \"application\": {\n    \"installed\": false,\n    \"installed_at\": \"<when>\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "state": [
+    {
+     "slug": "application",
+     "name": "Application",
+     "version": "1.0.0",
+     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "details": [
+      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
+      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
+      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+     ],
+     "notes": [
+      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
+      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+     ],
+     "keeps_data_on_uninstall": true,
+     "installed": false,
+     "installed_version": "1.0.0",
+     "installed_at": "2026-09-19T18:18:00+00:00"
+    }
+   ]
+  },
+  {
+   "label": "reinstall",
+   "raw": "{\n  \"application\": {\n    \"installed\": true,\n    \"installed_at\": \"2026-09-19T18:18:00+00:00\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "normalised": "{\n  \"application\": {\n    \"installed\": true,\n    \"installed_at\": \"<when>\",\n    \"version\": \"1.0.0\"\n  }\n}\n",
+   "state": [
+    {
+     "slug": "application",
+     "name": "Application",
+     "version": "1.0.0",
+     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "details": [
+      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
+      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
+      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+     ],
+     "notes": [
+      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
+      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+     ],
+     "keeps_data_on_uninstall": true,
+     "installed": true,
+     "installed_version": "1.0.0",
+     "installed_at": "2026-09-19T18:18:00+00:00"
+    }
+   ]
+  },
+  {
+   "label": "uninstall-with-a-stranger-present",
+   "raw": "{\n  \"application\": {\n    \"installed\": false,\n    \"installed_at\": \"2026-09-19T18:18:00+00:00\",\n    \"version\": \"1.0.0\"\n  },\n  \"something-else\": {\n    \"installed\": true,\n    \"installed_at\": \"2020-01-01T00:00:00+00:00\",\n    \"version\": \"9.9.9\"\n  }\n}\n",
+   "normalised": "{\n  \"application\": {\n    \"installed\": false,\n    \"installed_at\": \"<when>\",\n    \"version\": \"1.0.0\"\n  },\n  \"something-else\": {\n    \"installed\": true,\n    \"installed_at\": \"<when>\",\n    \"version\": \"9.9.9\"\n  }\n}\n",
+   "state": [
+    {
+     "slug": "application",
+     "name": "Application",
+     "version": "1.0.0",
+     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "details": [
+      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
+      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
+      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+     ],
+     "notes": [
+      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
+      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+     ],
+     "keeps_data_on_uninstall": true,
+     "installed": false,
+     "installed_version": "1.0.0",
+     "installed_at": "2026-09-19T18:18:00+00:00"
+    }
+   ]
+  }
+ ],
+ "names": [
+  {
+   "name": "",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "a",
+   "result": "a"
+  },
+  {
+   "name": "1",
+   "result": "1"
+  },
+  {
+   "name": "_",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "-",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "ab",
+   "result": "ab"
+  },
+  {
+   "name": "a-b",
+   "result": "a-b"
+  },
+  {
+   "name": "a_b",
+   "result": "a_b"
+  },
+  {
+   "name": "a--b",
+   "result": "a--b"
+  },
+  {
+   "name": "-ab",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "ab-",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "_ab",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "ab_",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "App",
+   "result": "app"
+  },
+  {
+   "name": "APP",
+   "result": "app"
+  },
+  {
+   "name": " app ",
+   "result": "app"
+  },
+  {
+   "name": "app name",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "app.name",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "app/name",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "app;name",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "result": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "result": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "a------------------------------b",
+   "result": "a------------------------------b"
+  },
+  {
+   "name": "a-------------------------------b",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  },
+  {
+   "name": "wordpress",
+   "result": "wordpress"
+  },
+  {
+   "name": "my-app",
+   "result": "my-app"
+  },
+  {
+   "name": "my_app_1",
+   "result": "my_app_1"
+  },
+  {
+   "name": "n8n",
+   "result": "n8n"
+  },
+  {
+   "name": "café",
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore"
+  }
+ ]
+}

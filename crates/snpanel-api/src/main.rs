@@ -39,6 +39,7 @@ mod qr;
 mod ratelimit;
 mod routes;
 mod shell;
+mod shlex;
 mod sso;
 mod state;
 mod storage;
