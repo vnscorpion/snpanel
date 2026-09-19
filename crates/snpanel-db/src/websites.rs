@@ -153,6 +153,146 @@ impl<'a> WebsiteRepo<'a> {
             .await?;
         Ok(())
     }
+
+    /// Source: `set_website_waf` - the column, after nginx has taken the change.
+    ///
+    /// The order is the Python's and it is deliberate: nginx is edited first
+    /// and the column is only written if that succeeded. A database saying
+    /// the WAF is on while the vhost does not is a panel claiming protection
+    /// it is not providing.
+    pub async fn set_waf_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET waf_enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `set_website_http_flood`.
+    pub async fn set_http_flood(
+        &self,
+        id: i64,
+        enabled: bool,
+        config_json: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET http_flood_enabled = ?, http_flood_config = ? WHERE id = ?",
+        )
+        .bind(enabled)
+        .bind(config_json)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `set_website_nginx_custom`, which also sets the mode back to
+    /// `managed` - saving a snippet through the panel is the panel taking the
+    /// file back.
+    pub async fn set_nginx_custom(&self, id: i64, custom: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET nginx_custom = ?, nginx_config_mode = 'managed' WHERE id = ?",
+        )
+        .bind(custom)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// One alias, scoped to its website so an id belonging to another site
+    /// cannot be reached by guessing.
+    pub async fn alias_by_id(
+        &self,
+        website_id: i64,
+        alias_id: i64,
+    ) -> Result<Option<WebsiteAlias>, DbError> {
+        Ok(sqlx::query_as::<_, WebsiteAlias>(
+            "SELECT id, website_id, domain, mode, ssl_enabled, created_at \
+             FROM website_aliases WHERE id = ? AND website_id = ?",
+        )
+        .bind(alias_id)
+        .bind(website_id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Source: `create_website_alias`.
+    pub async fn alias_create(
+        &self,
+        website_id: i64,
+        domain: &str,
+        mode: &str,
+    ) -> Result<WebsiteAlias, DbError> {
+        Ok(sqlx::query_as::<_, WebsiteAlias>(
+            "INSERT INTO website_aliases (website_id, domain, mode, ssl_enabled, created_at) \
+             VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP) \
+             RETURNING id, website_id, domain, mode, ssl_enabled, created_at",
+        )
+        .bind(website_id)
+        .bind(domain)
+        .bind(mode)
+        .fetch_one(self.pool)
+        .await?)
+    }
+
+    /// Source: `delete_website_alias`. `false` means there was nothing to
+    /// delete, which the caller turns into a 404 rather than a success.
+    pub async fn alias_delete(&self, website_id: i64, alias_id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM website_aliases WHERE id = ? AND website_id = ?")
+            .bind(alias_id)
+            .bind(website_id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Source: `_hostname_conflicts` over `_reserved_hostnames`.
+    ///
+    /// The reserved set is every website's domain *and* its `www.` form, plus
+    /// every alias's domain. The question asked of it is whether either the
+    /// candidate or its own `www.` form is in there - so `example.com`
+    /// conflicts with an existing `www.example.com` and the other way round.
+    /// Without both directions nginx ends up with two server blocks claiming
+    /// one name and serves whichever it read first.
+    ///
+    /// The exclusions are for the update paths: a site keeping its own domain
+    /// does not conflict with itself.
+    pub async fn hostname_taken(
+        &self,
+        domain: &str,
+        exclude_website_id: Option<i64>,
+        exclude_alias_id: Option<i64>,
+    ) -> Result<bool, DbError> {
+        let candidate = domain.trim().to_ascii_lowercase();
+        if candidate.is_empty() {
+            // Source: `if not safe_domain: return True`.
+            return Ok(true);
+        }
+        let with_www = format!("www.{candidate}");
+
+        let sql = "SELECT \
+             (SELECT COUNT(*) FROM websites \
+               WHERE id IS NOT ? AND lower(trim(domain)) IN (?, ?)) \
+           + (SELECT COUNT(*) FROM websites \
+               WHERE id IS NOT ? AND 'www.' || lower(trim(domain)) IN (?, ?)) \
+           + (SELECT COUNT(*) FROM website_aliases \
+               WHERE id IS NOT ? AND lower(trim(domain)) IN (?, ?))";
+        let count: i64 = sqlx::query_scalar(sql)
+            .bind(exclude_website_id)
+            .bind(&candidate)
+            .bind(&with_www)
+            .bind(exclude_website_id)
+            .bind(&candidate)
+            .bind(&with_www)
+            .bind(exclude_alias_id)
+            .bind(&candidate)
+            .bind(&with_www)
+            .fetch_one(self.pool)
+            .await?;
+        Ok(count > 0)
+    }
 }
 
 /// `id, domain` -> `w.id, w.domain`, so the join above is unambiguous.
@@ -343,5 +483,132 @@ mod tests {
         // ambiguous the moment the alias join is added.
         let sql = prefixed("id, domain, owner_id", "w");
         assert_eq!(sql, "w.id, w.domain, w.owner_id");
+    }
+
+    // --- the write methods Stage C added ---------------------------------
+
+    #[tokio::test]
+    async fn a_hostname_conflicts_in_both_directions() {
+        // Source: `_hostname_conflicts` over `_reserved_hostnames`. The
+        // reserved set holds every website's domain *and* its `www.` form, and
+        // the question asked is whether the candidate **or its own `www.`
+        // form** is in there. Both directions, which is what stops nginx
+        // ending up with two server blocks claiming one name.
+        let pool = scratch().await;
+        let repo = WebsiteRepo::new(&pool);
+
+        assert!(repo
+            .hostname_taken("first.example.com", None, None)
+            .await
+            .unwrap());
+        assert!(
+            repo.hostname_taken("www.first.example.com", None, None)
+                .await
+                .unwrap(),
+            "the www form of an existing domain is reserved"
+        );
+        assert!(
+            !repo
+                .hostname_taken("unused.example.com", None, None)
+                .await
+                .unwrap(),
+            "a name nothing serves is free"
+        );
+        assert!(
+            repo.hostname_taken("", None, None).await.unwrap(),
+            "an empty name conflicts, the way the Python returns True for it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_alias_reserves_its_name_too() {
+        let pool = scratch().await;
+        let repo = WebsiteRepo::new(&pool);
+        repo.alias_create(1, "shop.example.com", "alias")
+            .await
+            .unwrap();
+
+        assert!(repo
+            .hostname_taken("shop.example.com", None, None)
+            .await
+            .unwrap());
+        // `www.shop.example.com` is not in the reserved set - only websites
+        // contribute their www form - but asking about `shop.example.com`
+        // while holding `www.shop...` would find it. This pins the asymmetry
+        // rather than assuming it away.
+        assert!(
+            !repo
+                .hostname_taken("www.shop.example.com", None, None)
+                .await
+                .unwrap(),
+            "an alias does not reserve its own www form; only a website does"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_site_keeping_its_own_name_does_not_conflict_with_itself() {
+        let pool = scratch().await;
+        let repo = WebsiteRepo::new(&pool);
+        assert!(repo
+            .hostname_taken("first.example.com", None, None)
+            .await
+            .unwrap());
+        assert!(
+            !repo
+                .hostname_taken("first.example.com", Some(1), None)
+                .await
+                .unwrap(),
+            "excluding the site that owns the name is what makes an update possible"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_alias_round_trips_and_is_scoped_to_its_website() {
+        let pool = scratch().await;
+        let repo = WebsiteRepo::new(&pool);
+        let created = repo
+            .alias_create(1, "alias.example.com", "redirect")
+            .await
+            .unwrap();
+        assert_eq!(created.domain, "alias.example.com");
+        assert_eq!(created.mode, "redirect");
+        assert_eq!(created.website_id, 1);
+
+        assert!(repo.alias_by_id(1, created.id).await.unwrap().is_some());
+        assert!(
+            repo.alias_by_id(2, created.id).await.unwrap().is_none(),
+            "an id belonging to another site must not be reachable by guessing"
+        );
+        assert!(
+            !repo.alias_delete(2, created.id).await.unwrap(),
+            "and neither must it be deletable"
+        );
+        assert!(repo.alias_delete(1, created.id).await.unwrap());
+        assert!(
+            !repo.alias_delete(1, created.id).await.unwrap(),
+            "a second delete reports nothing to delete, which the caller turns into a 404"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_column_writes_land() {
+        let pool = scratch().await;
+        let repo = WebsiteRepo::new(&pool);
+
+        repo.set_waf_enabled(1, false).await.unwrap();
+        repo.set_http_flood(1, true, r#"{"connection_limit":7}"#)
+            .await
+            .unwrap();
+        repo.set_nginx_custom(1, "gzip on;").await.unwrap();
+
+        let site = repo.by_id(1).await.unwrap().expect("the site");
+        assert!(!site.waf_enabled);
+        assert!(site.http_flood_enabled);
+        assert_eq!(site.http_flood_config, r#"{"connection_limit":7}"#);
+        assert_eq!(site.nginx_custom, "gzip on;");
+        assert_eq!(
+            site.nginx_config_mode, "managed",
+            "saving a snippet through the panel is the panel taking the file back"
+        );
     }
 }
