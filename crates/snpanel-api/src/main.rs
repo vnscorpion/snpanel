@@ -27,6 +27,7 @@
 mod auth;
 mod client;
 mod errors;
+mod helper_socket;
 mod malware;
 mod middleware;
 mod panel_urls;

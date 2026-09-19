@@ -308,9 +308,50 @@ call site becomes a socket call with the shell path kept as fallback.
 a stray `systemctl start` put the old unit into a three-second restart loop
 that ran 71 times before anyone noticed. Do not repeat that shape.
 
+**What the cutover does**, in `installer/files/helper-cutover.sh`:
+
+- moves the bash helper to `snpanel-helper.sh` and puts the Rust binary in its
+  place, so the panel calls the same path through the same sudoers rule and
+  every unported verb `exec`s the bash;
+- installs `snpanel-extract` to `/usr/local/sbin/`, without which
+  `site-archive-extract` reports itself missing and the bash answers;
+- installs `snpanel-helper.socket` and `snpanel-helper.service` and runs
+  `enable --now` on the **socket**, not the service: systemd owns the socket,
+  starts the helper on the first connection, and holds the socket across a
+  helper restart so an update never shows the API a connection refused;
+- proves the round trip before declaring success, by connecting **as the
+  `snpanel` user** and reading an answer. A socket that exists and does not
+  answer is worse than no socket, because the API tries it first on every
+  call. If it does not answer, everything is rolled back.
+
+**The per-verb control is `SNPANEL_HELPER_VERBS`**, written as a systemd
+drop-in rather than into `.env`, because `.env` is also read by the Python and
+C18 is a contract. An entry ending in `*` matches a prefix, so
+`site-*,wp,wp-site` is a first deployment that moves the site domain and
+leaves everything else on the path it has been using. Unset means every verb
+the mapping answers.
+
+**Three outcomes, deliberately not alike**, in `shell.rs`:
+
+| what happened | what the panel does |
+| --- | --- |
+| the mapping does not know the verb | sudo, which reaches the bash. This is the cutover. |
+| the transport failed | sudo. A helper that is not listening is an operational problem, not a security one, and a customer should not see an error for it. |
+| the helper answered, ok or refused | that answer is returned, and **never retried through sudo**. Retrying a refusal would make failing the one check this transport adds a way around it. |
+| the mapping knows the verb and refuses the arguments | refused, 2, no transport. An argument rejected here must not get a second hearing from a looser parser. |
+
+Each of those four was checked by breaking the code and watching the test
+fail, not by reading it.
+
+**`snpanel doctor` does not exist.** `snpanelctl` is an interactive rescue
+menu with no such subcommand, so the exit criterion named a command that was
+never written. The report is `helper-cutover.sh status`, and it prints what a
+reboot comes back to - `is-enabled`, not `is-active` - because that is the
+distinction the API cutover got wrong.
+
 **Exit:** a live installation answers site verbs from Rust, the bash helper is
 installed but not called for them, **a reboot comes back in the same state**,
-and `snpanel doctor` says so.
+and `helper-cutover.sh status` says so.
 
 ### Stage C — the routers that sit on `site`
 

@@ -21,6 +21,9 @@
 //! *failure* faithfully matters as much as reproducing a success - an endpoint
 //! that starts answering 400 where it used to answer 500 is a different API.
 
+use snpanel_ipc::HelperRequest;
+
+use crate::helper_socket;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -124,6 +127,54 @@ pub async fn privileged(
     stdin: Option<&str>,
     fallback: Option<&[&str]>,
 ) -> CommandResult {
+    // Plan §4.2: the socket first, sudo behind it.
+    //
+    // The three outcomes are deliberately not alike. A verb the mapping does
+    // not know falls through to sudo, which reaches the bash helper - that is
+    // the cutover. A transport fault falls through too, because a helper that
+    // is not listening is an operational problem and a customer should not
+    // see an error for it. But a verb the mapping *knows* and refuses does
+    // not fall through: an argument rejected here must not get a second
+    // hearing from a looser parser, or the check is decorative.
+    if !dry_run
+        && use_helper()
+        && helper_socket::available()
+        && helper_socket::verb_enabled(command)
+    {
+        let invocation: Vec<String> = std::iter::once(command.to_string())
+            .chain(args.iter().map(|a| (*a).to_string()))
+            .collect();
+        let payload = stdin.map(|s| s.as_bytes().to_vec()).unwrap_or_default();
+        match HelperRequest::from_argv(&invocation, move || payload) {
+            Ok(request) => match helper_socket::call(&request).await {
+                Ok(response) => {
+                    return CommandResult {
+                        command: quote_argv(&invocation),
+                        returncode: helper_socket::returncode_of(&response),
+                        stdout: response.stdout.clone(),
+                        stderr: helper_socket::stderr_of(&response),
+                    };
+                }
+                Err(e) => {
+                    tracing::warn!(op = command, "helper socket unusable, using sudo: {e}");
+                }
+            },
+            Err(e) if e.is_unmapped() => {
+                tracing::debug!(op = command, "not ported; the bash helper answers it");
+            }
+            Err(e) => {
+                return CommandResult {
+                    command: quote_argv(&invocation),
+                    // 2 is what the bash's `deny` exits with, so a caller that
+                    // tells "refused" from "failed" keeps working.
+                    returncode: 2,
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                };
+            }
+        }
+    }
+
     let mut argv: Vec<String> = if use_helper() {
         let mut v: Vec<String> = vec![
             "sudo".into(),
@@ -323,5 +374,147 @@ mod tests {
                 "{no}"
             );
         }
+    }
+
+    // --- the routing between the socket and sudo ---------------------------
+    //
+    // These are the branch the cutover rests on, so they are driven against a
+    // socket that answers rather than against the shape of the code. The
+    // environment is process-wide, so they share one lock.
+
+    static TRANSPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A helper that is not the helper: it reads one line and answers with
+    /// whatever it was told to answer.
+    async fn fake_helper(path: std::path::PathBuf, reply: &'static str) {
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let mut line = String::new();
+                let _ = BufReader::new(&mut stream).read_line(&mut line).await;
+                let _ = stream.write_all(reply.as_bytes()).await;
+                let _ = stream.write_all(b"\n").await;
+                let _ = stream.flush().await;
+            }
+        });
+    }
+
+    struct Env {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Env {
+        fn new(name: &str) -> Self {
+            let guard = TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir()
+                .join(format!("snpanel-shell-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            std::env::set_var("SNPANEL_USE_HELPER", "1");
+            std::env::set_var("SNPANEL_HELPER_SOCKET", dir.join("helper.sock"));
+            std::env::remove_var("SNPANEL_HELPER_VERBS");
+            Self { _guard: guard, dir }
+        }
+
+        fn socket(&self) -> std::path::PathBuf {
+            self.dir.join("helper.sock")
+        }
+    }
+
+    impl Drop for Env {
+        fn drop(&mut self) {
+            std::env::remove_var("SNPANEL_USE_HELPER");
+            std::env::remove_var("SNPANEL_HELPER_SOCKET");
+            std::env::remove_var("SNPANEL_HELPER_VERBS");
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mapped_verb_is_answered_by_the_socket() {
+        let env = Env::new("answered");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":true,"stdout":"configuration ok","stderr":""}"#,
+        )
+        .await;
+
+        let result = privileged(false, "nginx-test", &[], None, None).await;
+        assert_eq!(result.returncode, 0, "{result:?}");
+        assert_eq!(result.stdout, "configuration ok");
+        // Not the sudo form: the panel should be told what actually ran.
+        assert_eq!(result.command, "nginx-test");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_the_helper_is_returned_and_not_retried_through_sudo() {
+        // The whole reason the socket exists is that the helper decides who
+        // may call it. A refusal that fell back to sudo would mean failing
+        // that check is a way around it.
+        let env = Env::new("refused");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":false,"stdout":"","stderr":"caller is not the panel user"}"#,
+        )
+        .await;
+
+        let result = privileged(false, "nginx-test", &[], None, None).await;
+        assert_eq!(result.returncode, 2, "{result:?}");
+        assert_eq!(result.stderr, "caller is not the panel user");
+    }
+
+    #[tokio::test]
+    async fn a_verb_outside_the_allowlist_does_not_touch_the_socket() {
+        let env = Env::new("allowlist");
+        // A socket that would answer, and an allowlist that excludes the verb.
+        fake_helper(
+            env.socket(),
+            r#"{"ok":true,"stdout":"SHOULD NOT BE SEEN","stderr":""}"#,
+        )
+        .await;
+        std::env::set_var("SNPANEL_HELPER_VERBS", "site-*");
+
+        let result = privileged(false, "nginx-test", &[], None, Some(&["true"])).await;
+        assert_ne!(result.stdout, "SHOULD NOT BE SEEN", "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_never_reaches_the_helper() {
+        let env = Env::new("dryrun");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":true,"stdout":"SHOULD NOT BE SEEN","stderr":""}"#,
+        )
+        .await;
+
+        let result = privileged(true, "nginx-test", &[], None, None).await;
+        assert!(result.stdout.starts_with("DRY RUN"), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_mapped_verb_with_refused_arguments_never_reaches_any_transport() {
+        // `from_argv` refuses this before a byte is sent, and it must not be
+        // handed to the bash either - a looser parser accepting what this
+        // rejected is the failure this distinction exists to prevent.
+        let env = Env::new("invalid");
+        fake_helper(
+            env.socket(),
+            r#"{"ok":true,"stdout":"SHOULD NOT BE SEEN","stderr":""}"#,
+        )
+        .await;
+
+        let result = privileged(
+            false,
+            "site-app-control",
+            &["alice", "myapp", "sudo"],
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(result.returncode, 2, "{result:?}");
+        assert!(result.stderr.contains("action not allowed"), "{result:?}");
+        assert_ne!(result.stdout, "SHOULD NOT BE SEEN");
     }
 }
