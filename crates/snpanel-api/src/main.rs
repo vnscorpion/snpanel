@@ -33,6 +33,7 @@ mod helper_socket;
 mod malware;
 mod middleware;
 mod panel_urls;
+mod php;
 mod qr;
 mod ratelimit;
 mod routes;

@@ -28,6 +28,7 @@ use crate::auth::CurrentUser;
 use crate::backups;
 use crate::errors::{bad_request, conflict, internal_error, not_found};
 use crate::files;
+use crate::php;
 use crate::shell;
 use crate::state::AppState;
 
@@ -106,6 +107,24 @@ pub fn router() -> Router<AppState> {
         .route(
             "/maintenance/sftp-targets/{target_id}",
             axum::routing::delete(delete_sftp_target).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-config",
+            get(get_php_config)
+                .post(update_php_config)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-config/defaults",
+            post(restore_php_defaults).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-versions",
+            get(get_php_versions).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-versions/{php_version}/install",
+            post(install_php_version).fallback(crate::fallback),
         )
 }
 
@@ -1537,6 +1556,238 @@ async fn delete_sftp_target(
             internal_error()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// PHP versions and the panel's ini file
+// ---------------------------------------------------------------------------
+
+/// The `php_version` a body carries, with the model's default and its
+/// validator: anything the panel does not support falls back to `8.4` rather
+/// than being refused, which is what `_validate_php_version(...) or "8.4"`
+/// does.
+fn body_php_version(payload: &Value) -> String {
+    let raw = payload
+        .get("php_version")
+        .and_then(Value::as_str)
+        .unwrap_or("8.4")
+        .trim();
+    if php::SUPPORTED_PHP_VERSIONS.contains(&raw) {
+        raw.to_string()
+    } else {
+        "8.4".to_string()
+    }
+}
+
+/// Write the panel's ini and restart FPM, through the helper.
+async fn write_php_ini(state: &AppState, version: &str, content: &str) -> Result<String, Response> {
+    let target = php::config_target(version);
+    if state.settings.command_dry_run {
+        // Source: `update_php_ini` returns the *content* in dry-run mode, not
+        // the path. Faithful, because a caller that printed it would show the
+        // operator what would be written.
+        return Ok(content.to_string());
+    }
+    let script = "cat > /etc/php/$1/fpm/conf.d/99-snpanel.ini && systemctl restart php$1-fpm";
+    let result = shell::privileged(
+        false,
+        "php-config-write",
+        &[version],
+        Some(content),
+        Some(&["bash", "-lc", script, "snpanel-php-config-write", version]),
+    )
+    .await;
+    if !result.ok() {
+        return Err(internal_error());
+    }
+    Ok(target)
+}
+
+/// Source: `get_php_config`.
+async fn get_php_config(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let requested = params.get("php_version").map(String::as_str);
+    match php::read_php_ini(requested, &state.settings.default_php_version) {
+        Ok(values) => axum::Json(values).into_response(),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// Source: `update_php_config`.
+async fn update_php_config(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let version = body_php_version(&payload);
+
+    let text = |name: &str, default: &str| -> String {
+        payload
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or(default)
+            .to_string()
+    };
+    let number = |name: &str, default: i64| -> i64 {
+        payload.get(name).and_then(Value::as_i64).unwrap_or(default)
+    };
+    let update = php::IniUpdate {
+        display_errors: text("display_errors", "Off"),
+        memory_limit: text("memory_limit", "1024M"),
+        upload_max_filesize: text("upload_max_filesize", "1024M"),
+        post_max_size: text("post_max_size", "1024M"),
+        max_execution_time: number("max_execution_time", 300),
+        max_input_time: number("max_input_time", 600),
+        max_input_vars: number("max_input_vars", 10000),
+    };
+    for (name, value, lo, hi) in [
+        ("max_execution_time", update.max_execution_time, 1, 3600),
+        ("max_input_time", update.max_input_time, 1, 3600),
+        ("max_input_vars", update.max_input_vars, 100, 1_000_000),
+    ] {
+        if !(lo..=hi).contains(&value) {
+            let (kind, msg, ctx) = if value < lo {
+                (
+                    "greater_than_equal",
+                    format!("Input should be greater than or equal to {lo}"),
+                    json!({ "ge": lo }),
+                )
+            } else {
+                (
+                    "less_than_equal",
+                    format!("Input should be less than or equal to {hi}"),
+                    json!({ "le": hi }),
+                )
+            };
+            return crate::errors::validation_error(vec![json!({
+                "type": kind,
+                "loc": ["body", name],
+                "msg": msg,
+                "input": value,
+                "ctx": ctx,
+            })]);
+        }
+    }
+
+    let content = match update.render() {
+        Ok(c) => c,
+        Err(e) => return bad_request(&e),
+    };
+    match write_php_ini(&state, &version, &content).await {
+        Ok(target) => axum::Json(json!({ "target": target })).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// Source: `restore_php_config_defaults`.
+async fn restore_php_defaults(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let version = body_php_version(&payload);
+    let values = match php::default_php_config(&version) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e),
+    };
+    let update = php::IniUpdate {
+        display_errors: "Off".into(),
+        memory_limit: "1024M".into(),
+        upload_max_filesize: "1024M".into(),
+        post_max_size: "1024M".into(),
+        max_execution_time: 300,
+        max_input_time: 600,
+        max_input_vars: 10000,
+    };
+    let content = match update.render() {
+        Ok(c) => c,
+        Err(e) => return bad_request(&e),
+    };
+    match write_php_ini(&state, &version, &content).await {
+        Ok(target) => axum::Json(json!({ "target": target, "values": values })).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// Source: `get_php_versions`.
+async fn get_php_versions(current: CurrentUser) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    axum::Json(json!({
+        "installed": php::list_installed_php(),
+        "supported": php::SUPPORTED_PHP_VERSIONS,
+    }))
+    .into_response()
+}
+
+/// Source: `install_php_version`.
+async fn install_php_version(
+    State(state): State<AppState>,
+    AxumPath(php_version): AxumPath<String>,
+    current: CurrentUser,
+) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    if !php::SUPPORTED_PHP_VERSIONS.contains(&php_version.as_str()) {
+        let mut allowed: Vec<&str> = php::SUPPORTED_PHP_VERSIONS.to_vec();
+        allowed.sort_unstable();
+        return bad_request(&format!(
+            "Unsupported PHP version. Allowed: {}",
+            allowed.join(", ")
+        ));
+    }
+    let already =
+        std::path::Path::new(&format!("/etc/php/{php_version}/fpm/php-fpm.conf")).exists();
+    if state.settings.command_dry_run {
+        let action = if already { "repair" } else { "install" };
+        return axum::Json(json!({
+            "status": "dry_run",
+            "message": format!("Would {action} php{php_version} and SNPanel extensions"),
+        }))
+        .into_response();
+    }
+
+    let packages = php::install_packages(&php_version);
+    let mut fallback: Vec<&str> = vec!["apt-get", "install", "-y"];
+    fallback.extend(packages.iter().map(String::as_str));
+    let result =
+        shell::privileged(false, "php-install", &[&php_version], None, Some(&fallback)).await;
+    if !result.ok() {
+        return internal_error();
+    }
+    axum::Json(json!({
+        "status": if already { "ensured" } else { "installed" },
+        "version": php_version,
+        "output": result.stdout,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
