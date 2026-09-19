@@ -1,0 +1,271 @@
+{
+ "tree": [
+  "public_html/",
+  "public_html/index.php",
+  "public_html/wp-content/",
+  "public_html/wp-content/plugins/",
+  "public_html/wp-content/plugins/a.php",
+  "public_html/wp-content/uploads/",
+  "public_html/wp-content/uploads/img.png",
+  "public_html/readme.txt",
+  "logs/",
+  "logs/access.log",
+  "empty/"
+ ],
+ "file_bytes": 100,
+ "selections": [
+  {
+   "paths": [
+    "public_html/readme.txt"
+   ],
+   "selected": [
+    "public_html/readme.txt"
+   ],
+   "total_size": 100
+  },
+  {
+   "paths": [
+    "public_html/wp-content",
+    "public_html/wp-content/plugins/a.php"
+   ],
+   "selected": [
+    "public_html/wp-content"
+   ],
+   "total_size": 400
+  },
+  {
+   "paths": [
+    "public_html/wp-content/plugins/a.php",
+    "public_html/wp-content"
+   ],
+   "selected": [
+    "public_html/wp-content"
+   ],
+   "total_size": 400
+  },
+  {
+   "paths": [
+    "public_html/wp-content/uploads",
+    "public_html/wp-content/plugins"
+   ],
+   "selected": [
+    "public_html/wp-content/uploads",
+    "public_html/wp-content/plugins"
+   ],
+   "total_size": 320
+  },
+  {
+   "paths": [
+    "public_html/readme.txt",
+    "public_html/readme.txt"
+   ],
+   "selected": [
+    "public_html/readme.txt"
+   ],
+   "total_size": 100
+  },
+  {
+   "paths": [
+    "public_html",
+    "logs"
+   ],
+   "selected": [
+    "public_html",
+    "logs"
+   ],
+   "total_size": 860
+  },
+  {
+   "paths": [
+    "logs",
+    "public_html"
+   ],
+   "selected": [
+    "logs",
+    "public_html"
+   ],
+   "total_size": 860
+  },
+  {
+   "paths": [
+    "public_html/wp-content/plugins/a.php",
+    "public_html/index.php",
+    "logs/access.log"
+   ],
+   "selected": [
+    "public_html/index.php",
+    "logs/access.log",
+    "public_html/wp-content/plugins/a.php"
+   ],
+   "total_size": 300
+  },
+  {
+   "paths": [
+    "empty"
+   ],
+   "selected": [
+    "empty"
+   ],
+   "total_size": 40
+  },
+  {
+   "paths": [],
+   "error": "Select files or folders first"
+  },
+  {
+   "paths": [
+    "public_html/missing.txt"
+   ],
+   "error": "File or folder not found"
+  },
+  {
+   "paths": [
+    ""
+   ],
+   "error": "Cannot copying website root"
+  },
+  {
+   "paths": [
+    "../outside"
+   ],
+   "error": "Path escapes website root"
+  }
+ ],
+ "limits": [
+  {
+   "role": "end_user",
+   "limit_mb": 0,
+   "limit_bytes": 0
+  },
+  {
+   "role": "end_user",
+   "limit_mb": 1,
+   "limit_bytes": 1048576
+  },
+  {
+   "role": "end_user",
+   "limit_mb": 100,
+   "limit_bytes": 104857600
+  },
+  {
+   "role": "end_user",
+   "limit_mb": -5,
+   "limit_bytes": 0
+  },
+  {
+   "role": "end_user",
+   "limit_mb": null,
+   "limit_bytes": 0
+  },
+  {
+   "role": "admin",
+   "limit_mb": 100,
+   "limit_bytes": null
+  },
+  {
+   "role": "super_admin",
+   "limit_mb": 0,
+   "limit_bytes": null
+  },
+  {
+   "role": "user",
+   "limit_mb": 50,
+   "limit_bytes": 52428800
+  },
+  {
+   "role": "readonly",
+   "limit_mb": 7,
+   "limit_bytes": 7340032
+  }
+ ],
+ "messages": [
+  {
+   "used": 0,
+   "limit": 10485760,
+   "incoming": 0,
+   "replaced": 0,
+   "projected": 0,
+   "over": false,
+   "message": ""
+  },
+  {
+   "used": 10485760,
+   "limit": 10485760,
+   "incoming": 0,
+   "replaced": 0,
+   "projected": 10485760,
+   "over": false,
+   "message": ""
+  },
+  {
+   "used": 10485760,
+   "limit": 10485760,
+   "incoming": 1,
+   "replaced": 0,
+   "projected": 10485761,
+   "over": true,
+   "message": "Storage quota exceeded: 10 MB used/projected, limit 10 MB"
+  },
+  {
+   "used": 10485760,
+   "limit": 10485760,
+   "incoming": 1048576,
+   "replaced": 1048576,
+   "projected": 10485760,
+   "over": false,
+   "message": ""
+  },
+  {
+   "used": 10485760,
+   "limit": 10485760,
+   "incoming": 2097152,
+   "replaced": 1048576,
+   "projected": 11534336,
+   "over": true,
+   "message": "Storage quota exceeded: 11 MB used/projected, limit 10 MB"
+  },
+  {
+   "used": 5242880,
+   "limit": 10485760,
+   "incoming": 0,
+   "replaced": 104857600,
+   "projected": 0,
+   "over": false,
+   "message": ""
+  },
+  {
+   "used": 0,
+   "limit": 0,
+   "incoming": 0,
+   "replaced": 0,
+   "projected": 0,
+   "over": false,
+   "message": ""
+  },
+  {
+   "used": 0,
+   "limit": 0,
+   "incoming": 1,
+   "replaced": 0,
+   "projected": 1,
+   "over": true,
+   "message": "Storage quota exceeded: 0 MB used/projected, limit 0 MB"
+  },
+  {
+   "used": 3146228,
+   "limit": 2097152,
+   "incoming": 0,
+   "replaced": 0,
+   "projected": 3146228,
+   "over": true,
+   "message": "Storage quota exceeded: 3 MB used/projected, limit 2 MB"
+  }
+ ],
+ "usage": {
+  "site_root": 1000,
+  "public_html": 700,
+  "empty": 40,
+  "one_file": 100,
+  "missing": 0
+ }
+}

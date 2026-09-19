@@ -406,6 +406,51 @@ pub fn helper_relative_path(root_path: &str, target: &Path) -> String {
     }
 }
 
+/// Source: `_assert_tree_read_allowed`.
+///
+/// Unlike the write walk this has no `allow_symlinks`: a read that follows a
+/// link reads somebody else's file, and there is no caller that wants that.
+///
+/// [`SENSITIVE_READ_NAMES`] is empty today, so what this refuses in practice
+/// is symlinks. It is written out in full anyway, because the constant exists
+/// to be filled and a check that is only correct while a list is empty is not
+/// a check.
+pub fn assert_tree_read_allowed(
+    path: &Path,
+    action: &str,
+    allow_sensitive: bool,
+) -> Result<(), PathError> {
+    if is_symlink(path) {
+        return refuse("Symlinks are not allowed");
+    }
+    if !path.is_dir() {
+        return assert_sensitive_read_allowed(path, action, allow_sensitive);
+    }
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            // `except PermissionError: return` - the walk stops and the
+            // operation proceeds, the same way the write walk gives up.
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let item = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&item) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                return refuse("Symlinks are not allowed");
+            }
+            if meta.is_dir() {
+                stack.push(item);
+            } else if meta.is_file() {
+                assert_sensitive_read_allowed(&item, action, allow_sensitive)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Source: `_assert_tree_write_allowed`.
 ///
 /// A directory is checked entry by entry, and a `PermissionError` while

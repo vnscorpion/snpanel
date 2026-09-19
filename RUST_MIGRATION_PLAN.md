@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **90 of 211** | 43% |
+| API endpoints answered by Rust | **94 of 211** | 44% |
 | Routers served whole | 6 of 17 | `addons`, `auth`, `firewall`, `packages`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -32,7 +32,7 @@ Two of those lines are easy to misread.
 **"14 of 17 routers have a Rust module" is not 82% done.** It is 43%. Most
 routers have a module that answers some of their endpoints and hands the rest
 to Python. `maintenance` alone is 67 endpoints — 32% of the whole surface —
-and 42 of them are still Python's.
+and 38 of them are still Python's.
 
 **The helper is deployed, and that is not the same as finished.** Stage B put
 `snpanel-helper` on a live Debian 13 behind a socket-activated unit and proved
@@ -227,6 +227,20 @@ set of conditionals.
   1,670 lines, most ending in backup and restore — where a mistake destroys
   customer data rather than returning the wrong JSON. It deserves the most
   conservative treatment here, not the fastest.
+- **Ported audit entries are missing their detail.** `packages::audit_action`
+  is the only audit helper the routers use, and it hardcodes an empty detail
+  and always appends `ip=` and `ua=`. The Python has two shapes and they are
+  not interchangeable: `log_action(db, user.id, action, target, detail)` with
+  no `request=`, which is what every file-manager endpoint calls, and
+  `log_action(..., request=request)` with no detail. So a ported `delete_files`
+  records ip and user-agent where the Python records *which files were
+  deleted*, which is the entry an administrator goes looking for after an
+  incident. Found while porting the file-manager writes; the new endpoints use
+  `maintenance::audit_detail`, which has the Python's shape. **19 existing call
+  sites across `maintenance`, `users`, `packages` and `websites` have not been
+  checked yet** — each has to be read against its Python counterpart, because
+  which of the two shapes is right differs per endpoint.
+
 - **Nothing in Stage F is reversible on a customer's machine.** An installer
   that half-runs leaves a box in a state no rollback was written for. Every
   step of it must be idempotent and re-runnable, which the bash learned the

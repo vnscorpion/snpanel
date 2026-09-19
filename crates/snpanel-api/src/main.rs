@@ -43,6 +43,7 @@ mod shlex;
 mod sso;
 mod state;
 mod storage;
+mod storage_quota;
 mod strangler;
 mod system;
 #[cfg(test)]

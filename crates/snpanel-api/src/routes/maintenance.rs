@@ -63,6 +63,22 @@ pub fn router() -> Router<AppState> {
             post(delete_entries).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/files/move",
+            post(move_entries).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/files/copy",
+            post(copy_entries).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/files/create",
+            post(create_file).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/files/write",
+            post(write_file).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/backups/{website_id}",
             get(list_site_backups)
                 .delete(delete_site_backup)
@@ -453,6 +469,27 @@ async fn run_as_site_user(
         Err(bad_request(
             result.failure_detail("The command failed").trim(),
         ))
+    }
+}
+
+/// `log_action` with a **detail** and no request.
+///
+/// `packages::audit_action` is the other shape: an empty detail plus `ip=`
+/// and `ua=`. Both exist in the Python and they are not interchangeable - the
+/// file-manager endpoints call `log_action(db, user.id, action, target,
+/// detail)` with no `request=`, so an entry that carries ip/ua instead of the
+/// paths is not the entry an administrator goes looking for after an
+/// incident.
+async fn audit_detail(state: &AppState, actor_id: i64, action: &str, target: &str, detail: &str) {
+    if let Err(e) = state
+        .db
+        .audits()
+        .log(Some(actor_id), action, target, detail)
+        .await
+    {
+        // The Python logs and carries on: a failed audit write must not turn a
+        // completed operation into a 500 the customer retries.
+        tracing::error!("could not write the {action} audit entry: {e}");
     }
 }
 
@@ -1790,9 +1827,879 @@ async fn install_php_version(
     .into_response()
 }
 
+// ---------------------------------------------------------------------------
+// the file manager's writes: moving, copying, creating and saving
+// ---------------------------------------------------------------------------
+
+/// Source: `_quota_check_for_website` - the closure the file manager calls
+/// before it writes anything.
+///
+/// The quota belongs to the website's **owner**, not to whoever is making the
+/// request. An administrator writing into a customer's site spends the
+/// customer's allowance, which is the only reading that makes sense: the bytes
+/// land under the customer's home.
+async fn quota_check(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    incoming_bytes: u64,
+    replaced_bytes: u64,
+) -> Result<(), Response> {
+    let owner = match state.db.users().by_id(website.owner_id).await {
+        Ok(Some(u)) => u,
+        // Source: `website.owner` being `None`. The Python would raise
+        // `AttributeError` reading `.role` off it, which is a 500 - not a
+        // silently unlimited write.
+        Ok(None) => {
+            tracing::error!("website {} has no owner row", website.id);
+            return Err(internal_error());
+        }
+        Err(e) => {
+            tracing::error!("owner lookup failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    let subject = crate::storage_quota::QuotaSubject {
+        dry_run: state.settings.command_dry_run,
+        user_id: owner.id,
+        role: &owner.role,
+        storage_limit_mb: owner.storage_limit_mb,
+        application_installed: super::addons::application_installed(),
+    };
+    match crate::storage_quota::enforce_user_storage_quota(
+        &state.db,
+        &subject,
+        incoming_bytes,
+        replaced_bytes,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        // Source: `except storage_quota.StorageQuotaExceeded` -> **413**, not
+        // the 400 every other `ValueError` here becomes. The frontend tells
+        // the two apart, and so does a customer: one means "fix your input",
+        // the other means "buy more disk".
+        Err(e) => Err(crate::errors::error(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            &e.to_string(),
+        )),
+    }
+}
+
+/// Source: `_existing_file_size` - what a write is about to replace. Zero for
+/// a directory or anything that is not there.
+fn existing_file_size(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.size()
+        })
+        .unwrap_or(0)
+}
+
+/// Source: `_total_size` - directories walked, files stat'ed.
+fn total_size(paths: &[std::path::PathBuf]) -> u64 {
+    paths
+        .iter()
+        .map(|p| {
+            if p.is_dir() {
+                crate::storage_quota::path_usage_bytes(p)
+            } else if p.is_file() {
+                existing_file_size(p)
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+/// Source: `_transfer_sources`.
+///
+/// The last loop is the one worth reading twice. Having resolved every path,
+/// it drops any source that already sits under another selected **directory**,
+/// so selecting a folder and a file inside it copies the folder once rather
+/// than copying the folder and then dropping the file into the destination's
+/// top level. The sort is by path depth, so a parent is always seen before its
+/// children; Python's sort is stable, so two paths of equal depth keep the
+/// order they were sent in.
+fn transfer_sources(
+    root_path: &str,
+    paths: &[&str],
+    action: &str,
+    allow_executable: bool,
+    allow_sensitive: bool,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let root =
+        std::fs::canonicalize(root_path).unwrap_or_else(|_| std::path::PathBuf::from(root_path));
+
+    let mut sources: Vec<std::path::PathBuf> = Vec::new();
+    for relative in paths {
+        let source = files::safe_path(root_path, relative, true).map_err(|e| e.to_string())?;
+        if !source.exists() {
+            return Err("File or folder not found".to_string());
+        }
+        if source == root {
+            return Err(format!("Cannot {} website root", action.to_lowercase()));
+        }
+        if std::fs::symlink_metadata(&source)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err("Symlinks are not allowed".to_string());
+        }
+        if action == "Copying" {
+            files::assert_tree_read_allowed(&source, action, allow_sensitive)
+                .map_err(|e| e.to_string())?;
+        }
+        // `allow_symlinks` is **false** here, which is the Python's default and
+        // how `_transfer_sources` calls it. The delete path passes true on
+        // purpose - a symlink has to be deletable - but a copy or a move must
+        // not walk one.
+        files::assert_tree_write_allowed(&source, action, allow_executable, false)
+            .map_err(|e| e.to_string())?;
+        sources.push(source);
+    }
+    if sources.is_empty() {
+        return Err("Select files or folders first".to_string());
+    }
+
+    // Source: `dict.fromkeys(sources)` - duplicates removed, first occurrence
+    // kept, then sorted by how many components the path has.
+    let mut unique: Vec<std::path::PathBuf> = Vec::new();
+    for source in sources {
+        if !unique.contains(&source) {
+            unique.push(source);
+        }
+    }
+    unique.sort_by_key(|p| p.components().count());
+
+    let mut top_level: Vec<std::path::PathBuf> = Vec::new();
+    for source in unique {
+        // `parent in source.parents` in the Python, and `source.parents`
+        // never contains the path itself - which is what the `source !=
+        // *parent` clause is here for, because `Path::starts_with` does count
+        // a path as starting with itself. Breaking that clause on purpose does
+        // not fail the corpus, and cannot: the dedup above means `top_level`
+        // can never hold a path equal to the one being tested. It is the
+        // faithful translation rather than a live guard, and is kept as one.
+        //
+        // `starts_with` is component-wise, so `/a/bcd` does not start with
+        // `/a/bc`. A string prefix test here would filter out a sibling whose
+        // name happens to begin with another's.
+        if top_level
+            .iter()
+            .any(|parent| parent.is_dir() && source.starts_with(parent) && source != *parent)
+        {
+            continue;
+        }
+        top_level.push(source);
+    }
+    Ok(top_level)
+}
+
+/// Source: `_transfer_destination`.
+fn transfer_destination(
+    root_path: &str,
+    destination_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let destination =
+        files::safe_path(root_path, destination_path, true).map_err(|e| e.to_string())?;
+    if !destination.is_dir() {
+        return Err("Destination folder not found".to_string());
+    }
+    if std::fs::symlink_metadata(&destination)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err("Symlinks are not allowed".to_string());
+    }
+    Ok(destination)
+}
+
+/// Source: `_assert_transfer_target`.
+fn assert_transfer_target(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    target: &std::path::Path,
+    action: &str,
+) -> Result<(), String> {
+    // Moving a folder into itself, or into anything under itself, would move
+    // the destination out from under the operation half way through.
+    if source.is_dir() && (destination == source || destination.starts_with(source)) {
+        return Err(format!(
+            "Cannot {} a folder into itself",
+            action.to_lowercase()
+        ));
+    }
+    let exists_or_link = target.exists()
+        || std::fs::symlink_metadata(target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+    if exists_or_link {
+        return Err(format!(
+            "Target already exists: {}",
+            target
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+/// The part `copy` and `move` share: resolve the sources, resolve the
+/// destination, and check every target before touching any of them.
+///
+/// Checking all of them first is the Python's order and it matters: a
+/// half-finished transfer that stopped on the third of five files leaves the
+/// customer to work out which two moved.
+fn plan_transfer(
+    website: &snpanel_db::Website,
+    payload: &Value,
+    action: &str,
+    allow_executable: bool,
+    allow_sensitive: bool,
+) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, Response> {
+    let Some(paths) = payload.get("paths").and_then(Value::as_array) else {
+        return Err(crate::errors::missing_field("paths", payload.clone()));
+    };
+    let destination_path = payload
+        .get("destination_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let mut relatives: Vec<&str> = Vec::new();
+    for value in paths {
+        let Some(text) = value.as_str() else {
+            return Err(crate::errors::string_type("paths", value));
+        };
+        relatives.push(text);
+    }
+
+    let plan = (|| -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>, String> {
+        let sources = transfer_sources(
+            &website.root_path,
+            &relatives,
+            action,
+            allow_executable,
+            allow_sensitive,
+        )?;
+        let destination = transfer_destination(&website.root_path, destination_path)?;
+
+        let verb = if action == "Copying" { "copy" } else { "move" };
+        let mut pairs = Vec::new();
+        for source in sources {
+            let Some(name) = source.file_name() else {
+                return Err("File or folder not found".to_string());
+            };
+            let target = destination.join(name);
+            assert_transfer_target(&source, &destination, &target, verb)?;
+            files::assert_write_allowed(&target, action, allow_executable)
+                .map_err(|e| e.to_string())?;
+            pairs.push((source, target));
+        }
+        Ok(pairs)
+    })();
+    // Source: the router's `except ValueError as exc: raise HTTPException(400,
+    // detail=str(exc))` - one place, so every message above reaches the
+    // customer unchanged.
+    plan.map_err(|message| bad_request(&message))
+}
+
+/// Source: `move_entries` / `move_entries` the endpoint.
+///
+/// No quota check: the bytes do not leave the customer's home, so moving
+/// cannot take them over their limit.
+async fn move_entries(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let allow_executable = permissions::is_admin_role(&current.user.role);
+
+    // `move_entries` passes `allow_sensitive` nowhere, so it keeps its default
+    // of false - but `_transfer_sources` only reads it for "Copying", so it
+    // makes no difference here. Passed explicitly rather than left implied.
+    let pairs = match plan_transfer(&website, &payload, "Moving", allow_executable, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mut moved: Vec<String> = Vec::new();
+    for (source, target) in pairs {
+        let source_str = source.to_string_lossy().into_owned();
+        let target_str = target.to_string_lossy().into_owned();
+        if website.linux_user.as_deref().is_some_and(|u| !u.is_empty()) {
+            let source_rel = files::helper_relative_path(&website.root_path, &source);
+            let target_rel = files::helper_relative_path(&website.root_path, &target);
+            if let Err(r) = run_as_site_user(
+                &state,
+                &website,
+                "mv",
+                &["--", &source_rel, &target_rel],
+                &["mv", "--", &source_str, &target_str],
+            )
+            .await
+            {
+                return r;
+            }
+        } else if let Err(e) = std::fs::rename(&source, &target) {
+            return bad_request(&format!("Cannot move: {e}"));
+        }
+        fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+        moved.push(target_str);
+    }
+    clear_fastcgi_cache(&state).await;
+
+    let detail = format!(
+        "{} -> {}",
+        payload
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| a
+                .iter()
+                .take(20)
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(","))
+            .unwrap_or_default(),
+        payload
+            .get("destination_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    );
+    audit_detail(
+        &state,
+        current.user.id,
+        "move_files",
+        &website.domain,
+        &detail,
+    )
+    .await;
+    axum::Json(json!({ "moved": moved })).into_response()
+}
+
+/// Source: `copy_entries` / `copy_entries` the endpoint.
+async fn copy_entries(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let admin = permissions::is_admin_role(&current.user.role);
+
+    let pairs = match plan_transfer(&website, &payload, "Copying", admin, admin) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // The quota is checked once, for the whole selection, **after** every
+    // target has been validated and before anything is written. `replaced` is
+    // zero: a copy cannot overwrite, because `_assert_transfer_target` has
+    // already refused every target that exists.
+    let sources: Vec<std::path::PathBuf> = pairs.iter().map(|(s, _)| s.clone()).collect();
+    if let Err(r) = quota_check(&state, &website, total_size(&sources), 0).await {
+        return r;
+    }
+
+    let mut copied: Vec<String> = Vec::new();
+    for (source, target) in pairs {
+        let source_str = source.to_string_lossy().into_owned();
+        let target_str = target.to_string_lossy().into_owned();
+        if website.linux_user.as_deref().is_some_and(|u| !u.is_empty()) {
+            let source_rel = files::helper_relative_path(&website.root_path, &source);
+            let target_rel = files::helper_relative_path(&website.root_path, &target);
+            if let Err(r) = run_as_site_user(
+                &state,
+                &website,
+                "cp",
+                &["-R", "--", &source_rel, &target_rel],
+                &["cp", "-R", "--", &source_str, &target_str],
+            )
+            .await
+            {
+                return r;
+            }
+        } else if let Err(e) = copy_tree(&source, &target) {
+            return bad_request(&format!("Cannot copy: {e}"));
+        }
+        fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+        copied.push(target_str);
+    }
+    clear_fastcgi_cache(&state).await;
+
+    let detail = format!(
+        "{} -> {}",
+        payload
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| a
+                .iter()
+                .take(20)
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(","))
+            .unwrap_or_default(),
+        payload
+            .get("destination_path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    );
+    audit_detail(
+        &state,
+        current.user.id,
+        "copy_files",
+        &website.domain,
+        &detail,
+    )
+    .await;
+    axum::Json(json!({ "copied": copied })).into_response()
+}
+
+/// Source: `shutil.copytree(..., copy_function=shutil.copy2)` for a directory
+/// and `shutil.copy2` for a file - the local path, used only when the website
+/// has no runtime user of its own.
+fn copy_tree(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    if source.is_dir() {
+        std::fs::create_dir_all(target)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &target.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(source, target).map(|_| ())
+    }
+}
+
+/// Source: `create_file` / `create_text_file` - an empty file.
+async fn create_file(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let name = match string_field(&payload, "name") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let parent_path = payload.get("path").and_then(Value::as_str).unwrap_or("");
+
+    let parent = match files::safe_path(&website.root_path, parent_path, true) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if parent.exists() && !parent.is_dir() {
+        return bad_request("Parent path is not a directory");
+    }
+    if std::fs::symlink_metadata(&parent)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return bad_request("Symlinks are not allowed");
+    }
+    let safe_name = match files::safe_entry_name(&name) {
+        Ok(n) => n,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    let target = parent.join(&safe_name);
+    if target.exists() {
+        return bad_request("File or folder already exists");
+    }
+    if let Err(e) = files::assert_write_allowed(
+        &target,
+        "Creating",
+        permissions::is_admin_role(&current.user.role),
+    ) {
+        return bad_request(&e.to_string());
+    }
+    // `quota_check(0, 0)`: zero incoming bytes, so this refuses only a
+    // customer who is *already* over their limit. That is deliberate in the
+    // Python - an account over quota should not be able to keep adding files,
+    // even empty ones.
+    if let Err(r) = quota_check(&state, &website, 0, 0).await {
+        return r;
+    }
+
+    let target_str = target.to_string_lossy().into_owned();
+    if let Err(r) = write_as_site_user(&state, &website, &target, "").await {
+        return r;
+    }
+    fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+    clear_fastcgi_cache(&state).await;
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "create_file",
+        &website.domain,
+        &target_str,
+    )
+    .await;
+    axum::Json(json!({ "target": target_str })).into_response()
+}
+
+/// Source: `write_file` / `write_text_file`.
+async fn write_file(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let relative = match string_field(&payload, "path") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let content = payload
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let target = match files::safe_path(&website.root_path, &relative, true) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if let Err(e) = files::assert_write_allowed(
+        &target,
+        "Writing",
+        permissions::is_admin_role(&current.user.role),
+    ) {
+        return bad_request(&e.to_string());
+    }
+    // The Python measures the encoded length, not the character count.
+    let content_size = content.len() as u64;
+    if content_size > files::MAX_TEXT_FILE_BYTES {
+        return bad_request("File content is too large");
+    }
+    if std::fs::symlink_metadata(&target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        // C36: never act through a symlink. A file the customer can edit that
+        // points at `/etc/nginx` is a file the customer can edit in
+        // `/etc/nginx`.
+        return bad_request("Refusing to write through a symlink");
+    }
+    if let Err(r) = quota_check(&state, &website, content_size, existing_file_size(&target)).await {
+        return r;
+    }
+
+    let target_str = target.to_string_lossy().into_owned();
+    if let Err(r) = write_as_site_user(&state, &website, &target, &content).await {
+        return r;
+    }
+    fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+    clear_fastcgi_cache(&state).await;
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "write_file",
+        &website.domain,
+        &target_str,
+    )
+    .await;
+    axum::Json(json!({ "target": target_str })).into_response()
+}
+
+/// Source: `_write_text_as_site_user`.
+///
+/// The content goes in on **stdin**, never in argv. C37: a file a customer is
+/// editing can hold anything, and a command line is visible in `ps` to every
+/// account on the machine.
+async fn write_as_site_user(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    target: &std::path::Path,
+    content: &str,
+) -> Result<(), Response> {
+    let Some(user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+        // Source: the `if not website.linux_user` branch - a plain local
+        // write, used on a development box with no site accounts.
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        return std::fs::write(target, content)
+            .map_err(|e| bad_request(&format!("Cannot write the file: {e}")));
+    };
+    let root = std::fs::canonicalize(&website.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+    let root_str = root.to_string_lossy().into_owned();
+    let relative = files::helper_relative_path(&website.root_path, target);
+    let target_str = target.to_string_lossy().into_owned();
+
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-file-write",
+        &[user, &root_str, &relative],
+        Some(content),
+        Some(&["tee", &target_str]),
+    )
+    .await;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(bad_request(
+            result.failure_detail("Cannot write the file").trim(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tree the corpus was generated over, rebuilt locally.
+    ///
+    /// Rebuilt rather than shipped, because what is being compared is what the
+    /// selection logic *picks*, and that needs real directories to walk.
+    fn build_transfer_tree(corpus: &Value, label: &str) -> std::path::PathBuf {
+        let site_root =
+            std::env::temp_dir().join(format!("transfer-test-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&site_root);
+        std::fs::create_dir_all(&site_root).expect("the site root");
+        let bytes = corpus["file_bytes"].as_u64().unwrap_or(100) as usize;
+        for entry in corpus["tree"].as_array().expect("the tree") {
+            let entry = entry.as_str().unwrap_or("");
+            let target = site_root.join(entry.trim_end_matches('/'));
+            if entry.ends_with('/') {
+                std::fs::create_dir_all(&target).expect("a directory");
+            } else {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).expect("a parent");
+                }
+                std::fs::write(&target, vec![b'x'; bytes]).expect("a file");
+            }
+        }
+        site_root
+    }
+
+    fn transfer_corpus() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/file_transfer.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the transfer corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// What `_transfer_sources` selects, and in what order.
+    ///
+    /// The order is not cosmetic: it is the order the copies happen in. And
+    /// the filtering is the part a hand-written version gets wrong - selecting
+    /// a folder *and* a file inside it has to copy the folder once, not copy
+    /// the folder and then drop the file into the destination's top level.
+    #[test]
+    fn a_selection_is_reduced_the_way_python_reduces_it() {
+        let corpus = transfer_corpus();
+        let site_root = build_transfer_tree(&corpus, "select");
+        let root_path = site_root.to_string_lossy().into_owned();
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in corpus["selections"].as_array().expect("the selections") {
+            let owned: Vec<String> = case["paths"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let paths: Vec<&str> = owned.iter().map(String::as_str).collect();
+            let got = transfer_sources(&root_path, &paths, "Copying", false, false);
+            let label = format!("{:?}", case["paths"]);
+
+            match (got, case.get("selected")) {
+                (Ok(picked), Some(want)) => {
+                    let want: Vec<String> = want
+                        .as_array()
+                        .expect("a list")
+                        .iter()
+                        .map(|v| v.as_str().unwrap_or("").to_string())
+                        .collect();
+                    let have: Vec<String> = picked
+                        .iter()
+                        .map(|p| {
+                            p.strip_prefix(&site_root)
+                                .unwrap_or(p)
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .collect();
+                    if have != want {
+                        failures.push(format!("{label}: python {want:?}, rust {have:?}"));
+                    }
+                    // Only selections made entirely of files are compared by
+                    // size. A directory's own inode size is filesystem
+                    // dependent - an empty one is 40 bytes on the box the
+                    // corpus came from and 4096 on plenty of others - so a
+                    // recorded total that includes one is not a number about
+                    // this code.
+                    if picked.iter().all(|p| p.is_file()) {
+                        let want_size = case["total_size"].as_u64().unwrap_or(0);
+                        let have_size = total_size(&picked);
+                        if have_size != want_size {
+                            failures.push(format!(
+                                "{label}: size python {want_size}, rust {have_size}"
+                            ));
+                        }
+                    }
+                }
+                (Err(detail), None) => {
+                    // The message matters: it is what the file manager shows.
+                    let want = case["error"].as_str().unwrap_or("");
+                    if detail != want {
+                        failures.push(format!("{label}: python {want:?}, rust {detail:?}"));
+                    }
+                }
+                (Ok(picked), None) => failures.push(format!(
+                    "{label}: python refused with {:?}, rust selected {} item(s)",
+                    case["error"],
+                    picked.len()
+                )),
+                (Err(detail), Some(want)) => {
+                    failures.push(format!("{label}: python {want:?}, rust refused {detail:?}"))
+                }
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&site_root);
+        assert!(
+            failures.is_empty(),
+            "{} disagree:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// `path_usage_bytes` over the same tree.
+    ///
+    /// The absolute totals are deliberately not compared - see above - so what
+    /// is asserted is what does not depend on the filesystem: a single file is
+    /// its own size, a missing path is zero, and a tree is bigger than the
+    /// subtree inside it.
+    #[test]
+    fn a_tree_is_measured_file_by_file() {
+        let corpus = transfer_corpus();
+        let site_root = build_transfer_tree(&corpus, "usage");
+        let bytes = corpus["file_bytes"].as_u64().unwrap_or(100);
+
+        use crate::storage_quota::path_usage_bytes;
+        assert_eq!(
+            path_usage_bytes(site_root.join("public_html/readme.txt")),
+            bytes
+        );
+        assert_eq!(path_usage_bytes(site_root.join("nope")), 0);
+
+        let whole = path_usage_bytes(&site_root);
+        let part = path_usage_bytes(site_root.join("public_html"));
+        // public_html holds four files of `bytes` each, plus directory inodes.
+        assert!(part >= 4 * bytes, "public_html measured {part}");
+        assert!(
+            whole > part,
+            "the whole tree {whole} is not bigger than {part}"
+        );
+
+        let _ = std::fs::remove_dir_all(&site_root);
+    }
+
+    /// The limit, and the message a customer reads when a write does not fit.
+    #[test]
+    fn the_quota_arithmetic_and_its_message_are_pythons() {
+        let corpus = transfer_corpus();
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in corpus["limits"].as_array().expect("the limits") {
+            let role = case["role"].as_str().unwrap_or("");
+            // Python's `int(user.storage_limit_mb or 0)` turns None into 0,
+            // and the Rust column is NOT NULL, so the None case is 0 here too.
+            let limit_mb = case["limit_mb"].as_i64().unwrap_or(0);
+            let want = case["limit_bytes"].as_u64();
+            let got = crate::storage_quota::user_storage_limit_bytes(role, limit_mb);
+            if got != want {
+                failures.push(format!("{role} {limit_mb}: python {want:?}, rust {got:?}"));
+            }
+        }
+
+        let mb = crate::storage_quota::BYTES_PER_MB;
+        for case in corpus["messages"].as_array().expect("the quota cases") {
+            let used = case["used"].as_u64().unwrap_or(0);
+            let limit = case["limit"].as_u64().unwrap_or(0);
+            let incoming = case["incoming"].as_u64().unwrap_or(0);
+            let replaced = case["replaced"].as_u64().unwrap_or(0);
+            let label = format!("{used}/{limit} +{incoming} -{replaced}");
+
+            let projected = used.saturating_sub(replaced) + incoming;
+            let want_projected = case["projected"].as_u64().unwrap_or(0);
+            if projected != want_projected {
+                failures.push(format!(
+                    "{label}: projected python {want_projected}, rust {projected}"
+                ));
+            }
+            let over = projected > limit;
+            if over != case["over"].as_bool().unwrap_or(false) {
+                failures.push(format!(
+                    "{label}: over python {}, rust {over}",
+                    case["over"]
+                ));
+            }
+            if over {
+                let message = format!(
+                    "Storage quota exceeded: {} MB used/projected, limit {} MB",
+                    projected / mb,
+                    limit / mb
+                );
+                let want = case["message"].as_str().unwrap_or("");
+                if message != want {
+                    failures.push(format!("{label}: python {want:?}, rust {message:?}"));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} disagree:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
 
     /// `validate_cron` is a hand-written port of a regular expression, which
     /// is where this stage has already been wrong once. The answers come from

@@ -80,6 +80,19 @@ fn stored() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Source: `addons.is_installed(addons.APPLICATION)`.
+///
+/// Read from the file every time rather than cached: an administrator turning
+/// the addon off has to take effect on the next request, and the file is one
+/// small read.
+pub fn application_installed() -> bool {
+    stored()
+        .get(APPLICATION)
+        .and_then(|record| record.get("installed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Source: `addons.state()` - the catalogue with each addon's record folded
 /// in, sorted by slug.
 fn addon_state() -> Vec<Value> {
@@ -362,7 +375,7 @@ async fn stop_app(dry_run: bool, app: &snpanel_db::SiteAppRow) -> Result<(), ()>
 
 /// Source: `site_apps.validate_name` - `^[a-z0-9][a-z0-9_-]{0,30}[a-z0-9]$` or
 /// a single `[a-z0-9]`, matched against the stripped, lowercased name.
-fn validate_app_name(name: &str) -> Option<String> {
+pub fn validate_app_name(name: &str) -> Option<String> {
     let value = name.trim().to_lowercase();
     let bytes = value.as_bytes();
     let alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();

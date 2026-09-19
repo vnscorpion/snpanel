@@ -31,6 +31,19 @@ impl<'a> SiteAppRepo<'a> {
         Self { pool }
     }
 
+    /// Source: `db.query(SiteApp).filter(SiteApp.owner_id == user.id).all()`.
+    pub async fn by_owner(&self, owner_id: i64) -> Result<Vec<SiteAppRow>, DbError> {
+        Ok(sqlx::query_as::<_, SiteAppRow>(
+            "SELECT site_apps.id AS id, site_apps.name AS name, \
+                    site_apps.owner_id AS owner_id, users.username AS owner_username \
+             FROM site_apps LEFT JOIN users ON users.id = site_apps.owner_id \
+             WHERE site_apps.owner_id = ? ORDER BY site_apps.id",
+        )
+        .bind(owner_id)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
     /// Source: `db.query(SiteApp).all()`.
     ///
     /// The Python does not order, and SQLite hands back rowid order for a
