@@ -10,7 +10,18 @@ description = "The root-privileged helper. Every privileged operation the panel 
 name = "snpanel-helper"
 path = "src/main.rs"
 
+# Unpacks a customer's archive with no privileges at all. Separate from the
+# helper on purpose: an archive is attacker-controlled input, so whatever
+# parses it must not be the process running as root. The helper runs this one
+# under `runuser` as the site's own user, which is what the bash does.
+[[bin]]
+name = "snpanel-extract"
+path = "src/bin/snpanel-extract.rs"
+
 [dependencies]
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
 snpanel-core = { path = "../snpanel-core" }
 snpanel-ipc = { path = "../snpanel-ipc" }
 snpanel-osabi = { path = "../snpanel-osabi" }

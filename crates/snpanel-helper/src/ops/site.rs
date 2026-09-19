@@ -250,6 +250,141 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// Where the unprivileged extractor is installed.
+const EXTRACTOR: &str = "/usr/local/sbin/snpanel-extract";
+
+/// `site-archive-extract`: unpack an archive inside a site.
+///
+/// The helper never parses the archive. It stages a copy the site user can
+/// read, runs [`EXTRACTOR`] as that user, puts the original back and fixes
+/// ownership. An archive is attacker-controlled input; whatever reads it must
+/// not be the process running as root.
+///
+/// The staging is not tidiness. An archive may contain an entry with its own
+/// filename, so the copy being read cannot be the copy that might be
+/// overwritten - which is also why the original is restored afterwards.
+pub fn archive_extract(
+    user: &PanelUsername,
+    root: &SitePath,
+    archive_relative: &str,
+    destination_relative: &str,
+    kind: snpanel_ipc::ArchiveKind,
+    max_items: u32,
+    max_bytes: u64,
+) -> HelperResponse {
+    if let Err(r) = guard(root) {
+        return r;
+    }
+    for fragment in [archive_relative, destination_relative] {
+        if let Err(message) = check_upload_relative(fragment) {
+            return HelperResponse::failed(HelperErrorKind::BadRequest, message);
+        }
+    }
+
+    let resolve = |fragment: &str| -> Result<SitePath, HelperResponse> {
+        let joined = root.as_path().join(fragment);
+        let p = SitePath::parse(&joined.to_string_lossy()).map_err(|_| {
+            HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!("path outside the site: {}", joined.display()),
+            )
+        })?;
+        if !p.as_path().starts_with(root.as_path()) {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!("path outside the site: {p}"),
+            ));
+        }
+        Ok(p)
+    };
+    let archive = match resolve(archive_relative) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let destination = match resolve(destination_relative) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let is_regular = |p: &SitePath| {
+        std::fs::symlink_metadata(p.as_path())
+            .is_ok_and(|m| m.is_file() && !m.file_type().is_symlink())
+    };
+    if !is_regular(&archive) {
+        return HelperResponse::failed(HelperErrorKind::NotFound, "archive not found".to_string());
+    }
+    let dest_ok = std::fs::symlink_metadata(destination.as_path())
+        .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
+    if !dest_ok {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "archive destination not found".to_string(),
+        );
+    }
+    if !std::path::Path::new(EXTRACTOR).is_file() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("the extractor is not installed: {EXTRACTOR}"),
+        );
+    }
+
+    // A copy the site user can read, outside the tree being written into.
+    let staged = format!("/tmp/snpanel-extract-{}", std::process::id());
+    let _ = std::fs::remove_file(&staged);
+    let out = exec::run(&[
+        "install",
+        "-o",
+        user.as_str(),
+        "-g",
+        user.as_str(),
+        "-m",
+        "0600",
+        "--",
+        archive.as_str(),
+        &staged,
+    ]);
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return exec::respond("install (staging the archive)", out);
+    }
+
+    let items = max_items.to_string();
+    let bytes = max_bytes.to_string();
+    let extracted = exec::run(&[
+        "runuser",
+        "-u",
+        user.as_str(),
+        "--",
+        EXTRACTOR,
+        &staged,
+        kind.as_str(),
+        destination.as_str(),
+        &items,
+        &bytes,
+    ]);
+
+    // Put the original back whatever happened: the archive may have named
+    // itself, and a failed extraction must not cost the customer the file
+    // they uploaded.
+    let _ = exec::run(&[
+        "install",
+        "-o",
+        user.as_str(),
+        "-g",
+        SITES_GROUP,
+        "-m",
+        "0644",
+        "--",
+        &staged,
+        archive.as_str(),
+    ]);
+    let _ = std::fs::remove_file(&staged);
+
+    if !matches!(&extracted, Ok(o) if o.ok()) {
+        return exec::respond("snpanel-extract", extracted);
+    }
+    fix_permissions(&destination, user)
+}
+
 /// `site-runtime-move`: move a site and rebuild its runtime at the new path.
 ///
 /// Source: the `site-runtime-move` arm. The old pool goes first: its name

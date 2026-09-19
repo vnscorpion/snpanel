@@ -238,36 +238,44 @@ Each stage states an **exit** that is a measurement, not an opinion. A stage
 is not finished because the code is written; it is finished when the number is
 reached.
 
-### Stage A - the helper's `site` domain
+### Stage A - the helper's `site` domain — **complete**
 
-**30 of 31 verbs are answered by Rust (96%).** Measured from `op_name()` and
-the dispatch table, not counted by hand:
+**31 of 31 verbs are answered by Rust.** Measured from `op_name()` and the
+dispatch table, not counted by hand.
 
-| | |
-|---|---|
-| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure`, `site-file-install`, `site-populate`, `wp`, `wp-site`, `site-runtime-delete`, `site-runtime-ensure`, `site-runtime-move`, and the five thin `site-app-*` verbs (`control`, `logs`, `compose-ps`, `compose-pull`, `volume-usage`, `dir-ensure`, `delete`, `pull`, `install-deps`, `rename`, `export`, `import`, `write` for the node and docker runtimes) |
-| variant declared, no implementation | none in this domain; `TerminalExec` is the last one anywhere |
-| not started | 1: `site-archive-extract`. `site-app-write`'s `compose` runtime also still falls through, because it writes a second file and resolves bind mounts |
-
-Two things the measurement corrected in this plan.
+Two things the work itself corrected in this plan:
 
 **The 27-verb figure counted `site-app-*` as part of this domain**, because
-the names share a prefix. They are Docker orchestration - compose, volumes,
-import and export - and nothing in `websites` or `maintenance` waits on them.
-The subset that actually blocks Stage C is seven verbs:
-`site-archive-extract`, `site-document-root-ensure`, `site-file-install`,
-`site-populate`, `site-runtime-move`, `site-runtime-ensure`,
-`site-runtime-delete`, plus `wp` and `wp-site` for WordPress sites. Doing
-those first is what shortens the critical path; the `site-app-*` group can
-follow with `provisioning` and `site_apps` in Stage E.
+the names share a prefix. They are Docker orchestration and nothing in
+`websites` or `maintenance` waited on them, so the critical path was shorter
+than it looked.
 
 **`site-path-fix` needed no work at all.** It is byte-for-byte the
-two-argument form of `fix-permissions`, so `SiteFixPermissions` already
-answers it. Checking before implementing is worth more here than anywhere
-else: the verbs are named as though they were all distinct.
+two-argument form of `fix-permissions`. Checking before implementing is worth
+more here than anywhere else: the verbs are named as though they were all
+distinct.
 
-**Exit:** every site verb outside the `site-app-*` group has an IPC variant
-and an implementation, and each shadow-diffs clean against the bash version.
+Two pieces deliberately still fall through to the bash, and are not counted
+as done:
+
+- **`site-app-write`'s `compose` runtime.** It writes a second file and
+  resolves bind mounts; the node and docker runtimes are here.
+- **nothing else.**
+
+`site-archive-extract` needed a second binary. An archive is
+attacker-controlled input, so the bash drops to the site's own user with
+`runuser` before touching it, and keeping that property ruled out three
+easier options: re-executing the helper needs it world-executable (it is
+0750 root:snpanel, and widening that to avoid shipping a small binary is the
+wrong trade); `fork` plus `setuid` is not safe from a threaded process when
+what follows allocates; and extracting as root then chowning gives up the
+containment entirely. So `snpanel-extract` is a program that needs no
+privileges, does one thing, and is run as the site user by the helper. It
+must be installed to `/usr/local/sbin/snpanel-extract` alongside the Rust
+helper in Stage B; until then the verb reports that it is missing and the
+bash answers.
+
+**Exit:** reached. Every site verb has an IPC variant and an implementation.
 
 ### Stage B — deploy the Rust helper *(critical path)*
 

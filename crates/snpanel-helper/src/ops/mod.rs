@@ -256,6 +256,23 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::SiteAppComposePs { user: u, app } => siteapp::compose_ps(u, app),
         HelperRequest::SiteAppComposePull { user: u, app } => siteapp::compose_pull(u, app),
         HelperRequest::SiteAppVolumeUsage { user: u } => siteapp::volume_usage(u),
+        HelperRequest::SiteArchiveExtract {
+            user: u,
+            root,
+            archive_relative,
+            destination_relative,
+            kind,
+            max_items,
+            max_bytes,
+        } => site::archive_extract(
+            u,
+            root,
+            archive_relative,
+            destination_relative,
+            *kind,
+            *max_items,
+            *max_bytes,
+        ),
         HelperRequest::SiteRuntimeMove {
             user: u,
             from,

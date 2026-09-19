@@ -46,6 +46,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # stderr - the panel captures the helper's stderr, so stderr-only logging
 # lives and dies inside one HTTP response.
 tracing-journald = "0.3"
+# Archive extraction for `site-archive-extract`. Both are used only by the
+# unprivileged `snpanel-extract` binary, never by the helper itself: an
+# archive is attacker-controlled input and a bug in a parser reading it must
+# not be a bug running as root.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
 rand = "0.8"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

@@ -47,6 +47,24 @@ pub enum ServiceAction {
     Status,
 }
 
+/// The two archive formats the panel unpacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveKind {
+    Zip,
+    #[serde(rename = "tar.gz")]
+    TarGz,
+}
+
+impl ArchiveKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::TarGz => "tar.gz",
+        }
+    }
+}
+
 /// How a site application is started.
 ///
 /// Source: the `--exec`, `--image` and related flags of `site-app-write`. A
@@ -458,6 +476,20 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Unpack an archive inside a site.
+    ///
+    /// The helper does not parse the archive: it runs `snpanel-extract` as
+    /// the site's own user. An archive is attacker-controlled input and this
+    /// process is root.
+    SiteArchiveExtract {
+        user: PanelUsername,
+        root: SitePath,
+        archive_relative: String,
+        destination_relative: String,
+        kind: ArchiveKind,
+        max_items: u32,
+        max_bytes: u64,
+    },
     /// Write an application's systemd unit.
     ///
     /// Only the node and docker runtimes. `compose` writes a second file and
@@ -820,6 +852,7 @@ impl HelperRequest {
             Self::SiteAppExport { .. } => "site-app-export",
             Self::SiteAppRename { .. } => "site-app-rename",
             Self::SiteAppWrite { .. } => "site-app-write",
+            Self::SiteArchiveExtract { .. } => "site-archive-extract",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",
