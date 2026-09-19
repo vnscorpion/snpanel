@@ -275,7 +275,23 @@ must be installed to `/usr/local/sbin/snpanel-extract` alongside the Rust
 helper in Stage B; until then the verb reports that it is missing and the
 bash answers.
 
-**Exit:** reached. Every site verb has an IPC variant and an implementation.
+**A correction, found while starting Stage B.** That exit was measured from
+`op_name()` and the dispatch table, and both said 31 of 31. Neither is what
+the panel calls. Every call site invokes `snpanel-helper <verb> <args>`, and
+the mapping from *that* to a request had 7 of the 31 - so 24 site verbs,
+including every `site-app-*`, `site-archive-extract`, `wp` and `wp-site`, were
+answered over a socket nothing used and handed straight back to the bash over
+the command line that everything uses. The measurement was true and the
+conclusion drawn from it was not: a verb is answered by Rust when the shape
+the caller uses reaches Rust, not when a variant exists for it.
+
+The mapping now covers all 31, and lives in `snpanel-ipc` rather than in the
+helper binary, because Stage B needs the identical one on the API side. What
+the two copies would have drifted about is which arguments are accepted for an
+operation that runs as root.
+
+**Exit:** reached. Every site verb has an IPC variant, an implementation, and
+a mapping from the command line the panel actually uses.
 
 ### Stage B — deploy the Rust helper *(critical path)*
 

@@ -15,6 +15,9 @@
 //! Phase 2 fills in all ~130 variants (plan Appendix B). The ones here are the
 //! set Phase 0/1 needs, plus enough of each domain to pin the shape.
 
+mod argv;
+pub use argv::InvocationError;
+
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
     AppName, DockerImage, Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString,

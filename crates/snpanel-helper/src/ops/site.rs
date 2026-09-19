@@ -1292,14 +1292,6 @@ pub enum LogKind {
 }
 
 impl LogKind {
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "access" => Some(Self::Access),
-            "error" => Some(Self::Error),
-            _ => None,
-        }
-    }
-
     fn suffix(&self) -> &'static str {
         match self {
             Self::Access => "access",
@@ -1950,15 +1942,6 @@ mod tests {
             log_path(&d, LogKind::Error).to_str().unwrap(),
             "/var/log/nginx/example.com.error.log"
         );
-    }
-
-    #[test]
-    fn only_the_two_log_kinds_parse() {
-        assert_eq!(LogKind::parse("access"), Some(LogKind::Access));
-        assert_eq!(LogKind::parse("error"), Some(LogKind::Error));
-        for bad in ["", "Access", "../../etc/passwd", "access.log"] {
-            assert!(LogKind::parse(bad).is_none(), "{bad:?}");
-        }
     }
 
     #[test]

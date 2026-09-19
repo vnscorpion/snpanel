@@ -440,13 +440,29 @@ install_ioncube_loader() {
   pkg_install ca-certificates curl tar >/dev/null
   tmp="$(mktemp -d)" || fail "Cannot create ionCube temporary directory"
   archive="${tmp}/ioncube_loaders.tar.gz"
-  if ! curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$archive"; then
-    rm -rf -- "$tmp"
-    fail "Failed to download ionCube Loader"
-  fi
+  # A slow CDN must not cost the whole installation. This function already
+  # skips when the architecture has no loader, and when the PHP version has
+  # none - so a missing loader is an outcome it is built to tolerate. Making
+  # a timeout fatal instead meant one 29MB download from a third party could
+  # end an install that had already configured nginx, PHP and the database.
+  # It is a commercial-code loader; nothing in the panel needs it.
+  local attempt
+  for attempt in 1 2 3; do
+    if curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$archive"; then
+      break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+      rm -rf -- "$tmp"
+      echo "Skipping ionCube Loader: download failed after ${attempt} attempts"
+      return 0
+    fi
+    echo "ionCube Loader download failed (attempt ${attempt}); retrying"
+    sleep 5
+  done
   if ! tar -xzf "$archive" -C "$tmp"; then
     rm -rf -- "$tmp"
-    fail "Failed to unpack ionCube Loader"
+    echo "Skipping ionCube Loader: the downloaded archive could not be unpacked"
+    return 0
   fi
   loader="${tmp}/ioncube/ioncube_loader_lin_${version}.so"
   if [[ ! -f "$loader" ]]; then
