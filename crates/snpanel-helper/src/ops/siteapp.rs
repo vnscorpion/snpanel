@@ -692,8 +692,436 @@ pub fn import(user: &PanelUsername, app: &AppName, source: &str) -> HelperRespon
     ))
 }
 
+/// The node application unit.
+///
+/// Built as a string so a test can read it. Every hardening directive here is
+/// load-bearing: `ProtectSystem=strict` with one `ReadWritePaths` is what
+/// keeps an application inside its own directory, and `HOST=127.0.0.1` is
+/// what stops one that binds whatever it likes from reaching a public
+/// interface. The firewall is the second layer, not the only one.
+#[allow(clippy::too_many_arguments)]
+pub fn node_unit_body(
+    app: &AppName,
+    user: &PanelUsername,
+    app_dir: &str,
+    env_file: &str,
+    port: u16,
+    memory_mb: u32,
+    bin_dir: &str,
+    exec_start: &str,
+    identifier: &str,
+) -> String {
+    format!(
+        "[Unit]\n\
+         Description=SNPanel application {app} ({user})\n\
+         After=network-online.target\n\
+         Wants=network-online.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         User={user}\n\
+         Group={user}\n\
+         WorkingDirectory={app_dir}\n\
+         EnvironmentFile=-{env_file}\n\
+         # HOST is forced so a misconfigured app cannot bind a public interface. The\n\
+         # firewall is the second layer here, not the only one.\n\
+         Environment=HOST=127.0.0.1\n\
+         Environment=NODE_ENV=production\n\
+         Environment=PORT={port}\n\
+         Environment=HOME=/home/{user}\n\
+         Environment=PATH={bin_dir}:/usr/local/bin:/usr/bin:/bin\n\
+         ExecStart={exec_start}\n\
+         Restart=always\n\
+         RestartSec=5\n\
+         MemoryAccounting=yes\n\
+         MemoryMax={memory_mb}M\n\
+         TasksMax=256\n\
+         LimitNOFILE=8192\n\
+         NoNewPrivileges=yes\n\
+         PrivateTmp=yes\n\
+         PrivateDevices=yes\n\
+         ProtectSystem=strict\n\
+         ProtectHome=read-only\n\
+         ReadWritePaths={app_dir}\n\
+         ProtectKernelTunables=yes\n\
+         ProtectKernelModules=yes\n\
+         ProtectKernelLogs=yes\n\
+         ProtectControlGroups=yes\n\
+         ProtectClock=yes\n\
+         RestrictSUIDSGID=yes\n\
+         RestrictRealtime=yes\n\
+         RestrictNamespaces=yes\n\
+         LockPersonality=yes\n\
+         StandardOutput=journal\n\
+         StandardError=journal\n\
+         SyslogIdentifier={identifier}\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n"
+    )
+}
+
+/// The container application unit.
+///
+/// The unit runs as root because it talks to the Docker socket. The
+/// *container* is the site's uid, drops every capability, cannot gain
+/// privileges and publishes on loopback only. A customer never gets socket
+/// access - that is equivalent to handing out root.
+#[allow(clippy::too_many_arguments)]
+pub fn docker_unit_body(
+    app: &AppName,
+    user: &PanelUsername,
+    container: &str,
+    app_dir: &str,
+    env_file: &str,
+    port: u16,
+    memory_mb: u32,
+    image: &str,
+    container_port: u16,
+    cpus: &str,
+    uid: u32,
+    gid: u32,
+    identifier: &str,
+) -> String {
+    format!(
+        "[Unit]\n\
+         Description=SNPanel container {app} ({user})\n\
+         After=network-online.target docker.service\n\
+         Requires=docker.service\n\
+         \n\
+         [Service]\n\
+         Type=exec\n\
+         ExecStartPre=-/usr/bin/docker rm -f {container}\n\
+         ExecStart=/usr/bin/docker run --rm --name {container} \\\n\
+         \x20 --user {uid}:{gid} \\\n\
+         \x20 --publish 127.0.0.1:{port}:{container_port} \\\n\
+         \x20 --env-file {env_file} \\\n\
+         \x20 --env PORT={container_port} \\\n\
+         \x20 --env HOST=0.0.0.0 \\\n\
+         \x20 --volume {app_dir}:/app \\\n\
+         \x20 --workdir /app \\\n\
+         \x20 --memory {memory_mb}m \\\n\
+         \x20 --memory-swap {memory_mb}m \\\n\
+         \x20 --cpus {cpus} \\\n\
+         \x20 --pids-limit 256 \\\n\
+         \x20 --cap-drop ALL \\\n\
+         \x20 --security-opt no-new-privileges \\\n\
+         \x20 --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \\\n\
+         \x20 {image}\n\
+         ExecStop=/usr/bin/docker stop --time 20 {container}\n\
+         Restart=always\n\
+         RestartSec=5\n\
+         TimeoutStartSec=300\n\
+         StandardOutput=journal\n\
+         StandardError=journal\n\
+         SyslogIdentifier={identifier}\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n"
+    )
+}
+
+/// Source: the `case` on `$app_exec` in `write_node_app_unit`.
+fn node_exec_start(
+    exec: snpanel_ipc::NodeExec,
+    bin_dir: &str,
+    arg: &str,
+) -> Result<String, String> {
+    use snpanel_ipc::NodeExec::*;
+    Ok(match exec {
+        Node => format!("{bin_dir}/node {arg}"),
+        Npm => format!("{bin_dir}/npm run --silent {arg}"),
+        Npx => format!("{bin_dir}/npx --yes {arg}"),
+        Yarn => {
+            if std::path::Path::new(&format!("{bin_dir}/yarn")).is_file() {
+                format!("{bin_dir}/yarn {arg}")
+            } else if std::path::Path::new("/usr/local/bin/yarn").is_file() {
+                format!("/usr/local/bin/yarn {arg}")
+            } else {
+                return Err("yarn is not installed; use npm instead".to_string());
+            }
+        }
+    })
+}
+
+/// Source: `^[A-Za-z0-9._@/-]{1,120}$`.
+fn check_start_arg(arg: &str) -> Result<(), String> {
+    if arg.is_empty()
+        || arg.len() > 120
+        || !arg
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'/' | b'-'))
+    {
+        return Err(format!("invalid start argument: {arg}"));
+    }
+    Ok(())
+}
+
+/// `site-app-write`, for the node and docker runtimes.
+pub fn write(
+    user: &PanelUsername,
+    app: &AppName,
+    runtime: &snpanel_ipc::AppRuntime,
+    port: u16,
+    memory_mb: u32,
+) -> HelperResponse {
+    let ensured = dir_ensure(user, app);
+    if !ensured.ok {
+        return ensured;
+    }
+    let app_dir = app_directory(user, app);
+    let env = env_file(user, app);
+    let unit = unit_name(user, app);
+    let unit_path = format!("/etc/systemd/system/{unit}.service");
+
+    // The env file the unit loads. `EnvironmentFile=-` so a missing one is
+    // not a startup failure.
+    if let Some(parent) = std::path::Path::new(&env).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if !std::path::Path::new(&env).exists() {
+        let _ = std::fs::write(&env, "");
+    }
+    let _ = exec::run(&["chown", "root:root", &env]);
+    let _ = exec::run(&["chmod", "0600", &env]);
+
+    let body = match runtime {
+        snpanel_ipc::AppRuntime::Node {
+            node_major,
+            exec: start,
+            arg,
+        } => {
+            if let Err(message) = check_start_arg(arg) {
+                return HelperResponse::failed(HelperErrorKind::BadRequest, message);
+            }
+            let Some(bin) = node_bin_dir(*node_major) else {
+                return HelperResponse::failed(
+                    HelperErrorKind::NotFound,
+                    format!(
+                        "Node {node_major} is not installed; run node-install {node_major} first"
+                    ),
+                );
+            };
+            let exec_start = match node_exec_start(*start, &bin, arg) {
+                Ok(s) => s,
+                Err(message) => return HelperResponse::failed(HelperErrorKind::NotFound, message),
+            };
+            node_unit_body(
+                app,
+                user,
+                &app_dir,
+                &env,
+                port,
+                memory_mb,
+                &bin,
+                &exec_start,
+                &unit,
+            )
+        }
+        snpanel_ipc::AppRuntime::Docker {
+            image,
+            container_port,
+            cpus_centi,
+        } => {
+            if !docker_present() {
+                return HelperResponse::failed(
+                    HelperErrorKind::NotFound,
+                    "Docker is not installed; run docker-install first".to_string(),
+                );
+            }
+            let (uid, gid) = match uid_gid_of(user) {
+                Some(pair) => pair,
+                None => {
+                    return HelperResponse::failed(
+                        HelperErrorKind::NotFound,
+                        format!("cannot resolve uid for {user}"),
+                    )
+                }
+            };
+            // Rendered from hundredths so the unit never carries a float that
+            // was produced by rounding somewhere else.
+            let cpus = format!("{}.{:02}", cpus_centi / 100, cpus_centi % 100);
+            docker_unit_body(
+                app,
+                user,
+                &container_name(user, app),
+                &app_dir,
+                &env,
+                port,
+                memory_mb,
+                image.as_str(),
+                container_port.get(),
+                &cpus,
+                uid,
+                gid,
+                &unit,
+            )
+        }
+    };
+
+    if let Err(e) = std::fs::write(&unit_path, body) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {unit_path}: {e}"),
+        );
+    }
+    let _ = exec::run(&["chown", "root:root", &unit_path]);
+    let _ = exec::run(&["chmod", "0644", &unit_path]);
+    let _ = exec::run(&["systemctl", "daemon-reload"]);
+    HelperResponse::with_stdout(format!("{unit}\n"))
+}
+
+/// Source: `id -u` and `id -g`.
+fn uid_gid_of(user: &PanelUsername) -> Option<(u32, u32)> {
+    let out = exec::run(&["getent", "passwd", user.as_str()]).ok()?;
+    let line = out.stdout.lines().next()?;
+    let mut parts = line.split(':');
+    let uid = parts.nth(2)?.parse().ok()?;
+    let gid = parts.next()?.parse().ok()?;
+    Some((uid, gid))
+}
+
 #[cfg(test)]
 mod tests {
+    /// Every hardening directive the bash writes must appear in ours.
+    ///
+    /// Taken from the helper script rather than typed here, so a directive
+    /// added there and forgotten here fails this test instead of silently
+    /// weakening one of the two.
+    #[test]
+    fn the_node_unit_keeps_every_hardening_directive() {
+        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../installer/files/snpanel-helper.sh");
+        let source = std::fs::read_to_string(&helper).expect("the helper must be readable");
+        // Only the heredoc body. Taking the whole function pulls in the
+        // shell's own assignments, which are not unit directives - the first
+        // version of this test failed on `bin_dir="$(...)"`.
+        let fn_start = source
+            .find("write_node_app_unit() {")
+            .expect("write_node_app_unit");
+        let doc_start = source[fn_start..]
+            .find("<<UNIT\n")
+            .map(|i| fn_start + i + "<<UNIT\n".len())
+            .expect("the heredoc starts");
+        let doc_end = source[doc_start..]
+            .find("\nUNIT\n")
+            .map(|i| doc_start + i)
+            .expect("the heredoc ends");
+        let template = &source[doc_start..doc_end];
+
+        let body = node_unit_body(
+            &AppName::parse("my-app").unwrap(),
+            &PanelUsername::parse("bp_site").unwrap(),
+            "/home/bp_site/apps/my-app",
+            "/var/lib/snpanel/apps/bp_site-my-app.env",
+            3000,
+            512,
+            "/opt/snpanel/node/22/bin",
+            "/opt/snpanel/node/22/bin/node server.js",
+            "snpanel-app-bp_site-my-app",
+        );
+
+        // Directives with no interpolation, so they can be compared literally.
+        let mut checked = 0;
+        for line in template.lines().map(str::trim) {
+            let is_directive = line.contains('=')
+                && !line.contains("${")
+                && !line.starts_with('#')
+                && !line.starts_with("local ")
+                && !line.starts_with("exec_start")
+                && !line.contains("|| deny");
+            if !is_directive {
+                continue;
+            }
+            assert!(
+                body.contains(line),
+                "the generated unit is missing `{line}`"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "only {checked} directives compared; the extractor has stopped matching"
+        );
+    }
+
+    /// The node application cannot be handed a public interface.
+    #[test]
+    fn the_node_unit_forces_loopback_and_its_own_directory() {
+        let body = node_unit_body(
+            &AppName::parse("my-app").unwrap(),
+            &PanelUsername::parse("bp_site").unwrap(),
+            "/home/bp_site/apps/my-app",
+            "/var/lib/snpanel/apps/bp_site-my-app.env",
+            3000,
+            512,
+            "/usr/bin",
+            "/usr/bin/node server.js",
+            "snpanel-app-bp_site-my-app",
+        );
+        assert!(body.contains("Environment=HOST=127.0.0.1"), "{body}");
+        assert!(body.contains("ProtectSystem=strict"), "{body}");
+        assert!(
+            body.contains("ReadWritePaths=/home/bp_site/apps/my-app"),
+            "exactly one writable path, and it is the app's own: {body}"
+        );
+        assert!(body.contains("User=bp_site") && body.contains("Group=bp_site"));
+        assert!(body.contains("MemoryMax=512M"));
+    }
+
+    /// The container's confinement, flag by flag.
+    #[test]
+    fn the_docker_unit_confines_the_container() {
+        let body = docker_unit_body(
+            &AppName::parse("my-app").unwrap(),
+            &PanelUsername::parse("bp_site").unwrap(),
+            "snpanel-bp_site-my-app",
+            "/home/bp_site/apps/my-app",
+            "/var/lib/snpanel/apps/bp_site-my-app.env",
+            3000,
+            512,
+            "nginx:alpine",
+            8080,
+            "1.00",
+            1001,
+            1001,
+            "snpanel-app-bp_site-my-app",
+        );
+
+        for required in [
+            "--user 1001:1001",
+            "--publish 127.0.0.1:3000:8080",
+            "--cap-drop ALL",
+            "--security-opt no-new-privileges",
+            "--pids-limit 256",
+            "--memory 512m",
+            "--memory-swap 512m",
+        ] {
+            assert!(body.contains(required), "missing `{required}`: {body}");
+        }
+        assert!(
+            !body.contains("/var/run/docker.sock") && !body.contains("--privileged"),
+            "the container must never reach the Docker socket: {body}"
+        );
+    }
+
+    /// A start argument is narrow, because it lands in an ExecStart line.
+    #[test]
+    fn a_start_argument_cannot_carry_a_shell_fragment() {
+        for good in [
+            "server.js",
+            "start",
+            "@scope/pkg",
+            "dist/main.js",
+            "build.prod",
+        ] {
+            assert!(check_start_arg(good).is_ok(), "{good:?}");
+        }
+        for bad in ["", "a b", "a;b", "a$(id)", "a\nb", "a|b", &"x".repeat(121)] {
+            assert!(check_start_arg(bad).is_err(), "{bad:?} must be refused");
+        }
+    }
+
     /// A path that leaves the backup tree is refused, however it leaves.
     #[test]
     fn a_backup_path_may_not_leave_the_backup_tree() {

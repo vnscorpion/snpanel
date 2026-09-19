@@ -221,6 +221,13 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteAppWrite {
+            user: u,
+            app,
+            runtime,
+            port,
+            memory_mb,
+        } => siteapp::write(u, app, runtime, port.get(), *memory_mb),
         HelperRequest::SiteAppRename { user: u, from, to } => siteapp::rename(u, from, to),
         HelperRequest::SiteAppExport { user: u, app, dest } => siteapp::export(u, app, dest),
         HelperRequest::SiteAppImport {

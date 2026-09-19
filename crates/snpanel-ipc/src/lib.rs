@@ -47,6 +47,53 @@ pub enum ServiceAction {
     Status,
 }
 
+/// How a site application is started.
+///
+/// Source: the `--exec`, `--image` and related flags of `site-app-write`. A
+/// node application names a start command and an argument; a container names
+/// an image, the port inside it and a CPU share. They are different shapes,
+/// so they are different variants rather than a struct of optionals where
+/// half the fields are meaningless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AppRuntime {
+    Node {
+        node_major: u8,
+        /// Source: the `case` on `$app_exec`.
+        exec: NodeExec,
+        /// Source: `^[A-Za-z0-9._@/-]{1,120}$`.
+        arg: String,
+    },
+    Docker {
+        image: DockerImage,
+        container_port: Port,
+        /// Whole CPUs, in hundredths, so "1.5" is 150. An integer because a
+        /// float in a unit file is a rounding argument waiting to happen.
+        cpus_centi: u32,
+    },
+}
+
+/// The four start commands a node application may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeExec {
+    Node,
+    Npm,
+    Npx,
+    Yarn,
+}
+
+impl NodeExec {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Npm => "npm",
+            Self::Npx => "npx",
+            Self::Yarn => "yarn",
+        }
+    }
+}
+
 /// What may be done to a site application's unit.
 ///
 /// Source: the `is_in` allowlist in `site-app-control`. Eight actions, and no
@@ -411,6 +458,18 @@ pub enum HelperRequest {
     },
 
     // --- site ---
+    /// Write an application's systemd unit.
+    ///
+    /// Only the node and docker runtimes. `compose` writes a second file and
+    /// resolves bind mounts; it stays in the bash until it can be done
+    /// properly, and the helper falls through for it.
+    SiteAppWrite {
+        user: PanelUsername,
+        app: AppName,
+        runtime: AppRuntime,
+        port: Port,
+        memory_mb: u32,
+    },
     /// Rename an application, moving its directory with it.
     SiteAppRename {
         user: PanelUsername,
@@ -760,6 +819,7 @@ impl HelperRequest {
             Self::SiteAppImport { .. } => "site-app-import",
             Self::SiteAppExport { .. } => "site-app-export",
             Self::SiteAppRename { .. } => "site-app-rename",
+            Self::SiteAppWrite { .. } => "site-app-write",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",

@@ -240,14 +240,14 @@ reached.
 
 ### Stage A - the helper's `site` domain
 
-**29 of 31 verbs are answered by Rust (93%).** Measured from `op_name()` and
+**30 of 31 verbs are answered by Rust (96%).** Measured from `op_name()` and
 the dispatch table, not counted by hand:
 
 | | |
 |---|---|
-| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure`, `site-file-install`, `site-populate`, `wp`, `wp-site`, `site-runtime-delete`, `site-runtime-ensure`, `site-runtime-move`, and the five thin `site-app-*` verbs (`control`, `logs`, `compose-ps`, `compose-pull`, `volume-usage`, `dir-ensure`, `delete`, `pull`, `install-deps`, `rename`, `export`, `import`) |
+| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix`, `site-document-root-ensure`, `site-file-install`, `site-populate`, `wp`, `wp-site`, `site-runtime-delete`, `site-runtime-ensure`, `site-runtime-move`, and the five thin `site-app-*` verbs (`control`, `logs`, `compose-ps`, `compose-pull`, `volume-usage`, `dir-ensure`, `delete`, `pull`, `install-deps`, `rename`, `export`, `import`, `write` for the node and docker runtimes) |
 | variant declared, no implementation | none in this domain; `TerminalExec` is the last one anywhere |
-| not started | 2: `site-app-write` and `site-archive-extract` |
+| not started | 1: `site-archive-extract`. `site-app-write`'s `compose` runtime also still falls through, because it writes a second file and resolves bind mounts |
 
 Two things the measurement corrected in this plan.
 
