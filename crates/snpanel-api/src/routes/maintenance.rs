@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use crate::auth::CurrentUser;
 use crate::backups;
-use crate::errors::{bad_request, internal_error, not_found};
+use crate::errors::{bad_request, conflict, internal_error, not_found};
 use crate::files;
 use crate::shell;
 use crate::state::AppState;
@@ -86,6 +86,26 @@ pub fn router() -> Router<AppState> {
         .route(
             "/maintenance/user-restore-backups",
             get(list_restore_backups).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backup-schedules",
+            get(list_backup_schedules)
+                .post(create_backup_schedule)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backup-schedules/{schedule_id}",
+            axum::routing::delete(delete_backup_schedule).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/sftp-targets",
+            get(list_sftp_targets)
+                .post(create_sftp_target)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/sftp-targets/{target_id}",
+            axum::routing::delete(delete_sftp_target).fallback(crate::fallback),
         )
 }
 
@@ -1045,4 +1065,530 @@ async fn list_restore_backups(State(state): State<AppState>, current: CurrentUse
     .await
     .unwrap_or_default();
     axum::Json(json!({ "directory": directory, "items": items })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// backup schedules and SFTP targets
+// ---------------------------------------------------------------------------
+
+/// Source: `BackupScheduleOut`, whose `user_ids` validator decodes the JSON
+/// the column holds. A column that will not parse becomes an empty list
+/// rather than an error, the same way the Python's `before` validator does.
+fn schedule_json(row: &snpanel_db::BackupSchedule) -> Value {
+    let user_ids: Vec<i64> = serde_json::from_str(&row.user_ids).unwrap_or_default();
+    json!({
+        "id": row.id,
+        "user_id": row.user_id,
+        "user_ids": user_ids,
+        "all_users": row.all_users,
+        "target_id": row.target_id,
+        "schedule": row.schedule,
+        "retention": row.retention,
+        "is_active": row.is_active,
+        "last_run_at": row.last_run_at,
+        "last_status": row.last_status,
+        "last_message": row.last_message,
+    })
+}
+
+/// Source: `SftpBackupTargetOut` - note what is *not* in it. The password and
+/// the private key are stored encrypted and never leave the server.
+fn sftp_json(row: &snpanel_db::SftpTarget) -> Value {
+    json!({
+        "id": row.id,
+        "name": row.name,
+        "host": row.host,
+        "port": row.port,
+        "username": row.username,
+        "remote_path": row.remote_path,
+        "is_active": row.is_active,
+        "host_key_type": row.host_key_type,
+        "host_key_fingerprint": row.host_key_fingerprint,
+    })
+}
+
+/// Source: `_validate_backup_schedule` - five fields, each `*` or one or two
+/// digits, optionally joined by `-`, `/` or `,`.
+fn validate_cron(value: &str) -> Option<String> {
+    let fields: Vec<&str> = value.split_whitespace().collect();
+    if fields.len() != 5 {
+        return None;
+    }
+    for field in &fields {
+        let mut terms = Vec::new();
+        let mut current = String::new();
+        for c in field.chars() {
+            if matches!(c, '-' | '/' | ',') {
+                terms.push(std::mem::take(&mut current));
+            } else {
+                current.push(c);
+            }
+        }
+        terms.push(current);
+        // The pattern needs at least one term, and a separator may not end
+        // the field: `1-` splits to ["1", ""], and "" matches nothing.
+        if terms.is_empty() {
+            return None;
+        }
+        for term in &terms {
+            let ok = term == "*"
+                || ((1..=2).contains(&term.len()) && term.bytes().all(|b| b.is_ascii_digit()));
+            if !ok {
+                return None;
+            }
+        }
+    }
+    Some(fields.join(" "))
+}
+
+async fn require_admin(current: &CurrentUser) -> Result<(), Response> {
+    if permissions::is_admin_role(&current.user.role) {
+        Ok(())
+    } else {
+        Err(crate::errors::not_enough_permissions())
+    }
+}
+
+/// Source: `list_backup_schedules`.
+async fn list_backup_schedules(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match state.db.backup_schedules().list().await {
+        Ok(rows) => axum::Json(rows.iter().map(schedule_json).collect::<Vec<_>>()).into_response(),
+        Err(e) => {
+            tracing::error!("listing backup schedules failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// Source: `create_backup_schedule`.
+async fn create_backup_schedule(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let all_users = payload
+        .get("all_users")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // `payload.user_ids or ([payload.user_id] if payload.user_id else [])`
+    let mut user_ids: Vec<i64> = if all_users {
+        Vec::new()
+    } else {
+        let listed: Vec<i64> = payload
+            .get("user_ids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_i64).collect())
+            .unwrap_or_default();
+        if listed.is_empty() {
+            payload
+                .get("user_id")
+                .and_then(Value::as_i64)
+                .filter(|id| *id != 0)
+                .map(|id| vec![id])
+                .unwrap_or_default()
+        } else {
+            listed
+        }
+    };
+    user_ids.retain(|id| *id > 0);
+    user_ids.sort_unstable();
+    user_ids.dedup();
+
+    let mut usernames: Vec<String> = Vec::new();
+    if !all_users {
+        if user_ids.is_empty() {
+            return bad_request("Select at least one user");
+        }
+        let mut missing: Vec<String> = Vec::new();
+        for id in &user_ids {
+            match state.db.users().by_id(*id).await {
+                Ok(Some(u)) => usernames.push(u.username),
+                Ok(None) => missing.push(id.to_string()),
+                Err(e) => {
+                    tracing::error!("user lookup failed: {e}");
+                    return internal_error();
+                }
+            }
+        }
+        if !missing.is_empty() {
+            return not_found(&format!("User not found: {}", missing.join(", ")));
+        }
+    }
+
+    let target_id = payload
+        .get("target_id")
+        .and_then(Value::as_i64)
+        .filter(|id| *id != 0);
+    if let Some(id) = target_id {
+        match state.db.sftp_targets().active_exists(id).await {
+            Ok(true) => {}
+            Ok(false) => return not_found("SFTP target not found"),
+            Err(e) => {
+                tracing::error!("SFTP target lookup failed: {e}");
+                return internal_error();
+            }
+        }
+    }
+
+    let schedule_raw = payload
+        .get("schedule")
+        .and_then(Value::as_str)
+        .unwrap_or("0 2 * * *");
+    let Some(schedule) = validate_cron(schedule_raw) else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "value_error",
+            "loc": ["body", "schedule"],
+            "msg": "Value error, Invalid cron schedule",
+            "input": schedule_raw,
+        })]);
+    };
+    let retention = payload
+        .get("retention")
+        .and_then(Value::as_i64)
+        .unwrap_or(7);
+    if !(1..=365).contains(&retention) {
+        let (kind, msg, ctx) = if retention < 1 {
+            (
+                "greater_than_equal",
+                "Input should be greater than or equal to 1",
+                json!({"ge": 1}),
+            )
+        } else {
+            (
+                "less_than_equal",
+                "Input should be less than or equal to 365",
+                json!({"le": 365}),
+            )
+        };
+        return crate::errors::validation_error(vec![json!({
+            "type": kind,
+            "loc": ["body", "retention"],
+            "msg": msg,
+            "input": retention,
+            "ctx": ctx,
+        })]);
+    }
+    let is_active = payload
+        .get("is_active")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let user_ids_json = serde_json::to_string(&user_ids).unwrap_or_else(|_| "[]".into());
+    let created = match state
+        .db
+        .backup_schedules()
+        .create(
+            user_ids.first().copied(),
+            &user_ids_json,
+            all_users,
+            target_id,
+            &schedule,
+            retention,
+            is_active,
+        )
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => {
+            tracing::error!("creating a backup schedule failed: {e}");
+            return internal_error();
+        }
+    };
+
+    let target = if all_users {
+        "all_users".to_string()
+    } else {
+        usernames.join(",")
+    };
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "create_backup_schedule",
+        &target,
+    )
+    .await;
+    axum::Json(schedule_json(&created)).into_response()
+}
+
+/// Source: `delete_backup_schedule`.
+async fn delete_backup_schedule(
+    State(state): State<AppState>,
+    AxumPath(schedule_id): AxumPath<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match state.db.backup_schedules().delete(schedule_id).await {
+        Ok(true) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "delete_backup_schedule",
+                &schedule_id.to_string(),
+            )
+            .await;
+            axum::Json(json!({ "ok": true })).into_response()
+        }
+        Ok(false) => not_found("Backup schedule not found"),
+        Err(e) => {
+            tracing::error!("deleting a backup schedule failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// Source: `list_sftp_targets`.
+async fn list_sftp_targets(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match state.db.sftp_targets().list().await {
+        Ok(rows) => axum::Json(rows.iter().map(sftp_json).collect::<Vec<_>>()).into_response(),
+        Err(e) => {
+            tracing::error!("listing SFTP targets failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// Source: `create_sftp_target`.
+///
+/// The password and the private key are encrypted here, with the panel's own
+/// key, before they reach the database layer - which does not hold that key
+/// and therefore cannot be called in a way that stores them in the clear.
+async fn create_sftp_target(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let name = match string_field(&payload, "name") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if !(2..=100).contains(&name.chars().count())
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b' ' | b'-'))
+    {
+        return crate::errors::validation_error(vec![json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["body", "name"],
+            "msg": "String should match pattern '^[A-Za-z0-9._ -]+$'",
+            "input": name,
+            "ctx": { "pattern": "^[A-Za-z0-9._ -]+$" },
+        })]);
+    }
+    let host = match string_field(&payload, "host") {
+        Ok(v) => v.trim().to_string(),
+        Err(r) => return r,
+    };
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+    {
+        return crate::errors::validation_error(vec![json!({
+            "type": "value_error",
+            "loc": ["body", "host"],
+            "msg": "Value error, Invalid SFTP host",
+            "input": host,
+        })]);
+    }
+    let username = match string_field(&payload, "username") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let port = payload.get("port").and_then(Value::as_i64).unwrap_or(22);
+    if !(1..=65535).contains(&port) {
+        return crate::errors::validation_error(vec![json!({
+            "type": "less_than_equal",
+            "loc": ["body", "port"],
+            "msg": "Input should be less than or equal to 65535",
+            "input": port,
+            "ctx": { "le": 65535 },
+        })]);
+    }
+    let remote_path = payload
+        .get("remote_path")
+        .and_then(Value::as_str)
+        .unwrap_or("/backups/snpanel")
+        .to_string();
+    let password = payload
+        .get("password")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let private_key = payload
+        .get("private_key")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    if password.is_none() && private_key.is_none() {
+        return bad_request("SFTP password or private key is required");
+    }
+
+    match state.db.sftp_targets().name_taken(&name).await {
+        Ok(true) => return conflict("SFTP target name already exists"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!("SFTP target lookup failed: {e}");
+            return internal_error();
+        }
+    }
+
+    let key = &state.settings.secret_key;
+    let encrypted_password = password.map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+    let encrypted_key = private_key.map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+
+    match state
+        .db
+        .sftp_targets()
+        .create(
+            &name,
+            &host,
+            port,
+            &username,
+            encrypted_password.as_deref(),
+            encrypted_key.as_deref(),
+            &remote_path,
+        )
+        .await
+    {
+        Ok(row) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "create_sftp_target",
+                &row.name,
+            )
+            .await;
+            axum::Json(sftp_json(&row)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("creating an SFTP target failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// Source: `delete_sftp_target`.
+async fn delete_sftp_target(
+    State(state): State<AppState>,
+    AxumPath(target_id): AxumPath<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match state.db.sftp_targets().delete(target_id).await {
+        Ok(Some(name)) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "delete_sftp_target",
+                &name,
+            )
+            .await;
+            axum::Json(json!({ "ok": true })).into_response()
+        }
+        Ok(None) => not_found("SFTP target not found"),
+        Err(e) => {
+            tracing::error!("deleting an SFTP target failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `validate_cron` is a hand-written port of a regular expression, which
+    /// is where this stage has already been wrong once. The answers come from
+    /// the real `_validate_backup_schedule` rather than from re-reading the
+    /// pattern that produced the port.
+    #[test]
+    fn the_cron_validator_agrees_with_python() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/cron_schedule.json");
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the cron corpus"))
+                .expect("the corpus parses");
+        assert!(cases.len() > 100, "the corpus shrank to {}", cases.len());
+        let accepted = cases
+            .iter()
+            .filter(|c| c["ok"].as_bool().unwrap_or(false))
+            .count();
+        assert!(
+            accepted > 20,
+            "only {accepted} accepted; a corpus that refuses everything would \
+             pass a validator that refuses everything"
+        );
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in &cases {
+            let input = case["input"].as_str().expect("an input");
+            let python_ok = case["ok"].as_bool().expect("a verdict");
+            match (validate_cron(input), python_ok) {
+                (Some(got), true) => {
+                    let want = case["value"].as_str().unwrap_or("");
+                    if got != want {
+                        failures.push(format!("{input:?}: python {want:?}, rust {got:?}"));
+                    }
+                }
+                (None, false) => {}
+                (Some(got), false) => failures.push(format!(
+                    "{input:?}: rust ACCEPTED as {got:?}, python refused"
+                )),
+                (None, true) => failures.push(format!("{input:?}: rust refused, python accepted")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+    }
 }

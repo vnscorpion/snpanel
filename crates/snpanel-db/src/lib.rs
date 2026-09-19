@@ -23,11 +23,13 @@ use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+pub mod backups;
 pub mod databases;
 pub mod packages;
 pub mod users;
 pub mod websites;
 
+pub use backups::{BackupSchedule, BackupScheduleRepo, SftpTarget, SftpTargetRepo};
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use users::{AuditEntry, AuditRepo, RevokedTokenRepo, User, UserFields, UserRepo};
@@ -143,6 +145,14 @@ impl Database {
 
     pub fn databases(&self) -> DatabaseRepo<'_> {
         DatabaseRepo::new(&self.pool)
+    }
+
+    pub fn backup_schedules(&self) -> BackupScheduleRepo<'_> {
+        BackupScheduleRepo::new(&self.pool)
+    }
+
+    pub fn sftp_targets(&self) -> SftpTargetRepo<'_> {
+        SftpTargetRepo::new(&self.pool)
     }
 
     pub fn websites(&self) -> WebsiteRepo<'_> {
