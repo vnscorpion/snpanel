@@ -66,16 +66,26 @@ looks least impressive in a status report.
 
 ## 3. What is not being ported
 
-Eight verbs have no caller anywhere — not the Python backend, not the Rust
-crates, not `update.sh`:
+**Five verbs had no caller and have been removed**: `chown-www`,
+`docker-firewall-guard`, `malware-scan-server-estimate`,
+`site-app-volume-list`, `waf-site-rules`. The helper went from 6,030 to 5,993
+lines, and **112 live verbs** remain.
 
-`certbot-renew-soon`, `chown-www`, `docker-firewall-guard`, `maldet-report`,
-`malware-scan-server-estimate`, `site-app-volume-list`, `waf-crs-install`,
-`waf-site-rules`.
+An earlier version of this section listed eight, and getting that wrong is the
+part worth keeping:
 
-Porting dead code is how dead code survives. Delete them from the bash in a
-change of their own, so the deletion is reviewable separately from any port.
-That leaves **109 live verbs**.
+- **`certbot-renew-soon` is alive and load-bearing.** It is invoked daily by
+  `snpanel-ssl-auto-renew.service`, a unit the helper writes itself inside a
+  heredoc, so no search for a *caller* finds it. Deleting it would have
+  stopped certificate renewal on every installed server, silently, and shown
+  up months later as an expired certificate.
+- **`maldet-report` and `waf-crs-install`** have no caller either, but a test
+  asserts each one exists. Removing a feature a test deliberately pins is a
+  product decision rather than cleanup, so they are left alone and named here.
+
+The rule this produced: before deleting anything, look for its name inside
+generated text - units, timers, cron entries, heredocs - and on a running
+server, not only in the source.
 
 ---
 
@@ -116,7 +126,7 @@ is a defect in the bash it replaces:
   "nginx says the config is bad" from "nginx is not installed" without
   parsing English out of stderr.
 
-93 variants are defined; 109 live verbs need one.
+93 variants are defined; 112 live verbs need one.
 
 ---
 
@@ -267,10 +277,9 @@ cron, logs — rather than attempting it whole.
 
 Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 `certbot` (6), `maldet` (6), `clamav` (4), `docker` (4), `ipv6` (4), `updates`
-(4), `cron` (2), `time` (2), `node` (2), and the singletons. Delete the eight
-dead verbs in §3 rather than porting them.
+(4), `cron` (2), `time` (2), `node` (2), and the singletons. The five dead verbs in §3 are already gone.
 
-**Exit:** 109 live verbs answered by Rust; the bash helper is no longer
+**Exit:** 112 live verbs answered by Rust; the bash helper is no longer
 installed on new installations.
 
 ### Stage E — the remaining routers
@@ -348,13 +357,13 @@ two-process concern rather than a one-process one.
 
 ## Appendix B — the bash surface, by domain
 
-117 verbs, of which 109 are live (§3). Ordered by size; "rust" means the
+112 verbs, after the five removed in §3. Ordered by size; "rust" means the
 `ops` module exists, not that the verbs are implemented.
 
 | domain | verbs | rust module |
 |---|---|---|
-| `site` | 27 | yes |
-| `waf` | 12 | yes |
+| `site` | 26 | yes |
+| `waf` | 11 | yes |
 | `panel` | 9 | — |
 | `certbot` | 6 | — |
 | `maldet` | 6 | — |

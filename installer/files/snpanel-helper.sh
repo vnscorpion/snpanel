@@ -4486,11 +4486,6 @@ case "$cmd" in
   waf-custom-save)
     save_waf_custom_rules
     ;;
-  waf-site-rules)
-    [[ $# -eq 1 ]] || deny "usage: waf-site-rules <domain>"
-    require_domain "$1"
-    exec cat "/etc/nginx/modsec/sites/${1}.conf"
-    ;;
   waf-site-save)
     [[ $# -eq 1 ]] || deny "usage: waf-site-save <domain>"
     save_waf_site_rules "$1"
@@ -4632,11 +4627,6 @@ case "$cmd" in
     # runs the scanner and leaves its output where the panel can read it.
     [[ $# -eq 1 ]] || deny "usage: malware-scan-server <job-id>"
     run_malware_server_scan "$1"
-    ;;
-
-  malware-scan-server-estimate)
-    [[ $# -eq 0 ]] || deny "usage: malware-scan-server-estimate"
-    printf 'total=%s\n' "$(malware_scan_file_list | wc -l)"
     ;;
 
   ipv6-status)
@@ -5040,17 +5030,6 @@ PY
     ;;
 
   # ---- filesystem -------------------------------------------------------
-  chown-www)
-    [[ $# -eq 1 ]] || deny "usage: chown-www <path>"
-    target=$(require_managed_path "$1")
-    chown -R "${WEB_USER}:${WEB_GROUP}" "$target"
-    find "$target" -type d -exec chmod 755 {} +
-    find "$target" -type d -exec chmod a-s {} + 2>/dev/null || true
-    find "$target" -type d -exec chmod -t {} + 2>/dev/null || true
-    find "$target" -type f -exec chmod 644 {} +
-    protect_site_secret_tree "$target"
-    ;;
-
   fix-permissions)
     [[ $# -ge 1 && $# -le 2 ]] || deny "usage: fix-permissions <path> [site-user]"
     target=$(require_managed_path "$1" "${2:-}")
@@ -5861,16 +5840,6 @@ PY
     echo "$total"
     ;;
 
-  site-app-volume-list)
-    [[ $# -eq 2 ]] || deny "usage: site-app-volume-list <owner-user> <name>"
-    user="$1"; app_name="$2"
-    require_linux_user "$user"
-    require_app_name "$app_name"
-    command -v docker >/dev/null 2>&1 || exit 0
-    docker volume ls --format '{{.Name}}' 2>/dev/null \
-      | grep -E "^$(app_container_name "$user" "$app_name")_" || true
-    ;;
-
   site-app-control)
     [[ $# -eq 3 ]] || deny "usage: site-app-control <owner-user> <name> <action>"
     user="$1"; app_name="$2"; app_action="$3"
@@ -6006,12 +5975,6 @@ PY
     docker builder prune -f 2>&1 || true
     echo "--- remaining ---"
     docker system df --format '{{.Type}}|{{.Size}}|{{.Reclaimable}}' 2>/dev/null || true
-    ;;
-
-  docker-firewall-guard)
-    [[ $# -eq 0 ]] || deny "usage: docker-firewall-guard"
-    install_docker_firewall_guard
-    echo "Docker inbound guard applied"
     ;;
 
   node-install)
