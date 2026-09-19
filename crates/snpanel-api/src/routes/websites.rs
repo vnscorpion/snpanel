@@ -59,6 +59,18 @@ pub fn router() -> Router<AppState> {
                 .fallback(crate::fallback),
         )
         .route(
+            "/websites/{website_id}/http-flood",
+            axum::routing::patch(set_http_flood).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/fix-nginx-security",
+            axum::routing::post(fix_nginx_security).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/nginx-config/reset",
+            axum::routing::post(reset_nginx_config).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/waf",
             axum::routing::patch(set_waf).fallback(crate::fallback),
         )
@@ -780,6 +792,23 @@ struct RewriteOverrides {
     custom_directives: Option<String>,
 }
 
+/// `log_action(db, user.id, action, target)` - a detail of `""` and no
+/// request, which is how these two endpoints call it.
+///
+/// `packages::audit_action` is the other shape, with `ip=` and `ua=` and no
+/// detail. Both exist in the Python and which one is right differs per
+/// endpoint; this is the one the Python uses here.
+async fn audit_website(state: &AppState, actor_id: i64, action: &str, target: &str) {
+    if let Err(e) = state
+        .db
+        .audits()
+        .log(Some(actor_id), action, target, "")
+        .await
+    {
+        tracing::error!("could not write the {action} audit entry: {e}");
+    }
+}
+
 /// Source: `_rewrite_website_vhost` followed by `nginx.rewrite_vhost`.
 ///
 /// The overrides matter because the caller often knows something the database
@@ -1201,7 +1230,11 @@ async fn may_manage_waf(state: &AppState, current: &CurrentUser) -> bool {
 /// Under `COMMAND_DRY_RUN` the Python renders the replacement against a stub
 /// server block and returns without touching anything, which is why a dry run
 /// does not need the file to exist.
-async fn update_waf_block(state: &AppState, domain: &str, enabled: bool) -> Result<(), Response> {
+pub(super) async fn update_waf_block(
+    state: &AppState,
+    domain: &str,
+    enabled: bool,
+) -> Result<(), Response> {
     if state.settings.command_dry_run {
         return Ok(());
     }
@@ -1322,9 +1355,456 @@ async fn set_waf(
     }
 }
 
+/// Source: `_sync_http_flood_zones` - re-render the server-wide zone file
+/// from **every** website, not just the one being changed.
+///
+/// It has to be every one: the file is shared, so writing it from a single
+/// site would drop the zones of all the others, and the next reload would fail
+/// for every vhost that names one.
+async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
+    let websites = state.db.websites().list(None, "").await.map_err(|e| {
+        tracing::error!("listing websites for the flood zones failed: {e}");
+        internal_error()
+    })?;
+
+    let configs: Vec<(String, bool, snpanel_nginx::HttpFloodConfig)> = websites
+        .iter()
+        .map(|w| {
+            (
+                w.domain.clone(),
+                w.http_flood_enabled,
+                crate::waf::http_flood_config(w),
+            )
+        })
+        .collect();
+    let sites: Vec<snpanel_nginx::FloodSite<'_>> = configs
+        .iter()
+        .map(|(domain, enabled, config)| snpanel_nginx::FloodSite {
+            domain,
+            enabled: *enabled,
+            config: *config,
+        })
+        .collect();
+    let content =
+        snpanel_nginx::render_http_flood_zones(&sites).map_err(|e| bad_request(&e.to_string()))?;
+
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "http-flood-zones-save",
+        &[],
+        Some(&content),
+        Some(&[
+            "bash",
+            "-lc",
+            "cat >/tmp/snpanel-http-flood-zones.conf && echo HTTP flood zones saved",
+        ]),
+    )
+    .await;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(bad_request(
+            result
+                .failure_detail("Could not save HTTP flood zones")
+                .trim(),
+        ))
+    }
+}
+
+/// Re-render this site's WAF rule file from its stored flags.
+///
+/// Shared by the two endpoints below, which both start by bringing the rule
+/// file up to date before they touch the vhost.
+async fn resync_site_waf(state: &AppState, website: &snpanel_db::Website) -> Result<(), Response> {
+    let result =
+        crate::waf::sync_website_rules(state.settings.command_dry_run, website, &server_crs_mode())
+            .await
+            .map_err(|e| bad_request(&e.to_string()))?;
+    if !result.ok() {
+        return Err(bad_request(
+            result.failure_detail("Could not write WAF rules").trim(),
+        ));
+    }
+    Ok(())
+}
+
+/// Source: `fix_nginx_security`.
+///
+/// Note what this is *not*: it does not look the site up through
+/// `_get_authorized_website`. It fetches first and decides after, so an id
+/// that does not exist is a 404 for an administrator and a customer alike.
+async fn fix_nginx_security(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = resync_site_waf(&state, &website).await {
+        return r;
+    }
+    // Only when this site has flood protection on. The file is shared, but
+    // the Python does not re-render it for a site that contributes nothing.
+    if website.http_flood_enabled {
+        if let Err(r) = sync_http_flood_zones(&state).await {
+            return r;
+        }
+    }
+    let target = match rewrite_website_vhost(&state, &website, RewriteOverrides::default()).await {
+        Ok(path) => path,
+        Err(r) => return r,
+    };
+
+    audit_website(
+        &state,
+        current.user.id,
+        "fix_nginx_security",
+        &website.domain,
+    )
+    .await;
+    axum::Json(json!({
+        "message": format!("Rewrote Nginx security template for {}", website.domain),
+        "path": target,
+    }))
+    .into_response()
+}
+
+/// Source: `reset_website_nginx_config` - throw away the customer's own
+/// directives and go back to the managed template.
+///
+/// Administrator only, unlike `fix-nginx-security`: this discards whatever the
+/// site owner wrote in the custom block, and `ensure_role` is checked *before*
+/// the website is looked up, so a customer gets a 403 rather than learning
+/// whether the id exists.
+async fn reset_nginx_config(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return not_enough_permissions();
+    }
+    let website = match state.db.websites().by_id(website_id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("website lookup failed: {e}");
+            return internal_error();
+        }
+    };
+
+    if let Err(r) = resync_site_waf(&state, &website).await {
+        return r;
+    }
+    if website.http_flood_enabled {
+        if let Err(r) = sync_http_flood_zones(&state).await {
+            return r;
+        }
+    }
+    // The empty custom block is the whole point: the vhost is rewritten with
+    // nothing from the customer in it, and only then is the column cleared.
+    // Clearing the column first would leave a site whose stored config says
+    // "managed" while the file on disk still carries the old directives.
+    if let Err(r) = rewrite_website_vhost(
+        &state,
+        &website,
+        RewriteOverrides {
+            custom_directives: Some(String::new()),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    {
+        return r;
+    }
+
+    if let Err(e) = state.db.websites().reset_nginx_custom(website.id).await {
+        tracing::error!("clearing the custom nginx block failed: {e}");
+        return internal_error();
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "reset_nginx_config",
+        &website.domain,
+    )
+    .await;
+
+    match state.db.websites().by_id(website.id).await {
+        Ok(Some(fresh)) => single(&state, fresh).await,
+        Ok(None) => not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("re-reading the website failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// `json.dumps(config, ensure_ascii=True)` for the flood config, byte for
+/// byte.
+///
+/// Two things serde would get wrong on its own: Python's default separators
+/// put a space after the comma and after the colon, and the key order is the
+/// dict's insertion order from `validate_http_flood_config` rather than
+/// alphabetical. Both parse back the same; both are what a shadow diff
+/// compares in the `http_flood_config` column.
+fn flood_config_json(config: &snpanel_nginx::HttpFloodConfig) -> String {
+    format!(
+        "{{\"access_limit_requests\": {}, \"access_limit_window\": {}, \
+         \"access_limit_burst\": {}, \"connection_limit\": {}}}",
+        config.access_limit_requests,
+        config.access_limit_window,
+        config.access_limit_burst,
+        config.connection_limit
+    )
+}
+
+/// Source: `nginx.update_http_flood_block`.
+async fn update_http_flood_block(
+    state: &AppState,
+    domain: &str,
+    enabled: bool,
+    config: &snpanel_nginx::HttpFloodConfig,
+) -> Result<(), Response> {
+    if state.settings.command_dry_run {
+        return Ok(());
+    }
+    let Some(path) = vhost_path(state, domain) else {
+        return Err(bad_request("Invalid domain"));
+    };
+    let Some(existing) = read_vhost(state, domain).await else {
+        return Err(bad_request(&path.to_string_lossy()));
+    };
+    let updated =
+        match snpanel_nginx::replace_http_flood_block(&existing, enabled, Some(domain), config) {
+            Ok(text) => text,
+            Err(e) => return Err(bad_request(&e.to_string())),
+        };
+    apply_vhost(
+        state,
+        &snpanel_nginx::VhostPlan {
+            path,
+            content: updated,
+            previous: Some(existing),
+            custom_include: String::new(),
+            custom_include_path: String::new(),
+        },
+    )
+    .await
+}
+
+/// Source: `_http_flood_payload_config`, with the ranges pydantic enforces.
+///
+/// Out of range is a **422**, not a clamp: `validate_http_flood_config` does
+/// clamp, but pydantic has already refused anything outside the bounds before
+/// it runs, so the clamp only ever sees values that are already inside them.
+fn flood_payload_config(payload: &Value) -> Result<snpanel_nginx::HttpFloodConfig, Response> {
+    let field = |name: &str, default: i64, min: i64, max: i64| -> Result<i64, Response> {
+        let Some(raw) = payload.get(name) else {
+            return Ok(default);
+        };
+        let Some(value) = raw.as_i64() else {
+            return Err(crate::errors::int_parsing(name, raw));
+        };
+        crate::errors::check_range(name, value, min, max)?;
+        Ok(value)
+    };
+    Ok(snpanel_nginx::HttpFloodConfig {
+        access_limit_requests: field("access_limit_requests", 100, 1, 100_000)?,
+        access_limit_window: field("access_limit_window", 10, 1, 3_600)?,
+        access_limit_burst: field("access_limit_burst", 100, 0, 100_000)?,
+        connection_limit: field("connection_limit", 60, 1, 10_000)?,
+    })
+}
+
+/// Source: `set_website_http_flood`.
+///
+/// The order of the two writes is **asymmetric and deliberate**. Turning the
+/// feature on writes the shared zone file first and then the vhost block,
+/// because the block names a zone by name and nginx refuses a configuration
+/// that references one which does not exist. Turning it off does the reverse:
+/// the reference goes first, then the zone. Either way round the wrong way is
+/// a moment where `nginx -t` fails - and a failed reload is every site on the
+/// box, not just this one.
+async fn set_http_flood(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match state.db.websites().by_id(website_id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("website lookup failed: {e}");
+            return internal_error();
+        }
+    };
+
+    let Some(raw) = payload.get("http_flood_enabled") else {
+        return crate::errors::missing_field("http_flood_enabled", payload.clone());
+    };
+    let Some(next_enabled) = raw.as_bool() else {
+        return crate::errors::bool_parsing("http_flood_enabled", raw);
+    };
+    let config = match flood_payload_config(&payload) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+
+    // The column is written before either file in the Python, because
+    // `_sync_http_flood_zones` calls `db.flush()` and re-reads every row - so
+    // this site's new state has to be visible to it. Writing it here reaches
+    // the same place: the zone file below is rendered from the database.
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_http_flood(website.id, next_enabled, &flood_config_json(&config))
+        .await
+    {
+        tracing::error!("storing the HTTP flood settings failed: {e}");
+        return internal_error();
+    }
+
+    let outcome = if next_enabled {
+        match sync_http_flood_zones(&state).await {
+            Ok(()) => update_http_flood_block(&state, &website.domain, true, &config).await,
+            Err(r) => Err(r),
+        }
+    } else {
+        match update_http_flood_block(&state, &website.domain, false, &config).await {
+            Ok(()) => sync_http_flood_zones(&state).await,
+            Err(r) => Err(r),
+        }
+    };
+    if let Err(r) = outcome {
+        // The Python's `except` leaves the ORM object dirty and never commits,
+        // so the column goes back. Put it back here too, or a failed request
+        // leaves a row claiming a protection the vhost does not have.
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_http_flood(
+                website.id,
+                website.http_flood_enabled,
+                &website.http_flood_config,
+            )
+            .await
+        {
+            tracing::error!("could not restore the HTTP flood settings: {e}");
+        }
+        return r;
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "update_http_flood",
+        &website.domain,
+    )
+    .await;
+
+    match state.db.websites().by_id(website.id).await {
+        Ok(Some(fresh)) => single(&state, fresh).await,
+        Ok(None) => not_found("Website not found"),
+        Err(e) => {
+            tracing::error!("re-reading the website failed: {e}");
+            internal_error()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `http_flood_config` column, byte for byte.
+    ///
+    /// `json.dumps` puts a space after the comma **and** after the colon, and
+    /// the key order is the dict's insertion order rather than alphabetical -
+    /// which is what `serde_json` would give. Both forms parse back the same,
+    /// and that is exactly why this is the byte a port gets wrong and never
+    /// notices until a shadow diff compares two databases.
+    #[test]
+    fn the_flood_config_column_is_the_pythons_bytes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/http_flood_zones.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the flood corpus"))
+                .expect("the corpus parses");
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in corpus["columns"].as_array().expect("the columns") {
+            let config = snpanel_nginx::HttpFloodConfig::from_json(&case["config"]);
+            let got = flood_config_json(&config);
+            let want = case["column"].as_str().unwrap_or("");
+            if got != want {
+                failures.push(format!("python {want}\nrust   {got}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Out of range is a 422 from pydantic, not a clamp.
+    ///
+    /// `validate_http_flood_config` does clamp - but pydantic refuses anything
+    /// outside the bounds before it ever runs, so the clamp only sees values
+    /// that are already inside them. A port that clamped instead would accept
+    /// a request the panel refuses and store a number the customer did not
+    /// ask for.
+    #[test]
+    fn a_flood_value_out_of_range_is_refused_rather_than_clamped() {
+        let ok = flood_payload_config(&json!({
+            "access_limit_requests": 100,
+            "access_limit_window": 10,
+            "access_limit_burst": 0,
+            "connection_limit": 1,
+        }));
+        assert!(ok.is_ok());
+
+        for bad in [
+            json!({ "access_limit_requests": 0 }),
+            json!({ "access_limit_requests": 100_001 }),
+            json!({ "access_limit_window": 0 }),
+            json!({ "access_limit_window": 3_601 }),
+            json!({ "access_limit_burst": -1 }),
+            json!({ "connection_limit": 0 }),
+            json!({ "connection_limit": 10_001 }),
+        ] {
+            assert!(
+                flood_payload_config(&bad).is_err(),
+                "{bad} should be refused, not clamped"
+            );
+        }
+
+        // An absent field is its default, which is how pydantic reads it.
+        let defaults = flood_payload_config(&json!({})).expect("the defaults");
+        assert_eq!(defaults.access_limit_requests, 100);
+        assert_eq!(defaults.access_limit_window, 10);
+        assert_eq!(defaults.access_limit_burst, 100);
+        assert_eq!(defaults.connection_limit, 60);
+    }
 
     fn website() -> snpanel_db::Website {
         snpanel_db::Website {

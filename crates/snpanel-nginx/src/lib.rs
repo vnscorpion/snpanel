@@ -277,6 +277,80 @@ pub fn waf_rules_file(domain: &str) -> Result<String, RenderError> {
 ///
 /// SHA-1 is not a security choice here; it is a naming contract with zones
 /// already in the nginx configuration of every machine running this panel.
+/// Source: `_http_flood_rate` - requests per second when the window is at
+/// most the request count, per minute otherwise.
+///
+/// The switch exists because nginx's `limit_req_zone` takes a rate, not a
+/// budget: "5 requests per 60 seconds" has no `r/s` spelling that is not zero,
+/// so it becomes `5r/m`. Both branches round **up** and floor at 1 - a rate of
+/// zero would refuse every request.
+pub fn http_flood_rate(config: &HttpFloodConfig) -> String {
+    let requests = config.access_limit_requests.max(1);
+    let window = config.access_limit_window.max(1);
+    if requests >= window {
+        // `math.ceil(requests / window)` on two positive integers.
+        format!("{}r/s", (requests + window - 1) / window)
+    } else {
+        format!("{}r/m", (requests * 60 + window - 1) / window)
+    }
+}
+
+/// One site's entry in the shared zone file.
+fn http_flood_zone_line(domain: &str, config: &HttpFloodConfig) -> Result<String, RenderError> {
+    Ok(format!(
+        "limit_req_zone $snpanel_http_flood_key zone={}:10m rate={};",
+        http_flood_zone_name(domain)?,
+        http_flood_rate(config)
+    ))
+}
+
+/// One site as this file sees it: a domain, whether the feature is on, and
+/// the limits.
+pub struct FloodSite<'a> {
+    pub domain: &'a str,
+    pub enabled: bool,
+    pub config: HttpFloodConfig,
+}
+
+/// Source: `render_http_flood_zones`.
+///
+/// The `map` is what lets a visitor who has passed the challenge stop being
+/// counted: their cookie makes the key an empty string, which
+/// `limit_req_zone` ignores. Sites with the feature off contribute nothing,
+/// and a domain appearing twice contributes one zone - two `limit_req_zone`
+/// directives with the same name is a configuration nginx refuses to load.
+///
+/// A domain the validator rejects is skipped rather than fatal. The Python
+/// would raise and abort the whole file, which is the one behaviour worth
+/// stating: see the note on the loop.
+pub fn render_http_flood_zones(sites: &[FloodSite<'_>]) -> Result<String, RenderError> {
+    let mut lines: Vec<String> = vec![
+        "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.".to_string(),
+        "map $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {".to_string(),
+        "    default $binary_remote_addr;".to_string(),
+        "    1 \"\";".to_string(),
+        "}".to_string(),
+        "limit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;".to_string(),
+    ];
+
+    let mut seen: Vec<String> = Vec::new();
+    for site in sites {
+        if !site.enabled {
+            continue;
+        }
+        // `_safe_domain` raises, and the Python lets that propagate: a row
+        // with a domain the validator refuses aborts the whole file rather
+        // than silently dropping that site's protection. Reproduced.
+        let zone = http_flood_zone_name(site.domain)?;
+        if seen.contains(&zone) {
+            continue;
+        }
+        seen.push(zone);
+        lines.push(http_flood_zone_line(site.domain, &site.config)?);
+    }
+    Ok(lines.join("\n").trim().to_string() + "\n")
+}
+
 pub fn http_flood_zone_name(domain: &str) -> Result<String, RenderError> {
     use sha1::{Digest, Sha1};
     let safe = safe_domain(domain)?;

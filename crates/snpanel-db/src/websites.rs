@@ -190,6 +190,40 @@ impl<'a> WebsiteRepo<'a> {
     /// Source: `set_website_nginx_custom`, which also sets the mode back to
     /// `managed` - saving a snippet through the panel is the panel taking the
     /// file back.
+    /// Source: `save_website_config` - the two columns it sets, written
+    /// together because a selection stored without its custom rules is a rule
+    /// file the panel can no longer reproduce.
+    pub async fn set_waf_rules(
+        &self,
+        id: i64,
+        default_rules: &str,
+        custom_rules: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET waf_default_rules = ?, waf_custom_rules = ? WHERE id = ?")
+            .bind(default_rules)
+            .bind(custom_rules)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `reset_website_nginx_config` - `nginx_custom = ""` and
+    /// `nginx_config_mode = "managed"`, set together.
+    ///
+    /// Together because they describe one state: a site whose mode says
+    /// "managed" while the custom column still holds directives is a site the
+    /// next render would put them back into.
+    pub async fn reset_nginx_custom(&self, id: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET nginx_custom = '', nginx_config_mode = 'managed' WHERE id = ?",
+        )
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_nginx_custom(&self, id: i64, custom: &str) -> Result<(), DbError> {
         sqlx::query(
             "UPDATE websites SET nginx_custom = ?, nginx_config_mode = 'managed' WHERE id = ?",

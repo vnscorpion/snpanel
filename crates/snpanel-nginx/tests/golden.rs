@@ -156,3 +156,90 @@ fn first_difference(expected: &str, actual: &str) -> String {
     }
     "the text matches but the bytes do not (trailing whitespace or newline)".to_string()
 }
+
+/// The shared HTTP-flood zone file, against the real Python's.
+///
+/// One file for the whole server, and every vhost with the feature on names
+/// its zone from it. A zone missing here fails `nginx -t` for that site, and a
+/// failed reload takes every site on the box with it.
+#[test]
+fn the_shared_flood_zone_file_agrees_with_python() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/golden/http_flood_zones.json");
+    let corpus: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the flood zone corpus"))
+            .expect("the corpus parses");
+
+    let mut failures: Vec<String> = Vec::new();
+    for case in corpus["cases"].as_array().expect("the cases") {
+        let specs: Vec<(String, bool, snpanel_nginx::HttpFloodConfig)> = case["sites"]
+            .as_array()
+            .expect("the sites")
+            .iter()
+            .map(|site| {
+                let raw = site["config"].as_str().unwrap_or("");
+                let parsed: serde_json::Value = if raw.trim().is_empty() {
+                    serde_json::json!({})
+                } else {
+                    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
+                };
+                (
+                    site["domain"].as_str().unwrap_or("").to_string(),
+                    site["enabled"].as_bool().unwrap_or(false),
+                    snpanel_nginx::HttpFloodConfig::from_json(&parsed),
+                )
+            })
+            .collect();
+        let sites: Vec<snpanel_nginx::FloodSite<'_>> = specs
+            .iter()
+            .map(|(domain, enabled, config)| snpanel_nginx::FloodSite {
+                domain,
+                enabled: *enabled,
+                config: *config,
+            })
+            .collect();
+
+        let label = format!("{:?}", case["sites"]);
+        match (
+            snpanel_nginx::render_http_flood_zones(&sites),
+            case.get("content").and_then(|v| v.as_str()),
+        ) {
+            (Ok(got), Some(want)) if got == want => {}
+            (Ok(got), Some(want)) => failures.push(format!(
+                "{label}:\n--- python ---\n{want}\n--- rust ---\n{got}"
+            )),
+            (Ok(_), None) => failures.push(format!(
+                "{label}: python refused with {:?}, rust rendered",
+                case["error"]
+            )),
+            (Err(e), Some(_)) => {
+                failures.push(format!("{label}: rust refused {e:?}, python rendered"))
+            }
+            (Err(_), None) => {}
+        }
+    }
+
+    // The rate is the number nginx enforces, so it gets checked on its own.
+    for case in corpus["rates"].as_array().expect("the rates") {
+        let config = snpanel_nginx::HttpFloodConfig {
+            access_limit_requests: case["requests"].as_i64().unwrap_or(0),
+            access_limit_window: case["window"].as_i64().unwrap_or(0),
+            ..Default::default()
+        };
+        let got = snpanel_nginx::http_flood_rate(&config);
+        let want = case["rate"].as_str().unwrap_or("");
+        if got != want {
+            failures.push(format!(
+                "rate {}/{}: python {want:?}, rust {got:?}",
+                config.access_limit_requests, config.access_limit_window
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} disagree:\n{}",
+        failures.len(),
+        failures.into_iter().take(4).collect::<Vec<_>>().join("\n")
+    );
+}

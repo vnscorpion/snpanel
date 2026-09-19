@@ -373,9 +373,468 @@ pub fn may_manage_waf(role: &str, package_waf_enabled: Option<bool>) -> bool {
     snpanel_core::permissions::is_admin_role(role) || package_waf_enabled.unwrap_or(true)
 }
 
+// ---------------------------------------------------------------------------
+// what the WAF page reads for one site
+// ---------------------------------------------------------------------------
+
+/// Source: `site_rules_file` - the path the vhost's
+/// `modsecurity_rules_file` points at.
+pub fn site_rules_file(domain: &str) -> Result<String, WafError> {
+    Ok(format!(
+        "/etc/nginx/modsec/sites/{}.conf",
+        validate_domain(domain)?
+    ))
+}
+
+/// Source: `nginx.normalize_blocked_bots` when it is handed a **string**.
+///
+/// `re.split(r"[\n,;]+", raw)` - newline, comma and semicolon, any run of
+/// them. Carriage return is deliberately not a separator, because it is not in
+/// the Python's class; a `\r\n` list splits on the `\n` and the stray `\r` is
+/// removed by the strip that follows.
+///
+/// People paste these in bulk - a CPGuard list, a blog post, a spreadsheet
+/// column - which is why the separators are this generous.
+pub fn split_bot_list(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for c in raw.chars() {
+        if c == '\n' || c == ',' || c == ';' {
+            // A *run* of separators is one split, so an empty piece between
+            // two of them is never produced.
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    // `re.split` on a string with a leading or trailing separator yields an
+    // empty first or last piece, which `normalize_blocked_bots` then drops for
+    // being blank. Skipping them here reaches the same list.
+    out
+}
+
+/// Source: `panel_settings.global_blocked_bots` - the server-wide list.
+///
+/// Read straight from the settings file rather than through
+/// `current_settings()`, which refreshes the malware scan status: far too much
+/// work to answer "what bots are blocked" on every vhost render.
+pub fn global_blocked_bots(raw_settings: &serde_json::Value) -> Vec<String> {
+    let stored = raw_settings.get("global_blocked_bots");
+    let candidates: Vec<String> = match stored {
+        Some(serde_json::Value::String(text)) => split_bot_list(text),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    snpanel_nginx::normalize_blocked_bots(&candidates).unwrap_or_default()
+}
+
+/// Source: `website_blocked_bots`.
+pub fn website_blocked_bots(website: &snpanel_db::Website) -> Vec<String> {
+    snpanel_nginx::normalize_blocked_bots(&split_bot_list(&website.blocked_bots))
+        .unwrap_or_default()
+}
+
+/// Source: `_merge_bots` - "union, order-preserving, case-insensitive, first
+/// spelling wins".
+///
+/// The Python keys on `casefold()` and this keys on `to_lowercase()`. They
+/// differ for a handful of characters - German ß casefolds to `ss` and
+/// lowercases to itself - and these are user-agent tokens, which are ASCII.
+/// Written down rather than assumed away.
+pub fn merge_bots(first: &[String], second: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut merged: Vec<String> = Vec::new();
+    for name in first.iter().chain(second.iter()) {
+        let key = name.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        merged.push(name.clone());
+    }
+    snpanel_nginx::normalize_blocked_bots(&merged).unwrap_or_default()
+}
+
+/// Source: `effective_blocked_bots` - "the server-wide list plus anything set
+/// on the site itself".
+///
+/// Keeping the two apart in storage is what lets a bot added globally protect
+/// every site at once, without flattening it into 23 copies that then drift.
+pub fn effective_blocked_bots(
+    website: &snpanel_db::Website,
+    raw_settings: &serde_json::Value,
+) -> Vec<String> {
+    merge_bots(
+        &global_blocked_bots(raw_settings),
+        &website_blocked_bots(website),
+    )
+}
+
+/// Source: `nginx.http_flood_config_for_website`.
+pub fn http_flood_config(website: &snpanel_db::Website) -> snpanel_nginx::HttpFloodConfig {
+    // `json.loads(raw) if raw.strip() else {}`, and anything that does not
+    // parse is `{}` - every field then falls back to its default rather than
+    // the request being refused.
+    let parsed = if website.http_flood_config.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&website.http_flood_config).unwrap_or_else(|_| serde_json::json!({}))
+    };
+    snpanel_nginx::HttpFloodConfig::from_json(&parsed)
+}
+
+/// Source: `default_rule_definitions()` - the identifying fields, never the
+/// rule bodies.
+pub fn default_rule_definitions() -> Vec<serde_json::Value> {
+    DEFAULT_RULES
+        .iter()
+        .map(|rule| {
+            serde_json::json!({
+                "id": rule.id,
+                "category": rule.category,
+                "title": rule.title,
+                "description": rule.description,
+                "enabled_default": true,
+            })
+        })
+        .collect()
+}
+
+/// Source: `site_config` - everything the WAF page shows for one site.
+///
+/// `crs_active` is the one field worth reading twice: it is true only when the
+/// site opted in *and* the server-wide mode is not off. Both toggles have to
+/// agree, because CRS is the one WAF feature with a memory bill.
+pub fn site_config(
+    website: &snpanel_db::Website,
+    server_crs_mode: &str,
+    raw_settings: &serde_json::Value,
+) -> serde_json::Value {
+    let mode = normalize_crs_mode(server_crs_mode);
+    let enabled = parse_enabled_rule_ids(&website.waf_default_rules);
+    let flood = http_flood_config(website);
+
+    serde_json::json!({
+        "website_id": website.id,
+        "domain": website.domain,
+        "waf_enabled": website.waf_enabled,
+        "crs_enabled": website.crs_enabled,
+        "crs_mode": mode,
+        "crs_active": site_uses_crs(website) && mode != "off",
+        "http_flood_enabled": website.http_flood_enabled,
+        "http_flood_config": {
+            "access_limit_requests": flood.access_limit_requests,
+            "access_limit_window": flood.access_limit_window,
+            "access_limit_burst": flood.access_limit_burst,
+            "connection_limit": flood.connection_limit,
+        },
+        // A domain the validator refuses has no rule file; the Python would
+        // raise here and the router would turn it into a 400. An empty string
+        // is not that, so this keeps the refusal.
+        "rules_file": site_rules_file(&website.domain).unwrap_or_default(),
+        "default_rules": default_rule_definitions()
+            .into_iter()
+            .map(|mut rule| {
+                let id = rule["id"].as_str().unwrap_or("").to_string();
+                rule["enabled"] = serde_json::json!(enabled.contains(&id));
+                rule
+            })
+            .collect::<Vec<_>>(),
+        // In DEFAULT_RULES order, not in the stored order.
+        "enabled_rule_ids": DEFAULT_RULES
+            .iter()
+            .filter(|rule| enabled.iter().any(|e| e == rule.id))
+            .map(|rule| rule.id)
+            .collect::<Vec<_>>(),
+        "custom_rules": validate_custom_rules(&website.waf_custom_rules)
+            .unwrap_or_default(),
+        "blocked_bots": website_blocked_bots(website),
+        "global_blocked_bots": global_blocked_bots(raw_settings),
+        "effective_blocked_bots": effective_blocked_bots(website, raw_settings),
+    })
+}
+
+/// What `save_website_config` stores, computed before anything is written.
+pub struct SavedWafConfig {
+    /// `json.dumps(selected, ensure_ascii=True)` - the `waf_default_rules`
+    /// column.
+    pub default_rules: String,
+    /// The `waf_custom_rules` column.
+    pub custom_rules: String,
+    /// The rule file's contents.
+    pub content: String,
+}
+
+/// Source: `save_website_config`.
+///
+/// "Editing a site's rule selection must not change whether it loads CRS" -
+/// the mode still comes from the site's own opt-in, not from the request.
+pub fn plan_website_config<S: AsRef<str>>(
+    website: &snpanel_db::Website,
+    enabled_rule_ids: &[S],
+    custom_rules: &str,
+    server_crs_mode: &str,
+) -> Result<SavedWafConfig, WafError> {
+    let selected = validate_enabled_rule_ids(enabled_rule_ids)?;
+    let custom = validate_custom_rules(custom_rules)?;
+    let mode = if site_uses_crs(website) {
+        normalize_crs_mode(server_crs_mode)
+    } else {
+        "off"
+    };
+    let content = render_site_rules(&website.domain, &selected, &custom, mode)?;
+    Ok(SavedWafConfig {
+        default_rules: python_json_list(&selected),
+        custom_rules: custom,
+        content,
+    })
+}
+
+/// `json.dumps(list, ensure_ascii=True)`, byte for byte.
+///
+/// Python's default separators are `", "` and `": "`, so a list comes out as
+/// `["a", "b"]` - **with** the space. `serde_json::to_string` writes
+/// `["a","b"]`. Both parse back the same, and the column would still work,
+/// but the stored bytes are what a shadow diff compares and what the next
+/// person reads in the database. NT7: a difference is a difference.
+///
+/// Every id in the table is ASCII, so `ensure_ascii` has nothing to escape
+/// here; the quoting is serde's, which matches Python's for ASCII.
+fn python_json_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items
+        .iter()
+        .map(|item| serde_json::Value::String(item.clone()).to_string())
+        .collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// Write a rule file the caller has already planned.
+pub async fn write_site_rules(
+    dry_run: bool,
+    domain: &str,
+    content: &str,
+) -> Result<crate::shell::CommandResult, WafError> {
+    let safe_domain = validate_domain(domain)?;
+    Ok(crate::shell::privileged(
+        dry_run,
+        "waf-site-save",
+        &[&safe_domain],
+        Some(content),
+        Some(&[
+            "bash",
+            "-lc",
+            "cat >/tmp/snpanel-waf-site.conf && echo WAF site rules saved",
+        ]),
+    )
+    .await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A website row built from the corpus's own description of one.
+    ///
+    /// Written out field by field rather than by deriving `Default` on the row
+    /// type: a `Website` that defaults to an empty domain is a footgun for
+    /// every non-test caller, and this is the only place that wants one.
+    fn corpus_website(spec: &serde_json::Value) -> snpanel_db::Website {
+        let s = |key: &str, fallback: &str| -> String {
+            spec.get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(fallback)
+                .to_string()
+        };
+        let b = |key: &str, fallback: bool| -> bool {
+            spec.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(fallback)
+        };
+        snpanel_db::Website {
+            id: spec
+                .get("id")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(7),
+            domain: s("domain", "example.com"),
+            owner_id: 1,
+            root_path: "/home/alice/example.com".into(),
+            document_root: "public_html".into(),
+            linux_user: Some("alice".into()),
+            php_version: "8.4".into(),
+            app_type: "wordpress".into(),
+            ssl_enabled: false,
+            ssl_mode: String::new(),
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssl_ca_path: None,
+            ssl_updated_at: None,
+            ssl_source_domain: None,
+            status: "active".into(),
+            nginx_custom: String::new(),
+            nginx_config_mode: "managed".into(),
+            nginx_rewrite_mode: "wordpress".into(),
+            waf_enabled: b("waf_enabled", true),
+            waf_default_rules: s("waf_default_rules", ""),
+            waf_custom_rules: s("waf_custom_rules", ""),
+            crs_enabled: b("crs_enabled", false),
+            http_flood_enabled: b("http_flood_enabled", false),
+            http_flood_config: s("http_flood_config", ""),
+            blocked_bots: s("blocked_bots", ""),
+            app_id: None,
+        }
+    }
+
+    fn site_corpus() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/waf_site_config.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the site config corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// The whole WAF page for one site, field for field.
+    ///
+    /// `crs_active` and `effective_blocked_bots` are the two that carry real
+    /// meaning: the first says whether CRS is actually running for this site,
+    /// which needs both toggles to agree, and the second is what ends up in
+    /// the vhost.
+    #[test]
+    fn a_sites_waf_page_agrees_with_python() {
+        let corpus = site_corpus();
+        let cases = corpus["configs"].as_array().expect("the configs");
+        assert!(cases.len() > 100, "the corpus shrank to {}", cases.len());
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let website = corpus_website(&case["website"]);
+            let mode = case["crs_mode"].as_str().unwrap_or("off");
+            let settings = serde_json::json!({
+                "global_blocked_bots": case["global_blocked_bots"],
+                "crs_mode": mode,
+            });
+            let Some(want) = case.get("config") else {
+                continue; // Python raised; not a case this compares.
+            };
+            let got = site_config(&website, mode, &settings);
+
+            // Compare key by key so a failure names the field rather than
+            // printing two walls of JSON.
+            let want_map = want.as_object().expect("an object");
+            for (key, want_value) in want_map {
+                let got_value = &got[key.as_str()];
+                if got_value != want_value {
+                    failures.push(format!(
+                        "{:?} bots={:?} mode={mode}: {key} python {want_value}, rust {got_value}",
+                        case["website"], case["global_blocked_bots"]
+                    ));
+                }
+            }
+            for key in got.as_object().expect("an object").keys() {
+                if !want_map.contains_key(key) {
+                    failures.push(format!("rust invented the field {key}"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} disagree:\n{}",
+            failures.len(),
+            failures.into_iter().take(10).collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    /// The two columns the save writes, byte for byte.
+    ///
+    /// `json.dumps` puts a **space** after the comma. Both forms parse back
+    /// the same and the column would still work, which is exactly why this is
+    /// the byte a port gets wrong and never notices.
+    #[test]
+    fn the_saved_columns_are_the_pythons_bytes() {
+        let corpus = site_corpus();
+        let mut failures: Vec<String> = Vec::new();
+        for case in corpus["saves"].as_array().expect("the saves") {
+            let website = corpus_website(&case["website"]);
+            let ids: Vec<String> = case["ids"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+            let custom = case["custom"].as_str().unwrap_or("");
+            let mode = case["crs_mode"].as_str().unwrap_or("off");
+            let label = format!("{:?} custom={custom:?} mode={mode}", case["ids"]);
+
+            match plan_website_config(&website, &ids, custom, mode) {
+                Ok(plan) => match case.get("waf_default_rules").and_then(|v| v.as_str()) {
+                    Some(want) => {
+                        if plan.default_rules != want {
+                            failures.push(format!(
+                                "{label}: column python {want:?}, rust {:?}",
+                                plan.default_rules
+                            ));
+                        }
+                        let want_custom = case["waf_custom_rules"].as_str().unwrap_or("");
+                        if plan.custom_rules != want_custom {
+                            failures.push(format!(
+                                "{label}: custom python {want_custom:?}, rust {:?}",
+                                plan.custom_rules
+                            ));
+                        }
+                    }
+                    None => failures.push(format!(
+                        "{label}: python refused with {:?}, rust planned",
+                        case["error"]
+                    )),
+                },
+                Err(e) => {
+                    let want = case.get("error").and_then(|v| v.as_str());
+                    match want {
+                        Some(want) if want == e.to_string() => {}
+                        Some(want) => failures.push(format!("{label}: python {want:?}, rust {e}")),
+                        None => failures.push(format!("{label}: rust refused {e}")),
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} disagree:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// What a pasted bot list turns into.
+    #[test]
+    fn a_pasted_bot_list_is_split_the_way_python_splits_it() {
+        let corpus = site_corpus();
+        let mut failures: Vec<String> = Vec::new();
+        for case in corpus["splits"].as_array().expect("the splits") {
+            let raw = case["raw"].as_str().unwrap_or("");
+            let want: Vec<String> = case["pieces"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+            let got =
+                snpanel_nginx::normalize_blocked_bots(&split_bot_list(raw)).unwrap_or_default();
+            if got != want {
+                failures.push(format!("{raw:?}: python {want:?}, rust {got:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     fn corpus() -> serde_json::Value {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

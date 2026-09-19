@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **95 of 211** | 45% |
+| API endpoints answered by Rust | **100 of 211** | 47% |
 | Routers served whole | 6 of 17 | `addons`, `auth`, `firewall`, `packages`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -29,7 +29,7 @@ resolving.
 
 Two of those lines are easy to misread.
 
-**"14 of 17 routers have a Rust module" is not 82% done.** It is 43%. Most
+**"14 of 17 routers have a Rust module" is not 82% done.** It is 47%. Most
 routers have a module that answers some of their endpoints and hands the rest
 to Python. `maintenance` alone is 67 endpoints — 32% of the whole surface —
 and 38 of them are still Python's.
