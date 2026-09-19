@@ -354,19 +354,34 @@ impl<'de> Deserialize<'de> for Domain {
 /// Matches `site_users.LINUX_USER_RE` (`^[a-z_][a-z0-9_-]{2,31}$`) and rejects
 /// every name in [`RESERVED_LINUX_USERS`], exactly as
 /// `site_users.validate_linux_user` does.
+///
+/// The Python has two functions here and they are not interchangeable.
+/// `validate_linux_user` matches the pattern against what it was given.
+/// `linux_user_for_panel_username` lowercases and strips *first*, and is the
+/// conversion from a panel account name to a system one. This is the former,
+/// because it validates a value at the privilege boundary that the caller has
+/// already converted - the two API call sites lowercase before calling it,
+/// the way the Python does.
+///
+/// It used to lowercase, and the harm was not that it accepted a name the
+/// bash helper refuses. It is that `SitePath` keeps the bytes it was given:
+/// `site-runtime-ensure UPPER /home/UPPER/x` parsed to the user `upper`,
+/// agreed with itself that the path belonged to that user, and then created
+/// `/home/UPPER/x` as root while the account's home was `/home/upper`. A type
+/// that says "this path belongs to user X" has to mean the bytes, not a
+/// normalisation of them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct PanelUsername(String);
 
 impl PanelUsername {
     pub fn parse(raw: &str) -> Result<Self, ParseError> {
-        let normalized = raw.trim().to_ascii_lowercase();
-        if !Self::is_valid(&normalized) {
+        if !Self::is_valid(raw) {
             return Err(ParseError::Username(raw.to_string()));
         }
-        if RESERVED_LINUX_USERS.contains(&normalized.as_str()) {
+        if RESERVED_LINUX_USERS.contains(&raw) {
             return Err(ParseError::Username(raw.to_string()));
         }
-        Ok(Self(normalized))
+        Ok(Self(raw.to_string()))
     }
 
     fn is_valid(s: &str) -> bool {
@@ -1205,5 +1220,52 @@ mod tests {
         assert!(SecretString::new("ok-password").valid_as_linux_password());
         assert!(!SecretString::new("has:colon").valid_as_linux_password());
         assert!(!SecretString::new("has\nnewline").valid_as_linux_password());
+    }
+
+    /// A mixed-case name is refused, not quietly lowercased.
+    ///
+    /// This is the test that was missing. `parse` lowercased first, so
+    /// `UPPER` became a valid `PanelUsername` of `upper` - and `SitePath`
+    /// keeps the bytes it was given, so `site-runtime-ensure UPPER
+    /// /home/UPPER/x` agreed with itself that the path belonged to that user
+    /// and created `/home/UPPER/x` as root, while the account's home was
+    /// `/home/upper`. Two directories, one account, and a type that said the
+    /// path belonged to a user whose home it was not under.
+    ///
+    /// Found by running it on a live box, not by reading the code.
+    ///
+    /// Lowercasing is a real operation the Python does - it is
+    /// `linux_user_for_panel_username`, and both API call sites do it
+    /// themselves before parsing, which is where it belongs. `parse` is
+    /// `validate_linux_user`: it matches the pattern against what it is
+    /// given.
+    #[test]
+    fn a_mixed_case_name_is_refused_rather_than_lowercased() {
+        for raw in ["UPPER", "Alice", "bOb", "aB_c"] {
+            assert!(
+                PanelUsername::parse(raw).is_err(),
+                "{raw} must be refused, not normalised"
+            );
+        }
+        assert_eq!(PanelUsername::parse("alice").unwrap().as_str(), "alice");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_refused_too() {
+        // The bash's `require_linux_user` anchors its pattern, so a name with
+        // a stray newline from a file or a form is not a name.
+        for raw in [" alice", "alice ", "alice\n", "\talice"] {
+            assert!(PanelUsername::parse(raw).is_err(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_name_is_refused_in_the_case_it_is_written() {
+        // The reserved list is compared against what was given, so it has to
+        // be reached by names that are already lowercase - which, now that
+        // parse does not normalise, is the only form that gets that far.
+        for raw in ["root", "www-data", "mysql", "nginx", "snpanel", "nobody"] {
+            assert!(PanelUsername::parse(raw).is_err(), "{raw} is reserved");
+        }
     }
 }
