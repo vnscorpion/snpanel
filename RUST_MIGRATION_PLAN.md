@@ -238,13 +238,36 @@ Each stage states an **exit** that is a measurement, not an opinion. A stage
 is not finished because the code is written; it is finished when the number is
 reached.
 
-### Stage A — the helper's `site` domain
+### Stage A - the helper's `site` domain
 
-27 verbs, the largest domain, and the one everything waits on. The Rust module
-exists (`ops/site.rs`); the verbs do not.
+**9 of 31 verbs are answered by Rust (29%).** Measured from `op_name()` and
+the dispatch table, not counted by hand:
 
-**Exit:** every `site-*` verb has an IPC variant and an implementation, and
-each shadow-diffs clean against the bash version.
+| | |
+|---|---|
+| answered | `fix-permissions`, `mkdir-site`, `rm-site`, `site-chmod`, `site-file-write`, `site-log-clear`, `site-log-read`, `site-logs-read-many`, `site-path-fix` |
+| variant declared, no implementation | `site-runtime-ensure`, `site-runtime-delete` |
+| not started | 20, of which **13 are `site-app-*`** |
+
+Two things the measurement corrected in this plan.
+
+**The 27-verb figure counted `site-app-*` as part of this domain**, because
+the names share a prefix. They are Docker orchestration - compose, volumes,
+import and export - and nothing in `websites` or `maintenance` waits on them.
+The subset that actually blocks Stage C is seven verbs:
+`site-archive-extract`, `site-document-root-ensure`, `site-file-install`,
+`site-populate`, `site-runtime-move`, `site-runtime-ensure`,
+`site-runtime-delete`, plus `wp` and `wp-site` for WordPress sites. Doing
+those first is what shortens the critical path; the `site-app-*` group can
+follow with `provisioning` and `site_apps` in Stage E.
+
+**`site-path-fix` needed no work at all.** It is byte-for-byte the
+two-argument form of `fix-permissions`, so `SiteFixPermissions` already
+answers it. Checking before implementing is worth more here than anywhere
+else: the verbs are named as though they were all distinct.
+
+**Exit:** every site verb outside the `site-app-*` group has an IPC variant
+and an implementation, and each shadow-diffs clean against the bash version.
 
 ### Stage B — deploy the Rust helper *(critical path)*
 

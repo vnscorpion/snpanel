@@ -250,6 +250,69 @@ pub fn log_read(domain: &Domain, kind: LogKind, lines: u32) -> HelperResponse {
     )
 }
 
+/// `site-logs-read-many`: one spawn for every site's log.
+///
+/// Source: `read_site_logs_many`. The format is a contract with the caller,
+/// which splits on `\x1f` and reads the first line of each block as the
+/// domain: every domain gets a header even when its log is missing, or the
+/// site disappears from the page rather than showing as empty.
+pub fn logs_read_many(domains: &[Domain], kind: LogKind, lines: u32) -> HelperResponse {
+    HelperResponse::with_stdout(logs_read_many_in(
+        std::path::Path::new(LOG_DIR),
+        domains,
+        kind,
+        lines,
+    ))
+}
+
+/// The assembly, with the log directory as an argument.
+///
+/// Split out so the tests drive the real function rather than a copy of it.
+/// The first version of the test built the blocks itself, because the
+/// production path is `/var/log/nginx` and a test must not write there - and
+/// a test that reproduces the logic only ever agrees with itself.
+fn logs_read_many_in(dir: &Path, domains: &[Domain], kind: LogKind, lines: u32) -> String {
+    let n = lines.clamp(1, 10_000);
+    let mut out = String::new();
+    for domain in domains {
+        out.push('\u{1f}');
+        out.push_str(domain.as_str());
+        out.push('\n');
+        match read_tail(&dir.join(format!("{domain}.{}.log", kind.suffix())), n) {
+            Some(body) => out.push_str(&body),
+            None => out.push_str("SNPANEL_LOG_MISSING\n"),
+        }
+    }
+    out
+}
+
+/// The last `lines` lines of a regular file, or `None` if there is not one.
+///
+/// `symlink_metadata`, not `exists()`: the bash guards this path with
+/// `[[ -f "$path" && ! -L "$path" ]]`, and the `! -L` is the security half.
+/// A symlink planted at a site's log path would otherwise let its owner read
+/// any file the helper can, through the panel's log viewer.
+fn read_tail(path: &Path, lines: u32) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let kept: Vec<&str> = text
+        .lines()
+        .rev()
+        .take(lines as usize)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let mut body = kept.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    Some(body)
+}
+
 /// `site-log-clear`: truncate rather than delete, so nginx keeps its open
 /// file descriptor and does not need a reopen.
 pub fn log_clear(domain: &Domain, kind: LogKind) -> HelperResponse {
@@ -293,8 +356,12 @@ impl LogKind {
     }
 }
 
+/// Where nginx writes a site's logs. Named once so the batch read and the
+/// single read cannot drift apart.
+const LOG_DIR: &str = "/var/log/nginx";
+
 fn log_path(domain: &Domain, kind: LogKind) -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("/var/log/nginx/{domain}.{}.log", kind.suffix()))
+    std::path::Path::new(LOG_DIR).join(format!("{domain}.{}.log", kind.suffix()))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
@@ -316,6 +383,100 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The shape the caller parses, not just the content.
+    ///
+    /// Source: `read_site_logs_many` and `waf.read_access_logs_many`. A
+    /// domain with no log still gets its header - Python builds its result
+    /// map from those headers, so dropping one drops the site from the page
+    /// rather than showing it as empty.
+    #[test]
+    fn every_domain_gets_a_header_even_with_no_log() {
+        let tmp = tempdir("logs-many");
+        let a = Domain::parse("a.example.com").unwrap();
+        let b = Domain::parse("b.example.com").unwrap();
+        write_log(&tmp, &a, "one\ntwo\nthree\n");
+        // b deliberately has no file.
+
+        let out = render(&tmp, &[a.clone(), b.clone()], 10);
+
+        let blocks: Vec<&str> = out.split('\u{1f}').filter(|s| !s.is_empty()).collect();
+        assert_eq!(blocks.len(), 2, "one block per domain: {out:?}");
+
+        let (head, body) = blocks[0].split_once('\n').expect("a header line");
+        assert_eq!(head, "a.example.com");
+        assert_eq!(body, "one\ntwo\nthree\n");
+
+        let (head, body) = blocks[1].split_once('\n').expect("a header line");
+        assert_eq!(head, "b.example.com");
+        assert_eq!(
+            body, "SNPANEL_LOG_MISSING\n",
+            "the caller compares against this literal"
+        );
+    }
+
+    #[test]
+    fn only_the_last_n_lines_come_back() {
+        let tmp = tempdir("logs-tail");
+        let d = Domain::parse("tail.example.com").unwrap();
+        write_log(&tmp, &d, "1\n2\n3\n4\n5\n");
+
+        let out = render(&tmp, std::slice::from_ref(&d), 2);
+        let (_, body) = out
+            .trim_start_matches('\u{1f}')
+            .split_once('\n')
+            .expect("a header line");
+        assert_eq!(body, "4\n5\n");
+    }
+
+    /// A symlinked log is refused, and the file it points at is not read.
+    ///
+    /// The bash guards with `[[ -f "$path" && ! -L "$path" ]]`. Without the
+    /// `! -L`, anyone who can put a symlink at a site's log path reads
+    /// whatever the helper can read, through the panel's log viewer. It is
+    /// reported as missing rather than as an error, exactly as the bash does.
+    #[test]
+    fn a_symlinked_log_is_treated_as_missing_not_followed() {
+        let tmp = tempdir("logs-symlink");
+        let secret = tmp.join("secret");
+        std::fs::write(&secret, "a password\n").unwrap();
+
+        let d = Domain::parse("evil.example.com").unwrap();
+        let link = tmp.join(format!("{d}.access.log"));
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+
+        let out = render(&tmp, std::slice::from_ref(&d), 10);
+        assert!(
+            out.contains("SNPANEL_LOG_MISSING"),
+            "a symlink must read as missing: {out:?}"
+        );
+        assert!(
+            !out.contains("a password"),
+            "the symlink target must not be read: {out:?}"
+        );
+    }
+
+    // --- helpers ---------------------------------------------------------
+
+    fn tempdir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "snpanel-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_log(dir: &Path, domain: &Domain, body: &str) {
+        std::fs::write(dir.join(format!("{domain}.access.log")), body).unwrap();
+    }
+
+    /// The real assembly, pointed at a temporary directory.
+    fn render(dir: &Path, domains: &[Domain], lines: u32) -> String {
+        logs_read_many_in(dir, domains, LogKind::Access, lines)
+    }
+
     use super::*;
 
     fn tmp_site() -> (std::path::PathBuf, SitePath) {

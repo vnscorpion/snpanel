@@ -220,6 +220,11 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteLogsReadMany {
+            domains,
+            kind,
+            lines,
+        } => site::logs_read_many(domains, log_kind(*kind), *lines),
 
         // --- ssl ---
         HelperRequest::CertbotIssue {

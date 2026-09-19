@@ -458,6 +458,17 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// Every named site's log in one round trip.
+    ///
+    /// The reply is not JSON: each site contributes a `\x1f<domain>\n` header
+    /// followed by its log, because the caller wants the bytes of a log file
+    /// and wrapping megabytes of them in JSON strings would cost more than the
+    /// round trips this saves.
+    SiteLogsReadMany {
+        domains: Vec<Domain>,
+        kind: LogKind,
+        lines: u32,
+    },
 
     // --- ssl ---
     SslCertInfo {
@@ -578,6 +589,7 @@ impl HelperRequest {
             Self::SiteFixPermissions { .. } => "fix-permissions",
             Self::SiteLogRead { .. } => "site-log-read",
             Self::SiteLogClear { .. } => "site-log-clear",
+            Self::SiteLogsReadMany { .. } => "site-logs-read-many",
             Self::SslCertInfo { .. } => "ssl-cert-info",
             Self::PanelSslSelfsigned { .. } => "panel-ssl-selfsigned",
             Self::PanelSslDomains => "panel-ssl-domains",
