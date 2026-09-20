@@ -25,7 +25,7 @@
 use axum::extract::Request;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::permissions;
@@ -50,7 +50,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/websites/{website_id}/nginx-custom",
-            get(nginx_custom).fallback(crate::fallback),
+            get(nginx_custom)
+                .put(set_nginx_custom)
+                .fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/nginx-config",
@@ -85,10 +87,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/websites/{website_id}/logs",
             get(logs).fallback(crate::fallback),
-        )
-        .route(
-            "/websites/{website_id}/nginx-custom",
-            put(set_nginx_custom).fallback(crate::fallback),
         )
 }
 

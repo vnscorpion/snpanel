@@ -475,14 +475,21 @@ async fn set_password(
         Err(r) => return r,
     };
 
-    let password = payload
-        .get("password")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if password.is_empty() {
+    let Some(raw) = payload.get("password") else {
         return crate::errors::missing_field("password", payload.clone());
+    };
+    let Some(password) = raw.as_str() else {
+        return crate::errors::string_type("password", raw);
+    };
+    // Source: `password: str = Field(min_length=12, max_length=72)`. FastAPI
+    // validates the model *before* the handler runs, so this happens before
+    // the permission check and before the user is looked up - which is not
+    // only a status code: the other order tells a caller whether a user id
+    // exists before it has looked at what they sent.
+    if let Err(r) = crate::errors::check_length("password", password, 12, 72) {
+        return r;
     }
+    let password = password.to_string();
 
     if user_id != current.user.id {
         if let Err(r) = require_admin(&current) {

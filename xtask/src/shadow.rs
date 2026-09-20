@@ -473,7 +473,20 @@ const CASES: &[Case] = &[
         path: "/api/firewall/status",
         body: None,
         form: false,
-        volatile: &[],
+        // **Not a moving reading**, unlike every other entry here, and the
+        // difference is worth stating rather than hiding.
+        //
+        // `command` is what actually ran. Since the Stage B cutover the Rust
+        // side answers this over the helper socket and reports the verb -
+        // `firewall-status` - while Python still shells out and reports
+        // `sudo -n /usr/local/sbin/snpanel-helper firewall-status`. Each is
+        // truthful about its own process; they are different processes.
+        //
+        // It disappears when Python does, and at that point this entry has to
+        // come back out rather than quietly keep covering something else.
+        // Every other field of the result, `returncode` and both streams
+        // included, is still compared.
+        volatile: &["command"],
     },
     Case {
         method: "GET",
@@ -777,6 +790,175 @@ const CASES: &[Case] = &[
         form: false,
         volatile: &[],
     },
+    // ---- Stage C: the site routers ---------------------------------------
+    //
+    // Reads only, and deliberately so. A shadow diff calls both sides with the
+    // same request, so a *write* would run twice: the first call changes the
+    // machine and the second is then compared against a world the first
+    // already altered. Every write ported in Stage C is covered by a golden
+    // corpus instead, where the comparison is of the bytes it would produce
+    // rather than of the effect of producing them twice.
+    Case {
+        method: "GET",
+        path: "/api/websites/1/ssl/sources",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/websites/99999/ssl/sources",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/websites/1/ssl/cloudflare-zone",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/websites/99999/ssl/cloudflare-zone",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    // ---- the WAF page ----------------------------------------------------
+    //
+    // `waf/websites/{id}` is the whole per-site page: the rule selection, the
+    // CRS state, the flood limits and the three bot lists. It is the single
+    // richest read Stage C added, which makes it the one most worth comparing
+    // against the real thing.
+    Case {
+        method: "GET",
+        path: "/api/waf/websites/1",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/waf/websites/99999",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/waf/bots",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    // `/waf/crs` reports what nginx has loaded *and* a memory estimate. The
+    // measured figures move between two calls; the estimate and the opt-in
+    // count do not, and those are what the page acts on.
+    Case {
+        method: "GET",
+        path: "/api/waf/crs",
+        body: None,
+        form: false,
+        volatile: &["nginx_pss_mb", "ram_available_mb"],
+    },
+    // Scanning for orphans touches nothing - that is the endpoint's whole
+    // claim, and running it twice is how the claim gets tested.
+    Case {
+        method: "GET",
+        path: "/api/waf/orphans",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    // ---- maintenance -----------------------------------------------------
+    Case {
+        method: "GET",
+        path: "/api/maintenance/cron/1",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/cron/99999",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/da-import/backups",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/files/1",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/files/1?path=public_html",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    // A path that climbs out of the site root. Both sides must refuse it, and
+    // with the same words: this is the one comparison where agreeing on the
+    // *message* matters as much as agreeing on the status.
+    Case {
+        method: "GET",
+        path: "/api/maintenance/files/1?path=../../etc",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/backups/1",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/user-backups",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/backup-schedules",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/sftp-targets",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    Case {
+        method: "GET",
+        path: "/api/maintenance/php-config",
+        body: None,
+        form: false,
+        volatile: &[],
+    },
+    // ---- the panel settings write half -----------------------------------
+    //
+    // Not called: `PATCH /panel-settings` can run `panel-url-set`, which
+    // rewrites the panel's own nginx server block. A shadow diff would do it
+    // twice and the second call would be comparing against a panel the first
+    // had already moved.
     // ---- addons ---------------------------------------------------------
     Case {
         method: "GET",

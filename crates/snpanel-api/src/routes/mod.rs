@@ -71,3 +71,54 @@ pub const PORTED_PREFIXES: &[&str] = &[
     "/api/users",
     "/api/websites",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build the whole API router.
+    ///
+    /// This exists because the panel could not start and nothing noticed.
+    /// `/websites/{website_id}/nginx-custom` was registered twice - once for
+    /// GET and once for PUT, each `.route()` attaching its own `.fallback()` -
+    /// and axum merges two `MethodRouter`s for the same path by panicking when
+    /// both carry a fallback:
+    ///
+    /// ```text
+    /// thread 'main' panicked at routes/websites.rs:89:10:
+    /// Cannot merge two `MethodRouter`s that both have a fallback
+    /// ```
+    ///
+    /// It reached `main` and stayed there. Every test passed, clippy passed,
+    /// the release built - because a router is only assembled at startup and
+    /// no test assembled one. A live deploy found it in four seconds.
+    ///
+    /// So the assertion is simply *that this returns*. There is nothing to
+    /// check about the value: the panic is the failure, and calling the
+    /// function is the test.
+    #[test]
+    fn the_api_router_can_be_built() {
+        let _router = api_router();
+    }
+
+    /// The same for every router on its own, so a failure names the module
+    /// rather than leaving the whole tree to bisect.
+    #[test]
+    fn every_router_can_be_built_on_its_own() {
+        let _ = health::router();
+        let _ = auth::router();
+        let _ = services::router();
+        let _ = packages::router();
+        let _ = users::router();
+        let _ = firewall::router();
+        let _ = databases::router();
+        let _ = updates::router();
+        let _ = addons::router();
+        let _ = websites::router();
+        let _ = waf::router();
+        let _ = malware::router();
+        let _ = panel_settings::router();
+        let _ = terminal::router();
+        let _ = maintenance::router();
+    }
+}

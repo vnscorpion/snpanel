@@ -428,13 +428,60 @@ every run; and `PanelUsername::parse` normalised where the Python validates,
 so `site-runtime-ensure UPPER /home/UPPER/x` created a directory outside the
 home of the account that owned it.
 
-### Stage C — the routers that sit on `site`
+### Stage C — the routers that sit on `site` — **met**
 
 `websites` write half (20 endpoints, 1,374 lines), then `maintenance` (67
 endpoints, 1,670 lines). Split `maintenance` by sub-area — backup, restore,
 cron, logs — rather than attempting it whole.
 
 **Exit:** shadow diff green for both; endpoint coverage ≥ **60%**.
+
+**Both met.** Coverage is 127 of 211 (60%), and the shadow diff is
+**109 of 109 requests identical**, run twice back to back on Debian 13 with
+the Rust front door on :2222 and Python on loopback. The corpus grew from 90
+requests to 109 for this: nineteen reads across `websites`, `waf` and
+`maintenance`, including the whole per-site WAF page and a file-manager path
+that climbs out of the site root, where agreeing on the *message* matters as
+much as agreeing on the status.
+
+Only reads were added. A shadow diff calls both sides with the same request,
+so a write would run twice and the second call would be compared against a
+world the first had already changed. Every Stage C write is covered by a
+golden corpus instead, where what is compared is the bytes it would produce.
+
+**The live run found two bugs that every test had passed over.**
+
+*The Rust API could not start.* `/websites/{website_id}/nginx-custom` was
+registered twice — once for `GET`, once for `PUT` — each `.route()` attaching
+its own `.fallback()`. axum merges two `MethodRouter`s for one path and
+panics when both carry a fallback:
+
+```text
+thread 'main' panicked at routes/websites.rs:89:10:
+Cannot merge two `MethodRouter`s that both have a fallback
+```
+
+It had been on `main` since at least `f802d07c` and nothing noticed, because a
+router is only assembled at startup and no test assembled one. The deployed
+binary predated the commit that introduced it, so the running panel was fine
+and the repository was not. A deploy found it in four seconds.
+`routes::tests::the_api_router_can_be_built` now builds it, and the test's
+only assertion is that the call returns.
+
+*`POST /users/{id}/password` checked in the wrong order.* A short password
+against a non-existent id answered 404 from Rust and 422 from Python:
+`UserPasswordUpdate` declares `password: str = Field(min_length=12)`, and
+FastAPI validates the model before the handler runs. Not only a status code —
+the Rust order told a caller whether a user id existed before it had looked at
+what they sent.
+
+One difference is declared rather than fixed. `GET /firewall/status` returns a
+`CommandResult` whose `command` field is what actually ran, and since the
+Stage B cutover the Rust side answers over the helper socket and reports
+`firewall-status` while Python shells out and reports the `sudo` line. Both
+are truthful about their own process. It is marked volatile *at that case*
+with the distinction spelled out — it is a transition artefact, not a moving
+reading — and it has to come back out when Python goes.
 
 ### Stage D — the remaining helper domains
 
