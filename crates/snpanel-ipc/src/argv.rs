@@ -501,6 +501,7 @@ impl HelperRequest {
                 url: rest[0].clone(),
                 add: op.ends_with("-add"),
             },
+            ("docker-install", 0) => HelperRequest::DockerInstall,
             ("docker-status", 0) => HelperRequest::DockerStatus,
             ("docker-prune", 0) => HelperRequest::DockerPrune,
             ("node-list", 0) => HelperRequest::NodeList,
@@ -1104,7 +1105,12 @@ mod tests {
 
     #[test]
     fn a_verb_this_build_does_not_answer_is_unmapped_so_the_bash_gets_it() {
-        let e = map(&["docker-install"]).expect_err("not ported");
+        // `docker-install` was this example until it was ported.
+        // `panel-url-set` is the next one to go, and this has to be
+        // changed again when it does - which is the point: the test
+        // is about the *mechanism*, so it must always name a verb the
+        // mapping really does not answer.
+        let e = map(&["panel-url-set", "http", "example.com", "2222"]).expect_err("not ported");
         assert!(e.is_unmapped(), "got {e:?}");
     }
 

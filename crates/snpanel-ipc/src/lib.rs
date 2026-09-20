@@ -858,6 +858,8 @@ pub enum HelperRequest {
         url: String,
         add: bool,
     },
+    /// `docker-install` - the container runtime the Application addon needs.
+    DockerInstall,
     /// `docker-status` - installed, running, and what the images cost.
     DockerStatus,
     /// `docker-prune` - dangling layers and build cache only.
@@ -1013,6 +1015,7 @@ impl HelperRequest {
                     "firewall-blocklist-delete"
                 }
             }
+            Self::DockerInstall => "docker-install",
             Self::DockerStatus => "docker-status",
             Self::DockerPrune => "docker-prune",
             Self::NodeList => "node-list",

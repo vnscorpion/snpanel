@@ -752,9 +752,338 @@ fn readlink_m(path: &std::path::Path) -> std::path::PathBuf {
     out
 }
 
+/// Source: `write_docker_daemon_config`.
+///
+/// "Log rotation is not optional on a shared host: an unbounded container log
+/// fills the disk and takes every other site down with it." The other three
+/// settings are the same kind of decision - `no-new-privileges` on by default,
+/// and an address pool that does not collide with the ranges a customer's own
+/// network is likely to use.
+const DOCKER_DAEMON_JSON: &str = "{\n\
+    \x20 \"log-driver\": \"json-file\",\n\
+    \x20 \"log-opts\": { \"max-size\": \"10m\", \"max-file\": \"3\" },\n\
+    \x20 \"live-restore\": true,\n\
+    \x20 \"no-new-privileges\": true,\n\
+    \x20 \"default-address-pool\": [ { \"base\": \"172.31.0.0/16\", \"size\": 24 } ]\n\
+    }\n";
+
+fn write_docker_daemon_config() -> std::io::Result<()> {
+    std::fs::create_dir_all("/etc/docker")?;
+    std::fs::write("/etc/docker/daemon.json", DOCKER_DAEMON_JSON)
+}
+
+/// Source: `install_docker_firewall_guard`.
+///
+/// "Docker publishes ports by DNAT in PREROUTING and allows them through its
+/// own FORWARD chain, so a published port never passes through SNPANEL-INPUT.
+/// Panel apps only ever publish on loopback, but a container started by hand
+/// could publish on 0.0.0.0 and be reachable while the firewall looks
+/// enabled. DOCKER-USER is the one chain Docker leaves to the operator."
+///
+/// Every step is best effort and the function returns quietly when iptables or
+/// docker is absent - the guard is protection, and failing the install because
+/// it could not be applied would leave the operator with neither.
+///
+/// The two inserts are in reverse order on purpose: each goes in at position
+/// 1, so the *last* one inserted ends up first. The conntrack RETURN has to be
+/// evaluated before the DROP or every established connection dies.
+fn install_docker_firewall_guard() {
+    if !have("iptables") || !have("docker") {
+        return;
+    }
+    let Some(iface) = default_interface() else {
+        return;
+    };
+
+    let _ = exec::run(&["iptables", "-w", "-N", "DOCKER-USER"]);
+    // Remove any copy this run is about to replace, so re-running does not
+    // stack duplicates.
+    let _ = exec::run(&[
+        "iptables",
+        "-w",
+        "-D",
+        "DOCKER-USER",
+        "-i",
+        &iface,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "RETURN",
+    ]);
+    let _ = exec::run(&[
+        "iptables",
+        "-w",
+        "-D",
+        "DOCKER-USER",
+        "-i",
+        &iface,
+        "-j",
+        "DROP",
+    ]);
+    let _ = exec::run(&[
+        "iptables",
+        "-w",
+        "-I",
+        "DOCKER-USER",
+        "1",
+        "-i",
+        &iface,
+        "-j",
+        "DROP",
+    ]);
+    let _ = exec::run(&[
+        "iptables",
+        "-w",
+        "-I",
+        "DOCKER-USER",
+        "1",
+        "-i",
+        &iface,
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "-j",
+        "RETURN",
+    ]);
+}
+
+/// `ip route show default | awk '/^default/{print $5; exit}'` - the fifth
+/// field of the first default route, which is the interface name.
+fn default_interface() -> Option<String> {
+    let out = exec::run(&["ip", "route", "show", "default"]).ok()?;
+    out.stdout
+        .lines()
+        .find(|line| line.starts_with("default"))
+        .and_then(|line| line.split_whitespace().nth(4))
+        .map(str::to_string)
+}
+
+/// `docker-install`.
+pub fn docker_install() -> HelperResponse {
+    if have("docker") {
+        if let Err(e) = write_docker_daemon_config() {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("writing /etc/docker/daemon.json: {e}"),
+            );
+        }
+        let _ = exec::run(&["systemctl", "restart", "docker"]);
+        install_docker_firewall_guard();
+        return HelperResponse::with_stdout("Docker is already installed\n".to_string());
+    }
+    if let Some(refusal) = debian_only("Docker install") {
+        return refusal;
+    }
+
+    // `. /etc/os-release` in the bash. `OsRelease` keeps only the fields the
+    // platform table needs, and the codename is not one of them, so this
+    // reads the file for both rather than taking `ID` from one place and the
+    // codename from another.
+    let os = os_release_fields();
+    let distro = match os_field(&os, "ID").as_str() {
+        "ubuntu" => "ubuntu",
+        "debian" => "debian",
+        other => {
+            return HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!(
+                    "unsupported distribution for Docker install: {}",
+                    if other.is_empty() { "unknown" } else { other }
+                ),
+            )
+        }
+    };
+    let codename = os_field(&os, "VERSION_CODENAME");
+    if codename.is_empty() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "cannot determine distribution codename".to_string(),
+        );
+    }
+    let arch = match exec::run(&["dpkg", "--print-architecture"]) {
+        Ok(o) if o.ok() => o.stdout.trim().to_string(),
+        other => return exec::respond("dpkg --print-architecture", other),
+    };
+
+    let mut out = String::new();
+    if let Ok(o) = update_index() {
+        out.push_str(&o.stdout);
+    }
+    match install_packages(&["ca-certificates", "curl", "gnupg"]) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        other => return exec::respond("apt-get install ca-certificates curl gnupg", other),
+    }
+
+    let _ = std::fs::create_dir_all("/etc/apt/keyrings");
+    let key_url = format!("https://download.docker.com/linux/{distro}/gpg");
+    let fetched = exec::run(&[
+        "curl",
+        "-fsSL",
+        &key_url,
+        "-o",
+        "/etc/apt/keyrings/docker.asc",
+    ]);
+    if !matches!(&fetched, Ok(o) if o.ok()) {
+        return exec::respond("curl docker gpg key", fetched);
+    }
+    // `chmod a+r` - apt runs the fetch as root and reads it as _apt.
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(
+        "/etc/apt/keyrings/docker.asc",
+        std::fs::Permissions::from_mode(0o644),
+    );
+
+    let source = format!(
+        "deb [arch={arch} signed-by=/etc/apt/keyrings/docker.asc] \
+         https://download.docker.com/linux/{distro} {codename} stable\n"
+    );
+    if let Err(e) = std::fs::write("/etc/apt/sources.list.d/docker.list", source) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing /etc/apt/sources.list.d/docker.list: {e}"),
+        );
+    }
+    if let Ok(o) = update_index() {
+        out.push_str(&o.stdout);
+    }
+    match install_packages(&[
+        "docker-ce",
+        "docker-ce-cli",
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-compose-plugin",
+    ]) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        other => return exec::respond("apt-get install docker-ce", other),
+    }
+
+    if let Err(e) = write_docker_daemon_config() {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing /etc/docker/daemon.json: {e}"),
+        );
+    }
+    let enabled = exec::run(&["systemctl", "enable", "--now", "docker"]);
+    if !matches!(&enabled, Ok(o) if o.ok()) {
+        return exec::respond("systemctl enable --now docker", enabled);
+    }
+    install_docker_firewall_guard();
+    out.push_str("Docker installed\n");
+    HelperResponse::with_stdout(out)
+}
+
+/// `/etc/os-release` as `KEY=value` pairs, quotes stripped.
+///
+/// Source: `. /etc/os-release`, which the bash sources for `ID` and
+/// `VERSION_CODENAME`.
+fn os_release_fields() -> Vec<(String, String)> {
+    let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            Some((
+                key.trim().to_string(),
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn os_field(fields: &[(String, String)], key: &str) -> String {
+    fields
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The daemon config, against the bash's heredoc.
+    ///
+    /// The log rotation is the line that matters on a shared host: "an
+    /// unbounded container log fills the disk and takes every other site down
+    /// with it."
+    #[test]
+    fn the_docker_daemon_config_is_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+        let open = "<<'JSON'\n";
+        let start = BASH.find(open).expect("the heredoc opener") + open.len();
+        let end = BASH[start..].find("JSON\n").expect("the closer") + start;
+        assert_eq!(DOCKER_DAEMON_JSON, &BASH[start..end]);
+
+        // And it is JSON, which a heredoc cannot promise.
+        let parsed: serde_json::Value =
+            serde_json::from_str(DOCKER_DAEMON_JSON).expect("daemon.json parses");
+        assert_eq!(parsed["log-opts"]["max-size"], "10m");
+        assert_eq!(parsed["no-new-privileges"], true);
+    }
+
+    /// `/etc/os-release` parsing, including the quoting the file uses.
+    #[test]
+    fn os_release_values_lose_their_quotes() {
+        let fields = |text: &str| -> Vec<(String, String)> {
+            text.lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        return None;
+                    }
+                    let (k, v) = line.split_once('=')?;
+                    Some((
+                        k.trim().to_string(),
+                        v.trim().trim_matches('"').trim_matches('\'').to_string(),
+                    ))
+                })
+                .collect()
+        };
+        let sample = "# a comment\nID=debian\nVERSION_CODENAME=trixie\nPRETTY_NAME=\"Debian GNU/Linux 13\"\n\nID_LIKE='debian'\n";
+        let got = fields(sample);
+        assert_eq!(os_field(&got, "ID"), "debian");
+        assert_eq!(os_field(&got, "VERSION_CODENAME"), "trixie");
+        assert_eq!(os_field(&got, "PRETTY_NAME"), "Debian GNU/Linux 13");
+        assert_eq!(os_field(&got, "ID_LIKE"), "debian");
+        assert_eq!(os_field(&got, "NOT_THERE"), "");
+    }
+
+    /// The interface name is the **fifth** field of the default route.
+    ///
+    /// `ip route show default` prints `default via <gw> dev <iface> ...`, so
+    /// counting from the wrong end puts an IP address where the DOCKER-USER
+    /// rule expects a device - and the guard then silently protects nothing.
+    #[test]
+    fn the_default_interface_is_the_fifth_field() {
+        let pick = |text: &str| -> Option<String> {
+            text.lines()
+                .find(|l| l.starts_with("default"))
+                .and_then(|l| l.split_whitespace().nth(4))
+                .map(str::to_string)
+        };
+        assert_eq!(
+            pick("default via 10.0.0.1 dev eth0 proto dhcp metric 100").as_deref(),
+            Some("eth0")
+        );
+        assert_eq!(
+            pick("10.0.0.0/24 dev eth0 scope link\ndefault via 192.168.1.1 dev ens3").as_deref(),
+            Some("ens3")
+        );
+        assert_eq!(pick(""), None);
+        // A default route with no `dev` has nothing to guard.
+        assert_eq!(pick("default via 10.0.0.1"), None);
+    }
 
     /// A scan job id becomes a filename under a directory the panel reads, so
     /// it is checked rather than escaped: lowercase hex only, which cannot

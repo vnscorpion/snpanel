@@ -370,6 +370,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
                 firewall::blocklist_delete(url)
             }
         }
+        HelperRequest::DockerInstall => packages::docker_install(),
         HelperRequest::DockerStatus => runtime::docker_status(),
         HelperRequest::DockerPrune => runtime::docker_prune(),
         HelperRequest::NodeList => runtime::node_list(),
