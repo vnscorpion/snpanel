@@ -463,6 +463,9 @@ impl HelperRequest {
                 };
                 HelperRequest::WafCrsMode { mode }
             }
+            ("docker-status", 0) => HelperRequest::DockerStatus,
+            ("docker-prune", 0) => HelperRequest::DockerPrune,
+            ("node-list", 0) => HelperRequest::NodeList,
             ("panel-user-lock", 1) | ("panel-user-unlock", 1) => HelperRequest::PanelUserLock {
                 user: user_of(&rest[0])?,
                 locked: op == "panel-user-lock",

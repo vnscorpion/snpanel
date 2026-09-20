@@ -806,6 +806,12 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `docker-status` - installed, running, and what the images cost.
+    DockerStatus,
+    /// `docker-prune` - dangling layers and build cache only.
+    DockerPrune,
+    /// `node-list` - the Node majors installed under /opt/snpanel/node.
+    NodeList,
     /// `panel-user-lock` / `panel-user-unlock` - a suspended customer's
     /// Linux account.
     ///
@@ -938,6 +944,9 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::DockerStatus => "docker-status",
+            Self::DockerPrune => "docker-prune",
+            Self::NodeList => "node-list",
             Self::PanelUserLock { locked, .. } => {
                 if *locked {
                     "panel-user-lock"

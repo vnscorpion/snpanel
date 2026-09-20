@@ -19,6 +19,7 @@ pub mod fwrules;
 pub mod misc;
 pub mod nginx;
 pub mod php;
+pub mod runtime;
 pub mod selinux;
 pub mod site;
 pub mod siteapp;
@@ -346,6 +347,9 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafSiteSave { domain, content } => waf::site_rules_save(domain, content),
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
+        HelperRequest::DockerStatus => runtime::docker_status(),
+        HelperRequest::DockerPrune => runtime::docker_prune(),
+        HelperRequest::NodeList => runtime::node_list(),
         HelperRequest::HttpFloodZonesSave { content } => nginx::flood_zones_save(content),
         HelperRequest::WafDefaultRules => waf::default_rules(),
         HelperRequest::WafCustomRules => waf::custom_rules(),

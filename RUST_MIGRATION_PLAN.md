@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 76 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 79 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,8 +39,8 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 76 are answered over the socket and
-29 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 79 are answered over the socket and
+26 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
