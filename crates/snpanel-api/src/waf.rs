@@ -377,6 +377,29 @@ pub fn may_manage_waf(role: &str, package_waf_enabled: Option<bool>) -> bool {
 // what the WAF page reads for one site
 // ---------------------------------------------------------------------------
 
+/// Source: `CRS_PSS_MB_PER_SITE`.
+///
+/// "Every nginx server block builds its own copy of the rule set, so this
+/// grows with the number of sites opted in rather than being paid once."
+///
+/// Measured in PSS, which is the only figure worth quoting: nginx parses the
+/// rules in the master and the workers fork, so those pages are shared, and
+/// summing RSS across processes counts them once per worker. On a live server
+/// with 19 sites the two readings were 3976 MB of RSS against 961 MB of PSS -
+/// roughly four times' difference, and the RSS number is the one that makes
+/// CRS look unaffordable when it is not. 50 MB is that 961 MB spread across
+/// 19, rounded up.
+pub const CRS_PSS_MB_PER_SITE: i64 = 50;
+
+/// Source: `CRS_RSS_MB_PER_SITE` - the same number under the name the API
+/// field uses, which the Python keeps deliberately because it is public.
+pub const CRS_RSS_MB_PER_SITE: i64 = CRS_PSS_MB_PER_SITE;
+
+/// Source: `crs_memory_estimate`.
+pub fn crs_memory_estimate(site_count: usize) -> i64 {
+    site_count as i64 * CRS_RSS_MB_PER_SITE
+}
+
 /// Source: `site_rules_file` - the path the vhost's
 /// `modsecurity_rules_file` points at.
 pub fn site_rules_file(domain: &str) -> Result<String, WafError> {

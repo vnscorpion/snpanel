@@ -51,7 +51,7 @@ pub const ALLOWED_REWRITE_MODES: &[&str] = &[
 ];
 const PROXY_TIMEOUT_SECONDS: u32 = 300;
 const PUBLIC_DIR: &str = "public_html";
-const MAX_BLOCKED_BOTS: usize = 500;
+pub const MAX_BLOCKED_BOTS: usize = 500;
 const MAX_BOT_NAME_LENGTH: usize = 120;
 /// Source: `_SSL_PATH_ROOTS`.
 const SSL_PATH_ROOTS: &[&str] = &["/etc/nginx/snpanel/ssl/sites/", "/etc/letsencrypt/live/"];

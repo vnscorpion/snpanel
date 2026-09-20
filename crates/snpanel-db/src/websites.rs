@@ -160,6 +160,18 @@ impl<'a> WebsiteRepo<'a> {
     /// and the column is only written if that succeeded. A database saying
     /// the WAF is on while the vhost does not is a panel claiming protection
     /// it is not providing.
+    /// Source: `set_website_crs` - the per-site CRS opt-in, which is separate
+    /// from `waf_enabled` because CRS is the one WAF feature with a memory
+    /// bill and both switches have to agree before it loads.
+    pub async fn set_crs_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET crs_enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_waf_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
         sqlx::query("UPDATE websites SET waf_enabled = ? WHERE id = ?")
             .bind(enabled)
@@ -221,6 +233,17 @@ impl<'a> WebsiteRepo<'a> {
         .bind(id)
         .execute(self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Source: `save_website_blocked_bots` - the site's own list, newline
+    /// separated, which is the shape `normalize_blocked_bots` reads back.
+    pub async fn set_blocked_bots(&self, id: i64, bots: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET blocked_bots = ? WHERE id = ?")
+            .bind(bots)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 

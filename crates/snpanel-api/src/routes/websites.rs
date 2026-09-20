@@ -362,7 +362,7 @@ async fn nginx_config(
         }
     };
 
-    let path = match vhost_path(&state, &website.domain) {
+    let path = match vhost_path_for(&state, &website.domain) {
         Some(p) => p,
         // `_vhost_path` raises ValueError("Invalid domain"), which the handler
         // turns into a 404 carrying that text.
@@ -377,7 +377,7 @@ async fn nginx_config(
 }
 
 /// Source: `nginx._vhost_path`.
-fn vhost_path(state: &AppState, domain: &str) -> Option<PathBuf> {
+pub(super) fn vhost_path_for(state: &AppState, domain: &str) -> Option<PathBuf> {
     let safe = domain.to_lowercase();
     if !is_domain(&safe) {
         return None;
@@ -420,7 +420,7 @@ fn normalise_config(text: &str) -> String {
 /// the Python has always written it with a plain `write_text`. Only the test
 /// and the reload go through the helper.
 async fn read_vhost(state: &AppState, domain: &str) -> Option<String> {
-    let path = vhost_path(state, domain)?;
+    let path = vhost_path_for(state, domain)?;
     tokio::fs::read_to_string(path).await.ok()
 }
 
@@ -451,6 +451,32 @@ async fn write_vhost_backup(path: &std::path::Path, previous: &str) {
 /// leaving it there means the *next* reload, for any site on the box, fails
 /// too. The Python restores the previous bytes for exactly that reason.
 async fn apply_vhost(state: &AppState, plan: &snpanel_nginx::VhostPlan) -> Result<(), Response> {
+    apply_vhost_message(state, plan).await.map_err(|message| {
+        if message.starts_with("internal:") {
+            internal_error()
+        } else {
+            bad_request(&message)
+        }
+    })
+}
+
+/// [`apply_vhost`], returning the failure **text** rather than a built
+/// response.
+///
+/// The bot endpoints write several vhosts in one request and report which
+/// ones failed, so they need the message rather than a `Response` they cannot
+/// look inside.
+pub(super) async fn apply_vhost_plan(
+    state: &AppState,
+    plan: snpanel_nginx::VhostPlan,
+) -> Result<(), String> {
+    apply_vhost_message(state, &plan).await
+}
+
+async fn apply_vhost_message(
+    state: &AppState,
+    plan: &snpanel_nginx::VhostPlan,
+) -> Result<(), String> {
     if state.settings.command_dry_run {
         return Ok(());
     }
@@ -464,7 +490,7 @@ async fn apply_vhost(state: &AppState, plan: &snpanel_nginx::VhostPlan) -> Resul
     }
     if let Err(e) = tokio::fs::write(&plan.path, &plan.content).await {
         tracing::error!("writing {} failed: {e}", plan.path.display());
-        return Err(internal_error());
+        return Err("internal:could not write the vhost".to_string());
     }
     let test = shell::privileged(false, "nginx-test", &[], None, Some(&["nginx", "-t"])).await;
     if !test.ok() {
@@ -477,7 +503,7 @@ async fn apply_vhost(state: &AppState, plan: &snpanel_nginx::VhostPlan) -> Resul
                 let _ = tokio::fs::remove_file(&plan.path).await;
             }
         }
-        return Err(bad_request(test.failure_detail("nginx -t failed").trim()));
+        return Err(test.failure_detail("nginx -t failed").trim().to_string());
     }
     let _ = shell::privileged(
         false,
@@ -667,7 +693,7 @@ async fn set_nginx_custom(
         }
         if positioned != existing {
             let plan = snpanel_nginx::VhostPlan {
-                path: vhost_path(&state, &website.domain).expect("a validated domain"),
+                path: vhost_path_for(&state, &website.domain).expect("a validated domain"),
                 content: positioned,
                 previous: Some(existing),
                 custom_include: validated.as_str().to_string(),
@@ -1238,7 +1264,7 @@ pub(super) async fn update_waf_block(
     if state.settings.command_dry_run {
         return Ok(());
     }
-    let Some(path) = vhost_path(state, domain) else {
+    let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
     };
     let Some(existing) = read_vhost(state, domain).await else {
@@ -1578,7 +1604,7 @@ async fn update_http_flood_block(
     if state.settings.command_dry_run {
         return Ok(());
     }
-    let Some(path) = vhost_path(state, domain) else {
+    let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
     };
     let Some(existing) = read_vhost(state, domain).await else {
