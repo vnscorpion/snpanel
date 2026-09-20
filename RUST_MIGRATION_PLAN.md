@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 98 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 100 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,14 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 98 are answered over the socket and
-7 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 100 are answered over the socket
+and 5 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
-direction: `snpanel-ipc` defines 111 request variants and the argv layer maps
-127 verb names, which is more than the 98 above. (An earlier draft said 133
+direction: `snpanel-ipc` defines 113 request variants and the argv layer maps
+129 verb names, which is more than the 100 above. (An earlier draft said 133
 variants. Counted two ways — the variants in the `enum HelperRequest` body, and
 the distinct `Self::` arms in its `name()` table — it is 109; more names than
 variants because several verbs are aliases sharing one.) Three of those names
@@ -253,6 +253,24 @@ sections. What the administrator saw was the release blob alone — no
 upgradable package list, no unattended-upgrades state, neither service state,
 neither journal. Not a parse failure, an information loss, and invisible for
 the same reason as the rest: nothing errored.
+
+### A test whose example keeps being ported is testing the wrong thing
+
+`an_unmapped_verb_does_not_read_stdin` checks that a verb the argv layer does
+not map is delegated to bash **without** reading stdin first — reading it
+would consume the payload the fallthrough needs. It named a real unported verb
+as its example, and that example had to be changed three times:
+`docker-install`, then `panel-url-set`, then `php-install`, each time because
+that verb had just been ported.
+
+None of those edits said anything about the mechanism. `from_argv` does not
+know which names the bash helper carries, so any unmapped name exercises the
+same path — and one of the moves hid a real problem, because a substring guard
+had matched this test's example rather than the argv arm it was meant to find.
+The example is now a name that cannot ever be mapped.
+
+The general form: when a test has to be edited every time unrelated work
+lands, the thing it names is not the thing it is testing.
 
 ### A test can pass because it never ran
 

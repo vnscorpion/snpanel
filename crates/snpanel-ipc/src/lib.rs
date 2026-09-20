@@ -860,6 +860,20 @@ pub enum HelperRequest {
         version: PhpVersion,
         content: String,
     },
+    /// `php-install <version>` - a PHP version and SNPanel's extension set.
+    ///
+    /// Minutes: it may add the ondrej PPA, refresh the package lists and
+    /// download the ionCube loader before installing fourteen packages.
+    PhpInstall {
+        version: PhpVersion,
+    },
+
+    /// `waf-install` - the nginx ModSecurity module and SNPanel's rules.
+    ///
+    /// Debian only; refused with the reason on EL, where the connector is not
+    /// packaged at all.
+    WafInstall,
+
     /// `firewall-blocklist-run` - download every configured list, normalise
     /// it and reload the firewall with the result.
     ///
@@ -1043,6 +1057,8 @@ impl HelperRequest {
             Self::UpdatesPanelRun => "updates-panel-run",
             Self::PhpPoolsRetune => "php-pools-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
+            Self::PhpInstall { .. } => "php-install",
+            Self::WafInstall => "waf-install",
             Self::FirewallBlocklistRun => "firewall-blocklist-run",
             Self::FirewallBlocklistStatus => "firewall-blocklist-status",
             Self::FirewallBlocklistUrl { add, .. } => {

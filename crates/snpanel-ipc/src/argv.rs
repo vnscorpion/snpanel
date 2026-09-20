@@ -496,6 +496,11 @@ impl HelperRequest {
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
                 content: String::from_utf8_lossy(&stdin()).into_owned(),
             },
+            ("php-install", 1) => HelperRequest::PhpInstall {
+                version: snpanel_core::PhpVersion::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+            },
+            ("waf-install", 0) => HelperRequest::WafInstall,
             ("firewall-blocklist-run", 0)
             | ("nginx-blocklist-run", 0)
             | ("ufw-blocklist-run", 0) => HelperRequest::FirewallBlocklistRun,
@@ -1158,17 +1163,36 @@ mod tests {
         // The bash helper reads the payload itself when the call falls
         // through, so reading it here to decide would consume the very thing
         // the fallthrough needs. `no_stdin` panics if this regresses.
+        //
+        // The verb named here is deliberately one that cannot ever be
+        // mapped. Earlier versions used a real unported verb -
+        // `docker-install`, then `panel-url-set`, then `php-install` - and
+        // each had to be changed the day that verb was ported, which proved
+        // nothing about this mechanism and twice hid a real problem in the
+        // noise. `from_argv` does not know which names the bash helper
+        // carries; any name it does not map exercises the same path.
         let touched = Cell::new(false);
-        let e = HelperRequest::from_argv(&argv(&["php-install", "8.4"]), || {
+        let e = HelperRequest::from_argv(&argv(&["not-a-verb-in-any-build", "8.4"]), || {
             touched.set(true);
             Vec::new()
         })
-        .expect_err("not ported");
+        .expect_err("never mapped");
         assert!(e.is_unmapped());
         assert!(
             !touched.get(),
             "stdin was read before delegating to the bash"
         );
+
+        // And with no arguments at all, which is the shape most unported
+        // verbs are called in.
+        let touched = Cell::new(false);
+        let e = HelperRequest::from_argv(&argv(&["not-a-verb-in-any-build"]), || {
+            touched.set(true);
+            Vec::new()
+        })
+        .expect_err("never mapped");
+        assert!(e.is_unmapped());
+        assert!(!touched.get());
     }
 
     #[test]

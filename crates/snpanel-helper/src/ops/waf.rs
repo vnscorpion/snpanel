@@ -395,6 +395,173 @@ fn which(binary: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// `waf-install`: the nginx ModSecurity module, plus SNPanel's own rules.
+///
+/// Source: `install_waf_engine`.
+///
+/// Debian only, and refused with the reason on EL rather than handed to a
+/// package manager that has no such package: EL10 ships neither the connector
+/// nor libmodsecurity, so "no match for argument" would read like a broken
+/// repository instead of a settled fact about the distribution.
+pub fn install_engine() -> HelperResponse {
+    use crate::ops::packages;
+
+    let mut out = String::new();
+
+    if !packages::dpkg_installed(&["libnginx-mod-http-modsecurity"]) {
+        if let Some(refusal) = packages::debian_only("installing the nginx ModSecurity module") {
+            return refusal;
+        }
+        if let Ok(o) = packages::update_index() {
+            out.push_str(&o.stdout);
+        }
+        // "The core rule set is a separate package and a box may not carry
+        // it." Falling back to the module alone still gives a working engine
+        // for SNPanel's own rules, which is what this verb is really for.
+        let full = packages::install_packages(&[
+            "libnginx-mod-http-modsecurity",
+            "modsecurity-crs",
+            "libmodsecurity3",
+        ]);
+        match full {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            _ => {
+                let second = packages::install_packages(&[
+                    "libnginx-mod-http-modsecurity",
+                    "libmodsecurity3",
+                ]);
+                match second {
+                    Ok(o) if o.ok() => out.push_str(&o.stdout),
+                    other => {
+                        let detail = match other {
+                            Ok(o) => {
+                                if o.stderr.trim().is_empty() {
+                                    o.stdout
+                                } else {
+                                    o.stderr
+                                }
+                            }
+                            Err(e) => e.to_string(),
+                        };
+                        let detail = detail.trim().to_string();
+                        return HelperResponse::failed(
+                            HelperErrorKind::CommandFailed,
+                            if detail.is_empty() {
+                                "could not install the nginx ModSecurity module".to_string()
+                            } else {
+                                format!("could not install the nginx ModSecurity module: {detail}")
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if let Err(resp) = ensure_modsec_dir() {
+        return resp;
+    }
+    if let Err(resp) = write_default_rules() {
+        return resp;
+    }
+    // `touch` - the include has to resolve before nginx will load at all.
+    if !Path::new(CUSTOM_CONF).exists() {
+        if let Err(e) = std::fs::write(CUSTOM_CONF, "") {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("creating {CUSTOM_CONF}: {e}"),
+            );
+        }
+    }
+
+    // Debian ships the recommended config unactivated. Copying it is what
+    // gives `Include /etc/modsecurity/modsecurity.conf` in the base conf
+    // something to find - and only when there is no config already, so an
+    // administrator's edits are never overwritten.
+    let recommended = Path::new("/etc/modsecurity/modsecurity.conf-recommended");
+    let active = Path::new("/etc/modsecurity/modsecurity.conf");
+    if recommended.is_file() && !active.exists() {
+        let _ = std::fs::copy(recommended, active);
+    }
+    if active.is_file() {
+        if let Ok(text) = std::fs::read_to_string(active) {
+            let rewritten = rewrite_rule_engine(&text);
+            if rewritten != text {
+                let _ = std::fs::write(active, rewritten);
+            }
+        }
+    }
+
+    // The module has to be loaded by nginx before any of the above matters.
+    // `ln -sfn` replaces an existing link rather than failing on it.
+    let available = Path::new("/usr/share/nginx/modules-available/mod-http-modsecurity.conf");
+    if available.is_file() {
+        let enabled_dir = Path::new("/etc/nginx/modules-enabled");
+        let _ = std::fs::create_dir_all(enabled_dir);
+        let link = enabled_dir.join("50-mod-http-modsecurity.conf");
+        let _ = std::fs::remove_file(&link);
+        if let Err(e) = std::os::unix::fs::symlink(available, &link) {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("linking {}: {e}", link.display()),
+            );
+        }
+    }
+
+    if let Err(resp) = write_main_conf() {
+        return resp;
+    }
+    if let Err(resp) = crate::ops::nginx::ensure_flood_conf() {
+        return resp;
+    }
+
+    // `nginx -t` then `systemctl reload nginx`: a configuration nginx rejects
+    // must not reach a reload, because the reload is what would take every
+    // site on the box down.
+    let checked = exec::run(&["nginx", "-t"]);
+    if !matches!(&checked, Ok(o) if o.ok()) {
+        return exec::respond("nginx -t", checked);
+    }
+    let reloaded = exec::run(&["systemctl", "reload", "nginx"]);
+    if !matches!(&reloaded, Ok(o) if o.ok()) {
+        return exec::respond("systemctl reload nginx", reloaded);
+    }
+
+    out.push_str("WAF engine installed with SNPanel lightweight WordPress/Laravel/PHP rules.\n");
+    HelperResponse::with_stdout(out)
+}
+
+/// `sed -i -E 's/^SecRuleEngine .*/SecRuleEngine On/'`.
+///
+/// Anchored at the start of a line and applied to **every** match, which is
+/// what `sed` without a line range does. A file carrying the directive twice -
+/// the shipped one and an administrator's - comes out with both saying `On`,
+/// and since the last one wins in ModSecurity, rewriting only the first would
+/// leave the engine off while reporting that it had been turned on.
+///
+/// The shipped Debian file says `SecRuleEngine DetectionOnly`, which loads
+/// every rule and blocks nothing.
+pub(crate) fn rewrite_rule_engine(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let ends_with_newline = text.ends_with('\n');
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with("SecRuleEngine ") {
+            lines.push("SecRuleEngine On".to_string());
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let mut out = lines.join("\n");
+    // GNU sed leaves a file that ended without a newline ending without one.
+    if ends_with_newline {
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +838,65 @@ mod tests {
         // /proc/meminfo is present on every Linux this runs on.
         assert!(total > 0, "MemTotal should be readable here");
         assert!(available <= total, "available {available} > total {total}");
+    }
+
+    /// `sed -i -E 's/^SecRuleEngine .*/SecRuleEngine On/'`.
+    ///
+    /// Debian ships `SecRuleEngine DetectionOnly`, which loads every rule and
+    /// blocks nothing - a WAF that reports as installed and stops no request.
+    ///
+    /// No line range, so **every** matching line is rewritten. Since the last
+    /// `SecRuleEngine` wins in ModSecurity, rewriting only the first would
+    /// leave the engine in detection mode while reporting it had been turned
+    /// on, which is the same failure one layer down.
+    #[test]
+    fn the_rule_engine_is_turned_on_on_every_line_that_sets_it() {
+        assert_eq!(
+            rewrite_rule_engine("SecRuleEngine DetectionOnly\n"),
+            "SecRuleEngine On\n"
+        );
+        assert_eq!(
+            rewrite_rule_engine("SecRuleEngine Off\n"),
+            "SecRuleEngine On\n"
+        );
+        assert_eq!(
+            rewrite_rule_engine("SecRuleEngine On\n"),
+            "SecRuleEngine On\n"
+        );
+
+        // Both copies, which is what `sed` without a range does.
+        let two = "SecRuleEngine DetectionOnly\nSecAuditEngine RelevantOnly\nSecRuleEngine Off\n";
+        assert_eq!(
+            rewrite_rule_engine(two),
+            "SecRuleEngine On\nSecAuditEngine RelevantOnly\nSecRuleEngine On\n"
+        );
+
+        // `^` - a directive inside a comment or a continuation is not this
+        // directive and is left alone.
+        for untouched in [
+            "# SecRuleEngine DetectionOnly\n",
+            "  SecRuleEngine DetectionOnly\n",
+            "SecRuleEngineFoo DetectionOnly\n",
+            "SecAuditEngine On\n",
+        ] {
+            assert_eq!(rewrite_rule_engine(untouched), untouched, "{untouched:?}");
+        }
+
+        // The pattern is `SecRuleEngine ` with a space: the directive with no
+        // argument is not what it matches.
+        assert_eq!(rewrite_rule_engine("SecRuleEngine\n"), "SecRuleEngine\n");
+
+        // Everything else survives byte for byte, including blank lines.
+        let conf = "# -- Rule engine\nSecRuleEngine DetectionOnly\n\nSecRequestBodyAccess On\n";
+        assert_eq!(
+            rewrite_rule_engine(conf),
+            "# -- Rule engine\nSecRuleEngine On\n\nSecRequestBodyAccess On\n"
+        );
+
+        // GNU sed leaves a file that ended without a newline ending without
+        // one, and an empty file empty.
+        assert_eq!(rewrite_rule_engine("SecRuleEngine Off"), "SecRuleEngine On");
+        assert_eq!(rewrite_rule_engine(""), "");
     }
 }
 

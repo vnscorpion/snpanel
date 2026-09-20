@@ -201,7 +201,7 @@ const FLOOD_ZONES_FALLBACK: &str = concat!(
 );
 
 /// Source: `write_http_flood_nginx_conf`.
-fn write_flood_conf() -> Result<(), HelperResponse> {
+pub(crate) fn ensure_flood_conf() -> Result<(), HelperResponse> {
     if let Err(e) = std::fs::create_dir_all("/etc/nginx/snpanel") {
         return Err(HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -270,7 +270,7 @@ pub fn flood_zones_save(content: &str) -> HelperResponse {
             format!("writing {FLOOD_ZONES}: {e}"),
         );
     }
-    if let Err(resp) = write_flood_conf() {
+    if let Err(resp) = ensure_flood_conf() {
         return resp;
     }
 

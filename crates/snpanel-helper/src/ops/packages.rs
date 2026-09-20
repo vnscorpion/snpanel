@@ -12,6 +12,9 @@
 //! apt, and a distribution that packages none of this should say so rather
 //! than hand its package manager a name it will reject.
 
+use std::path::Path;
+
+use snpanel_core::PhpVersion;
 use snpanel_ipc::{HelperErrorKind, HelperResponse};
 use snpanel_osabi::Family;
 
@@ -29,7 +32,7 @@ fn family() -> Family {
 }
 
 /// Source: `pkg_update_index`.
-fn update_index() -> std::io::Result<exec::Output> {
+pub(crate) fn update_index() -> std::io::Result<exec::Output> {
     match family() {
         Family::Rhel => exec::run(&["dnf", "-y", "makecache"]),
         _ => exec::run_with_env(
@@ -40,7 +43,7 @@ fn update_index() -> std::io::Result<exec::Output> {
 }
 
 /// Source: `pkg_install`.
-fn install_packages(names: &[&str]) -> std::io::Result<exec::Output> {
+pub(crate) fn install_packages(names: &[&str]) -> std::io::Result<exec::Output> {
     let mut argv: Vec<&str> = match family() {
         Family::Rhel => vec!["dnf", "-y", "install"],
         _ => vec!["apt-get", "install", "-y"],
@@ -57,7 +60,7 @@ fn install_packages(names: &[&str]) -> std::io::Result<exec::Output> {
 /// Only meaningful on Debian; on EL the caller asks dnf, which is idempotent
 /// anyway. A missing `dpkg` answers "not installed" rather than failing, which
 /// is what the bash's `2>&1` does with it.
-fn dpkg_installed(names: &[&str]) -> bool {
+pub(crate) fn dpkg_installed(names: &[&str]) -> bool {
     let mut argv: Vec<&str> = vec!["dpkg", "-s"];
     argv.extend_from_slice(names);
     matches!(exec::run(&argv), Ok(o) if o.ok())
@@ -68,7 +71,7 @@ fn dpkg_installed(names: &[&str]) -> bool {
 /// "Refusing with the reason beats reaching apt-get and reporting 'command not
 /// found', which reads like a broken PATH rather than a settled fact about the
 /// distribution."
-fn debian_only(what: &str) -> Option<HelperResponse> {
+pub(crate) fn debian_only(what: &str) -> Option<HelperResponse> {
     if family() == Family::Debian {
         return None;
     }
@@ -1551,6 +1554,362 @@ pub(crate) fn format_utc(secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+// ---------------------------------------------------------------------------
+// installing a PHP version
+// ---------------------------------------------------------------------------
+
+/// Source: `php_versions_installable` - the versions the panel offers.
+const OFFERED_PHP_VERSIONS: &[&str] = &["5.6", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"];
+
+/// Source: the `packages` array in `install_php_version`.
+///
+/// `-fpm` and `-cli` are the version; the rest are the extension set the
+/// panel's application templates assume. Each is checked separately below,
+/// because one name missing from a repository must skip that extension rather
+/// than fail the whole transaction.
+const PHP_EXTENSIONS: &[&str] = &[
+    "fpm", "cli", "mysql", "sqlite3", "curl", "gd", "mbstring", "xml", "zip", "opcache", "intl",
+    "bcmath", "redis", "imagick",
+];
+
+/// Source: `apt_installable`.
+///
+/// "Not `apt-cache show`: that succeeds for a name the archive merely
+/// references. On Ubuntu 26.04 it says yes to php7.4-fpm, which has no
+/// installable version - so a refusal built on it told the user 7.4 was
+/// available on a release that has no such package."
+fn apt_installable(package: &str) -> bool {
+    let Ok(o) = exec::run(&["apt-cache", "policy", package]) else {
+        return false;
+    };
+    candidate_version(&o.stdout).is_some()
+}
+
+/// `sed -n 's/^  Candidate: //p'`, then `-n "$c" && "$c" != "(none)"`.
+///
+/// Two leading spaces exactly: `apt-cache policy` indents the candidate line
+/// that much, and a looser match would also take the `Candidate:` inside a
+/// version table where it means something else.
+pub(crate) fn candidate_version(policy: &str) -> Option<&str> {
+    policy
+        .lines()
+        .find_map(|l| l.strip_prefix("  Candidate: "))
+        .filter(|c| !c.is_empty() && *c != "(none)")
+}
+
+/// Source: `php_versions_installable` - "used to make a refusal useful rather
+/// than just a refusal."
+fn installable_versions() -> String {
+    let mut out = Vec::new();
+    for v in OFFERED_PHP_VERSIONS {
+        if apt_installable(&format!("php{v}-fpm")) {
+            out.push(*v);
+        }
+    }
+    out.join(" ")
+}
+
+/// Source: `ondrej_ppa_publishes_this_release`.
+///
+/// Asked before the repository is added, not after. A PPA that publishes
+/// nothing for this release still adds cleanly and still fails `apt-get
+/// update` afterwards - at which point the box is left carrying a broken
+/// source list because of a version the panel could never have installed.
+fn ondrej_publishes_this_release() -> bool {
+    let Some(codename) = os_release_field("VERSION_CODENAME") else {
+        return false;
+    };
+    if codename.is_empty() {
+        return false;
+    }
+    let url =
+        format!("https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/{codename}/Release");
+    matches!(
+        exec::run(&["curl", "-fsI", "--max-time", "20", &url]),
+        Ok(o) if o.ok()
+    )
+}
+
+/// `. /etc/os-release && printf '%s' "${FIELD:-}"`.
+pub(crate) fn os_release_field(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string("/etc/os-release").ok()?;
+    parse_os_release_field(&text, key)
+}
+
+/// The value for `key`, with one layer of quotes removed.
+pub(crate) fn parse_os_release_field(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let raw = text.lines().rev().find_map(|l| l.strip_prefix(&prefix))?;
+    let raw = raw.trim();
+    let unquoted = if (raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2)
+        || (raw.starts_with('\'') && raw.ends_with('\'') && raw.len() >= 2)
+    {
+        &raw[1..raw.len() - 1]
+    } else {
+        raw
+    };
+    Some(unquoted.to_string())
+}
+
+/// Is the ondrej PPA already configured here?
+///
+/// "`.sources` as well as `.list`: add-apt-repository writes deb822 on
+/// current Ubuntu, so a check that reads only `*.list` never sees its own
+/// work and adds the repository again on every attempt."
+fn ondrej_ppa_configured() -> bool {
+    if std::fs::read_to_string("/etc/apt/sources.list")
+        .map(|t| t.contains("ondrej/php"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Ok(entries) = std::fs::read_dir("/etc/apt/sources.list.d") else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        std::fs::read_to_string(e.path())
+            .map(|t| t.contains("ondrej/php"))
+            .unwrap_or(false)
+    })
+}
+
+/// `php-install <version>`.
+pub fn php_install(version: PhpVersion) -> HelperResponse {
+    let v = version.dotted();
+
+    // "Adding a version here would need both [the Remi package names and the
+    // layout shim], and doing only the first is worse than refusing: the
+    // packages would install, the panel would list the version, and every
+    // tuning action against it would fail on a path that does not exist."
+    if family() == Family::Rhel {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "installing additional PHP versions from the panel is not supported on rhel yet; \
+             PHP 8.3 and 8.4 are set up by the installer"
+                .to_string(),
+        );
+    }
+
+    let mut out = String::new();
+    if Path::new(&format!("/etc/php/{v}/fpm/php-fpm.conf")).is_file() {
+        out.push_str(&format!(
+            "PHP {v} is already installed; ensuring SNPanel extension set...\n"
+        ));
+    }
+
+    let fpm = format!("php{v}-fpm");
+    if !apt_installable(&fpm) {
+        if !ondrej_ppa_configured() {
+            if !ondrej_publishes_this_release() {
+                return HelperResponse::failed(
+                    HelperErrorKind::BadRequest,
+                    format!(
+                        "PHP {v} is not available on this system. Ondrej's PPA does not publish \
+                         packages for this Ubuntu release, so only the versions the distribution \
+                         carries can be installed: {}. Nothing was changed.",
+                        installable_versions()
+                    ),
+                );
+            }
+            out.push_str(&format!("Adding ondrej/php PPA for PHP {v}...\n"));
+            if let Ok(o) = update_index() {
+                out.push_str(&o.stdout);
+            }
+            let _ = install_packages(&["software-properties-common"]);
+            let _ = exec::run(&["add-apt-repository", "-y", "ppa:ondrej/php"]);
+        }
+        if let Ok(o) = update_index() {
+            out.push_str(&o.stdout);
+        }
+        if !apt_installable(&fpm) {
+            return HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!(
+                    "PHP {v} is still not available after refreshing the package lists. \
+                     Installable versions here: {}",
+                    installable_versions()
+                ),
+            );
+        }
+    }
+
+    out.push_str(&format!("Installing PHP {v}...\n"));
+    let wanted: Vec<String> = PHP_EXTENSIONS
+        .iter()
+        .map(|ext| format!("php{v}-{ext}"))
+        .collect();
+    let mut available: Vec<&str> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for package in &wanted {
+        if apt_installable(package) {
+            available.push(package);
+        } else {
+            missing.push(package);
+        }
+    }
+    if !missing.is_empty() {
+        out.push_str(&format!(
+            "Skipping PHP packages not available in repo: {}\n",
+            missing.join(" ")
+        ));
+    }
+    if available.is_empty() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("No package found for PHP {v}"),
+        );
+    }
+    match install_packages(&available) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        _ => {
+            out.push_str(&format!("Failed to install PHP {v}\n"));
+            return HelperResponse::failed(HelperErrorKind::CommandFailed, out);
+        }
+    }
+
+    match install_ioncube_loader(version) {
+        Ok(text) => out.push_str(&text),
+        Err(resp) => return resp,
+    }
+
+    let _ = exec::run(&["systemctl", "enable", &fpm]);
+    let _ = exec::run(&["systemctl", "start", &fpm]);
+
+    out.push_str(&format!("PHP {v} installed successfully\n"));
+    HelperResponse::with_stdout(out)
+}
+
+/// Source: `install_ioncube_loader`.
+///
+/// This puts a third-party binary into every PHP process on the box as a
+/// `zend_extension`, so the last step is not optional: PHP is asked whether it
+/// actually loaded, and if it did not, both ini files are removed again. A
+/// loader that is configured but not loading leaves every site running with a
+/// startup error in its log and no way to see why from the panel.
+fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse> {
+    let v = version.dotted();
+
+    let arch = exec::run(&["dpkg", "--print-architecture"])
+        .ok()
+        .filter(exec::Output::ok)
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .or_else(|| {
+            exec::run(&["uname", "-m"])
+                .ok()
+                .map(|o| o.stdout.trim().to_string())
+        })
+        .unwrap_or_default();
+    if arch != "amd64" && arch != "x86_64" {
+        return Ok(format!(
+            "Skipping ionCube Loader: unsupported architecture {arch}\n"
+        ));
+    }
+
+    let _ = install_packages(&["ca-certificates", "curl", "tar"]);
+
+    // `mktemp -d`, not a name built from the pid: this unpacks an archive and
+    // then installs a file out of it as root.
+    let temp = match exec::run(&["mktemp", "-d"]) {
+        Ok(o) if o.ok() && !o.stdout.trim().is_empty() => o.stdout.trim().to_string(),
+        _ => {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::Internal,
+                "cannot create ionCube temporary directory".to_string(),
+            ))
+        }
+    };
+    let cleanup = |resp: HelperResponse| -> HelperResponse {
+        let _ = std::fs::remove_dir_all(&temp);
+        resp
+    };
+    let archive = format!("{temp}/ioncube_loaders.tar.gz");
+
+    const URL: &str =
+        "https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz";
+    if !matches!(
+        exec::run(&["curl", "-fsSL", "--connect-timeout", "10", "--max-time", "300", URL, "-o", &archive]),
+        Ok(o) if o.ok()
+    ) {
+        return Err(cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "failed to download ionCube Loader".to_string(),
+        )));
+    }
+    if !matches!(exec::run(&["tar", "-xzf", &archive, "-C", &temp]), Ok(o) if o.ok()) {
+        return Err(cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "failed to unpack ionCube Loader".to_string(),
+        )));
+    }
+
+    let loader = format!("{temp}/ioncube/ioncube_loader_lin_{v}.so");
+    if !Path::new(&loader).is_file() {
+        // Not a failure: ionCube ships loaders for the versions it supports,
+        // and a PHP newer than the bundle is a normal state.
+        let _ = std::fs::remove_dir_all(&temp);
+        return Ok(format!(
+            "Skipping ionCube Loader: no loader found for PHP {v}\n"
+        ));
+    }
+
+    const TARGET_DIR: &str = "/usr/local/ioncube";
+    let target = format!("{TARGET_DIR}/ioncube_loader_lin_{v}.so");
+    if let Err(e) = std::fs::create_dir_all(TARGET_DIR) {
+        return Err(cleanup(HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {TARGET_DIR}: {e}"),
+        )));
+    }
+    if let Err(e) = std::fs::copy(&loader, &target) {
+        return Err(cleanup(HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("installing {target}: {e}"),
+        )));
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(TARGET_DIR, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644));
+    }
+    let _ = std::fs::remove_dir_all(&temp);
+
+    let inis = [
+        format!("/etc/php/{v}/cli/conf.d/00-ioncube.ini"),
+        format!("/etc/php/{v}/fpm/conf.d/00-ioncube.ini"),
+    ];
+    for ini in &inis {
+        let dir = Path::new(ini).parent().expect("the conf.d directory");
+        if !dir.is_dir() {
+            continue;
+        }
+        if std::fs::write(ini, format!("zend_extension={target}\n")).is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(ini, std::fs::Permissions::from_mode(0o644));
+            let _ = exec::run(&["chown", "root:root", ini]);
+        }
+    }
+
+    // The check that makes the whole thing safe to have done.
+    let php = format!("php{v}");
+    if have(&php) {
+        let reported = exec::run(&[&php, "-v"])
+            .map(|o| format!("{}{}", o.stdout, o.stderr))
+            .unwrap_or_default();
+        if !reported.to_lowercase().contains("ioncube") {
+            for ini in &inis {
+                let _ = std::fs::remove_file(ini);
+            }
+            return Err(HelperResponse::failed(
+                HelperErrorKind::CommandFailed,
+                format!("ionCube Loader failed to load for PHP {v}"),
+            ));
+        }
+    }
+
+    Ok(format!("ionCube Loader enabled for PHP {v}\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2103,5 +2462,138 @@ Sep 21 10:00:04 host maldet[1]: {mon} no such user in {mon} default_monitor_mode
         assert_eq!(lmd_source_dir(&dir), None);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `apt-cache policy <pkg> | sed -n 's/^  Candidate: //p'`.
+    ///
+    /// The bash comment records the bug this replaced: `apt-cache show`
+    /// succeeds for a name the archive merely references, so on Ubuntu 26.04
+    /// it said yes to `php7.4-fpm` and the panel told the user 7.4 was
+    /// available on a release that has no such package. The candidate line is
+    /// the one that distinguishes them, and `(none)` is how it says no.
+    #[test]
+    fn a_package_is_installable_only_when_apt_names_a_candidate() {
+        // Real `apt-cache policy` output.
+        let installable = "php8.4-fpm:\n  \
+                           Installed: (none)\n  \
+                           Candidate: 8.4.3-1+ubuntu24.04.1+deb.sury.org+1\n  \
+                           Version table:\n     \
+                           8.4.3-1+ubuntu24.04.1+deb.sury.org+1 500\n";
+        assert_eq!(
+            candidate_version(installable),
+            Some("8.4.3-1+ubuntu24.04.1+deb.sury.org+1")
+        );
+
+        // Referenced but not installable - the case that caused the bug.
+        let referenced = "php7.4-fpm:\n  Installed: (none)\n  \
+                          Candidate: (none)\n  Version table:\n";
+        assert_eq!(candidate_version(referenced), None);
+
+        // A name apt does not know at all prints nothing useful.
+        assert_eq!(
+            candidate_version("N: Unable to locate package nope\n"),
+            None
+        );
+        assert_eq!(candidate_version(""), None);
+
+        // Exactly two leading spaces: `Candidate:` also appears inside a
+        // version table's pinning block, indented further, where it means
+        // something else.
+        assert_eq!(candidate_version("Candidate: 1.0\n"), None);
+        assert_eq!(candidate_version("      Candidate: 1.0\n"), None);
+        assert_eq!(candidate_version("  Candidate: 1.0\n"), Some("1.0"));
+        assert_eq!(candidate_version("  Candidate: \n"), None);
+    }
+
+    /// `. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}"`.
+    ///
+    /// Sourcing the file gives shell unquoting for free; reading it does not,
+    /// and a codename carrying its quotes would build a URL that 404s - which
+    /// this reads as "the PPA does not publish for this release" and refuses
+    /// an install that would have worked.
+    #[test]
+    fn the_os_release_codename_arrives_unquoted() {
+        let sample = "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n\
+                      NAME=\"Ubuntu\"\n\
+                      VERSION_ID=\"24.04\"\n\
+                      VERSION_CODENAME=noble\n\
+                      ID=ubuntu\n";
+        assert_eq!(
+            parse_os_release_field(sample, "VERSION_CODENAME").as_deref(),
+            Some("noble")
+        );
+        assert_eq!(
+            parse_os_release_field(sample, "ID").as_deref(),
+            Some("ubuntu")
+        );
+        assert_eq!(
+            parse_os_release_field(sample, "VERSION_ID").as_deref(),
+            Some("24.04")
+        );
+        assert_eq!(
+            parse_os_release_field(sample, "NAME").as_deref(),
+            Some("Ubuntu")
+        );
+
+        // Debian quotes the codename; Ubuntu does not. Both have to work.
+        assert_eq!(
+            parse_os_release_field("VERSION_CODENAME=\"trixie\"\n", "VERSION_CODENAME").as_deref(),
+            Some("trixie")
+        );
+        assert_eq!(
+            parse_os_release_field("VERSION_CODENAME='trixie'\n", "VERSION_CODENAME").as_deref(),
+            Some("trixie")
+        );
+
+        // Absent is absent, not empty - the caller refuses on it.
+        assert_eq!(parse_os_release_field(sample, "VERSION_CODENAMEX"), None);
+        assert_eq!(parse_os_release_field("", "VERSION_CODENAME"), None);
+
+        // A prefix of another key must not match: `ID` and `VERSION_ID` are
+        // different fields and the file lists both.
+        let ordered = "ID=debian\nVERSION_ID=\"13\"\n";
+        assert_eq!(
+            parse_os_release_field(ordered, "ID").as_deref(),
+            Some("debian")
+        );
+
+        // Sourcing means the last assignment wins.
+        assert_eq!(
+            parse_os_release_field("ID=first\nID=second\n", "ID").as_deref(),
+            Some("second")
+        );
+    }
+
+    /// The extension set, and the two packages that are not optional.
+    ///
+    /// Every name is checked against the repository on its own before the
+    /// install, because one missing extension must skip that extension rather
+    /// than fail the whole `apt-get install` and leave the version uninstalled.
+    #[test]
+    fn the_php_package_set_is_the_bash_helpers() {
+        assert_eq!(PHP_EXTENSIONS.len(), 14);
+        assert_eq!(PHP_EXTENSIONS[0], "fpm");
+        assert_eq!(PHP_EXTENSIONS[1], "cli");
+        for required in ["fpm", "cli", "mysql", "opcache", "mbstring", "curl", "gd"] {
+            assert!(PHP_EXTENSIONS.contains(&required), "{required} is missing");
+        }
+        // Names are suffixes, joined as `php<version>-<ext>`.
+        let names: Vec<String> = PHP_EXTENSIONS
+            .iter()
+            .map(|e| format!("php8.4-{e}"))
+            .collect();
+        assert_eq!(names[0], "php8.4-fpm");
+        assert!(names.iter().all(|n| n.starts_with("php8.4-")));
+
+        // The versions the panel offers are the ones `PhpVersion` accepts.
+        for v in OFFERED_PHP_VERSIONS {
+            assert!(
+                snpanel_core::PhpVersion::parse(v).is_ok(),
+                "{v} is offered but not a valid PhpVersion"
+            );
+        }
+        for bad in ["8.6", "9.0", "7.3", "5.5"] {
+            assert!(!OFFERED_PHP_VERSIONS.contains(&bad), "{bad}");
+        }
     }
 }
