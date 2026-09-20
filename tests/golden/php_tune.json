@@ -1,0 +1,149 @@
+{
+ "cases": [
+  {
+   "content": "",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 512M\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit=512M",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 512\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 512G\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 1234567M\n",
+   "ok": false,
+   "error": "invalid size for memory_limit"
+  },
+  {
+   "content": "memory_limit = abc\n",
+   "ok": false,
+   "error": "invalid size for memory_limit"
+  },
+  {
+   "content": "memory_limit = 512MM\n",
+   "ok": false,
+   "error": "invalid size for memory_limit"
+  },
+  {
+   "content": "realpath_cache_size = 4096K\n",
+   "ok": true
+  },
+  {
+   "content": "realpath_cache_ttl = 600\n",
+   "ok": true
+  },
+  {
+   "content": "realpath_cache_ttl = 12345678\n",
+   "ok": false,
+   "error": "invalid integer for realpath_cache_ttl"
+  },
+  {
+   "content": "opcache.memory_consumption = 128\n",
+   "ok": true
+  },
+  {
+   "content": "opcache.enable = 1\n",
+   "ok": true
+  },
+  {
+   "content": "opcache.enable = 2\n",
+   "ok": false,
+   "error": "opcache.enable must be 0 or 1"
+  },
+  {
+   "content": "opcache.enable = On\n",
+   "ok": false,
+   "error": "opcache.enable must be 0 or 1"
+  },
+  {
+   "content": "opcache.jit = tracing\n",
+   "ok": true
+  },
+  {
+   "content": "opcache.jit = 1255\n",
+   "ok": true
+  },
+  {
+   "content": "opcache.jit = 125\n",
+   "ok": false,
+   "error": "invalid opcache.jit value"
+  },
+  {
+   "content": "opcache.jit = maybe\n",
+   "ok": false,
+   "error": "invalid opcache.jit value"
+  },
+  {
+   "content": "opcache.jit_buffer_size = 64M\n",
+   "ok": true
+  },
+  {
+   "content": "expose_php = Off\n",
+   "ok": true
+  },
+  {
+   "content": "expose_php = 0\n",
+   "ok": true
+  },
+  {
+   "content": "expose_php = false\n",
+   "ok": false,
+   "error": "expose_php must be On or Off"
+  },
+  {
+   "content": "zlib.output_compression = On\n",
+   "ok": true
+  },
+  {
+   "content": "; a comment only\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 512M ; trailing comment\n",
+   "ok": true
+  },
+  {
+   "content": "   memory_limit   =   512M   \n",
+   "ok": true
+  },
+  {
+   "content": "\n\n\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit\n",
+   "ok": false,
+   "error": "invalid PHP tuning line: memory_limit"
+  },
+  {
+   "content": "max_execution_time = 30\n",
+   "ok": false,
+   "error": "unsupported PHP tuning directive: max_execution_time"
+  },
+  {
+   "content": "display_errors = On\n",
+   "ok": false,
+   "error": "unsupported PHP tuning directive: display_errors"
+  },
+  {
+   "content": "memory_limit = 512M\nopcache.enable = 1\nexpose_php = Off\n",
+   "ok": true
+  },
+  {
+   "content": "memory_limit = 512M\nbogus_key = 1\n",
+   "ok": false,
+   "error": "unsupported PHP tuning directive: bogus_key"
+  }
+ ]
+}

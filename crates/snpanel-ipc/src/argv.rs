@@ -469,6 +469,12 @@ impl HelperRequest {
             // works, so the aliases are here for the same reason the bash
             // keeps them: an operator's muscle memory and a script somebody
             // wrote years ago.
+            ("php-pools-retune", 0) => HelperRequest::PhpPoolsRetune,
+            ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
+                version: php_or_none(&rest[0])?
+                    .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
+                content: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
             ("firewall-blocklist-add", 1)
             | ("nginx-blocklist-add", 1)
             | ("ufw-blocklist-add", 1)

@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 101;
+const ANSWERED_VERBS: usize = 103;
 const BASH_VERBS: usize = 147;
 
 fn print_help(sink: audit::Sink) {
@@ -87,7 +87,7 @@ fn print_help(sink: audit::Sink) {
         "  fix-permissions",
         "  certbot-*       issue, renew, delete;  ssl-cert-info",
         "  panel-ssl-*     selfsigned, domains;   panel-sni-sync",
-        "  php-*           opcache-set, config-write",
+        "  php-*           opcache-set, config-write, tune-write, pools-retune",
         "  ipv6-*          status, enable, disable, apply",
         "  time-*          status, sync;          cron-list, cron-write",
         "  updates-*       status, os-run, os-auto",

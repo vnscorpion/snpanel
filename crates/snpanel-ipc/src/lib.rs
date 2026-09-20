@@ -806,6 +806,18 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `php-pools-retune` - rewrite every site pool against the machine as
+    /// it is now.
+    PhpPoolsRetune,
+    /// `php-tune-write` - the auto-tuner's `95-snpanel-tune.ini`.
+    ///
+    /// The file is on stdin because it is generated from the machine's RAM and
+    /// CPU count and runs to a dozen directives; the version names which
+    /// PHP it is for.
+    PhpTuneWrite {
+        version: PhpVersion,
+        content: String,
+    },
     /// `firewall-blocklist-add` / `firewall-blocklist-delete` - the list of
     /// URLs the nightly refresh downloads from.
     ///
@@ -954,6 +966,8 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::PhpPoolsRetune => "php-pools-retune",
+            Self::PhpTuneWrite { .. } => "php-tune-write",
             Self::FirewallBlocklistUrl { add, .. } => {
                 if *add {
                     "firewall-blocklist-add"

@@ -625,6 +625,335 @@ pub fn tuning_overrides() -> PoolTuningOverrides {
     }
 }
 
+// ---------------------------------------------------------------------------
+// the tuning file the panel sizes from the machine
+// ---------------------------------------------------------------------------
+
+/// Source: `validate_php_tune_file`'s `deny` messages.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TuneError {
+    SizeOutOfRange,
+    NotAnAssignment(String),
+    BadSize(String),
+    BadInteger(String),
+    BadFlag(String),
+    BadJit,
+    BadOnOff(String),
+    Unsupported(String),
+}
+
+impl std::fmt::Display for TuneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SizeOutOfRange => write!(f, "PHP tuning file size out of range"),
+            Self::NotAnAssignment(line) => write!(f, "invalid PHP tuning line: {line}"),
+            Self::BadSize(key) => write!(f, "invalid size for {key}"),
+            Self::BadInteger(key) => write!(f, "invalid integer for {key}"),
+            Self::BadFlag(key) => write!(f, "{key} must be 0 or 1"),
+            Self::BadJit => write!(f, "invalid opcache.jit value"),
+            Self::BadOnOff(key) => write!(f, "{key} must be On or Off"),
+            Self::Unsupported(key) => write!(f, "unsupported PHP tuning directive: {key}"),
+        }
+    }
+}
+
+/// `^[0-9]{1,6}[KkMmGg]?$`.
+fn is_tune_size(value: &str) -> bool {
+    let digits = value.trim_end_matches(['K', 'k', 'M', 'm', 'G', 'g']);
+    // Exactly one optional suffix character, so `1MM` is refused.
+    if value.len() > digits.len() + 1 {
+        return false;
+    }
+    !digits.is_empty() && digits.len() <= 6 && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_digits(value: &str, max_len: usize) -> bool {
+    !value.is_empty() && value.len() <= max_len && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Source: `validate_php_tune_file`.
+///
+/// "A separate allowlist from the panel's PHP config page: these are the keys
+/// the tuner is allowed to size from the machine, and nothing else reaches a
+/// file that root writes into PHP's configuration directory."
+///
+/// The separation matters. [`validate_config`] guards what a *customer* may
+/// put in their own PHP settings; this guards what the panel's auto-tuner may
+/// write as root. A key in one is not automatically allowed in the other, and
+/// merging them would widen both.
+pub fn validate_tune(content: &str) -> Result<(), TuneError> {
+    // No size check here. `validate_php_tune_file` walks lines and nothing
+    // else; the `(( size <= 0 || size > 8192 ))` test lives in
+    // `write_php_tune`, before this is called. So an empty file passes here
+    // and is refused there, which is what the corpus records.
+    for raw in content.lines() {
+        // `line="${line%%;*}"` - everything from the first `;` is a comment,
+        // then the remainder is trimmed at both ends.
+        let line = raw.split(';').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(TuneError::NotAnAssignment(line.to_string()));
+        };
+        // `${line%%=*}` trims only the *right* of the key and only the left of
+        // the value; the line was already trimmed, so both end up trimmed.
+        let key = key.trim_end();
+        let value = value.trim();
+
+        match key {
+            "memory_limit" | "realpath_cache_size" => {
+                if !is_tune_size(value) {
+                    return Err(TuneError::BadSize(key.to_string()));
+                }
+            }
+            "realpath_cache_ttl"
+            | "opcache.memory_consumption"
+            | "opcache.interned_strings_buffer"
+            | "opcache.max_accelerated_files"
+            | "opcache.revalidate_freq" => {
+                if !is_digits(value, 7) {
+                    return Err(TuneError::BadInteger(key.to_string()));
+                }
+            }
+            "opcache.enable"
+            | "opcache.enable_cli"
+            | "opcache.validate_timestamps"
+            | "opcache.save_comments" => {
+                if value != "0" && value != "1" {
+                    return Err(TuneError::BadFlag(key.to_string()));
+                }
+            }
+            "opcache.jit" => {
+                // Named modes, or the four-digit form PHP also accepts.
+                let named = matches!(value, "disable" | "off" | "on" | "tracing" | "function");
+                if !named && !(value.len() == 4 && value.bytes().all(|b| b.is_ascii_digit())) {
+                    return Err(TuneError::BadJit);
+                }
+            }
+            "opcache.jit_buffer_size" => {
+                if !is_tune_size(value) {
+                    return Err(TuneError::BadSize("opcache.jit_buffer_size".to_string()));
+                }
+            }
+            "expose_php" | "zlib.output_compression" => {
+                if !matches!(value, "On" | "Off" | "0" | "1") {
+                    return Err(TuneError::BadOnOff(key.to_string()));
+                }
+            }
+            other => return Err(TuneError::Unsupported(other.to_string())),
+        }
+    }
+    Ok(())
+}
+
+/// `php-tune-write` - the auto-tuner's `95-snpanel-tune.ini`.
+///
+/// Written to the FPM directory and *copied* to the CLI one when that exists:
+/// "the CLI reads its own directory; opcache settings there are harmless and
+/// realpath cache helps WP-CLI too."
+pub fn tune_write(version: PhpVersion, content: &str) -> HelperResponse {
+    // The bash's order: size first, then the directives.
+    if content.is_empty() || content.len() > 8192 {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            TuneError::SizeOutOfRange.to_string(),
+        );
+    }
+    if let Err(e) = validate_tune(content) {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, e.to_string());
+    }
+    let conf_dir = format!("/etc/php/{version}/fpm/conf.d");
+    if !PathBuf::from(&conf_dir).is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("PHP FPM config directory not found: {conf_dir}"),
+        );
+    }
+    let target = format!("{conf_dir}/95-snpanel-tune.ini");
+
+    // The bash writes a temporary file in the same directory and renames it, so
+    // a half-written tuning file is never what PHP-FPM reloads into.
+    let temp = format!("{conf_dir}/.95-snpanel-tune.ini.{}", std::process::id());
+    if let Err(e) = std::fs::write(&temp, content) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("cannot create temporary PHP tuning file: {e}"),
+        );
+    }
+    if let Err(e) = set_mode(&temp, 0o644) {
+        let _ = std::fs::remove_file(&temp);
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("cannot set permissions on the PHP tuning file: {e}"),
+        );
+    }
+    if let Err(e) = std::fs::rename(&temp, &target) {
+        let _ = std::fs::remove_file(&temp);
+        return HelperResponse::failed(HelperErrorKind::Internal, format!("writing {target}: {e}"));
+    }
+
+    let cli_dir = format!("/etc/php/{version}/cli/conf.d");
+    if PathBuf::from(&cli_dir).is_dir() {
+        let cli_target = format!("{cli_dir}/95-snpanel-tune.ini");
+        if std::fs::write(&cli_target, content).is_ok() {
+            let _ = set_mode(&cli_target, 0o644);
+        }
+    }
+
+    // `reload || restart` - a pool that is not running cannot be reloaded, and
+    // the tuning has to take effect either way.
+    let service = format!("php{version}-fpm");
+    let reloaded = exec::run(&["systemctl", "reload", &service]);
+    if !matches!(&reloaded, Ok(o) if o.ok()) {
+        let _ = exec::run(&["systemctl", "restart", &service]);
+    }
+    HelperResponse::with_stdout(format!("PHP {version} tuned: {target}\n"))
+}
+
+fn set_mode(path: &str, mode: u32) -> std::io::Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Source: `php_fpm_set_directive`.
+///
+/// Rewrites the directive in place when it is there - **including a commented
+/// one**, because `^[;[:space:]]*<key>[[:space:]]*=` matches `;pm = dynamic`
+/// and the replacement drops the semicolon. That is deliberate: a pool file
+/// shipped by the distribution comments these out, and appending a second
+/// uncommented copy would leave two lines PHP reads in order.
+fn set_directive(text: &str, key: &str, value: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for line in text.lines() {
+        // `sed -i` with no range rewrites **every** matching line; the absent
+        // `g` only means once per line. A pool file with the directive twice
+        // ends up with two identical lines rather than one new and one stale.
+        if directive_matches(line, key) {
+            out.push(format!("{key} = {value}"));
+            replaced = true;
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !replaced {
+        out.push(format!("{key} = {value}"));
+    }
+    let mut joined = out.join("\n");
+    // The bash appends with `printf '%s\n'` and `sed -i` keeps the file's own
+    // trailing newline, so the result always ends with one.
+    joined.push('\n');
+    joined
+}
+
+/// `^[;[:space:]]*<key>[[:space:]]*=` with the key's dots taken literally.
+fn directive_matches(line: &str, key: &str) -> bool {
+    let rest = line.trim_start_matches([';', ' ', '\t']);
+    let Some(after) = rest.strip_prefix(key) else {
+        return false;
+    };
+    after.trim_start_matches([' ', '\t']).starts_with('=')
+}
+
+/// The pool files the panel owns: `/etc/php/*/fpm/pool.d/snpanel-*.conf`.
+fn snpanel_pool_files() -> Vec<std::path::PathBuf> {
+    let mut found: Vec<std::path::PathBuf> = Vec::new();
+    let Ok(versions) = std::fs::read_dir("/etc/php") else {
+        return found;
+    };
+    for version in versions.flatten() {
+        let dir = version.path().join("fpm/pool.d");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_file() && name.starts_with("snpanel-") && name.ends_with(".conf") {
+                found.push(path);
+            }
+        }
+    }
+    // `shopt -s nullglob` expands in sorted order; the report lists them and a
+    // reshuffle between two runs is a diff an operator would have to read.
+    found.sort();
+    found
+}
+
+/// `php-pools-retune`.
+///
+/// "Pool sizes are decided when a pool is written. A server that gained RAM
+/// keeps the old numbers until every site happens to be touched; this walks
+/// them all and rewrites each one against the machine as it is now."
+pub fn pools_retune() -> HelperResponse {
+    let files = snpanel_pool_files();
+    let total_mb = total_memory_mb();
+    let cpus = cpu_count();
+    let overrides = tuning_overrides();
+
+    let mut out = String::new();
+    let mut retuned = 0usize;
+    for path in &files {
+        // Each pool is sized against how many pools share the machine, which
+        // is what `calculate_php_fpm_pool_tuning` does per file.
+        let tuning = pool_tuning(total_mb, cpus, pool_count(path), overrides);
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut updated = text;
+        updated = set_directive(&updated, "pm", "ondemand");
+        updated = set_directive(
+            &updated,
+            "pm.max_children",
+            &tuning.max_children.to_string(),
+        );
+        updated = set_directive(
+            &updated,
+            "pm.process_idle_timeout",
+            &format!("{}s", tuning.idle_timeout),
+        );
+        updated = set_directive(
+            &updated,
+            "pm.max_requests",
+            &tuning.max_requests.to_string(),
+        );
+        updated = set_directive(
+            &updated,
+            "request_terminate_timeout",
+            &format!("{}s", tuning.request_terminate_timeout),
+        );
+        if std::fs::write(path, &updated).is_err() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "{name}: pm.max_children={} idle={}s max_requests={}\n",
+            tuning.max_children, tuning.idle_timeout, tuning.max_requests
+        ));
+        retuned += 1;
+    }
+
+    // Every FPM version on the box, reloaded once. `|| true` in the bash: a
+    // version whose service is not running is not a failure of the retune.
+    if let Ok(versions) = std::fs::read_dir("/etc/php") {
+        let mut names: Vec<String> = versions
+            .flatten()
+            .filter(|v| v.path().join("fpm").is_dir())
+            .map(|v| v.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for version in names {
+            let _ = exec::run(&["systemctl", "reload", &format!("php{version}-fpm")]);
+        }
+    }
+
+    out.push_str(&format!("retuned {retuned} pool(s)\n"));
+    HelperResponse::with_stdout(out)
+}
+
 #[cfg(test)]
 mod tests {
     /// The ported tuning must equal the shell's, across every tier.
@@ -776,6 +1105,142 @@ printf '%s %s %s %s\n' "$PHP_FPM_MAX_CHILDREN" "$PHP_FPM_PROCESS_IDLE_TIMEOUT" \
     }
 
     use super::*;
+
+    /// `php_fpm_set_directive` rewrites a **commented** directive too.
+    ///
+    /// `^[;[:space:]]*<key>[[:space:]]*=` matches `;pm = dynamic`, and the
+    /// replacement drops the semicolon. That is the behaviour that matters:
+    /// distribution pool files ship these commented out, and appending an
+    /// uncommented copy instead would leave two lines PHP reads in order - the
+    /// second winning, which is the opposite of what an operator reading the
+    /// file would expect.
+    #[test]
+    fn a_commented_directive_is_rewritten_rather_than_duplicated() {
+        let before = "[pool]\n;pm = dynamic\nuser = alice\n";
+        let after = set_directive(before, "pm", "ondemand");
+        assert_eq!(after, "[pool]\npm = ondemand\nuser = alice\n");
+        assert_eq!(after.matches("pm = ").count(), 1);
+
+        // Leading whitespace and a semicolon together.
+        let spaced = set_directive("  ;  pm  =  dynamic\n", "pm", "ondemand");
+        assert_eq!(spaced, "pm = ondemand\n");
+    }
+
+    /// A directive that is not there is appended, once.
+    #[test]
+    fn a_missing_directive_is_appended_and_a_present_one_is_replaced() {
+        let appended = set_directive("[pool]\nuser = alice\n", "pm.max_children", "7");
+        assert_eq!(appended, "[pool]\nuser = alice\npm.max_children = 7\n");
+
+        let replaced = set_directive("pm.max_children = 3\n", "pm.max_children", "7");
+        assert_eq!(replaced, "pm.max_children = 7\n");
+        assert_eq!(replaced.matches("pm.max_children").count(), 1);
+    }
+
+    /// The dot in `pm.max_children` is a literal, not a wildcard.
+    ///
+    /// `${key//./\\.}` in the bash escapes it. Treating it as "any character"
+    /// would make `pm.max_children` match `pmXmax_children` - and, worse,
+    /// `pm.max_requests` match nothing it should while matching something it
+    /// should not.
+    #[test]
+    fn the_dot_in_a_directive_name_is_literal() {
+        let untouched = set_directive("pmXmax_children = 3\n", "pm.max_children", "7");
+        assert!(untouched.contains("pmXmax_children = 3"));
+        assert!(untouched.contains("pm.max_children = 7"));
+
+        // And one directive does not match another with a shared prefix.
+        let two = set_directive("pm.max_requests = 500\n", "pm.max_children", "7");
+        assert!(two.contains("pm.max_requests = 500"));
+        assert!(two.contains("pm.max_children = 7"));
+    }
+
+    /// Every matching line is rewritten, the way `sed -i` does it.
+    ///
+    /// A pool file with the directive twice is already contradictory - PHP
+    /// reads the last one - and leaving a stale second copy would make the
+    /// file disagree with what it does.
+    #[test]
+    fn a_duplicated_directive_is_rewritten_everywhere_sed_would() {
+        let out = set_directive(
+            "pm = dynamic\nuser = alice\npm = static\n",
+            "pm",
+            "ondemand",
+        );
+        assert_eq!(out, "pm = ondemand\nuser = alice\npm = ondemand\n");
+    }
+
+    /// What the auto-tuner is allowed to write into PHP's configuration
+    /// directory, against `validate_php_tune_file` run from the shipped bash.
+    ///
+    /// This is a **separate allowlist** from [`validate_config`], and the
+    /// corpus proves it rather than asserting it: `max_execution_time` and
+    /// `display_errors` are fine on the customer's PHP settings page and are
+    /// refused here, because this file is written by root and sized from the
+    /// machine. Merging the two lists would widen both.
+    #[test]
+    fn the_tuning_allowlist_agrees_with_the_bash_helper() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/php_tune.json");
+        let corpus: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the tune corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["cases"].as_array().expect("the cases");
+        let refused = cases
+            .iter()
+            .filter(|c| !c["ok"].as_bool().unwrap_or(true))
+            .count();
+        assert!(
+            refused > 8,
+            "only {refused} refusals; a corpus that accepts everything would \
+             pass a validator that accepts everything"
+        );
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let content = case["content"].as_str().unwrap_or("");
+            let want_ok = case["ok"].as_bool().unwrap_or(false);
+            match (validate_tune(content), want_ok) {
+                (Ok(()), true) => {}
+                (Err(e), false) => {
+                    let want = case["error"].as_str().unwrap_or("");
+                    if e.to_string() != want {
+                        failures.push(format!("{content:?}: bash {want:?}, rust {e}"));
+                    }
+                }
+                (Ok(()), false) => failures.push(format!(
+                    "{content:?}: bash refused with {:?}, rust accepted",
+                    case["error"]
+                )),
+                (Err(e), true) => {
+                    failures.push(format!("{content:?}: bash accepted, rust refused {e}"))
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The size bound is the writer's, not the validator's.
+    ///
+    /// An empty file passes `validate_php_tune_file` and is refused by
+    /// `write_php_tune`. Putting the check in the wrong place would still
+    /// refuse the same input through the verb, and would make this corpus -
+    /// which drives the validator on its own - disagree.
+    #[test]
+    fn an_empty_tuning_file_passes_the_validator_and_not_the_writer() {
+        assert!(validate_tune("").is_ok());
+        assert!(validate_tune(&"; comment\n".repeat(10)).is_ok());
+        // 8192 is the limit the bash tests, inclusive.
+        let at_limit = "; ".to_string() + &"x".repeat(8190);
+        assert_eq!(at_limit.len(), 8192);
+        assert!(validate_tune(&at_limit).is_ok());
+    }
 
     #[test]
     fn opcache_is_numbered_after_the_tuning_file_and_before_the_admin_one() {

@@ -347,6 +347,8 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafSiteSave { domain, content } => waf::site_rules_save(domain, content),
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
+        HelperRequest::PhpPoolsRetune => php::pools_retune(),
+        HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
         HelperRequest::FirewallBlocklistUrl { url, add } => {
             if *add {
                 firewall::blocklist_add(url)
