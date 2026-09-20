@@ -483,6 +483,10 @@ impl HelperRequest {
                 major: rest[0].clone(),
             },
             ("clamav-install", 0) => HelperRequest::ClamavInstall,
+            ("maldet-install", 0) => HelperRequest::MaldetInstall,
+            ("maldet-monitor", 1) => HelperRequest::MaldetMonitor {
+                action: rest[0].clone(),
+            },
             ("maldet-update-sigs", 0) => HelperRequest::MaldetUpdateSigs,
             ("nginx-upgrade-map-ensure", 0) => HelperRequest::NginxUpgradeMapEnsure,
             ("updates-panel-run", 0) => HelperRequest::UpdatesPanelRun,
@@ -500,6 +504,22 @@ impl HelperRequest {
             | ("ufw-blocklist-delete", 1) => HelperRequest::FirewallBlocklistUrl {
                 url: rest[0].clone(),
                 add: op.ends_with("-add"),
+            },
+            ("manual-ssl-install", 1) => match snpanel_core::Domain::parse(&rest[0]) {
+                Ok(domain) => HelperRequest::ManualSsl {
+                    domain,
+                    install: true,
+                    payload: String::from_utf8_lossy(&stdin()).into_owned(),
+                },
+                Err(e) => return Err(InvocationError::invalid(e.to_string())),
+            },
+            ("manual-ssl-remove", 1) => match snpanel_core::Domain::parse(&rest[0]) {
+                Ok(domain) => HelperRequest::ManualSsl {
+                    domain,
+                    install: false,
+                    payload: String::new(),
+                },
+                Err(e) => return Err(InvocationError::invalid(e.to_string())),
             },
             ("docker-install", 0) => HelperRequest::DockerInstall,
             ("docker-status", 0) => HelperRequest::DockerStatus,

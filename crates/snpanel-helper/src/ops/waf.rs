@@ -71,10 +71,26 @@ pub fn status() -> HelperResponse {
     }))
 }
 
+/// Source: `CRS_MODE_FILE=/etc/nginx/modsec/snpanel-crs-mode`.
+///
+/// The name is the bash's, not a new one. Rust used to keep the mode in
+/// `crs-mode` in the same directory, so the two implementations each wrote a
+/// file the other never read: a mode set before the cutover read as `off`
+/// after it, and a mode set after it read as `off` on any fallthrough.
+pub const CRS_MODE_FILE: &str = "/etc/nginx/modsec/snpanel-crs-mode";
+
+/// Source: `CRS_CONF=/etc/nginx/modsec/snpanel-crs.conf`.
+pub const CRS_CONF: &str = "/etc/nginx/modsec/snpanel-crs.conf";
+
 fn read_crs_mode() -> CrsMode {
-    std::fs::read_to_string(Path::new(WAF_DIR).join("crs-mode"))
+    // `tr -d '[:space:]'` - not just the ends, because a file written by hand
+    // can carry an interior space that `trim` would keep.
+    std::fs::read_to_string(CRS_MODE_FILE)
         .ok()
-        .and_then(|s| CrsMode::parse(s.trim()))
+        .and_then(|s| {
+            let squeezed: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+            CrsMode::parse(&squeezed)
+        })
         .unwrap_or(CrsMode::Off)
 }
 
@@ -103,11 +119,177 @@ pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
 }
 
 /// `waf-crs-status`.
+///
+/// Source: `waf_crs_status`. Eight `key=value` lines, in its order, because
+/// `crs_status` in `backend/app/services/waf.py` reads exactly those keys off
+/// stdout - its own dry-run fallback spells the shape out:
+/// `echo mode=off; echo installed=no; echo conf=no; echo rule_files=0;
+/// echo sites_including=0`.
+///
+/// Answering with two JSON fields left the page showing CRS as not installed,
+/// with every memory figure zero, on servers that had it installed and
+/// blocking.
 pub fn crs_status() -> HelperResponse {
-    HelperResponse::with_data(serde_json::json!({
-        "installed": Path::new(CRS_DIR).exists(),
-        "mode": read_crs_mode().as_str(),
+    let rules_dir = crs_rules_dir();
+    let (available_mb, total_mb) = memory_mb();
+    HelperResponse::with_stdout(crs_status_lines(CrsStatusFacts {
+        mode: read_crs_mode().as_str(),
+        nginx_pss_mb: nginx_memory_pss_mb(),
+        ram_available_mb: available_mb,
+        ram_total_mb: total_mb,
+        installed: rules_dir.is_some(),
+        conf: Path::new(CRS_CONF).is_file(),
+        rule_files: count_conf_files(rules_dir.as_deref()),
+        sites_including: sites_including_crs(),
     }))
+}
+
+/// What the eight lines say, separated from how they are found.
+struct CrsStatusFacts {
+    mode: &'static str,
+    nginx_pss_mb: u64,
+    ram_available_mb: u64,
+    ram_total_mb: u64,
+    installed: bool,
+    conf: bool,
+    rule_files: usize,
+    sites_including: usize,
+}
+
+/// The eight lines, in `waf_crs_status`'s order.
+fn crs_status_lines(f: CrsStatusFacts) -> String {
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    format!(
+        "mode={}\nnginx_pss_mb={}\nram_available_mb={}\nram_total_mb={}\n\
+         installed={}\nconf={}\nrule_files={}\nsites_including={}\n",
+        f.mode,
+        f.nginx_pss_mb,
+        f.ram_available_mb,
+        f.ram_total_mb,
+        yes_no(f.installed),
+        yes_no(f.conf),
+        f.rule_files,
+        f.sites_including,
+    )
+}
+
+/// Source: `crs_rules_dir`.
+///
+/// "Debian/Ubuntu ship the rules under one of these." Checked in the bash's
+/// order, first hit wins - the previous constant pointed at
+/// `/etc/nginx/modsec/crs`, which is not where any distribution puts them, so
+/// `installed` was answering "no" on a correctly installed server.
+pub(crate) const CRS_RULE_DIRS: &[&str] = &[
+    "/usr/share/modsecurity-crs/rules",
+    "/etc/modsecurity/crs/rules",
+    "/usr/local/owasp-crs/rules",
+];
+
+fn crs_rules_dir() -> Option<std::path::PathBuf> {
+    first_existing(CRS_RULE_DIRS)
+}
+
+/// The first of `dirs` that is a directory, in the order given.
+///
+/// Order is the whole of it: a box carrying both a distribution package and a
+/// hand-unpacked copy has two, and the bash takes the distribution's.
+fn first_existing<P: AsRef<Path>>(dirs: &[P]) -> Option<std::path::PathBuf> {
+    dirs.iter()
+        .map(|d| std::path::PathBuf::from(d.as_ref()))
+        .find(|d| d.is_dir())
+}
+
+/// `ls "$(crs_rules_dir)"/*.conf | wc -l`, or 0 when there is no such
+/// directory.
+fn count_conf_files(dir: Option<&Path>) -> usize {
+    let Some(dir) = dir else { return 0 };
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "conf"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// `grep -lF "Include ${CRS_CONF}" /etc/nginx/modsec/sites/*.conf | wc -l`.
+///
+/// `-F` and `-l`: a fixed string, counted once per file however many times it
+/// appears in one.
+fn sites_including_crs() -> usize {
+    let needle = format!("Include {CRS_CONF}");
+    std::fs::read_dir(WAF_SITE_DIR)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "conf"))
+                .filter(|e| {
+                    std::fs::read_to_string(e.path())
+                        .map(|t| t.contains(&needle))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// `free -m | awk '/^Mem:/{print $7}'` and `$2`: available, then total.
+fn memory_mb() -> (u64, u64) {
+    // /proc/meminfo rather than `free`, which parses that same file and would
+    // add a fork and a locale-dependent column layout in between. `free -m`
+    // divides by 1024 and truncates, so this does too.
+    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
+        return (0, 0);
+    };
+    let field = |name: &str| -> u64 {
+        text.lines()
+            .find(|l| l.starts_with(name))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+            .unwrap_or(0)
+    };
+    (field("MemAvailable:"), field("MemTotal:"))
+}
+
+/// Source: `nginx_memory_pss_mb`, which the bash implements in `python3`.
+///
+/// "PSS, not RSS. nginx parses the rule set in the master and the workers
+/// fork, so those pages are shared: summing RSS across processes counts them
+/// once per worker and overstates the cost several times over."
+///
+/// Porting it here takes another `python3` out of the helper's dependencies.
+fn nginx_memory_pss_mb() -> u64 {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    let mut pss_kb: u64 = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str() else { continue };
+        if !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let comm = entry.path().join("comm");
+        match std::fs::read_to_string(&comm) {
+            Ok(c) if c.trim() == "nginx" => {}
+            // A process that exited between the listing and the read is not an
+            // error; the bash's `except OSError: continue` says the same.
+            _ => continue,
+        }
+        let Ok(rollup) = std::fs::read_to_string(entry.path().join("smaps_rollup")) else {
+            continue;
+        };
+        // `^Pss:\s+(\d+) kB`, the first match in the file.
+        if let Some(value) = rollup.lines().find_map(|l| {
+            let rest = l.strip_prefix("Pss:")?;
+            rest.split_whitespace().next()?.parse::<u64>().ok()
+        }) {
+            pss_kb += value;
+        }
+    }
+    pss_kb / 1024
 }
 
 /// `waf-site-save`: per-site rule file.
@@ -170,11 +352,15 @@ pub fn clamav_status() -> HelperResponse {
         .map(|o| o.stdout.trim() == "active")
         .unwrap_or(false);
 
-    HelperResponse::with_data(serde_json::json!({
-        "installed": installed,
-        "service": service,
-        "running": running,
-    }))
+    // One line, two pairs, as the bash writes it: `installed=1 running=0`.
+    // There is no Python caller today - this verb is Rust-side surface running
+    // ahead of its callers - but the next one to arrive will be written
+    // against the bash, so it should find the bash's shape.
+    HelperResponse::with_stdout(format!(
+        "installed={} running={}\n",
+        u8::from(installed),
+        u8::from(running)
+    ))
 }
 
 /// `clamav-start` / `clamav-stop`.
@@ -190,14 +376,6 @@ pub fn clamav_control(start: bool) -> HelperResponse {
     }
     let verb = if start { "start" } else { "stop" };
     exec::respond("systemctl", exec::run(&["systemctl", verb, &service]))
-}
-
-/// `maldet-status`.
-pub fn maldet_status() -> HelperResponse {
-    HelperResponse::with_data(serde_json::json!({
-        "installed": which("maldet").is_some(),
-        "signatures": Path::new("/usr/local/maldetect/sigs").exists(),
-    }))
 }
 
 fn which(binary: &str) -> Option<std::path::PathBuf> {
@@ -240,12 +418,34 @@ mod tests {
         assert!(r.ok);
         assert!(r.data.unwrap()["installed"].is_boolean());
 
+        // `clamav-status` answers in the bash's one-line form. No Python
+        // reads it yet, but the one that does will be written against the
+        // bash, so it should find the bash's shape.
         let r = clamav_status();
         assert!(r.ok);
-        assert!(r.data.unwrap()["installed"].is_boolean());
+        assert!(r.data.is_none(), "this verb answers on stdout, not in data");
+        let mut parts = r.stdout.trim_end().split(' ');
+        let installed = parts.next().expect("installed=N");
+        let running = parts.next().expect("running=N");
+        assert!(
+            parts.next().is_none(),
+            "one line, two pairs: {:?}",
+            r.stdout
+        );
+        assert!(
+            installed == "installed=0" || installed == "installed=1",
+            "{installed}"
+        );
+        assert!(
+            running == "running=0" || running == "running=1",
+            "{running}"
+        );
 
-        let r = maldet_status();
-        assert!(r.ok);
+        // `maldet-status` lives in `ops::packages` and is checked there -
+        // by `every_status_line_is_one_python_s_kv_regex_can_read`, which
+        // asserts the shape its only caller can parse. Asserting `r.ok` here,
+        // which is all this test used to do, is what let it answer in JSON
+        // that the panel read as "nothing installed" for as long as it did.
     }
 
     #[test]
@@ -285,6 +485,192 @@ mod tests {
     fn crs_defaults_to_off_when_nothing_says_otherwise() {
         // Opt-in: an unreadable or absent marker must not mean "block".
         assert_eq!(CrsMode::Off.as_str(), "off");
+    }
+
+    /// `crs_status` in `backend/app/services/waf.py`, applied to these lines.
+    ///
+    /// That function's own dry-run fallback spells the contract out -
+    /// `echo mode=off; echo installed=no; echo conf=no; echo rule_files=0;
+    /// echo sites_including=0` - and it reads three more keys besides. The
+    /// verb used to answer with two JSON fields, so every key fell back to its
+    /// default and the page showed CRS as absent, with zero memory, on servers
+    /// running it in blocking mode.
+    #[test]
+    fn crs_status_says_what_the_python_parser_reads() {
+        /// The loop in `crs_status`, verbatim in its effects.
+        fn parse(output: &str) -> std::collections::HashMap<String, String> {
+            let mut info = std::collections::HashMap::new();
+            for line in output.lines() {
+                let (key, value) = match line.split_once('=') {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                let (key, value) = (key.trim(), value.trim());
+                if matches!(
+                    key,
+                    "installed"
+                        | "conf"
+                        | "rule_files"
+                        | "sites_including"
+                        | "nginx_pss_mb"
+                        | "ram_available_mb"
+                        | "ram_total_mb"
+                        | "mode"
+                ) {
+                    info.insert(key.to_string(), value.to_string());
+                }
+            }
+            info
+        }
+
+        let text = crs_status_lines(CrsStatusFacts {
+            mode: "block",
+            nginx_pss_mb: 61,
+            ram_available_mb: 5156,
+            ram_total_mb: 7936,
+            installed: true,
+            conf: true,
+            rule_files: 34,
+            sites_including: 7,
+        });
+        let info = parse(&text);
+        assert_eq!(info.len(), 8, "all eight keys reach the parser:\n{text}");
+        assert_eq!(info["mode"], "block");
+        assert_eq!(info["installed"], "yes");
+        assert_eq!(info["conf"], "yes");
+        assert_eq!(info["rule_files"], "34");
+        assert_eq!(info["sites_including"], "7");
+        assert_eq!(info["nginx_pss_mb"], "61");
+        assert_eq!(info["ram_available_mb"], "5156");
+        assert_eq!(info["ram_total_mb"], "7936");
+
+        // The bash's order, which is what a reader comparing the two sees.
+        let keys: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "mode",
+                "nginx_pss_mb",
+                "ram_available_mb",
+                "ram_total_mb",
+                "installed",
+                "conf",
+                "rule_files",
+                "sites_including"
+            ]
+        );
+
+        // A server with nothing installed still writes all eight.
+        let text = crs_status_lines(CrsStatusFacts {
+            mode: "off",
+            nginx_pss_mb: 0,
+            ram_available_mb: 0,
+            ram_total_mb: 0,
+            installed: false,
+            conf: false,
+            rule_files: 0,
+            sites_including: 0,
+        });
+        assert_eq!(parse(&text).len(), 8);
+        assert_eq!(parse(&text)["installed"], "no");
+
+        // And the shape the bug had.
+        let json = serde_json::to_string_pretty(
+            &serde_json::json!({ "installed": true, "mode": "block" }),
+        )
+        .expect("json");
+        assert!(
+            parse(&json).is_empty(),
+            "JSON must be unreadable to that parser - that was the bug"
+        );
+    }
+
+    /// The mode lives in the file the bash reads and writes.
+    ///
+    /// Rust kept it in `crs-mode` in the same directory while the bash used
+    /// `snpanel-crs-mode`, so each implementation wrote a file the other never
+    /// looked at: a mode set before the cutover read as `off` after it, and a
+    /// mode set after it read as `off` on any fallthrough to bash. Both
+    /// directions silently disarm a WAF an administrator believes is on.
+    #[test]
+    fn the_crs_mode_file_is_the_one_the_bash_uses() {
+        assert_eq!(CRS_MODE_FILE, "/etc/nginx/modsec/snpanel-crs-mode");
+        assert_eq!(CRS_CONF, "/etc/nginx/modsec/snpanel-crs.conf");
+        assert_ne!(
+            CRS_MODE_FILE,
+            format!("{WAF_DIR}/crs-mode"),
+            "the old name must not come back"
+        );
+    }
+
+    /// `crs_rules_dir`: where distributions actually put the rule set.
+    ///
+    /// The previous constant was `/etc/nginx/modsec/crs`, which is not one of
+    /// them, so `installed` answered "no" on a correctly installed server and
+    /// the page offered to install what was already there.
+    #[test]
+    fn the_rule_set_is_looked_for_where_distributions_put_it() {
+        // Asserted directly rather than probed. An earlier version of this
+        // test asked the filesystem, so on a machine with no CRS installed -
+        // every CI runner - it was true whatever the list said, and it passed
+        // while the search pointed at `/etc/nginx/modsec/crs`, which is not
+        // where any distribution puts the rules.
+        assert_eq!(
+            CRS_RULE_DIRS,
+            &[
+                "/usr/share/modsecurity-crs/rules",
+                "/etc/modsecurity/crs/rules",
+                "/usr/local/owasp-crs/rules",
+            ]
+        );
+        assert!(
+            !CRS_RULE_DIRS.contains(&"/etc/nginx/modsec/crs"),
+            "that is the panel's own directory, not the rule set's"
+        );
+
+        // And the order, against directories that really exist.
+        let base = std::env::temp_dir().join(format!("crs-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let first = base.join("a");
+        let second = base.join("b");
+        let candidates = [first.clone(), second.clone()];
+
+        assert_eq!(first_existing(&candidates), None, "neither exists yet");
+
+        std::fs::create_dir_all(&second).expect("the second");
+        assert_eq!(first_existing(&candidates), Some(second.clone()));
+
+        std::fs::create_dir_all(&first).expect("the first");
+        assert_eq!(
+            first_existing(&candidates),
+            Some(first),
+            "the earlier entry wins once it is there"
+        );
+
+        // A file of the right name is not a rules directory.
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("the base");
+        std::fs::write(base.join("a"), "").expect("a file, not a directory");
+        assert_eq!(
+            first_existing(&candidates),
+            Some(second.clone()).filter(|d| d.is_dir())
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(count_conf_files(None), 0);
+    }
+
+    /// `free -m` truncates, and so does this.
+    #[test]
+    fn memory_is_reported_in_whole_megabytes() {
+        let (available, total) = memory_mb();
+        // /proc/meminfo is present on every Linux this runs on.
+        assert!(total > 0, "MemTotal should be readable here");
+        assert!(available <= total, "available {available} > total {total}");
     }
 }
 

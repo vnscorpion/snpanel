@@ -1008,6 +1008,549 @@ fn os_field(fields: &[(String, String)], key: &str) -> String {
         .unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// installing the scanner, and the real-time monitor
+// ---------------------------------------------------------------------------
+
+/// Source: `MALDET_CONF`, `MALDET_TARBALL_URL`.
+const MALDET_CONF: &str = "/usr/local/maldetect/conf.maldet";
+const MALDET_TARBALL_URL: &str = "https://www.rfxn.com/downloads/maldetect-current.tar.gz";
+const MONITOR_PID_FILE: &str = "/usr/local/maldetect/tmp/inotifywait.pid";
+
+/// Source: the `kv` list in `maldet_write_conf`.
+///
+/// "Panel-owned settings on top of whatever the rfxn installer shipped. The
+/// panel drives scheduling and never auto-quarantines, so its cron is off."
+///
+/// The three `quarantine_*` zeros are the ones worth reading twice. A scanner
+/// that moves a customer's file out from under their running site, on a match
+/// it decided by itself, breaks the site; one that reports and waits does not.
+const MALDET_SETTINGS: &[(&str, &str)] = &[
+    ("quarantine_hits", "0"),
+    ("quarantine_clean", "0"),
+    ("quarantine_suspend_user", "0"),
+    ("scan_clamscan", "1"),
+    ("scan_ignore_root", "0"),
+    ("scan_find_h10k_alert", "0"),
+    ("autoupdate_signatures", "1"),
+    ("autoupdate_version", "1"),
+    ("cron_daily_scan", "0"),
+    ("email_alert", "0"),
+    ("default_monitor_mode", "users"),
+];
+
+/// Source: `maldet_write_conf`.
+///
+/// `sed -i -E "s#^${key}=.*#${key}=\"${val}\"#"` has no line range, so it
+/// rewrites **every** matching line, not just the first - a config that ended
+/// up with the same key twice comes out with both copies agreeing.
+pub(crate) fn maldet_write_conf(conf: &std::path::Path, cron_daily: &std::path::Path) {
+    // `[[ -f "$MALDET_CONF" ]] || return 0` - nothing to tune before the rfxn
+    // installer has written its own config.
+    let Ok(text) = std::fs::read_to_string(conf) else {
+        return;
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    for (key, value) in MALDET_SETTINGS {
+        let prefix = format!("{key}=");
+        let replacement = format!("{key}=\"{value}\"");
+        let mut found = false;
+        for line in lines.iter_mut() {
+            if line.starts_with(&prefix) {
+                *line = replacement.clone();
+                found = true;
+            }
+        }
+        if !found {
+            lines.push(replacement);
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    let _ = std::fs::write(conf, out);
+
+    // `[[ -f ... ]] && chmod a-x` - the panel owns the schedule, so the
+    // installer's daily cron is disarmed rather than deleted: an admin who
+    // looks for it still finds it, and it cannot fire.
+    if cron_daily.is_file() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(cron_daily) {
+            let mode = meta.permissions().mode() & !0o111;
+            let _ = std::fs::set_permissions(cron_daily, std::fs::Permissions::from_mode(mode));
+        }
+    }
+}
+
+/// `maldet-install`.
+///
+/// "clamscan is the scan engine; the resident daemon is deliberately not
+/// enabled - maldet runs clamscan one-shot so the ~1.3GB of signatures are
+/// only resident during a scan."
+///
+/// The bash runs under `set -euo pipefail`, so the package steps that are not
+/// written `|| true` are failures, not warnings. They are failures here too.
+pub fn maldet_install() -> HelperResponse {
+    let mut out = String::new();
+
+    if !have("clamscan") {
+        match update_index() {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            other => return install_step_failed("refreshing the package index", other),
+        }
+        match install_packages(&["clamav"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            _ => {
+                return HelperResponse::failed(
+                    HelperErrorKind::CommandFailed,
+                    "could not install the clamav package (scan engine)".to_string(),
+                )
+            }
+        }
+    }
+    // `freshclam >/dev/null 2>&1 || true` - an initial signature refresh; a
+    // box behind a proxy that cannot reach the mirrors still gets a working
+    // install, and the panel has an update button for later.
+    let _ = exec::run(&["freshclam"]);
+
+    if !have("wget") && !have("curl") {
+        match install_packages(&["wget"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            other => return install_step_failed("installing wget", other),
+        }
+    }
+    // "inotifywait is what maldet's Level 2 monitor runs; Debian does not ship
+    // it." `|| true`: the monitor is optional, so its absence is not a reason
+    // to fail the install.
+    if !have("inotifywait") {
+        let _ = install_packages(&["inotify-tools"]);
+    }
+
+    if !is_executable(MALDET_BIN) {
+        if let Err(response) = fetch_and_run_lmd_installer(&mut out) {
+            return response;
+        }
+    }
+    if !is_executable(MALDET_BIN) {
+        return HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "maldet is still not present after install".to_string(),
+        );
+    }
+
+    maldet_write_conf(
+        std::path::Path::new(MALDET_CONF),
+        std::path::Path::new("/etc/cron.daily/maldet"),
+    );
+    // "The rfxn installer enables maldet.service (the inotify monitor).
+    // SNPanel owns Level 2: keep it off until the admin turns it on."
+    let _ = exec::run(&["systemctl", "disable", "--now", "maldet"]);
+    let _ = exec::run(&[MALDET_BIN, "-u", "--force"]);
+
+    out.push_str(&format!(
+        "LMD installed at {MALDET_HOME}; ClamAV engine present (daemon not enabled).\n"
+    ));
+    HelperResponse::with_stdout(out)
+}
+
+/// The message `set -e` never gets to print.
+///
+/// When one of these steps fails the bash simply dies, so all the caller sees
+/// is apt's stderr on the helper's own stderr and a non-zero status. Carrying
+/// that text into the refusal keeps the reason visible in the panel instead of
+/// in a journal the administrator cannot read from a web page.
+fn install_step_failed(what: &str, result: std::io::Result<exec::Output>) -> HelperResponse {
+    let detail = match result {
+        Ok(o) => {
+            let text = if o.stderr.trim().is_empty() {
+                o.stdout
+            } else {
+                o.stderr
+            };
+            text.trim().to_string()
+        }
+        Err(e) => e.to_string(),
+    };
+    HelperResponse::failed(
+        HelperErrorKind::CommandFailed,
+        if detail.is_empty() {
+            format!("{what} failed")
+        } else {
+            format!("{what} failed: {detail}")
+        },
+    )
+}
+
+/// Download the LMD tarball, check it, unpack it, run the installer inside it.
+///
+/// Every failure removes the temporary directory first - the bash writes
+/// `{ rm -rf "$tmp"; deny ...; }` on each one, and a half-unpacked archive
+/// left behind would be read by the next attempt as a good one.
+fn fetch_and_run_lmd_installer(out: &mut String) -> Result<(), HelperResponse> {
+    // `mktemp -d /tmp/snpanel-maldet.XXXXXX`, and asked of mktemp rather than
+    // built from a pid: a name an attacker can predict is a name they can
+    // pre-create as a symlink into a directory this then unpacks a
+    // root-executed installer into.
+    let temp = match exec::run(&["mktemp", "-d", "/tmp/snpanel-maldet.XXXXXX"]) {
+        Ok(o) if o.ok() && !o.stdout.trim().is_empty() => o.stdout.trim().to_string(),
+        _ => {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::Internal,
+                "could not create a temporary directory".to_string(),
+            ))
+        }
+    };
+    let cleanup = |response: HelperResponse| -> Result<(), HelperResponse> {
+        let _ = std::fs::remove_dir_all(&temp);
+        Err(response)
+    };
+    let tarball = format!("{temp}/maldetect.tar.gz");
+
+    let fetched = if have("wget") {
+        exec::run(&[
+            "wget",
+            "-q",
+            "--timeout=30",
+            "-O",
+            &tarball,
+            MALDET_TARBALL_URL,
+        ])
+    } else {
+        exec::run(&[
+            "curl",
+            "-fsSL",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "120",
+            MALDET_TARBALL_URL,
+            "-o",
+            &tarball,
+        ])
+    };
+    if !matches!(&fetched, Ok(o) if o.ok()) {
+        return cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "could not download LMD from rfxn.com (offline? use the panel button later)"
+                .to_string(),
+        ));
+    }
+
+    // "Asked of gzip, not of `file`: Debian's minimal install ships no `file`,
+    // and an absent command reads exactly like a corrupt download. gzip is
+    // already a hard requirement here - `tar -xzf` on the next line needs it -
+    // and `gzip -t` checks the whole archive's CRC, not just two magic bytes."
+    if !matches!(exec::run(&["gzip", "-t", &tarball]), Ok(o) if o.ok()) {
+        let bytes = std::fs::metadata(&tarball).map(|m| m.len()).unwrap_or(0);
+        return cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            format!(
+                "the LMD download is not a valid gzip archive (rfxn.com returned {bytes} bytes)"
+            ),
+        ));
+    }
+    if !matches!(exec::run(&["tar", "-xzf", &tarball, "-C", &temp]), Ok(o) if o.ok()) {
+        return cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "could not unpack the LMD archive".to_string(),
+        ));
+    }
+
+    // `find "$tmp" -maxdepth 1 -type d -name 'maldetect-*' | head -n1`, then
+    // `[[ -n "$srcdir" && -x "$srcdir/install.sh" ]]`.
+    let Some(srcdir) = lmd_source_dir(std::path::Path::new(&temp)) else {
+        return cleanup(HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "LMD archive layout not recognised".to_string(),
+        ));
+    };
+
+    // `( cd "$srcdir" && ./install.sh )`. The installer reads its own files by
+    // relative path, so it has to run from inside its directory.
+    match exec::run_in_dir(&["./install.sh"], &srcdir) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        _ => {
+            return cleanup(HelperResponse::failed(
+                HelperErrorKind::CommandFailed,
+                "the LMD installer failed".to_string(),
+            ))
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&temp);
+    Ok(())
+}
+
+/// The unpacked `maldetect-*` directory, if it is there and carries an
+/// executable installer.
+///
+/// `find | head -n1` takes whatever the filesystem hands back first; sorting
+/// makes the choice the same on every run. The archive contains exactly one
+/// such directory, so the two agree in practice - this only decides which one
+/// wins in a temporary directory that somehow held two.
+fn lmd_source_dir(temp: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(temp)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("maldetect-"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .find(|dir| is_executable(&dir.join("install.sh").to_string_lossy()))
+}
+
+/// Source: `maldet_monitor_running`.
+///
+/// The pid file first, then `pgrep` - and the pid file alone is not enough,
+/// because a killed monitor leaves it behind and it would then read as
+/// running for as long as nobody cleaned up.
+pub(crate) fn maldet_monitor_running() -> bool {
+    if let Ok(text) = std::fs::read_to_string(MONITOR_PID_FILE) {
+        let pid = text.trim();
+        // `[[ -n "$pid" ]] && kill -0 "$pid"` - a signal of 0 asks whether the
+        // process exists and is ours to signal, and sends nothing.
+        if let Ok(pid) = pid.parse::<i32>() {
+            if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+                return true;
+            }
+        }
+    }
+    // "Fallback: any inotifywait watching /home is maldet's monitor."
+    matches!(
+        exec::run(&["pgrep", "-f", "inotifywait.*(/home|maldet)"]),
+        Ok(o) if o.ok()
+    )
+}
+
+/// Source: `write_inotify_sysctl`.
+///
+/// The kernel default of 8192 watches runs out part-way through a box with a
+/// few hundred sites, and the monitor then watches a prefix of the filesystem
+/// while still reporting that it started - which is worse than not running.
+const INOTIFY_SYSCTL: &str = "/etc/sysctl.d/60-snpanel-inotify.conf";
+const INOTIFY_SYSCTL_BODY: &str = "\
+# Raised by SNPanel so the LMD real-time monitor can watch every site file.
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+";
+
+fn write_inotify_sysctl() {
+    let _ = std::fs::write(INOTIFY_SYSCTL, INOTIFY_SYSCTL_BODY);
+    let _ = exec::run(&["sysctl", "--system"]);
+}
+
+/// The two commands LMD's monitor mode shells out to.
+///
+/// "It exits 0 when one is missing, so systemd reports a bare protocol failure
+/// and the real reason never surfaces - hence installing them here rather than
+/// letting the start fail and guessing afterwards. `ed` is absent from a
+/// minimal Debian."
+const MONITOR_DEPS: &[(&str, &str)] = &[("inotifywait", "inotify-tools"), ("ed", "ed")];
+
+/// `maldet-monitor <start|stop|status>`.
+pub fn maldet_monitor(action: &str) -> HelperResponse {
+    if !is_executable(MALDET_BIN) {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "maldet is not installed".to_string(),
+        );
+    }
+    match action {
+        "start" => monitor_start(),
+        "stop" => monitor_stop(),
+        "status" => HelperResponse::with_stdout(format!(
+            "running={}\nwatches={}\n",
+            u8::from(maldet_monitor_running()),
+            max_user_watches()
+        )),
+        _ => HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "usage: maldet-monitor <start|stop|status>".to_string(),
+        ),
+    }
+}
+
+/// `cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0`.
+fn max_user_watches() -> String {
+    std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+        .map(|t| t.trim().to_string())
+        .ok()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "0".to_string())
+}
+
+fn monitor_start() -> HelperResponse {
+    for (command, package) in MONITOR_DEPS {
+        if have(command) {
+            continue;
+        }
+        let _ = install_packages(&[package]);
+        if !have(command) {
+            return HelperResponse::failed(
+                HelperErrorKind::CommandFailed,
+                format!(
+                    "real-time protection needs {command} (package {package}), \
+                     which could not be installed"
+                ),
+            );
+        }
+    }
+    write_inotify_sysctl();
+    // `grep -qE '^default_monitor_mode=' || printf ... >>` - the monitor has
+    // nothing to watch without it and exits straight away.
+    if let Ok(text) = std::fs::read_to_string(MALDET_CONF) {
+        if !text.lines().any(|l| l.starts_with("default_monitor_mode=")) {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(MALDET_CONF) {
+                let _ = f.write_all(b"default_monitor_mode=\"users\"\n");
+            }
+        }
+    }
+
+    // "Run the monitor through maldet.service: its children stay in the unit's
+    // cgroup, so `systemctl stop` cleans them all up. A bare `maldet -b -m`
+    // daemonises outside systemd and orphans its inotifywait."
+    let _ = exec::run(&["systemctl", "enable", "maldet"]);
+    let _ = exec::run(&["systemctl", "restart", "maldet"]);
+    // `for _ in 1..10; do maldet_monitor_running && break; sleep 1; done` -
+    // ten checks with a sleep between all but the first.
+    for attempt in 0..10 {
+        if maldet_monitor_running() {
+            return HelperResponse::with_stdout("monitor started\n".to_string());
+        }
+        let _ = attempt;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    if maldet_monitor_running() {
+        return HelperResponse::with_stdout("monitor started\n".to_string());
+    }
+    // "Carry maldet's own sentence out to the panel. 'monitor did not start'
+    // on its own sent this into a journal-reading session that the
+    // administrator cannot perform from the web interface."
+    let why = exec::run(&["journalctl", "-u", "maldet", "--no-pager", "-n", "20"])
+        .ok()
+        .map(|o| last_mon_message(&o.stdout))
+        .unwrap_or_default();
+    HelperResponse::failed(
+        HelperErrorKind::CommandFailed,
+        if why.is_empty() {
+            "monitor did not start".to_string()
+        } else {
+            format!("monitor did not start: {why}")
+        },
+    )
+}
+
+/// `sed -n 's/.*{mon} //p' | tail -n 1`.
+///
+/// `.*` is greedy, so a line carrying the marker twice keeps what follows the
+/// **last** one; `tail -n 1` then keeps the newest line that had it at all.
+fn last_mon_message(journal: &str) -> String {
+    journal
+        .lines()
+        .filter_map(|line| {
+            line.rfind("{mon} ")
+                .map(|i| line[i + "{mon} ".len()..].to_string())
+        })
+        .next_back()
+        .unwrap_or_default()
+}
+
+fn monitor_stop() -> HelperResponse {
+    let _ = exec::run(&["systemctl", "disable", "--now", "maldet"]);
+    let _ = exec::run(&["systemctl", "reset-failed", "maldet"]);
+    let _ = exec::run(&[MALDET_BIN, "--kill-monitor"]);
+    // "Kill the supervisor first (it respawns inotifywait), then the watcher."
+    let _ = exec::run(&["pkill", "-f", "maldet .*--monitor"]);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let _ = exec::run(&["pkill", "-f", "inotifywait .*maldetect/sess/inotify"]);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let _ = exec::run(&["pkill", "-9", "-f", "inotifywait .*maldetect/sess/inotify"]);
+    let _ = std::fs::remove_file(MONITOR_PID_FILE);
+    if maldet_monitor_running() {
+        return HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            "monitor still running after stop".to_string(),
+        );
+    }
+    HelperResponse::with_stdout("monitor stopped\n".to_string())
+}
+
+/// `maldet-status`.
+///
+/// Four `key=value` lines, because that is what reads them: `_KV_RE` in
+/// `backend/app/services/maldet.py` is `^([a-z_]+)=(.*)$`, applied line by
+/// line. Anything else - including well-formed JSON - matches nothing, and
+/// `status()` then reports a scanner that is installed, with a monitor that is
+/// running, as neither.
+pub fn maldet_status() -> HelperResponse {
+    let sig_file = format!("{MALDET_HOME}/sigs/maldet.sigs.ver");
+    HelperResponse::with_stdout(status_lines(
+        is_executable(MALDET_BIN),
+        maldet_monitor_running(),
+        std::path::Path::new(&sig_file),
+    ))
+}
+
+/// The four lines, split out from the two probes so a test can drive it.
+fn status_lines(installed: bool, monitor: bool, sig_path: &std::path::Path) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("installed={}\n", u8::from(installed)));
+    out.push_str(&format!("monitor={}\n", u8::from(monitor)));
+
+    if sig_path.is_file() {
+        // `$(cat ...)` strips trailing newlines; `|| echo unknown` covers a
+        // file that exists but cannot be read.
+        let version = std::fs::read_to_string(sig_path)
+            .map(|t| t.trim_end_matches('\n').to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        out.push_str(&format!("sig_version={version}\n"));
+        let updated = std::fs::metadata(sig_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| format_utc(d.as_secs() as i64))
+            .unwrap_or_default();
+        out.push_str(&format!("sig_updated={updated}\n"));
+    } else {
+        out.push_str("sig_version=unknown\n");
+        out.push_str("sig_updated=\n");
+    }
+    out
+}
+
+/// `date -u -r <file> +%Y-%m-%dT%H:%M:%SZ`, without the fork.
+///
+/// Civil date from a day count, by Howard Hinnant's algorithm: shifting the
+/// year to start in March puts the leap day at the end of a 400-year era, so
+/// every month length collapses into one formula and there is no table to get
+/// wrong. The test compares it against GNU `date` over a corpus that includes
+/// both sides of every century boundary and each leap-year rule.
+pub(crate) fn format_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1310,6 +1853,254 @@ mod tests {
         assert!(!present(&f), "empty is absent");
         std::fs::write(&f, "map {}\n").expect("content");
         assert!(present(&f), "non-empty is present");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bug this test exists for.
+    ///
+    /// `maldet-status` used to answer with `HelperResponse::with_data`, which
+    /// the helper prints as pretty JSON. The only reader is `status()` in
+    /// `backend/app/services/maldet.py`, and it parses stdout line by line with
+    /// `_KV_RE = ^([a-z_]+)=(.*)$`. No JSON line can match that, so every key
+    /// came back missing and the panel reported an installed scanner with a
+    /// running monitor as neither installed nor running - silently, because
+    /// the call is made with `check=False`.
+    ///
+    /// The assertion is the Python regex, applied to every line.
+    #[test]
+    fn every_status_line_is_one_python_s_kv_regex_can_read() {
+        fn python_kv(line: &str) -> Option<(&str, &str)> {
+            // ^([a-z_]+)=(.*)$
+            let (key, value) = line.split_once('=')?;
+            if key.is_empty() || !key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                return None;
+            }
+            Some((key, value))
+        }
+
+        let dir = std::env::temp_dir().join(format!("maldet-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let sig = dir.join("maldet.sigs.ver");
+
+        // Without a signature file: the two placeholder lines.
+        let text = status_lines(true, true, &sig);
+        let parsed: Vec<(&str, &str)> = text.lines().filter_map(python_kv).collect();
+        assert_eq!(
+            parsed,
+            vec![
+                ("installed", "1"),
+                ("monitor", "1"),
+                ("sig_version", "unknown"),
+                ("sig_updated", ""),
+            ]
+        );
+
+        // With one: a version, and a timestamp Python hands to the panel as-is.
+        std::fs::write(&sig, "2025091801\n").expect("the sig file");
+        let text = status_lines(false, false, &sig);
+        let parsed: std::collections::HashMap<&str, &str> =
+            text.lines().filter_map(python_kv).collect();
+        assert_eq!(parsed.len(), 4, "all four lines parse: {text:?}");
+        assert_eq!(parsed["installed"], "0");
+        assert_eq!(parsed["monitor"], "0");
+        assert_eq!(parsed["sig_version"], "2025091801");
+        let updated = parsed["sig_updated"];
+        assert!(
+            updated.len() == 20 && updated.ends_with('Z') && updated.as_bytes()[10] == b'T',
+            "an RFC 3339 instant, not {updated:?}"
+        );
+
+        // And the shape the bug had: pretty JSON yields nothing at all.
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "installed": true, "signatures": false,
+        }))
+        .expect("json");
+        assert!(
+            json.lines().filter_map(python_kv).next().is_none(),
+            "JSON must be unreadable to the caller - that was the bug"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `format_utc` against GNU `date -u -d @N`, which is what the bash runs.
+    ///
+    /// 1,266 instants, weighted towards the days a hand-written civil-date
+    /// conversion gets wrong: 1900 (divisible by 100, not a leap year), 2000
+    /// (divisible by 400, a leap year), 2100, the first and last second of a
+    /// day, and both sides of the 32-bit signed epoch.
+    #[test]
+    fn utc_timestamps_match_gnu_date_over_the_whole_corpus() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            secs: i64,
+            utc: String,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/format_utc.json");
+        let raw = std::fs::read_to_string(&path).expect("the format_utc corpus");
+        let cases: Vec<Case> = serde_json::from_str(&raw).expect("the corpus parses");
+        assert!(cases.len() > 1_000, "the corpus is {} cases", cases.len());
+        for case in &cases {
+            assert_eq!(
+                format_utc(case.secs),
+                case.utc,
+                "at {} seconds from the epoch",
+                case.secs
+            );
+        }
+    }
+
+    /// `sed -i -E "s#^key=.*#key=\"val\"#"` has no line range.
+    ///
+    /// A config that somehow ended up with `quarantine_hits` twice comes out
+    /// with **both** copies set - which is the only safe answer, since the
+    /// last assignment is the one the shell that sources it would keep. A
+    /// first-match-only rewrite would leave a stale `quarantine_hits=1` below
+    /// the corrected one and the scanner would quarantine after all.
+    #[test]
+    fn every_copy_of_a_key_is_rewritten_not_just_the_first() {
+        let dir = std::env::temp_dir().join(format!("maldet-conf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let conf = dir.join("conf.maldet");
+        let cron = dir.join("cron.daily.maldet");
+
+        std::fs::write(
+            &conf,
+            "# rfxn's own config\n\
+             quarantine_hits=1\n\
+             email_alert=1\n\
+             quarantine_hits=1\n\
+             something_else=\"keep me\"\n",
+        )
+        .expect("the conf");
+        std::fs::write(&cron, "#!/bin/sh\n").expect("the cron");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cron, std::fs::Permissions::from_mode(0o755))
+                .expect("executable to begin with");
+        }
+
+        maldet_write_conf(&conf, &cron);
+        let text = std::fs::read_to_string(&conf).expect("read back");
+
+        assert_eq!(
+            text.matches("quarantine_hits=\"0\"").count(),
+            2,
+            "both copies: {text}"
+        );
+        assert!(!text.contains("quarantine_hits=1"), "{text}");
+        assert!(text.contains("something_else=\"keep me\""), "{text}");
+        assert!(text.contains("# rfxn's own config"), "the comment survives");
+        // A key that was not there is appended, quoted.
+        assert!(text.contains("default_monitor_mode=\"users\""), "{text}");
+        assert!(text.ends_with('\n'));
+
+        // `chmod a-x`: disarmed, not deleted, so an admin still finds it.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&cron)
+                .expect("still there")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0, "no execute bit left: {mode:o}");
+        }
+
+        // And a box where rfxn's installer has not run yet is left alone
+        // rather than having a config invented for it.
+        let absent = dir.join("not-there");
+        maldet_write_conf(&absent, &cron);
+        assert!(!absent.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `journalctl ... | sed -n 's/.*{mon} //p' | tail -n 1`.
+    ///
+    /// Greedy `.*` keeps what follows the **last** marker on a line, and
+    /// `tail -n 1` keeps the newest line that carried one at all - so what
+    /// reaches the panel is maldet's most recent complaint, not its first.
+    #[test]
+    fn the_monitor_failure_reason_is_the_last_marked_line() {
+        let journal = "\
+Sep 21 10:00:01 host maldet[1]: starting
+Sep 21 10:00:02 host maldet[1]: {mon} inotify watch limit reached
+Sep 21 10:00:03 host maldet[1]: unrelated chatter
+Sep 21 10:00:04 host maldet[1]: {mon} no such user in {mon} default_monitor_mode
+";
+        assert_eq!(last_mon_message(journal), "default_monitor_mode");
+
+        // Nothing marked at all: the caller falls back to its own sentence.
+        assert_eq!(
+            last_mon_message("Sep 21 10:00:01 host maldet[1]: quiet\n"),
+            ""
+        );
+        assert_eq!(last_mon_message(""), "");
+    }
+
+    /// The action word is closed, and an uninstalled scanner refuses first.
+    #[test]
+    fn the_monitor_verb_takes_exactly_three_actions() {
+        // `[[ -x "$MALDET_BIN" ]] || deny` comes before the `case`, so on a box
+        // without maldet even a valid action refuses - and says which fact is
+        // missing rather than reporting the monitor as stopped.
+        if !is_executable(MALDET_BIN) {
+            for action in ["start", "stop", "status", "restart", ""] {
+                let response = maldet_monitor(action);
+                assert!(!response.ok, "{action:?}");
+                let message = response
+                    .error
+                    .as_ref()
+                    .map(|e| e.message.clone())
+                    .unwrap_or_default();
+                assert_eq!(message, "maldet is not installed", "{action:?}");
+            }
+        }
+    }
+
+    /// `find -maxdepth 1 -type d -name 'maldetect-*'`, plus `-x install.sh`.
+    ///
+    /// The `-x` half is the one that matters: an archive that unpacked into a
+    /// directory of the right name but without a runnable installer has to
+    /// refuse, not `cd` into it and run nothing.
+    #[test]
+    fn the_unpacked_directory_is_found_only_with_a_runnable_installer() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("maldet-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+
+        assert_eq!(lmd_source_dir(&dir), None, "an empty directory");
+
+        // A file, not a directory: `-type d` skips it.
+        std::fs::write(dir.join("maldetect-1.6.5"), "").expect("a decoy file");
+        assert_eq!(lmd_source_dir(&dir), None, "a file of the right name");
+        std::fs::remove_file(dir.join("maldetect-1.6.5")).expect("remove the decoy");
+
+        // The right name, but no installer.
+        let src = dir.join("maldetect-1.6.5");
+        std::fs::create_dir_all(&src).expect("the source dir");
+        assert_eq!(lmd_source_dir(&dir), None, "no install.sh");
+
+        // Present but not executable - which is what a tarball unpacked with a
+        // umask that stripped the bit looks like.
+        let script = src.join("install.sh");
+        std::fs::write(&script, "#!/bin/sh\n").expect("the script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644))
+            .expect("not executable");
+        assert_eq!(lmd_source_dir(&dir), None, "install.sh is not executable");
+
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("executable");
+        assert_eq!(lmd_source_dir(&dir), Some(src));
+
+        // A directory of some other name is not a candidate.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("maldet-1.6.5")).expect("wrong prefix");
+        assert_eq!(lmd_source_dir(&dir), None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

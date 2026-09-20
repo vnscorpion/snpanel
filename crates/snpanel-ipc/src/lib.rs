@@ -830,6 +830,18 @@ pub enum HelperRequest {
     /// `clamav-install` - the on-demand malware engine.
     ClamavInstall,
     /// `maldet-update-sigs` - refresh LMD's and ClamAV's signatures.
+    /// `maldet-install` - download and install Linux Malware Detect.
+    ///
+    /// Minutes, not seconds: it fetches a tarball from rfxn.com and runs a
+    /// third-party installer, so the caller gives it a 600s budget.
+    MaldetInstall,
+
+    /// `maldet-monitor <start|stop|status>` - LMD's real-time (Level 2)
+    /// inotify monitor.
+    MaldetMonitor {
+        action: String,
+    },
+
     MaldetUpdateSigs,
     /// `nginx-upgrade-map-ensure` - the http-level `map` a proxied vhost needs
     /// before nginx will load at all.
@@ -857,6 +869,17 @@ pub enum HelperRequest {
     FirewallBlocklistUrl {
         url: String,
         add: bool,
+    },
+    /// `manual-ssl-install` / `manual-ssl-remove` - a certificate an
+    /// administrator uploaded.
+    ///
+    /// The certificate arrives as JSON on stdin, never in argv: a private key
+    /// in a command line is readable in `/proc/<pid>/cmdline` by every account
+    /// on the machine for as long as the process lives (C37).
+    ManualSsl {
+        domain: Domain,
+        install: bool,
+        payload: String,
     },
     /// `docker-install` - the container runtime the Application addon needs.
     DockerInstall,
@@ -1003,6 +1026,8 @@ impl HelperRequest {
             Self::NodeInstall { .. } => "node-install",
             Self::CertbotDnsCloudflareInstall => "certbot-dns-cloudflare-install",
             Self::ClamavInstall => "clamav-install",
+            Self::MaldetInstall => "maldet-install",
+            Self::MaldetMonitor { .. } => "maldet-monitor",
             Self::MaldetUpdateSigs => "maldet-update-sigs",
             Self::NginxUpgradeMapEnsure => "nginx-upgrade-map-ensure",
             Self::UpdatesPanelRun => "updates-panel-run",
@@ -1013,6 +1038,13 @@ impl HelperRequest {
                     "firewall-blocklist-add"
                 } else {
                     "firewall-blocklist-delete"
+                }
+            }
+            Self::ManualSsl { install, .. } => {
+                if *install {
+                    "manual-ssl-install"
+                } else {
+                    "manual-ssl-remove"
                 }
             }
             Self::DockerInstall => "docker-install",

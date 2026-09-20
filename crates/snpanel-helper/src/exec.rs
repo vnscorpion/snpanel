@@ -45,17 +45,29 @@ pub fn run(argv: &[&str]) -> std::io::Result<Output> {
 /// `DEBIAN_FRONTEND=noninteractive` is the one that matters: without it
 /// `apt-get` can stop on a prompt nobody will ever answer.
 pub fn run_with_env(argv: &[&str], extra: &[(&str, &str)]) -> std::io::Result<Output> {
-    run_inner(argv, None, extra)
+    run_inner(argv, None, extra, None)
+}
+
+/// Run `argv` with `dir` as its working directory.
+///
+/// Source: `( cd "$srcdir" && ./install.sh )`. A third-party installer that
+/// expects to be run from inside its own unpacked directory gets that, without
+/// a shell and without this process ever chdir-ing - a `chdir` here would be
+/// process-wide and would change what every later relative path in this run
+/// means.
+pub fn run_in_dir(argv: &[&str], dir: &std::path::Path) -> std::io::Result<Output> {
+    run_inner(argv, None, &[], Some(dir))
 }
 
 pub fn run_with_stdin(argv: &[&str], stdin_data: Option<&[u8]>) -> std::io::Result<Output> {
-    run_inner(argv, stdin_data, &[])
+    run_inner(argv, stdin_data, &[], None)
 }
 
 fn run_inner(
     argv: &[&str],
     stdin_data: Option<&[u8]>,
     extra: &[(&str, &str)],
+    dir: Option<&std::path::Path>,
 ) -> std::io::Result<Output> {
     let (program, args) = argv.split_first().expect("argv must not be empty");
 
@@ -76,6 +88,9 @@ fn run_inner(
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         .env("LC_ALL", "C");
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
     for (key, value) in extra {
         cmd.env(key, value);
     }

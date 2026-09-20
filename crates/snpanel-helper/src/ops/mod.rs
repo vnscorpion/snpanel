@@ -359,6 +359,8 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::MalwareScanServer { job } => packages::malware_scan_server(job),
         HelperRequest::NodeInstall { major } => packages::node_install(major),
         HelperRequest::ClamavInstall => packages::clamav_install(),
+        HelperRequest::MaldetInstall => packages::maldet_install(),
+        HelperRequest::MaldetMonitor { action } => packages::maldet_monitor(action),
         HelperRequest::MaldetUpdateSigs => packages::maldet_update_sigs("/usr/local/sbin/maldet"),
         HelperRequest::NginxUpgradeMapEnsure => packages::upgrade_map_ensure(),
         HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
@@ -369,6 +371,24 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             } else {
                 firewall::blocklist_delete(url)
             }
+        }
+        HelperRequest::ManualSsl {
+            domain,
+            install,
+            payload,
+        } => {
+            let response = if *install {
+                ssl::manual_ssl_install(domain, payload)
+            } else {
+                ssl::manual_ssl_remove(domain)
+            };
+            // The bash runs `sync_panel_sni_certificates` after both, so the
+            // panel starts or stops serving this name on its own port in the
+            // same call that changed the certificate.
+            if response.ok {
+                let _ = ssl::sync_sni();
+            }
+            response
         }
         HelperRequest::DockerInstall => packages::docker_install(),
         HelperRequest::DockerStatus => runtime::docker_status(),
@@ -381,7 +401,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafUpdate => waf::update_rules(),
         HelperRequest::ClamavStatus => waf::clamav_status(),
         HelperRequest::ClamavControl { start } => waf::clamav_control(*start),
-        HelperRequest::MaldetStatus => waf::maldet_status(),
+        HelperRequest::MaldetStatus => packages::maldet_status(),
 
         other => HelperResponse::failed(
             HelperErrorKind::NotImplemented,

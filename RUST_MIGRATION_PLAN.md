@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 92 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 96 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,17 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 92 are answered over the socket and
-13 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 96 are answered over the socket and
+9 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
-direction: `snpanel-ipc` defines 133 request variants and the argv layer maps
-117 verb names, which is more than the 92 above. Three of those names
+direction: `snpanel-ipc` defines 109 request variants and the argv layer maps
+121 verb names, which is more than the 96 above. (An earlier draft said 133
+variants. Counted two ways — the variants in the `enum HelperRequest` body, and
+the distinct `Self::` arms in its `name()` table — it is 109; more names than
+variants because several verbs are aliases sharing one.) Three of those names
 (`firewall-migrate-nft`, `selinux-port-add`, `selinux-restore-site`) have no
 caller in Python and no arm in the bash helper. They are Rust-side surface
 running ahead of its callers, not coverage.
@@ -220,6 +223,55 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### A ported verb can answer in a shape its caller cannot read
+
+`shell.privileged` runs `sudo snpanel-helper <verb>` and captures **stdout as
+text**. `HelperResponse::data` is printed as pretty JSON. So any verb whose
+Python consumer parses stdout is wrong unless the helper writes the bash's
+text — and six did not. All six were on `main`, all six were silent, because
+every one of those call sites passes `check=False`.
+
+| verb | what Python parses | what Rust wrote | what the panel showed |
+|---|---|---|---|
+| `maldet-status` | `installed=` `monitor=` `sig_version=` `sig_updated=` | JSON | scanner and real-time monitor always "off" |
+| `ipv6-status` | `available=yes` `enabled=yes` `addresses=a,b` | JSON, no `addresses` at all | every server "no IPv6, disabled" |
+| `ssl-cert-info` | `not_after=` `sans=` | JSON, no `sans` at all | no expiry, no covered names |
+| `panel-ssl-domains` | one bare domain per line | JSON `{"hostnames":[…]}`, and read the panel's own copies rather than `/etc/letsencrypt/live` | "borrow an existing certificate" list always empty |
+| `waf-crs-status` | eight keys | JSON with two | CRS "not installed", every memory figure 0 |
+| `clamav-status` | (no caller yet) | JSON | — |
+
+`ssl-cert-info` is the one with teeth beyond display. `cert_covers(sans,
+domain)` decides whether a certificate already covers a name; an empty `sans`
+answers "no" for every domain, which sends the panel to certbot for a
+certificate it already holds — against an issuer with rate limits.
+
+Two more divergences surfaced in the same reading, neither about JSON:
+
+- **The CRS mode lived in two files.** Rust wrote `/etc/nginx/modsec/crs-mode`;
+  the bash reads and writes `/etc/nginx/modsec/snpanel-crs-mode`. Each
+  implementation wrote a file the other never opened, so a mode set before the
+  cutover read as `off` after it and vice versa. Both directions silently
+  disarm a WAF an administrator believes is on.
+- **The rule set was looked for in the wrong place.** Rust checked
+  `/etc/nginx/modsec/crs`; no distribution puts the rules there. The bash
+  checks the three paths Debian and EL actually use.
+
+Two verbs answer in JSON and are *not* bugs: `waf-status` and `updates-status`
+hand `CommandResult.__dict__` straight to the UI, so stdout is displayed, not
+parsed. Recorded so the next reader does not "fix" them.
+
+**What generalises.** A verb counted as "ported" is counted on its signature.
+When its consumer parses text, the contract lives in the parser, not the type
+— and `check=False` turns a wrong answer into a silent one at **83** call
+sites. Each of the six now has a test that applies the consumer's own parsing
+to the helper's own output, and separately asserts that pretty JSON parses to
+nothing. All 21 remaining `with_data` sites were read against their Python
+consumers; the rest either have no caller yet or are displayed verbatim.
+
+The test that let `maldet-status` through asserted `r.ok`. That is true of
+both shapes. A status verb needs its output asserted, not its success.
+
 
 - **C3, the Fernet key derivation (R1).** The highest-rated risk and
   unchanged: Python and Rust must derive the same key from the same
