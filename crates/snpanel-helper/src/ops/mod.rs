@@ -350,13 +350,18 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
+        HelperRequest::MaldetScan {
+            job,
+            mode,
+            days,
+            paths,
+        } => packages::maldet_scan(job, mode, days, paths),
+        HelperRequest::MalwareScanServer { job } => packages::malware_scan_server(job),
         HelperRequest::NodeInstall { major } => packages::node_install(major),
         HelperRequest::ClamavInstall => packages::clamav_install(),
         HelperRequest::MaldetUpdateSigs => packages::maldet_update_sigs("/usr/local/sbin/maldet"),
         HelperRequest::NginxUpgradeMapEnsure => packages::upgrade_map_ensure(),
-        HelperRequest::UpdatesPanelRun => {
-            packages::panel_update_run("/opt/snpanel-src/installer/update.sh")
-        }
+        HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
         HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
         HelperRequest::FirewallBlocklistUrl { url, add } => {
             if *add {

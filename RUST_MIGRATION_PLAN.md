@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 89 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 91 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,14 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 89 are answered over the socket and
-16 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 91 are answered over the socket and
+14 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
 direction: `snpanel-ipc` defines 133 request variants and the argv layer maps
-114 verb names, which is more than the 89 above. Three of those names
+116 verb names, which is more than the 91 above. Three of those names
 (`firewall-migrate-nft`, `selinux-port-add`, `selinux-restore-site`) have no
 caller in Python and no arm in the bash helper. They are Rust-side surface
 running ahead of its callers, not coverage.
@@ -494,7 +494,7 @@ Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 (4), `cron` (2), `time` (2), `node` (2), and the singletons. The five dead verbs in §3 are already gone.
 
 **Exit:** every verb the panel's Python calls answered by Rust — 105 of
-them, of which 89 are today; the bash helper is no longer
+them, of which 91 are today; the bash helper is no longer
 installed on new installations.
 
 ### Stage E — the remaining routers

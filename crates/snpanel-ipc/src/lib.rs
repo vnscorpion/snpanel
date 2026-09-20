@@ -806,6 +806,21 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `maldet-scan <job-id> <all|recent> <days> <path>...`
+    ///
+    /// The paths stay `String`s: the helper resolves them and then insists on
+    /// `/` or something under `/home`, which is a rule about where a resolved
+    /// path *lands* and not a shape a type can carry.
+    MaldetScan {
+        job: String,
+        mode: String,
+        days: String,
+        paths: Vec<String>,
+    },
+    /// `malware-scan-server <job-id>` - the whole machine, through clamd.
+    MalwareScanServer {
+        job: String,
+    },
     /// `node-install` - one Node major under /opt/snpanel/node.
     NodeInstall {
         major: String,
@@ -981,6 +996,8 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::MaldetScan { .. } => "maldet-scan",
+            Self::MalwareScanServer { .. } => "malware-scan-server",
             Self::NodeInstall { .. } => "node-install",
             Self::CertbotDnsCloudflareInstall => "certbot-dns-cloudflare-install",
             Self::ClamavInstall => "clamav-install",

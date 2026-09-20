@@ -45,7 +45,7 @@ pub fn node_list() -> HelperResponse {
     HelperResponse::with_stdout(out)
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -55,7 +55,7 @@ fn is_executable(path: &Path) -> bool {
 /// Is a command on the helper's `PATH`?
 ///
 /// Source: `command -v <name> >/dev/null 2>&1`.
-fn have(command: &str) -> bool {
+pub(crate) fn have(command: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
     };

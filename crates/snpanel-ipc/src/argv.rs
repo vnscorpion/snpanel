@@ -470,6 +470,15 @@ impl HelperRequest {
             // keeps them: an operator's muscle memory and a script somebody
             // wrote years ago.
             ("certbot-dns-cloudflare-install", 0) => HelperRequest::CertbotDnsCloudflareInstall,
+            ("maldet-scan", n) if n >= 4 => HelperRequest::MaldetScan {
+                job: rest[0].clone(),
+                mode: rest[1].clone(),
+                days: rest[2].clone(),
+                paths: rest[3..].to_vec(),
+            },
+            ("malware-scan-server", 1) => HelperRequest::MalwareScanServer {
+                job: rest[0].clone(),
+            },
             ("node-install", 1) => HelperRequest::NodeInstall {
                 major: rest[0].clone(),
             },

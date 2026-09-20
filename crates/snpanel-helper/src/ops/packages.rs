@@ -15,6 +15,7 @@
 use snpanel_ipc::{HelperErrorKind, HelperResponse};
 use snpanel_osabi::Family;
 
+use super::runtime::have;
 use crate::exec;
 
 /// The platform's family, or Debian when `/etc/os-release` cannot be read.
@@ -185,6 +186,17 @@ pub fn upgrade_map_ensure() -> HelperResponse {
     HelperResponse::with_stdout("websocket upgrade map present\n".to_string())
 }
 
+/// Source: `UPDATE_SCRIPT` in the bash helper.
+///
+/// Not the installer's `update.sh` in the source tree - the helper runs the
+/// copy the installer put on `PATH`. Pinned by a test, because a constant
+/// that looks right on its own and does not match what the rest of the system
+/// uses fails as "missing ..." and never says why.
+pub const UPDATE_SCRIPT: &str = "/usr/local/sbin/snpanel-update";
+
+/// Source: `SOURCE_DIR` in the bash helper.
+pub const SOURCE_DIR: &str = "/opt/snpanel-source";
+
 /// `updates-panel-run`.
 ///
 /// The update is started as a **transient unit** and the request returns at
@@ -216,7 +228,7 @@ pub fn panel_update_run(update_script: &str) -> HelperResponse {
         let value = if value.is_empty() { default } else { &value };
         format!("--property=Environment={key}={value}")
     };
-    let source_dir = std::env::var("SOURCE_DIR").unwrap_or_else(|_| "/opt/snpanel-src".into());
+    let source_dir = std::env::var("SOURCE_DIR").unwrap_or_else(|_| SOURCE_DIR.into());
     let app_dir = std::env::var("APP_DIR").unwrap_or_else(|_| "/opt/snpanel".into());
     let properties = vec![
         format!("--property=Environment=SOURCE_DIR={source_dir}"),
@@ -396,9 +408,481 @@ fn looks_like_version(value: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
+// ---------------------------------------------------------------------------
+// the malware scanners
+// ---------------------------------------------------------------------------
+
+/// Source: `MALDET_BIN`, `MALDET_HOME`, `MALWARE_JOBS_DIR`.
+pub const MALDET_BIN: &str = "/usr/local/sbin/maldet";
+pub const MALDET_HOME: &str = "/usr/local/maldetect";
+pub const MALWARE_JOBS_DIR: &str = "/var/lib/snpanel/malware-scan-jobs";
+
+/// Source: `MALWARE_SCAN_PRUNE`.
+///
+/// "Left out of a whole-server scan: kernel filesystems that are not files at
+/// all, read-only squashfs images, package caches that are re-downloadable,
+/// and the signature database itself. Scanning them costs hours and finds
+/// nothing."
+pub const SCAN_PRUNE: &[&str] = &[
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/snap",
+    "/var/lib/docker",
+    "/var/lib/lxcfs",
+    "/var/lib/clamav",
+    "/var/cache/apt/archives",
+];
+
+/// Source: `[[ "$job" =~ ^[0-9a-f]{8,64}$ ]]`.
+///
+/// The job id becomes a filename under a directory the panel reads, so it is
+/// checked rather than escaped - and lowercase hex only, which cannot contain
+/// a separator or a dot.
+fn valid_job_id(job: &str) -> bool {
+    (8..=64).contains(&job.len())
+        && job
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Source: the `case "$resolved"` in `run_maldet_scan`.
+///
+/// A scan target is `/` or something under `/home`, and **nothing else**. The
+/// path is resolved first, so a symlink cannot smuggle `/etc` in as
+/// `/home/alice/link`.
+fn scan_target(raw: &str) -> Result<Option<String>, String> {
+    let resolved = readlink_m(std::path::Path::new(raw));
+    let text = resolved.to_string_lossy().into_owned();
+    if text == "/" {
+        return Ok(Some(text));
+    }
+    if text == "/home" || text.starts_with("/home/") {
+        // `[[ -d "$resolved" ]] && targets+=(...)` - a path under /home that
+        // is not a directory is skipped, not refused. A customer removed
+        // between the panel listing them and the scan starting is not an
+        // error.
+        return Ok(resolved.is_dir().then_some(text));
+    }
+    Err(format!("scan path must be / or under /home: {text}"))
+}
+
+/// `maldet-scan <job-id> <all|recent> <days> <path>...`
+///
+/// Foreground on purpose: `-b` daemonises and the helper would return before
+/// the report exists. The panel already runs this call in a background job.
+pub fn maldet_scan(job: &str, mode: &str, days: &str, paths: &[String]) -> HelperResponse {
+    if !valid_job_id(job) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "invalid scan job id".to_string(),
+        );
+    }
+    if mode != "all" && mode != "recent" {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "scan mode must be all|recent".to_string(),
+        );
+    }
+    if days.is_empty() || days.len() > 4 || !days.bytes().all(|b| b.is_ascii_digit()) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "scan days must be an integer".to_string(),
+        );
+    }
+    if !is_executable(MALDET_BIN) {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "maldet is not installed".to_string(),
+        );
+    }
+
+    let mut targets: Vec<String> = Vec::new();
+    for raw in paths {
+        match scan_target(raw) {
+            Ok(Some(target)) => targets.push(target),
+            Ok(None) => {}
+            Err(message) => return HelperResponse::failed(HelperErrorKind::BadRequest, message),
+        }
+    }
+    if targets.is_empty() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "no valid scan path".to_string(),
+        );
+    }
+
+    if let Err(e) = std::fs::create_dir_all(MALWARE_JOBS_DIR) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {MALWARE_JOBS_DIR}: {e}"),
+        );
+    }
+    let out_path = format!("{MALWARE_JOBS_DIR}/{job}.maldet.out");
+    let report_path = format!("{MALWARE_JOBS_DIR}/{job}.maldet.report");
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&report_path);
+
+    // "A whole-machine scan skips the kernel/pkg-cache noise; a /home scan
+    // does not need it. maldet takes one -co per override."
+    let ignore = format!("scan_ignore={}", SCAN_PRUNE.join(","));
+    let whole_machine = targets.iter().any(|t| t == "/");
+
+    let mut argv: Vec<&str> = vec!["nice", "-n", "19", "ionice", "-c3", MALDET_BIN];
+    if whole_machine {
+        argv.push("-co");
+        argv.push(&ignore);
+    }
+    if mode == "recent" {
+        argv.push("-r");
+        argv.push(&targets[0]);
+        argv.push(days);
+    } else {
+        argv.push("-a");
+        argv.extend(targets.iter().map(String::as_str));
+    }
+
+    let run = exec::run(&argv);
+    let (stdout, code) = match run {
+        Ok(o) => (format!("{}{}", o.stdout, o.stderr), o.status.unwrap_or(-1)),
+        Err(e) => (format!("cannot run maldet: {e}\n"), -1),
+    };
+    let _ = std::fs::write(&out_path, &stdout);
+
+    // `grep -oE '[0-9]{6}-[0-9]{4}\.[0-9]+' | head -n1`, then the session file
+    // maldet left behind - the report body is that file, not `maldet -e`.
+    let scanid = find_scan_id(&stdout).or_else(|| {
+        std::fs::read_to_string(format!("{MALDET_HOME}/sess/session.last"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    let mut report = String::new();
+    if let Some(id) = &scanid {
+        if let Ok(body) = std::fs::read_to_string(format!("{MALDET_HOME}/sess/session.{id}")) {
+            report = body;
+        }
+    }
+    let _ = std::fs::write(&report_path, &report);
+    set_job_file_mode(&out_path);
+    set_job_file_mode(&report_path);
+
+    HelperResponse::with_stdout(format!(
+        "scanid={}\nexit={code}\n",
+        scanid.as_deref().unwrap_or("none")
+    ))
+}
+
+/// `[0-9]{6}-[0-9]{4}\.[0-9]+`, first match.
+fn find_scan_id(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let digits = |from: usize, n: usize| -> bool {
+        from + n <= bytes.len() && bytes[from..from + n].iter().all(u8::is_ascii_digit)
+    };
+    for start in 0..bytes.len() {
+        if !digits(start, 6) || bytes.get(start + 6) != Some(&b'-') || !digits(start + 7, 4) {
+            continue;
+        }
+        if bytes.get(start + 11) != Some(&b'.') {
+            continue;
+        }
+        let mut end = start + 12;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end == start + 12 {
+            continue; // `[0-9]+` needs at least one.
+        }
+        return Some(text[start..end].to_string());
+    }
+    None
+}
+
+/// `chown snpanel:snpanel` and `chmod 0640` - the panel reads these while the
+/// scan runs, and nobody else should.
+fn set_job_file_mode(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640));
+    let _ = exec::run(&["chown", "snpanel:snpanel", path]);
+}
+
+/// `malware-scan-server <job-id>` - the whole machine, through clamd.
+pub fn malware_scan_server(job: &str) -> HelperResponse {
+    if !valid_job_id(job) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "invalid scan job id".to_string(),
+        );
+    }
+    if !have("clamdscan") {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "clamdscan is not installed".to_string(),
+        );
+    }
+    let active = exec::run(&["systemctl", "is-active", "--quiet", "clamav-daemon"]);
+    if !matches!(&active, Ok(o) if o.ok()) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "clamav-daemon is not running".to_string(),
+        );
+    }
+    if let Err(e) = std::fs::create_dir_all(MALWARE_JOBS_DIR) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {MALWARE_JOBS_DIR}: {e}"),
+        );
+    }
+    let list = format!("{MALWARE_JOBS_DIR}/{job}.files");
+    let log = format!("{MALWARE_JOBS_DIR}/{job}.scan.log");
+    let _ = std::fs::remove_file(&list);
+    let _ = std::fs::remove_file(&log);
+
+    // "One find over the machine, with the noise pruned. Ten seconds on a
+    // normal VPS, and it buys an exact total so the panel can show real
+    // progress."
+    let mut find_argv: Vec<&str> = vec!["find", "/"];
+    for path in SCAN_PRUNE {
+        find_argv.push("-path");
+        find_argv.push(path);
+        find_argv.push("-prune");
+        find_argv.push("-o");
+    }
+    find_argv.push("-type");
+    find_argv.push("f");
+    find_argv.push("-print");
+    let files = match exec::run(&find_argv) {
+        // `2>/dev/null` and no status check: `find` exits non-zero for a
+        // directory it could not read, and that is not a failure of the scan.
+        Ok(o) => o.stdout,
+        Err(e) => {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("cannot list files to scan: {e}"),
+            )
+        }
+    };
+    let total = files.lines().count();
+    if let Err(e) = std::fs::write(&list, &files) {
+        return HelperResponse::failed(HelperErrorKind::Internal, format!("writing {list}: {e}"));
+    }
+    // "The panel reads its progress out of this file while the scan runs, so
+    // the total has to be in there rather than only in the exit output."
+    let _ = std::fs::write(&log, format!("total={total}\n"));
+    set_job_file_mode(&list);
+    set_job_file_mode(&log);
+
+    // `--fdpass` hands clamd an open descriptor, which is the only way it
+    // reads files its own user cannot. Niced hard: a scan must never be the
+    // reason a website goes slow.
+    let file_list = format!("--file-list={list}");
+    let scanned = exec::run(&[
+        "nice",
+        "-n",
+        "19",
+        "ionice",
+        "-c3",
+        "clamdscan",
+        "--fdpass",
+        "--stdout",
+        "--no-summary",
+        &file_list,
+    ]);
+    let code = match &scanned {
+        Ok(o) => {
+            // `>>"$log"` - appended after the total line.
+            let mut body = std::fs::read_to_string(&log).unwrap_or_default();
+            body.push_str(&o.stdout);
+            body.push_str(&o.stderr);
+            let _ = std::fs::write(&log, body);
+            o.status.unwrap_or(-1)
+        }
+        Err(_) => -1,
+    };
+    let _ = std::fs::remove_file(&list);
+
+    HelperResponse::with_stdout(format!("total={total}\nexit={code}\n"))
+}
+
+/// `readlink -m` - resolve what exists, normalise the rest, never fail.
+///
+/// The `-m` is what makes it safe to use on a path that may not be there: the
+/// check that follows is about where the path *points*, and a target that
+/// does not exist yet still has a location.
+fn readlink_m(path: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    // Walk up to the deepest ancestor that does exist, resolve that, and
+    // re-apply the rest lexically - dropping `.` and popping on `..`.
+    let mut prefix = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !prefix.as_os_str().is_empty() {
+        if let Ok(real) = std::fs::canonicalize(&prefix) {
+            let mut out = real;
+            for part in tail.iter().rev() {
+                if part == ".." {
+                    out.pop();
+                } else if part != "." {
+                    out.push(part);
+                }
+            }
+            return out;
+        }
+        match prefix.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => break,
+        }
+        if !prefix.pop() {
+            break;
+        }
+    }
+    // Nothing on the way up exists: normalise what we were given.
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scan job id becomes a filename under a directory the panel reads, so
+    /// it is checked rather than escaped: lowercase hex only, which cannot
+    /// carry a separator, a dot or a traversal.
+    #[test]
+    fn a_scan_job_id_is_lowercase_hex_of_a_bounded_length() {
+        assert!(valid_job_id("0123abcd"));
+        assert!(valid_job_id(&"a".repeat(64)));
+        for bad in [
+            "",
+            "0123abc",
+            &"a".repeat(65),
+            "0123ABCD",
+            "0123abc-",
+            "../etc",
+            "0123 abcd",
+            "0123abcg",
+            "0123.abc",
+        ] {
+            assert!(!valid_job_id(bad), "{bad:?} should be refused");
+        }
+    }
+
+    /// A scan target is `/` or under `/home`, decided **after** resolving.
+    ///
+    /// That order is the point: `/home/alice/link` pointing at `/etc` resolves
+    /// to `/etc` and is refused, where checking the text first would have
+    /// accepted it and handed the scanner the whole of `/etc`.
+    #[test]
+    fn a_scan_target_is_judged_after_it_is_resolved() {
+        assert_eq!(scan_target("/").unwrap().as_deref(), Some("/"));
+        assert!(scan_target("/etc").is_err());
+        assert!(scan_target("/var/www").is_err());
+        // `/home/../etc` normalises to `/etc` before the check.
+        assert!(scan_target("/home/../etc").is_err());
+
+        // A real symlink out of /home resolves out of /home.
+        let dir = std::env::temp_dir().join(format!("scanlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let link = dir.join("escape");
+        let _ = std::os::unix::fs::symlink("/etc", &link);
+        if link.exists() {
+            let resolved = readlink_m(&link);
+            assert_eq!(resolved.to_string_lossy(), "/etc");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Under /home but not a directory: skipped, not refused. A customer
+        // removed between the panel listing them and the scan starting is not
+        // an error.
+        assert_eq!(scan_target("/home/definitely-not-there").unwrap(), None);
+    }
+
+    /// `readlink -m` never fails, and normalises what it cannot resolve.
+    #[test]
+    fn the_resolver_normalises_a_path_that_is_not_there() {
+        assert_eq!(readlink_m(std::path::Path::new("/")).to_string_lossy(), "/");
+        assert_eq!(
+            readlink_m(std::path::Path::new("/nope/../also-nope")).to_string_lossy(),
+            "/also-nope"
+        );
+        assert_eq!(
+            readlink_m(std::path::Path::new("/home/./x/../y")).to_string_lossy(),
+            "/home/y"
+        );
+    }
+
+    /// The scan id maldet prints, found the way the bash greps for it.
+    ///
+    /// `[0-9]{6}-[0-9]{4}\.[0-9]+`, first match. Getting it wrong means the
+    /// report body is empty and the panel shows a scan that found nothing.
+    #[test]
+    fn the_scan_id_is_found_the_way_the_bash_greps_for_it() {
+        assert_eq!(
+            find_scan_id("maldet(1234): {scan} 250920-1431.4321 started").as_deref(),
+            Some("250920-1431.4321")
+        );
+        // First match wins.
+        assert_eq!(
+            find_scan_id("111111-2222.3 then 444444-5555.6").as_deref(),
+            Some("111111-2222.3")
+        );
+        // Near misses: wrong digit counts, and no digits after the dot.
+        assert_eq!(find_scan_id("12345-1234.1"), None);
+        assert_eq!(find_scan_id("123456-123.1"), None);
+        assert_eq!(find_scan_id("123456-1234."), None);
+        assert_eq!(find_scan_id("123456-1234"), None);
+        assert_eq!(find_scan_id(""), None);
+    }
+
+    /// The prune list is the bash's, read from the bash.
+    ///
+    /// It is the difference between a scan that takes ten minutes and one that
+    /// takes hours reading `/proc` and a package cache.
+    #[test]
+    fn the_scan_prune_list_is_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+        let line = BASH
+            .lines()
+            .find(|l| l.starts_with("MALWARE_SCAN_PRUNE="))
+            .expect("MALWARE_SCAN_PRUNE is not in the bash helper");
+        let inside = line
+            .trim_start_matches("MALWARE_SCAN_PRUNE=(")
+            .trim_end_matches(')');
+        let want: Vec<&str> = inside.split_whitespace().collect();
+        assert_eq!(SCAN_PRUNE, want.as_slice());
+    }
+
+    /// Both update paths, read out of the bash helper rather than asserted.
+    ///
+    /// I had written `/opt/snpanel-src/...` - this session's tooling path -
+    /// where the helper ships `/usr/local/sbin/snpanel-update`. The verb would
+    /// have refused with "missing ..." on every box and never said why.
+    #[test]
+    fn the_update_paths_are_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+        let value_of = |key: &str| -> String {
+            BASH.lines()
+                .find_map(|l| l.strip_prefix(key))
+                .unwrap_or_else(|| panic!("{key} is not in the bash helper"))
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        };
+        assert_eq!(UPDATE_SCRIPT, value_of("UPDATE_SCRIPT="));
+        assert_eq!(SOURCE_DIR, value_of("SOURCE_DIR="));
+    }
 
     /// The Node major is a directory name and half a URL, so it is checked
     /// rather than escaped.
