@@ -361,7 +361,12 @@ fn cli(args: &[String]) -> ExitCode {
         if let Some(err) = &response.error {
             eprintln!("snpanel-helper: {}", err.message);
         }
-        ExitCode::from(1)
+        // **2, not 1.** The bash's `deny` exits 2, and
+        // `helper_socket::returncode_of` maps every non-ok response to 2. A
+        // refusal that came back as 1 here would mean the code a caller sees
+        // depends on whether the socket or sudo answered - and making that
+        // invisible is the whole point of the cutover.
+        ExitCode::from(REFUSED_EXIT_CODE)
     }
 }
 
@@ -404,7 +409,7 @@ fn delegate_to_bash(args: &[String]) -> ExitCode {
     // On success this never returns: the process becomes the bash helper.
     let err = std::process::Command::new(BASH_HELPER).args(args).exec();
     eprintln!("snpanel-helper: cannot exec {BASH_HELPER}: {err}");
-    ExitCode::from(2)
+    ExitCode::from(REFUSED_EXIT_CODE)
 }
 
 /// The same, for content that is not necessarily UTF-8 - a site file can be
@@ -415,6 +420,12 @@ fn read_stdin_bytes() -> Vec<u8> {
     let _ = std::io::stdin().read_to_end(&mut buf);
     buf
 }
+
+/// What a refusal exits with, on every path.
+///
+/// The bash's `deny` uses 2 and `helper_socket::returncode_of` maps every
+/// non-ok response to 2. One constant so the two cannot drift.
+pub(crate) const REFUSED_EXIT_CODE: u8 = 2;
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("snpanel-helper: {message}");
@@ -433,6 +444,44 @@ fn current_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refusal is exit 2 whichever transport answered it.
+    ///
+    /// The panel reaches a mapped verb over the socket and an unmapped one
+    /// through sudo, and `shell.rs` documents 2 as the code that tells
+    /// "refused" from "failed". If the two paths disagreed, the code a caller
+    /// sees would depend on how far the cutover had got - which is the one
+    /// thing the cutover must not be visible for.
+    ///
+    /// Found live: `php-tune-write` with a directive outside the allowlist
+    /// refused with the right message and exit 1.
+    #[test]
+    fn a_refusal_is_exit_two_on_both_transports() {
+        use snpanel_ipc::{HelperErrorKind, HelperResponse};
+
+        let refused = HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "unsupported PHP tuning directive: display_errors".to_string(),
+        );
+        // What the socket reports - the same mapping the panel reads.
+        assert_eq!(socket_returncode(&refused), 2);
+        // And what the CLI reports, which is the constant below.
+        assert_eq!(REFUSED_EXIT_CODE, 2);
+
+        let fine = HelperResponse::ok();
+        assert_eq!(socket_returncode(&fine), 0);
+    }
+
+    /// `helper_socket::returncode_of`, repeated here because the helper crate
+    /// does not depend on the API crate. Repeated *and* compared: if the two
+    /// ever drift, this is the test that says so.
+    fn socket_returncode(response: &snpanel_ipc::HelperResponse) -> i32 {
+        if response.ok {
+            0
+        } else {
+            2
+        }
+    }
 
     /// The two numbers in `--help` are the measured ones.
     ///
