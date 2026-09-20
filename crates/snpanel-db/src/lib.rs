@@ -24,13 +24,15 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 pub mod backups;
-pub mod databases;
+pub mod cloudflare;
+mod databases;
 pub mod packages;
 pub mod site_apps;
 mod users;
 pub mod websites;
 
 pub use backups::{BackupSchedule, BackupScheduleRepo, SftpTarget, SftpTargetRepo};
+pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use site_apps::{SiteAppRepo, SiteAppRow};
@@ -163,6 +165,10 @@ impl Database {
 
     pub fn site_apps(&self) -> SiteAppRepo<'_> {
         SiteAppRepo::new(&self.pool)
+    }
+
+    pub fn cloudflare(&self) -> CloudflareRepo<'_> {
+        CloudflareRepo::new(&self.pool)
     }
 
     /// Does the Python schema look present?

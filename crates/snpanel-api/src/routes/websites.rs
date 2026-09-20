@@ -71,6 +71,14 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(reset_nginx_config).fallback(crate::fallback),
         )
         .route(
+            "/websites/{website_id}/ssl/cloudflare-zone",
+            get(cloudflare_zone).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/ssl/sources",
+            get(ssl_sources).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/waf",
             axum::routing::patch(set_waf).fallback(crate::fallback),
         )
@@ -946,32 +954,9 @@ async fn rewrite_website_vhost(
     Ok(plan.path.to_string_lossy().into_owned())
 }
 
-/// Source: `ssl.cert_info` - read through the helper, because
-/// `/etc/letsencrypt/live` is root's.
+/// The names a certificate covers, from [`cert_info`].
 async fn cert_sans(state: &AppState, domain: &str) -> Vec<String> {
-    let probe = format!("echo 'no cert info for {domain}'; exit 1");
-    let result = shell::privileged(
-        state.settings.command_dry_run,
-        "ssl-cert-info",
-        &[domain],
-        None,
-        Some(&["bash", "-lc", &probe]),
-    )
-    .await;
-    if !result.ok() {
-        return Vec::new();
-    }
-    for line in result.stdout.lines() {
-        if let Some(value) = line.strip_prefix("sans=") {
-            return value
-                .trim()
-                .split(',')
-                .filter(|n| !n.is_empty())
-                .map(str::to_string)
-                .collect();
-        }
-    }
-    Vec::new()
+    cert_info(state, domain).await.1
 }
 
 /// Source: `ssl._hostname_matches` - an exact name, or a wildcard that covers
@@ -1759,6 +1744,145 @@ async fn set_http_flood(
             internal_error()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// the two SSL reads
+// ---------------------------------------------------------------------------
+
+/// Source: `_cloudflare_zone_for` - "(zone, token) for `domain`, resolved from
+/// a saved Cloudflare credential. Tries each saved zone that is a suffix of
+/// the domain, longest first."
+///
+/// Longest first matters: a panel holding credentials for both `example.com`
+/// and `eu.example.com` must use the more specific token for
+/// `shop.eu.example.com`, because the broader one may not cover that zone.
+async fn cloudflare_zone_for(state: &AppState, domain: &str) -> Option<String> {
+    let domain = domain.trim().to_lowercase();
+    let zones = state.db.cloudflare().zones().await.ok()?;
+    zones
+        .into_iter()
+        .filter(|zone| domain == *zone || domain.ends_with(&format!(".{zone}")))
+        .max_by_key(|zone| zone.len())
+}
+
+/// Source: `cloudflare_zone`.
+///
+/// The token itself never leaves the database here - only whether one exists,
+/// which is what the page needs to decide between offering a wildcard and
+/// asking for a credential.
+async fn cloudflare_zone(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let zone = cloudflare_zone_for(&state, &website.domain).await;
+    axum::Json(json!({
+        "zone": zone,
+        // `has_token=zone is not None` - the Python reports a token as present
+        // whenever a zone matched, without checking that it decrypts. Kept, so
+        // a credential the panel cannot read still shows as configured rather
+        // than silently disappearing from the page.
+        "has_token": zone.is_some(),
+    }))
+    .into_response()
+}
+
+/// Source: `ssl.cert_info` - expiry and covered names for a certificate on
+/// this machine, read through the helper because `/etc/letsencrypt/live` is
+/// root's.
+async fn cert_info(state: &AppState, domain: &str) -> (String, Vec<String>) {
+    let probe = format!("echo 'no cert info for {domain}'; exit 1");
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "ssl-cert-info",
+        &[domain],
+        None,
+        Some(&["bash", "-lc", &probe]),
+    )
+    .await;
+    if !result.ok() {
+        return (String::new(), Vec::new());
+    }
+    let mut not_after = String::new();
+    let mut sans: Vec<String> = Vec::new();
+    for line in result.stdout.lines() {
+        // `line.partition("=")` - the first `=`, and the key is compared
+        // without trimming.
+        let (key, value) = match line.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (line, ""),
+        };
+        match key {
+            "not_after" => not_after = value.trim().to_string(),
+            "sans" => {
+                sans = value
+                    .trim()
+                    .split(',')
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            }
+            _ => {}
+        }
+    }
+    (not_after, sans)
+}
+
+/// Source: `ssl_sources` - the certificates already on this server that would
+/// cover this website.
+///
+/// A customer only sees their own sites' certificates. That is not cosmetic:
+/// the list is what the "borrow a certificate" screen offers, and borrowing
+/// points this site's vhost at another site's key.
+async fn ssl_sources(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let admin = permissions::is_admin_role(&current.user.role);
+    let all = match state.db.websites().list(None, "").await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("listing websites failed: {e}");
+            return internal_error();
+        }
+    };
+
+    let mut out: Vec<Value> = Vec::new();
+    for candidate in all
+        .iter()
+        .filter(|c| c.id != website.id && c.ssl_enabled)
+        .filter(|c| admin || c.owner_id == current.user.id)
+    {
+        // `candidate.ssl_source_domain or candidate.domain` - a site already
+        // borrowing a certificate offers the certificate it borrowed, not one
+        // of its own that does not exist.
+        let source = candidate
+            .ssl_source_domain
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .unwrap_or(&candidate.domain);
+        let (not_after, sans) = cert_info(&state, source).await;
+        if sans.is_empty() || !cert_covers(&sans, &website.domain) {
+            continue;
+        }
+        out.push(json!({
+            "domain": candidate.domain,
+            "ssl_mode": candidate.ssl_mode,
+            "wildcard": sans.iter().any(|name| name.starts_with("*.")),
+            "not_after": not_after,
+        }));
+    }
+    axum::Json(out).into_response()
 }
 
 #[cfg(test)]

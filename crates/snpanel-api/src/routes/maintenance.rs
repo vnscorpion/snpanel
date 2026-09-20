@@ -79,6 +79,20 @@ pub fn router() -> Router<AppState> {
             post(write_file).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/da-import/backups",
+            get(list_da_backups)
+                .delete(delete_da_backup)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/wordpress",
+            post(wordpress_action).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/wordpress/{website_id}/fix-permissions",
+            post(fix_wordpress_permissions).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/cron",
             post(add_cron).delete(delete_cron).fallback(crate::fallback),
         )
@@ -2779,6 +2793,330 @@ async fn delete_cron(State(state): State<AppState>, req: axum::extract::Request)
     )
     .await;
     axum::Json(json!({ "deleted": target, "cron_user": cron_user })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// WordPress
+// ---------------------------------------------------------------------------
+
+/// Source: `wordpress._wp_php_flag`.
+///
+/// "WP-CLI must run under the site's PHP. Left to the default `php`, a site on
+/// one version gets updated by another version's CLI, which may not have the
+/// extensions WordPress needs - mysqli in particular."
+fn wp_php_flag(php_version: &str) -> Option<String> {
+    let version = php_version.trim();
+    (!version.is_empty()).then(|| format!("--php-version={version}"))
+}
+
+/// Source: `wordpress_action` and `wordpress.wp_update`.
+async fn wordpress_action(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(website_id) = payload.get("website_id").and_then(Value::as_i64) else {
+        return crate::errors::missing_field("website_id", payload.clone());
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let action = match string_field(&payload, "action") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // The document root here is the website's **configured** one, unlike the
+    // terminal's start directory which always uses `public_html`. WP-CLI is
+    // pointed at where WordPress actually lives.
+    let relative = if website.document_root.is_empty() {
+        "public_html"
+    } else {
+        &website.document_root
+    };
+    let path = match files::safe_path(&website.root_path, relative, true) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(e) => return bad_request(&e.to_string()),
+    };
+
+    let path_flag = format!("--path={path}");
+    let args: Vec<&str> = match action.as_str() {
+        "core" => vec!["core", "update", &path_flag, "--allow-root"],
+        "plugins" => vec!["plugin", "update", "--all", &path_flag, "--allow-root"],
+        "themes" => vec!["theme", "update", "--all", &path_flag, "--allow-root"],
+        _ => return bad_request("Unsupported WordPress action"),
+    };
+
+    let user = website.linux_user.as_deref().unwrap_or("");
+    let result = if user.is_empty() {
+        // No runtime account: the helper runs WP-CLI itself.
+        let mut fallback: Vec<&str> = vec!["wp"];
+        fallback.extend_from_slice(&args);
+        shell::privileged(
+            state.settings.command_dry_run,
+            "wp",
+            &args,
+            None,
+            Some(&fallback),
+        )
+        .await
+    } else {
+        let flag = wp_php_flag(&website.php_version);
+        let mut helper_args: Vec<&str> = vec![user];
+        if let Some(flag) = flag.as_deref() {
+            helper_args.push(flag);
+        }
+        helper_args.extend_from_slice(&args);
+        let mut fallback: Vec<&str> = vec!["wp"];
+        fallback.extend_from_slice(&args);
+        shell::privileged(
+            state.settings.command_dry_run,
+            "wp-site",
+            &helper_args,
+            None,
+            Some(&fallback),
+        )
+        .await
+    };
+
+    // Source: `return result.__dict__` - the command result itself, so the
+    // page can show WP-CLI's output whether it worked or not.
+    axum::Json(result.to_json()).into_response()
+}
+
+/// Source: `fix_wordpress_permissions`.
+///
+/// The runtime is ensured first when the site has its own account: fixing
+/// ownership on a tree whose home does not exist yet would leave the files
+/// owned by an account cron and PHP-FPM cannot use.
+async fn fix_wordpress_permissions(
+    State(state): State<AppState>,
+    axum::extract::Path(website_id): axum::extract::Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let user = website.linux_user.clone().unwrap_or_default();
+    if !user.is_empty() {
+        let runtime_php = if matches!(website.app_type.as_str(), "" | "wordpress" | "php") {
+            let v = website.php_version.clone();
+            if v.is_empty() {
+                "none".to_string()
+            } else {
+                v
+            }
+        } else {
+            "none".to_string()
+        };
+        let fallback_dir = document_root_of(&website);
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-ensure",
+            &[&user, &website.root_path, &runtime_php],
+            None,
+            Some(&["mkdir", "-p", &fallback_dir]),
+        )
+        .await;
+    }
+
+    // Source: `site_users.fix_site_permissions` - two shapes, because the
+    // helper derives different ownership from one argument than from two.
+    if user.is_empty() {
+        let owner = format!("{}:{}", web_user(), web_group());
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "fix-permissions",
+            &[&website.root_path],
+            None,
+            Some(&["chown", "-R", &owner, &website.root_path]),
+        )
+        .await;
+    } else {
+        let Ok(safe_user) = snpanel_core::types::PanelUsername::parse(&user) else {
+            return bad_request("Invalid panel Linux user");
+        };
+        let owner = format!("{}:{}", safe_user.as_str(), safe_user.as_str());
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "fix-permissions",
+            &[&website.root_path, safe_user.as_str()],
+            None,
+            Some(&["chown", "-R", &owner, &website.root_path]),
+        )
+        .await;
+    }
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "fix_permissions",
+        &website.domain,
+        &website.root_path,
+    )
+    .await;
+    axum::Json(json!({
+        "message": format!("Fixed permissions for {}", website.domain),
+        "root_path": website.root_path,
+    }))
+    .into_response()
+}
+
+/// Source: `platform.web_group()`.
+fn web_group() -> String {
+    snpanel_osabi::detect()
+        .map(|p| p.web_group().to_string())
+        .unwrap_or_else(|_| "www-data".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// the DirectAdmin backup archives waiting to be imported
+// ---------------------------------------------------------------------------
+
+/// Source: `da_import.ARCHIVE_SUFFIXES`.
+const ARCHIVE_SUFFIXES: &[&str] = &[
+    ".tar.zst", ".tzst", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar",
+];
+
+/// Source: `da_import.DA_BACKUP_DIR`.
+fn da_backup_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(
+        std::env::var("SNPANEL_DA_BACKUP_DIR")
+            .unwrap_or_else(|_| "/home/admin/snpanel_backups/da".to_string()),
+    )
+}
+
+/// Source: `da_import._is_archive` - a **file**, with one of the suffixes,
+/// matched case-insensitively on the name.
+fn is_archive(path: &std::path::Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    ARCHIVE_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
+/// Source: `da_import.resolve_backup_path` - "confining it to the upload
+/// directory keeps the endpoints from reading or deleting arbitrary files on
+/// the host".
+///
+/// Scan, import and delete all take this path from the request body, so this
+/// is the boundary. An absolute path is allowed *through* the check rather
+/// than refused outright, because the listing hands absolute paths back and
+/// the page sends one of them straight back - but it still has to resolve
+/// inside the directory.
+fn resolve_backup_path(archive_path: &str) -> Result<std::path::PathBuf, String> {
+    let raw = archive_path.trim();
+    if raw.is_empty() {
+        return Err("archive_path is required".to_string());
+    }
+    let root = crate::files::resolve(&da_backup_dir());
+    let candidate = std::path::Path::new(raw);
+    let resolved = crate::files::resolve(&if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    });
+    if !resolved.starts_with(&root) {
+        return Err(format!("Backup must be inside {}", root.display()));
+    }
+    Ok(resolved)
+}
+
+/// Source: `list_da_backups`.
+async fn list_da_backups(State(state): State<AppState>, current: CurrentUser) -> Response {
+    let _ = &state;
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let dir = da_backup_dir();
+    // `DA_BACKUP_DIR.mkdir(parents=True, exist_ok=True)` - the Python creates
+    // it, so an operator opening the page before anything has been uploaded
+    // sees an empty list rather than an error.
+    let _ = std::fs::create_dir_all(&dir);
+
+    let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries.flatten().map(|e| e.path()).collect(),
+        Err(_) => Vec::new(),
+    };
+    // `sorted(DA_BACKUP_DIR.iterdir())` sorts the whole path, which for one
+    // directory is the same as sorting by name.
+    paths.sort();
+
+    let items: Vec<Value> = paths
+        .iter()
+        .filter(|p| is_archive(p))
+        .map(|p| {
+            let size = std::fs::metadata(p).map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.size()
+            });
+            json!({
+                "filename": p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                "path": p.to_string_lossy(),
+                "size": size.unwrap_or(0),
+            })
+        })
+        .collect();
+    axum::Json(items).into_response()
+}
+
+/// Source: `delete_da_backup`.
+async fn delete_da_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let archive_path = payload
+        .get("archive_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    // Source: the endpoint's own `if not archive_path` check, which runs
+    // before `resolve_backup_path` would raise the same thing.
+    if archive_path.is_empty() {
+        return bad_request("archive_path is required");
+    }
+    let path = match resolve_backup_path(archive_path) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e),
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // Source: `FileNotFoundError` -> **404**, `ValueError` -> 400. The order
+    // matters: a path that is not there is reported as missing rather than as
+    // the wrong format.
+    if !path.exists() {
+        return not_found(&format!("Backup not found: {name}"));
+    }
+    if !is_archive(&path) {
+        return bad_request("Not a supported archive format");
+    }
+    let _ = std::fs::remove_file(&path);
+
+    audit_detail(&state, current.user.id, "da_backup_delete", &name, "").await;
+    axum::Json(json!({ "deleted": name })).into_response()
 }
 
 #[cfg(test)]

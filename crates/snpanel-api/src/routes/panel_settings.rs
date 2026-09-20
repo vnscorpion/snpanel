@@ -1,7 +1,9 @@
-//! `/api/panel-settings` - ported from `api/panel_settings.py`, the two reads.
+//! `/api/panel-settings` - ported from `api/panel_settings.py`.
 //!
-//! Changing the settings, the admin account, or uploading branding all write
-//! and stay with Python. What is here is `/public` and the full read.
+//! The reads, the settings write, the two certificate switches and the IPv6
+//! toggle. Uploading branding and changing the admin account stay with Python:
+//! one is multipart, the other needs the step-up check that guards a password
+//! change.
 //!
 //! **`/public` is the only unauthenticated endpoint in the panel.** The login
 //! page needs the panel's name and its artwork; what certificate the panel
@@ -21,16 +23,16 @@
 //! and the malware state come back as `""`, `[]` and `false` rather than as
 //! what they actually are.
 
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::config::Settings;
 use snpanel_core::permissions::{self, Role};
 
 use crate::auth::CurrentUser;
-use crate::errors::not_enough_permissions;
+use crate::errors::{bad_request, not_enough_permissions};
 use crate::shell;
 use crate::state::AppState;
 
@@ -43,7 +45,22 @@ pub fn router() -> Router<AppState> {
             "/panel-settings/public",
             get(public).fallback(crate::fallback),
         )
-        .route("/panel-settings", get(full).fallback(crate::fallback))
+        .route(
+            "/panel-settings",
+            get(full).patch(update_settings).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/ssl/use-domain",
+            post(use_domain_certificate).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/ssl/self-signed",
+            post(regenerate_self_signed).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/ipv6",
+            post(toggle_ipv6).fallback(crate::fallback),
+        )
 }
 
 fn data_dir() -> std::path::PathBuf {
@@ -447,6 +464,488 @@ async fn full(State(state): State<AppState>, current: CurrentUser) -> Response {
     // Through the response model too: `current_settings` never sets `message`,
     // so the reply carries it as null.
     axum::Json(to_response_model(&current_settings(&state).await)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// the settings an administrator can change
+// ---------------------------------------------------------------------------
+
+/// Source: `panel_settings._write_raw` - a temporary file beside the real one,
+/// then a rename. Every page on the panel reads this file.
+fn write_raw(data: &Value) -> std::io::Result<()> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    let mut text = serde_json::to_string_pretty(data)?;
+    text.push('\n');
+    let temp = dir.join(format!(".panel-settings.json.{}", std::process::id()));
+    std::fs::write(&temp, text)?;
+    std::fs::rename(&temp, dir.join("panel-settings.json"))
+}
+
+/// Source: `normalize_panel_hostname`.
+///
+/// A scheme, a port or a path in the hostname box is refused rather than
+/// stripped: this name goes into the URL the panel tells people to use, and
+/// quietly discarding half of what was typed produces a link that does not
+/// work for a reason nobody can see.
+fn normalize_panel_hostname(value: &str) -> Result<String, String> {
+    let host = value
+        .trim()
+        .to_lowercase()
+        .trim_end_matches('.')
+        .to_string();
+    if host.is_empty() {
+        return Err("Panel hostname is required".to_string());
+    }
+    if host.contains("://") || host.contains('/') || host.contains(':') {
+        return Err("Panel hostname must not include a scheme, port, or path".to_string());
+    }
+    if !is_reportable_host(&host) && host != "localhost" {
+        return Err("Panel hostname must be a domain name or IPv4 address".to_string());
+    }
+    Ok(host)
+}
+
+/// Source: `normalize_panel_port`.
+fn normalize_panel_port(value: Option<i64>, fallback: i64) -> Result<i64, String> {
+    // `int(value or settings.panel_port or 2222)` - **zero is falsy**, so a
+    // port of 0 falls back rather than being refused as out of range. Kept.
+    let port = match value {
+        Some(0) | None => fallback,
+        Some(v) => v,
+    };
+    if !(1..=65535).contains(&port) {
+        return Err("Panel port is out of range".to_string());
+    }
+    Ok(port)
+}
+
+/// Source: `has_panel_certificate`.
+fn has_panel_certificate(settings: &Settings) -> bool {
+    let pairs = [
+        (
+            settings.panel_ssl_cert.clone(),
+            settings.panel_ssl_key.clone(),
+        ),
+        (
+            "/etc/snpanel/panel-fullchain.pem".to_string(),
+            "/etc/snpanel/panel-privkey.pem".to_string(),
+        ),
+    ];
+    pairs.iter().any(|(cert, key)| {
+        !cert.is_empty()
+            && !key.is_empty()
+            && std::path::Path::new(cert).exists()
+            && std::path::Path::new(key).exists()
+    })
+}
+
+/// Source: `update_panel_settings` and `panel_settings.update_settings`.
+///
+/// `panel_port` is accepted and **discarded** - `del panel_port` with the
+/// comment "the panel port is install-time only; settings can change
+/// hostname/branding". Changing the port here would leave the running service
+/// listening on the old one while the stored URL pointed at the new.
+async fn update_settings(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let mut data = raw_settings();
+    let map = data
+        .as_object_mut()
+        .expect("raw_settings returns an object");
+
+    if let Some(raw) = payload.get("app_name").filter(|v| !v.is_null()) {
+        let Some(name) = raw.as_str() else {
+            return crate::errors::string_type("app_name", raw);
+        };
+        let value = name.trim();
+        // `if not 2 <= len(value) <= 80` - characters, not bytes.
+        let length = value.chars().count();
+        if !(2..=80).contains(&length) {
+            return bad_request("Panel name must be 2-80 characters");
+        }
+        map.insert("app_name".to_string(), json!(value));
+    }
+
+    let hostname = payload
+        .get("panel_hostname")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let url_field = payload
+        .get("panel_url")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    if !hostname.trim().is_empty() || !url_field.trim().is_empty() {
+        let existing_url = map
+            .get("panel_url")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&state.settings.panel_url)
+            .to_string();
+        let (existing_host, existing_port) =
+            parse_panel_url(&existing_url, state.settings.panel_port.get() as i64);
+        let existing_scheme = if existing_url.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        // `existing_normalized` is "" when there is no stored URL, and the
+        // comparison below is against that - so a first-time save always runs
+        // the helper.
+        let existing_normalized = if existing_host.is_empty() {
+            String::new()
+        } else {
+            format!("{existing_scheme}://{existing_host}:{existing_port}")
+        };
+
+        let (scheme, host) = if !hostname.trim().is_empty() {
+            (existing_scheme.to_string(), hostname.to_string())
+        } else {
+            let (requested_host, _) =
+                parse_panel_url(url_field, state.settings.panel_port.get() as i64);
+            let requested_scheme = if url_field.trim().starts_with("https://") {
+                "https"
+            } else {
+                "http"
+            };
+            (requested_scheme.to_string(), requested_host)
+        };
+        let host = match normalize_panel_hostname(&host) {
+            Ok(h) => h,
+            Err(e) => return bad_request(&e),
+        };
+        let port =
+            match normalize_panel_port(Some(existing_port), state.settings.panel_port.get() as i64)
+            {
+                Ok(p) => p,
+                Err(e) => return bad_request(&e),
+            };
+        let normalized = format!("{scheme}://{host}:{port}");
+
+        if scheme == "https" && !has_panel_certificate(&state.settings) {
+            return bad_request("Use Install SSL before saving an HTTPS panel URL");
+        }
+        if normalized != existing_normalized {
+            let port_text = port.to_string();
+            let result = shell::privileged(
+                state.settings.command_dry_run,
+                "panel-url-set",
+                &[&scheme, &host, &port_text],
+                None,
+                Some(&["bash", "-lc", "true"]),
+            )
+            .await;
+            if !result.ok() {
+                // Source: `raise RuntimeError(...)`, which the router turns
+                // into a **500**, not a 400 - this is the machine refusing,
+                // not the input being wrong.
+                tracing::error!(
+                    "setting the panel URL failed: {}",
+                    result.failure_detail("Could not update panel URL")
+                );
+                return crate::errors::internal_error();
+            }
+        }
+        map.insert("panel_url".to_string(), json!(normalized));
+    }
+
+    if let Err(e) = write_raw(&data) {
+        tracing::error!("writing panel-settings.json failed: {e}");
+        return crate::errors::internal_error();
+    }
+
+    let settings = current_settings(&state).await;
+    let target = settings["panel_url"].as_str().unwrap_or("");
+    let target = if target.is_empty() { "panel" } else { target };
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "update_panel_settings",
+        target,
+    )
+    .await;
+    axum::Json(to_response_model(&settings)).into_response()
+}
+
+/// `log_action(..., request=request)` - ip and user agent, no detail, which is
+/// how every write in this router calls it.
+async fn audit_panel(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    actor_id: i64,
+    action: &str,
+    target: &str,
+) {
+    super::packages::audit_action(state, parts, actor_id, action, target).await;
+}
+
+/// Source: `panel_settings.domains_with_certificate`.
+///
+/// Asked through the helper: "/etc/letsencrypt/live is root-only, so the panel
+/// reading it directly finds nothing and reports, wrongly, that there is
+/// nothing to borrow."
+async fn domains_with_certificate(state: &AppState) -> Vec<String> {
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "panel-ssl-domains",
+        &[],
+        None,
+        Some(&["bash", "-lc", "echo ''"]),
+    )
+    .await;
+    if !result.ok() {
+        return Vec::new();
+    }
+    let mut found: Vec<String> = Vec::new();
+    for line in result.stdout.lines() {
+        let name = line.trim().trim_matches('/');
+        if name.is_empty() || name == "README" || !is_reportable_host(name) {
+            continue;
+        }
+        if !found.iter().any(|f| f == name) {
+            found.push(name.to_string());
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Source: `use_domain_certificate` - "serve the panel with a certificate a
+/// website here already has".
+///
+/// Better than asking a certificate authority for a second certificate
+/// covering a name it has already signed, and it renews with the website.
+async fn use_domain_certificate(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let domain = payload.get("domain").and_then(Value::as_str).unwrap_or("");
+    let host = match normalize_panel_hostname(domain) {
+        Ok(h) => h,
+        Err(e) => return bad_request(&e),
+    };
+    let port = match normalize_panel_port(
+        payload.get("panel_port").and_then(Value::as_i64),
+        state.settings.panel_port.get() as i64,
+    ) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e),
+    };
+
+    if !domains_with_certificate(&state).await.contains(&host) {
+        return bad_request(&format!(
+            "{host} chưa có chứng chỉ trên máy này. Cài SSL cho website đó trước."
+        ));
+    }
+    let port_text = port.to_string();
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "panel-ssl-use-domain",
+        &[&host, &port_text],
+        None,
+        Some(&["bash", "-lc", "echo dry-run-panel-ssl-use-domain"]),
+        Some(300),
+    )
+    .await;
+    if !result.ok() {
+        return bad_request(&tail_500(
+            &result.failure_detail("Could not switch the panel certificate"),
+        ));
+    }
+
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "panel_ssl_use_domain",
+        &host,
+    )
+    .await;
+    axum::Json(json!({
+        "message": format!(
+            "Panel dùng chứng chỉ của {host} làm mặc định. \
+             Các domain khác có SSL trên máy vẫn mở panel được bằng chứng chỉ riêng."
+        ),
+        "panel_url": format!("https://{host}:{port}"),
+    }))
+    .into_response()
+}
+
+/// Source: `regenerate_self_signed` - "go back to a certificate the panel
+/// signs for itself".
+async fn regenerate_self_signed(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+
+    let data = raw_settings();
+    let stored = data
+        .get("panel_url")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&state.settings.panel_url)
+        .to_string();
+    let mut host = if stored.is_empty() {
+        String::new()
+    } else {
+        parse_panel_url(&stored, state.settings.panel_port.get() as i64).0
+    };
+    if host.is_empty() {
+        host = std::env::var("PANEL_DOMAIN")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+    }
+    if host.is_empty() {
+        host = "127.0.0.1".to_string();
+    }
+    let port = state.settings.panel_port.get() as i64;
+
+    let port_text = port.to_string();
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "panel-ssl-selfsigned",
+        &[&host, &port_text],
+        None,
+        Some(&["bash", "-lc", "echo dry-run-panel-ssl-selfsigned"]),
+        Some(300),
+    )
+    .await;
+    if !result.ok() {
+        return bad_request(&tail_500(
+            &result.failure_detail("Could not generate a certificate"),
+        ));
+    }
+
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "panel_ssl_self_signed",
+        "panel",
+    )
+    .await;
+    axum::Json(json!({
+        "message": "Panel dùng chứng chỉ tự ký.",
+        "panel_url": format!("https://{host}:{port}"),
+    }))
+    .into_response()
+}
+
+/// Source: `panel_ipv6.NO_IPV6_MESSAGE`.
+const NO_IPV6_MESSAGE: &str =
+    "VPS của bạn không có địa chỉ IPv6 nên không thể dùng tính năng này. \
+     Liên hệ nhà cung cấp để được cấp IPv6, sau đó bật lại.";
+
+/// `(...).strip()[-500:]` - the **last** 500 characters, so the end of a long
+/// error survives rather than its beginning. Sliced by character.
+fn tail_500(value: &str) -> String {
+    let trimmed = value.trim();
+    let count = trimmed.chars().count();
+    if count <= 500 {
+        return trimmed.to_string();
+    }
+    trimmed.chars().skip(count - 500).collect()
+}
+
+/// Source: `toggle_ipv6` and `panel_ipv6.set_enabled`.
+///
+/// "Turning it on is refused when the server has no IPv6 address: nginx cannot
+/// bind an address family that is not there, and it would refuse to start."
+async fn toggle_ipv6(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `bool(payload.enabled)` on a pydantic `bool` field: absent is the
+    // model's default, which is false.
+    let enabled = payload
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let before = ipv6_status(&state.settings).await;
+    if enabled && !before["available"].as_bool().unwrap_or(false) {
+        return bad_request(NO_IPV6_MESSAGE);
+    }
+
+    let verb = if enabled {
+        "ipv6-enable"
+    } else {
+        "ipv6-disable"
+    };
+    let probe = format!("echo dry-run-{verb}");
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        verb,
+        &[],
+        None,
+        Some(&["bash", "-lc", &probe]),
+        Some(300),
+    )
+    .await;
+    if !result.ok() {
+        let mut detail = tail_500(&result.failure_detail(""));
+        if detail.contains("no global IPv6 address") {
+            detail = NO_IPV6_MESSAGE.to_string();
+        }
+        if detail.is_empty() {
+            detail = "Không thay đổi được cấu hình IPv6.".to_string();
+        }
+        return bad_request(&detail);
+    }
+
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "toggle_ipv6",
+        if enabled { "on" } else { "off" },
+    )
+    .await;
+
+    let mut settings = current_settings(&state).await;
+    settings["message"] = json!(if enabled {
+        "Đã bật IPv6 cho toàn bộ website và panel."
+    } else {
+        "Đã tắt IPv6. Website và panel chỉ nhận kết nối IPv4."
+    });
+    axum::Json(to_response_model(&settings)).into_response()
 }
 
 #[cfg(test)]
