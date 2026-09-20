@@ -1,0 +1,403 @@
+{
+ "tree": [
+  "public_html/",
+  "public_html/cron.php",
+  "public_html/sub/",
+  "public_html/sub/task.php",
+  "public_html/notes.txt",
+  "logs/",
+  "logs/cron.log"
+ ],
+ "site_root": "/tmp/cron-ie7wcwvb/example.com",
+ "wp_cli_present": true,
+ "commands": [
+  {
+   "command": "wp cron event run --due-now",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp cron event run --due-now --allow-root",
+   "line_plain_php": "wp cron event run --due-now --allow-root"
+  },
+  {
+   "command": "wp core update",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root",
+   "line_plain_php": "wp core update --allow-root"
+  },
+  {
+   "command": "wp plugin update --all",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp plugin update --all --allow-root",
+   "line_plain_php": "wp plugin update --all --allow-root"
+  },
+  {
+   "command": "wp theme update --all",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp theme update --all --allow-root",
+   "line_plain_php": "wp theme update --all --allow-root"
+  },
+  {
+   "command": "wp cron event run --due-now --allow-root",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp cron event run --due-now --allow-root",
+   "line_plain_php": "wp cron event run --due-now --allow-root"
+  },
+  {
+   "command": "wp --allow-root cron event run --due-now",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp cron event run --due-now --allow-root",
+   "line_plain_php": "wp cron event run --due-now --allow-root"
+  },
+  {
+   "command": "wp db export",
+   "error": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed",
+   "error_plain_php": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed"
+  },
+  {
+   "command": "wp plugin install evil",
+   "error": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed",
+   "error_plain_php": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed"
+  },
+  {
+   "command": "wp",
+   "error": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed",
+   "error_plain_php": "Only safe WP-CLI maintenance commands or PHP scripts inside this website are allowed"
+  },
+  {
+   "command": "php cron.php",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "php -q cron.php",
+   "line": "/usr/bin/php8.1 -q /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php -q /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "php sub/task.php",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/sub/task.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/sub/task.php"
+  },
+  {
+   "command": "php public_html/cron.php",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/public_html/cron.php"
+  },
+  {
+   "command": "php /nonexistent/evil.php",
+   "error": "PHP cron scripts must be inside this website's public_html directory",
+   "error_plain_php": "PHP cron scripts must be inside this website's public_html directory"
+  },
+  {
+   "command": "php ../../../etc/passwd",
+   "error": "PHP cron commands must run a .php file",
+   "error_plain_php": "PHP cron commands must run a .php file"
+  },
+  {
+   "command": "php notes.txt",
+   "error": "PHP cron commands must run a .php file",
+   "error_plain_php": "PHP cron commands must run a .php file"
+  },
+  {
+   "command": "php -r 'echo 1;'",
+   "error": "PHP cron commands must run a .php file; only the -q option is allowed",
+   "error_plain_php": "PHP cron commands must run a .php file; only the -q option is allowed"
+  },
+  {
+   "command": "php -q -q cron.php",
+   "error": "PHP cron commands must run a .php file; only the -q option is allowed",
+   "error_plain_php": "PHP cron commands must run a .php file; only the -q option is allowed"
+  },
+  {
+   "command": "php",
+   "error": "PHP cron commands must run a .php file; only the -q option is allowed",
+   "error_plain_php": "PHP cron commands must run a .php file; only the -q option is allowed"
+  },
+  {
+   "command": "/usr/bin/php8.1 cron.php",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "php8.4 cron.php",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "/usr/bin/php8.1 /usr/local/bin/wp cron event run --due-now --allow-root",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp cron event run --due-now --allow-root",
+   "line_plain_php": "wp cron event run --due-now --allow-root"
+  },
+  {
+   "command": "php /usr/local/bin/wp core update",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root",
+   "line_plain_php": "wp core update --allow-root"
+  },
+  {
+   "command": "wp core update >/dev/null",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root >/dev/null",
+   "line_plain_php": "wp core update --allow-root >/dev/null"
+  },
+  {
+   "command": "wp core update > /dev/null",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root >/dev/null",
+   "line_plain_php": "wp core update --allow-root >/dev/null"
+  },
+  {
+   "command": "wp core update >>/dev/null 2>&1",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root >>/dev/null 2>&1",
+   "line_plain_php": "wp core update --allow-root >>/dev/null 2>&1"
+  },
+  {
+   "command": "wp core update 2>/dev/null",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root 2>/dev/null",
+   "line_plain_php": "wp core update --allow-root 2>/dev/null"
+  },
+  {
+   "command": "php cron.php >> logs/cron.log 2>&1",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php >>/tmp/cron-ie7wcwvb/example.com/public_html/logs/cron.log 2>&1",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php >>/tmp/cron-ie7wcwvb/example.com/public_html/logs/cron.log 2>&1"
+  },
+  {
+   "command": "php cron.php > ../outside.log",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php >/tmp/cron-ie7wcwvb/example.com/outside.log",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php >/tmp/cron-ie7wcwvb/example.com/outside.log"
+  },
+  {
+   "command": "php cron.php > /etc/passwd",
+   "error": "Cron output can only be redirected to /dev/null or a file inside this website's folder",
+   "error_plain_php": "Cron output can only be redirected to /dev/null or a file inside this website's folder"
+  },
+  {
+   "command": "php cron.php >",
+   "error": "Redirection is missing a target file",
+   "error_plain_php": "Redirection is missing a target file"
+  },
+  {
+   "command": "wp core update &> /dev/null",
+   "error": "Only the >, >>, 2> and 2>&1 redirections are supported",
+   "error_plain_php": "Only the >, >>, 2> and 2>&1 redirections are supported"
+  },
+  {
+   "command": "wp core update | mail me",
+   "error": "Only the >, >>, 2> and 2>&1 redirections are supported",
+   "error_plain_php": "Only the >, >>, 2> and 2>&1 redirections are supported"
+  },
+  {
+   "command": "wp core update ; rm -rf /",
+   "error": "Only the >, >>, 2> and 2>&1 redirections are supported",
+   "error_plain_php": "Only the >, >>, 2> and 2>&1 redirections are supported"
+  },
+  {
+   "command": "wp core update && rm -rf /",
+   "error": "Only the >, >>, 2> and 2>&1 redirections are supported",
+   "error_plain_php": "Only the >, >>, 2> and 2>&1 redirections are supported"
+  },
+  {
+   "command": "wp core update '--allow-root'",
+   "line": "/usr/bin/php8.1 /usr/local/bin/wp core update --allow-root",
+   "line_plain_php": "wp core update --allow-root"
+  },
+  {
+   "command": "php \"cron.php\"",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "php 'cron.php'",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php"
+  },
+  {
+   "command": "php cron.php 'a b'",
+   "line": "/usr/bin/php8.1 /tmp/cron-ie7wcwvb/example.com/public_html/cron.php 'a b'",
+   "line_plain_php": "php /tmp/cron-ie7wcwvb/example.com/public_html/cron.php 'a b'"
+  },
+  {
+   "command": "",
+   "error": "Cron command is required",
+   "error_plain_php": "Cron command is required"
+  },
+  {
+   "command": "   ",
+   "error": "Cron command is required",
+   "error_plain_php": "Cron command is required"
+  },
+  {
+   "command": "php 'unterminated",
+   "error": "No closing quotation",
+   "error_plain_php": "No closing quotation"
+  }
+ ],
+ "schedules": [
+  {
+   "input": "* * * * *",
+   "value": "* * * * *"
+  },
+  {
+   "input": "0 3 * * *",
+   "value": "0 3 * * *"
+  },
+  {
+   "input": "*/5 * * * *",
+   "value": "*/5 * * * *"
+  },
+  {
+   "input": "0,30 * * * *",
+   "value": "0,30 * * * *"
+  },
+  {
+   "input": "1-5 * * * *",
+   "value": "1-5 * * * *"
+  },
+  {
+   "input": "0 0 1 1 0",
+   "value": "0 0 1 1 0"
+  },
+  {
+   "input": "70 * * * *",
+   "value": "70 * * * *"
+  },
+  {
+   "input": "* * * *",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "* * * * * *",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "   ",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "  0   3   *   *   *  ",
+   "value": "0 3 * * *"
+  },
+  {
+   "input": "a * * * *",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "0-*/5 * * * *",
+   "value": "0-*/5 * * * *"
+  },
+  {
+   "input": "999 * * * *",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "*/ * * * *",
+   "error": "Invalid cron schedule"
+  },
+  {
+   "input": "0/ * * * *",
+   "error": "Invalid cron schedule"
+  }
+ ],
+ "lines": [
+  {
+   "line": "0 3 * * * cd /home/a/example.com/public_html && /usr/bin/php8.1 cron.php # snpanel:example.com",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "/usr/bin/php8.1 cron.php",
+    "line": "0 3 * * * cd /home/a/example.com/public_html && /usr/bin/php8.1 cron.php # snpanel:example.com"
+   }
+  },
+  {
+   "line": "*/5 * * * * cd '/home/a/x' && wp core update --allow-root >/dev/null 2>&1 # snpanel:example.com",
+   "parsed": {
+    "index": 0,
+    "schedule": "*/5 * * * *",
+    "command": "wp core update >/dev/null 2>&1",
+    "line": "*/5 * * * * cd '/home/a/x' && wp core update --allow-root >/dev/null 2>&1 # snpanel:example.com"
+   }
+  },
+  {
+   "line": "0 3 * * * echo hi",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "echo hi",
+    "line": "0 3 * * * echo hi"
+   }
+  },
+  {
+   "line": "0 3 * * *",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "",
+    "line": "0 3 * * *"
+   }
+  },
+  {
+   "line": "* * * * * a b c # snpanel:x.com",
+   "parsed": {
+    "index": 0,
+    "schedule": "* * * * *",
+    "command": "a b c",
+    "line": "* * * * * a b c # snpanel:x.com"
+   }
+  },
+  {
+   "line": "0 3 * * * cd /x && php a.php # snpanel:has space",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "php a.php # snpanel:has space",
+    "line": "0 3 * * * cd /x && php a.php # snpanel:has space"
+   }
+  },
+  {
+   "line": "0 3 * * * php a.php \\%d",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "php a.php %d",
+    "line": "0 3 * * * php a.php \\%d"
+   }
+  },
+  {
+   "line": "0 3 * * * php a.php # not-a-marker",
+   "parsed": {
+    "index": 0,
+    "schedule": "0 3 * * *",
+    "command": "php a.php # not-a-marker",
+    "line": "0 3 * * * php a.php # not-a-marker"
+   }
+  }
+ ],
+ "percents": [
+  {
+   "input": "",
+   "escaped": ""
+  },
+  {
+   "input": "%",
+   "escaped": "\\%"
+  },
+  {
+   "input": "a%b",
+   "escaped": "a\\%b"
+  },
+  {
+   "input": "\\%",
+   "escaped": "\\%"
+  },
+  {
+   "input": "a\\%b",
+   "escaped": "a\\%b"
+  },
+  {
+   "input": "%%",
+   "escaped": "\\%\\%"
+  },
+  {
+   "input": "\\%%",
+   "escaped": "\\%\\%"
+  },
+  {
+   "input": "100%",
+   "escaped": "100\\%"
+  }
+ ]
+}

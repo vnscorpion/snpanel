@@ -79,6 +79,14 @@ pub fn router() -> Router<AppState> {
             post(write_file).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/cron",
+            post(add_cron).delete(delete_cron).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/cron/{website_id}",
+            get(list_cron).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/backups/{website_id}",
             get(list_site_backups)
                 .delete(delete_site_backup)
@@ -2482,6 +2490,295 @@ async fn write_as_site_user(
             result.failure_detail("Cannot write the file").trim(),
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// cron
+// ---------------------------------------------------------------------------
+
+/// Source: `platform.web_user()` - "`www-data` on Ubuntu, `nginx` on EL".
+///
+/// A job installed under the wrong name does not run at all, which is the
+/// quietest way for a backup or a WordPress cron to stop happening.
+fn web_user() -> String {
+    snpanel_osabi::detect()
+        .map(|p| p.web_user().to_string())
+        .unwrap_or_else(|_| "www-data".to_string())
+}
+
+/// Source: `cron.list_cron_all`.
+async fn list_cron_all(state: &AppState, cron_user: &str) -> String {
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "cron-list",
+        &[cron_user],
+        None,
+        Some(&["bash", "-lc", "crontab -l 2>/dev/null || true"]),
+    )
+    .await;
+    result.stdout
+}
+
+/// Source: `cron.list_cron` - the lines carrying this site's marker.
+fn lines_for_domain(all: &str, domain: &str) -> Vec<String> {
+    let marker = format!("snpanel:{domain}");
+    all.lines()
+        .filter(|line| line.contains(&marker))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Source: `cron-write` - the whole crontab, replaced.
+///
+/// The helper takes the entire file on stdin because a crontab has no
+/// line-addressed edit: the panel reads it, changes it, and writes it back.
+async fn write_crontab(state: &AppState, cron_user: &str, content: &str) -> Result<(), Response> {
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "cron-write",
+        &[cron_user],
+        Some(content),
+        Some(&["bash", "-lc", "crontab -"]),
+    )
+    .await;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(bad_request(
+            result.failure_detail("Cannot write the crontab").trim(),
+        ))
+    }
+}
+
+/// Source: `list_cron` the endpoint.
+async fn list_cron(
+    State(state): State<AppState>,
+    axum::extract::Path(website_id): axum::extract::Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let cron_user = crate::cron::cron_user_for_website(
+        website.linux_user.as_deref(),
+        &website.root_path,
+        &web_user(),
+    );
+    let Ok(domain) = crate::cron::validate_domain(&website.domain) else {
+        return bad_request("Invalid domain");
+    };
+
+    let all = list_cron_all(&state, &cron_user).await;
+    let items: Vec<Value> = lines_for_domain(&all, &domain)
+        .iter()
+        .enumerate()
+        .map(|(index, line)| crate::cron::parse_cron_line(index, line))
+        .collect();
+
+    axum::Json(json!({
+        "items": items,
+        "cron_user": cron_user,
+        "php_version": website.php_version,
+        // Shown in the add-cron help so it is obvious which interpreter a job
+        // runs on.
+        "php_binary": crate::cron::php_binary(&website.php_version),
+        "document_root": document_root_of(&website),
+    }))
+    .into_response()
+}
+
+/// Source: `site_users.document_root(website.root_path)` - the default
+/// `public_html`, resolved.
+fn document_root_of(website: &snpanel_db::Website) -> String {
+    let root = crate::files::resolve(std::path::Path::new(&website.root_path));
+    root.join("public_html").to_string_lossy().into_owned()
+}
+
+/// Source: `add_cron` the endpoint and `cron.add_cron`.
+async fn add_cron(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(website_id) = payload.get("website_id").and_then(Value::as_i64) else {
+        return crate::errors::missing_field("website_id", payload.clone());
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let schedule = match string_field(&payload, "schedule") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let command = match string_field(&payload, "command") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let cron_user = crate::cron::cron_user_for_website(
+        website.linux_user.as_deref(),
+        &website.root_path,
+        &web_user(),
+    );
+    // Source: `if not website.linux_user and cron_user != "www-data"` - note
+    // the **literal**, not `WEB_USER`. On EL the web user is `nginx`, so a
+    // site with no runtime user of its own gets `linux_user` recorded there
+    // and not on Debian. Reproduced rather than tidied: changing it would
+    // start writing a column on one distribution that the Python leaves
+    // empty.
+    let adopt_user =
+        website.linux_user.as_deref().unwrap_or("").is_empty() && cron_user != "www-data";
+
+    let document_root = std::path::PathBuf::from(document_root_of(&website));
+    let site_root = crate::files::resolve(std::path::Path::new(&website.root_path));
+    let php_bin = crate::cron::php_binary(&website.php_version);
+    let wp_cli = std::path::Path::new(crate::cron::WP_CLI_PATH).exists();
+
+    let safe_schedule = match crate::cron::validate_schedule(&schedule) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    let safe_command =
+        match crate::cron::validate_command(&command, &document_root, &site_root, &php_bin, wp_cli)
+        {
+            Ok(v) => v,
+            Err(e) => return bad_request(&e.to_string()),
+        };
+    let safe_domain = match crate::cron::validate_domain(&website.domain) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+
+    let line = format!(
+        "{safe_schedule} cd {} && {} # snpanel:{safe_domain}",
+        shell::shlex_quote(&document_root.to_string_lossy()),
+        crate::cron::escape_percent(&safe_command)
+    );
+
+    // A site whose jobs run as its own account needs that account's home and
+    // runtime to exist before cron tries to `cd` into it.
+    if cron_user != web_user() {
+        let runtime_php = if matches!(website.app_type.as_str(), "" | "wordpress" | "php") {
+            website.php_version.clone()
+        } else {
+            "none".to_string()
+        };
+        let runtime_php = if runtime_php.is_empty() {
+            "none".to_string()
+        } else {
+            runtime_php
+        };
+        let fallback_dir = document_root.to_string_lossy().into_owned();
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-ensure",
+            &[&cron_user, &website.root_path, &runtime_php],
+            None,
+            Some(&["mkdir", "-p", &fallback_dir]),
+        )
+        .await;
+    }
+
+    let existing = list_cron_all(&state, &cron_user).await;
+    let trimmed = existing.trim_end();
+    let new_content = if trimmed.trim().is_empty() {
+        format!("{line}\n")
+    } else {
+        format!("{trimmed}\n{line}\n")
+    };
+    if let Err(r) = write_crontab(&state, &cron_user, &new_content).await {
+        return r;
+    }
+
+    if adopt_user {
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_linux_user(website.id, &cron_user)
+            .await
+        {
+            tracing::error!("recording the cron runtime user failed: {e}");
+            return internal_error();
+        }
+    }
+
+    audit_detail(&state, current.user.id, "add_cron", &website.domain, &line).await;
+    axum::Json(json!({ "line": line, "cron_user": cron_user })).into_response()
+}
+
+/// Source: `delete_cron` the endpoint and `cron.delete_cron`.
+///
+/// The index is into **this site's** lines, not the whole crontab, and the
+/// removal matches by text: two identical lines would both go, which is the
+/// Python's behaviour and is the safe direction for a duplicate.
+async fn delete_cron(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(website_id) = payload.get("website_id").and_then(Value::as_i64) else {
+        return crate::errors::missing_field("website_id", payload.clone());
+    };
+    let Some(raw_index) = payload.get("index") else {
+        return crate::errors::missing_field("index", payload.clone());
+    };
+    let Some(index) = raw_index.as_i64() else {
+        return crate::errors::int_parsing("index", raw_index);
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let cron_user = crate::cron::cron_user_for_website(
+        website.linux_user.as_deref(),
+        &website.root_path,
+        &web_user(),
+    );
+    let Ok(domain) = crate::cron::validate_domain(&website.domain) else {
+        return bad_request("Invalid domain");
+    };
+
+    let all = list_cron_all(&state, &cron_user).await;
+    let matching = lines_for_domain(&all, &domain);
+    if index < 0 || index as usize >= matching.len() {
+        return bad_request("Cron not found");
+    }
+    let target = matching[index as usize].clone();
+
+    let kept: Vec<&str> = all
+        .lines()
+        .filter(|line| line.trim() != target.trim())
+        .collect();
+    let new_content = if kept.is_empty() {
+        String::new()
+    } else {
+        kept.join("\n") + "\n"
+    };
+    if let Err(r) = write_crontab(&state, &cron_user, &new_content).await {
+        return r;
+    }
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "delete_cron",
+        &website.domain,
+        &target,
+    )
+    .await;
+    axum::Json(json!({ "deleted": target, "cron_user": cron_user })).into_response()
 }
 
 #[cfg(test)]

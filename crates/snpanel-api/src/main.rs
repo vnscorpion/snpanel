@@ -27,6 +27,7 @@
 mod auth;
 mod backups;
 mod client;
+mod cron;
 mod errors;
 mod files;
 mod helper_socket;

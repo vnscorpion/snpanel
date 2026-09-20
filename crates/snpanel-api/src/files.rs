@@ -230,7 +230,9 @@ fn is_symlink(path: &Path) -> bool {
 
 /// `Path.resolve()` with `strict=False`: the longest existing prefix made
 /// real, the rest applied lexically.
-fn resolve(path: &Path) -> PathBuf {
+/// `Path.resolve(strict=False)`: symlinks resolved where the path exists,
+/// the rest normalised lexically.
+pub(crate) fn resolve(path: &Path) -> PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return real;
     }

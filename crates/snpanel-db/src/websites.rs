@@ -172,6 +172,20 @@ impl<'a> WebsiteRepo<'a> {
         Ok(())
     }
 
+    /// Source: `add_cron` adopting the derived runtime account.
+    ///
+    /// A site created before the panel wrote this column gets it filled in the
+    /// first time a cron job is installed, so the job and the files agree
+    /// about which account owns them.
+    pub async fn set_linux_user(&self, id: i64, linux_user: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET linux_user = ? WHERE id = ?")
+            .bind(linux_user)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_waf_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
         sqlx::query("UPDATE websites SET waf_enabled = ? WHERE id = ?")
             .bind(enabled)

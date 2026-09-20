@@ -1,7 +1,9 @@
 //! `/api/waf` - ported from `api/waf.py`.
 //!
-//! The engine-level reads and one site's rule selection. What is left edits
-//! bot lists, reads access logs and installs the engine itself.
+//! Everything except reading the access logs, which needs the log parser and
+//! the GeoIP table the Python builds on a background thread - the same shape
+//! as `malware`, where the line count is a poor measure of the work. Clearing
+//! them is here; reading them is not.
 //!
 //! The note here used to say the per-site rules belonged to a surface Phase 2
 //! had not finished. [`crate::waf`] renders them now.
@@ -70,6 +72,15 @@ pub fn router() -> Router<AppState> {
         .route(
             "/waf/websites/{website_id}/crs",
             axum::routing::put(set_website_crs).fallback(crate::fallback),
+        )
+        .route("/waf/orphans", get(scan_orphans).fallback(crate::fallback))
+        .route(
+            "/waf/orphans/clean",
+            axum::routing::post(clean_orphans).fallback(crate::fallback),
+        )
+        .route(
+            "/waf/access-logs",
+            axum::routing::delete(clear_access_logs).fallback(crate::fallback),
         )
 }
 
@@ -1245,6 +1256,320 @@ async fn set_crs(State(state): State<AppState>, req: Request) -> Response {
 fn truncate_200(value: String) -> String {
     let trimmed = value.trim();
     trimmed.chars().take(200).collect()
+}
+
+// ---------------------------------------------------------------------------
+// what a deleted website left behind
+// ---------------------------------------------------------------------------
+
+/// Source: `orphans.CATEGORY_LABELS`.
+///
+/// The labels go straight into the page, and the first one is the one that
+/// hurts: "a renewal config for a site nobody hosts wakes certbot twice a day
+/// and eventually fails for good."
+const CATEGORY_LABELS: &[(&str, &str)] = &[
+    ("cert", "Let's Encrypt certificate"),
+    ("waf-rules", "WAF rule file"),
+    ("vhost-backup", "vhost backup"),
+    ("manual-ssl", "uploaded certificate"),
+    ("sni-copy", "panel SNI copy"),
+];
+
+/// Source: `orphans.live_domains` - "every domain this panel still serves,
+/// websites and aliases alike".
+///
+/// An alias is as live as the website carrying it: a certificate covering only
+/// an alias is still in use, and deleting it would break a site that works.
+async fn live_domains(state: &AppState) -> Result<Vec<String>, Response> {
+    let websites = state.db.websites().list(None, "").await.map_err(|e| {
+        tracing::error!("listing websites failed: {e}");
+        crate::errors::internal_error()
+    })?;
+    let ids: Vec<i64> = websites.iter().map(|w| w.id).collect();
+    let aliases = state
+        .db
+        .websites()
+        .aliases_for(&ids)
+        .await
+        .unwrap_or_default();
+
+    let mut names: Vec<String> = Vec::new();
+    for domain in websites
+        .iter()
+        .map(|w| w.domain.as_str())
+        .chain(aliases.iter().map(|a| a.domain.as_str()))
+    {
+        let cleaned = domain.trim().to_lowercase();
+        if !cleaned.is_empty() && !names.contains(&cleaned) {
+            names.push(cleaned);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Source: `orphans._parse` - the helper's tab-separated report.
+fn parse_orphans(result: &crate::shell::CommandResult) -> Value {
+    let mut items: Vec<Value> = Vec::new();
+    let mut summary = serde_json::Map::new();
+    let mut archive = String::new();
+
+    for line in result.stdout.lines() {
+        // `line.split("\t")` with fewer than two fields is skipped, so a
+        // blank line or a stray message cannot become an item.
+        let mut parts = line.split('\t');
+        let (Some(kind), Some(value)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let (kind, value) = (kind.trim(), value.trim());
+        match kind {
+            "summary" => {
+                for token in value.split_whitespace() {
+                    let (key, count) = match token.split_once('=') {
+                        Some((k, c)) => (k, c),
+                        None => (token, ""),
+                    };
+                    // `int(count) if count.isdigit() else 0`.
+                    let number: i64 =
+                        if !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) {
+                            count.parse().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                    summary.insert(key.to_string(), json!(number));
+                }
+            }
+            "archive" => archive = value.to_string(),
+            _ => {
+                if let Some((_, label)) = CATEGORY_LABELS.iter().find(|(k, _)| *k == kind) {
+                    items.push(json!({ "type": kind, "label": label, "name": value }));
+                }
+            }
+        }
+    }
+
+    let ok = result.returncode == 0;
+    json!({
+        "items": items,
+        "summary": summary,
+        "archive": archive,
+        "total": items.len(),
+        "ok": ok,
+        // `[:400]` slices characters, not bytes.
+        "error": if ok {
+            String::new()
+        } else {
+            result
+                .failure_detail("")
+                .trim()
+                .chars()
+                .take(400)
+                .collect::<String>()
+        },
+    })
+}
+
+/// Source: `orphans._run`.
+///
+/// The empty-list guard is the important line. An empty list would mean
+/// "nothing on this server is live", which the helper refuses - but the Python
+/// does not even ask, so a broken query cannot turn into a delete request at
+/// all. That guard is reproduced here rather than left to the helper.
+async fn run_orphans(state: &AppState, verb: &str) -> Result<Value, Response> {
+    let domains = live_domains(state).await?;
+    if domains.is_empty() {
+        return Err(bad_request(
+            "refusing to run orphan cleanup without any live domains",
+        ));
+    }
+    let payload = domains.join("\n") + "\n";
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        verb,
+        &[],
+        Some(&payload),
+        Some(&[
+            "bash",
+            "-lc",
+            "cat >/dev/null; echo 'summary\tcerts=0 waf-rules=0'",
+        ]),
+    )
+    .await;
+    Ok(parse_orphans(&result))
+}
+
+/// Source: `scan_orphans` - "what deleted websites left behind. Touches
+/// nothing."
+async fn scan_orphans(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return not_enough_permissions();
+    }
+    let mut outcome = match run_orphans(&state, "orphans-scan").await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let total = outcome["total"].as_u64().unwrap_or(0);
+    outcome["message"] = json!(if total > 0 {
+        format!("{total} orphaned item(s) on disk.")
+    } else {
+        "Nothing orphaned.".to_string()
+    });
+    axum::Json(outcome).into_response()
+}
+
+/// Source: `clean_orphans` - "remove them, after copying everything to
+/// /root/snpanel-removed".
+async fn clean_orphans(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return not_enough_permissions();
+    }
+    let mut outcome = match run_orphans(&state, "orphans-clean").await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    outcome["message"] = json!(describe_orphans(&outcome));
+    axum::Json(outcome).into_response()
+}
+
+/// Source: `orphans.describe`.
+fn describe_orphans(outcome: &Value) -> String {
+    if !outcome["ok"].as_bool().unwrap_or(false) {
+        let error = outcome["error"].as_str().unwrap_or("");
+        let error = if error.is_empty() {
+            "unknown error"
+        } else {
+            error
+        };
+        return format!("Orphan cleanup failed: {error}");
+    }
+    let total = outcome["total"].as_u64().unwrap_or(0);
+    if total == 0 {
+        return "Nothing orphaned: every certificate and config on disk belongs to \
+                a website this panel serves."
+            .to_string();
+    }
+    // `sorted(outcome["summary"].items())` and only the non-zero counts -
+    // serde_json's map is already sorted by key.
+    let counts: Vec<String> = outcome["summary"]
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter(|(_, value)| value.as_i64().unwrap_or(0) != 0)
+                .map(|(key, value)| format!("{key} {value}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut message = format!("Removed {total} orphaned item(s): {}.", counts.join(", "));
+    let archive = outcome["archive"].as_str().unwrap_or("");
+    if !archive.is_empty() {
+        message.push_str(&format!(" A copy is in {archive}."));
+    }
+    message
+}
+
+/// The website list these two endpoints work from.
+///
+/// Source: the query the Python builds before `access_logs` and
+/// `clear_access_logs`. The owner filter is not a nicety: "without this an end
+/// user asking for no website_id would be handed every site's access log on
+/// the server."
+async fn log_scope(
+    state: &AppState,
+    current: &CurrentUser,
+    website_id: Option<i64>,
+) -> Result<Vec<snpanel_db::Website>, Response> {
+    let admin = permissions::is_admin_role(&current.user.role);
+    if !admin {
+        let flag = match current.user.package_id {
+            Some(id) => match state.db.packages().by_id(id).await {
+                Ok(Some(package)) => Some(package.waf_enabled),
+                _ => None,
+            },
+            None => None,
+        };
+        if !crate::waf::may_manage_waf(&current.user.role, flag) {
+            return Err(crate::errors::error(
+                axum::http::StatusCode::FORBIDDEN,
+                "Your hosting package does not include WAF settings",
+            ));
+        }
+    }
+    let owner = if admin { None } else { Some(current.user.id) };
+    let mut websites = state.db.websites().list(owner, "").await.map_err(|e| {
+        tracing::error!("listing websites failed: {e}");
+        crate::errors::internal_error()
+    })?;
+    if let Some(id) = website_id {
+        websites.retain(|w| w.id == id);
+        // A `website_id` that matched nothing is a 404 - including when the
+        // site exists but belongs to somebody else, which is what keeps this
+        // from being an id oracle.
+        if websites.is_empty() {
+            return Err(crate::errors::not_found("Website not found"));
+        }
+    }
+    websites.sort_by(|a, b| a.domain.cmp(&b.domain));
+    Ok(websites)
+}
+
+/// Source: `clear_waf_access_logs`.
+async fn clear_access_logs(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let website_id = match params.get("website_id") {
+        Some(raw) => match raw.parse::<i64>() {
+            // `Query(default=None, ge=1)`.
+            Ok(id) if id >= 1 => Some(id),
+            _ => {
+                return crate::errors::validation_error(vec![json!({
+                    "type": "greater_than_equal",
+                    "loc": ["query", "website_id"],
+                    "msg": "Input should be greater than or equal to 1",
+                    "input": raw,
+                    "ctx": { "ge": 1 },
+                })])
+            }
+        },
+        None => None,
+    };
+    let websites = match log_scope(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let mut cleared = 0usize;
+    for site in &websites {
+        let Ok(domain) = crate::waf::validate_domain(&site.domain) else {
+            return bad_request("Invalid domain");
+        };
+        let path = format!("/var/log/nginx/{domain}.access.log");
+        let result = shell::privileged(
+            state.settings.command_dry_run,
+            "site-log-clear",
+            &[&domain, "access"],
+            None,
+            Some(&[
+                "bash",
+                "-lc",
+                "test -f \"$1\" && : >\"$1\" || true",
+                "snpanel-clear-log",
+                &path,
+            ]),
+        )
+        .await;
+        if !result.ok() {
+            return bad_request(result.failure_detail("Cannot clear log file").trim());
+        }
+        cleared += 1;
+    }
+
+    axum::Json(json!({
+        "message": format!("Cleared access logs for {cleared} website(s)."),
+        "cleared": cleared,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
