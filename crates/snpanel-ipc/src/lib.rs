@@ -860,6 +860,16 @@ pub enum HelperRequest {
         version: PhpVersion,
         content: String,
     },
+    /// `firewall-blocklist-run` - download every configured list, normalise
+    /// it and reload the firewall with the result.
+    ///
+    /// Runs from `snpanel-blocklist.timer` as well as from the panel button,
+    /// and takes minutes on a slow link: the lists run to millions of rows.
+    FirewallBlocklistRun,
+
+    /// `firewall-blocklist-status` - the URLs, the loaded sets and the timer.
+    FirewallBlocklistStatus,
+
     /// `firewall-blocklist-add` / `firewall-blocklist-delete` - the list of
     /// URLs the nightly refresh downloads from.
     ///
@@ -1033,6 +1043,8 @@ impl HelperRequest {
             Self::UpdatesPanelRun => "updates-panel-run",
             Self::PhpPoolsRetune => "php-pools-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
+            Self::FirewallBlocklistRun => "firewall-blocklist-run",
+            Self::FirewallBlocklistStatus => "firewall-blocklist-status",
             Self::FirewallBlocklistUrl { add, .. } => {
                 if *add {
                     "firewall-blocklist-add"

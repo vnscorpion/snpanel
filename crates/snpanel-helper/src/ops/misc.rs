@@ -263,25 +263,112 @@ pub fn service_status(service: &ServiceName) -> HelperResponse {
     }
 }
 
-/// `updates-status`. C14: the JSON file keeps its schema, because the Updates
-/// page reads it directly.
+/// `updates-status`: the six-section report the Updates page displays.
+///
+/// Every line of this reaches the browser as text - `updatesStatus?.stdout`
+/// in `frontend/src/App.jsx`, rendered as-is. An earlier version answered
+/// with `with_data(update-status.json)`, which the helper prints as pretty
+/// JSON, so the page showed the release blob and nothing else: no upgradable
+/// packages, no unattended-upgrades state, no service states, no journals.
+///
+/// C14 still holds - `update-status.json` keeps its schema - but it is
+/// reported by being *included* here, which is what the bash does, not by
+/// replacing the report with it.
 pub fn updates_status() -> HelperResponse {
+    let mut out = String::with_capacity(8192);
     let path = Path::new(DATA_DIR).join("update-status.json");
+
+    out.push_str("SNPanel release status:\n");
     match std::fs::read_to_string(&path) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => HelperResponse::with_data(v),
-            // Pass a corrupt file through as text rather than hiding it: the
-            // operator needs to see what is actually there.
-            Err(_) => HelperResponse::with_stdout(text),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            HelperResponse::with_data(serde_json::json!({ "status": "unknown" }))
-        }
-        Err(e) => HelperResponse::failed(
-            HelperErrorKind::Internal,
-            format!("reading {}: {e}", path.display()),
-        ),
+        // `cat`: byte for byte, including whether it ends in a newline.
+        Ok(text) => out.push_str(&text),
+        Err(_) => out.push_str("No update status file found.\n"),
     }
+
+    out.push('\n');
+    out.push_str("APT upgradable packages:\n");
+    // `apt list --upgradable | sed -n '1,60p'` - the first 60 lines, so a box
+    // with 400 pending packages does not push everything else off the page.
+    if let Ok(o) = exec::run(&["apt", "list", "--upgradable"]) {
+        for line in o.stdout.lines().take(60) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    out.push('\n');
+    out.push_str("Unattended upgrades:\n");
+    for verb in ["is-enabled", "is-active"] {
+        if let Ok(o) = exec::run(&["systemctl", verb, "unattended-upgrades.service"]) {
+            out.push_str(&o.stdout);
+        }
+    }
+
+    for (label, unit) in [
+        ("OS update service:", "snpanel-os-update.service"),
+        ("Panel update service:", "snpanel-panel-update.service"),
+    ] {
+        out.push('\n');
+        out.push_str(label);
+        out.push('\n');
+        if let Ok(o) = exec::run(&["systemctl", "is-active", unit]) {
+            // `sed 's/^inactive$/idle/'` - a oneshot unit that has finished
+            // reads as "inactive", which on this page looks like a broken
+            // service rather than one with nothing to do.
+            out.push_str(&idle_for_inactive(&o.stdout));
+        }
+        out.push_str(&journal_tail(unit, 16));
+    }
+
+    out.push('\n');
+    out.push_str("Panel update log:\n");
+    out.push_str(&journal_tail("snpanel-panel-update.service", 60));
+    if let Ok(text) = std::fs::read_to_string(PANEL_UPDATE_LOG) {
+        if !text.is_empty() {
+            out.push_str(&format!("--- {PANEL_UPDATE_LOG} (tail) ---\n"));
+            let lines: Vec<&str> = text.lines().collect();
+            for line in lines.iter().skip(lines.len().saturating_sub(60)) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+
+    HelperResponse::with_stdout(out)
+}
+
+/// Source: `/var/log/snpanel-panel-update.log`.
+const PANEL_UPDATE_LOG: &str = "/var/log/snpanel-panel-update.log";
+
+/// `sed 's/^inactive$/idle/'`, applied per line.
+pub(crate) fn idle_for_inactive(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        out.push_str(if line == "inactive" { "idle" } else { line });
+        out.push('\n');
+    }
+    out
+}
+
+/// `journalctl -u <unit> -n <n> --no-pager | grep -v "Failed to open /run/systemd/transient"`.
+///
+/// That one line is noise systemd emits inside a container and it is dropped
+/// rather than shown, because on the Updates page it reads like the update
+/// itself failed.
+fn journal_tail(unit: &str, lines: u32) -> String {
+    let count = lines.to_string();
+    let Ok(o) = exec::run(&["journalctl", "-u", unit, "-n", &count, "--no-pager"]) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for line in o.stdout.lines() {
+        if line.contains("Failed to open /run/systemd/transient") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 /// `updates-os-run`: apply pending OS package updates.
@@ -526,5 +613,73 @@ mod tests {
             sample.lines().next().unwrap().split_whitespace().nth(1),
             Some("eth0")
         );
+    }
+
+    /// The Updates page renders this verb's stdout verbatim
+    /// (`updatesStatus?.stdout` in `frontend/src/App.jsx`), so the six
+    /// labelled sections *are* the page.
+    ///
+    /// This used to answer with `with_data(update-status.json)`. The helper
+    /// prints `data` as pretty JSON, so the administrator got the release
+    /// blob alone: no upgradable packages, no unattended-upgrades state,
+    /// neither service state, neither journal. Nothing failed and nothing
+    /// said so.
+    #[test]
+    fn the_updates_report_carries_all_six_sections_in_order() {
+        let r = updates_status();
+        assert!(r.ok);
+        assert!(
+            r.data.is_none(),
+            "this verb answers on stdout - `data` is what the bug put it in"
+        );
+
+        const SECTIONS: &[&str] = &[
+            "SNPanel release status:",
+            "APT upgradable packages:",
+            "Unattended upgrades:",
+            "OS update service:",
+            "Panel update service:",
+            "Panel update log:",
+        ];
+        let mut cursor = 0usize;
+        for section in SECTIONS {
+            let found = r.stdout[cursor..]
+                .find(section)
+                .unwrap_or_else(|| panic!("{section:?} missing or out of order in:\n{}", r.stdout));
+            cursor += found + section.len();
+        }
+
+        // And it is a report, not a JSON document that happens to contain
+        // those words.
+        assert!(
+            !r.stdout.trim_start().starts_with('{'),
+            "the report must not be a JSON blob: {}",
+            r.stdout
+        );
+    }
+
+    /// `sed 's/^inactive$/idle/'`.
+    ///
+    /// A oneshot unit that has finished reads as `inactive`, which on a page
+    /// of service states looks like something broken rather than something
+    /// with nothing to do. The anchors matter: only a line that is exactly
+    /// that word is rewritten.
+    #[test]
+    fn a_finished_oneshot_reads_as_idle_not_inactive() {
+        assert_eq!(idle_for_inactive("inactive\n"), "idle\n");
+        assert_eq!(idle_for_inactive("active\n"), "active\n");
+        assert_eq!(idle_for_inactive("failed\n"), "failed\n");
+
+        // `^...$` - a line that merely contains the word keeps it, because it
+        // is a sentence about the unit and not the unit's state.
+        assert_eq!(
+            idle_for_inactive("unit is inactive now\n"),
+            "unit is inactive now\n"
+        );
+        assert_eq!(idle_for_inactive("inactive (dead)\n"), "inactive (dead)\n");
+
+        // Several lines, each judged on its own.
+        assert_eq!(idle_for_inactive("enabled\ninactive\n"), "enabled\nidle\n");
+        assert_eq!(idle_for_inactive(""), "");
     }
 }

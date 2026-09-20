@@ -761,15 +761,12 @@ impl IpOrCidr {
         let addr: std::net::IpAddr = addr_part.parse().map_err(|_| err())?;
         let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
         let prefix = match prefix_part {
-            Some(p) => {
-                let value: u8 = p.parse().map_err(|_| err())?;
-                if value > max_prefix {
-                    return Err(err());
-                }
-                value
-            }
+            Some(p) => prefix_len(p, addr.is_ipv4()).ok_or_else(err)?,
             None => max_prefix,
         };
+        if prefix > max_prefix {
+            return Err(err());
+        }
         Ok(Self {
             addr,
             prefix,
@@ -826,6 +823,98 @@ impl IpOrCidr {
     pub fn prefix(&self) -> u8 {
         self.prefix
     }
+}
+
+/// How many leading one-bits `text` asks for, in any of the three spellings
+/// `ipaddress.ip_network` accepts.
+///
+/// CPython's `_prefix_from_ip_string` tries them in this order:
+///
+/// 1. an integer prefix - `24`, and `032` too, since it parses as one;
+/// 2. a **netmask**, `255.255.255.0`, which must be contiguous ones then zeros;
+/// 3. a **hostmask**, `0.0.0.255`, which is that inverted.
+///
+/// Only IPv4 has the mask spellings - `2001:db8::/ffff::` is an error there,
+/// and is one here. "Contiguous" is the whole of the validation:
+/// `255.0.0.255` names no prefix length and is refused rather than rounded to
+/// something plausible, because a firewall rule that silently covers more
+/// addresses than it was written to cover is worse than one that is rejected.
+fn prefix_len(text: &str, is_ipv4: bool) -> Option<u8> {
+    // CPython gates the integer spelling on `prefixlen_str.isdigit()`, not on
+    // `int()` succeeding - so `+8` is not a prefix there, even though it is a
+    // number. Rust's `parse::<u8>()` accepts a leading `+`, which made `/+8`
+    // an address range here and a `ValueError` in the bash. Digits only.
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        // `/300` is digits and still out of range: rejected, never fallen
+        // through to the mask spellings to be read as something else.
+        return text.parse::<u8>().ok();
+    }
+    if !is_ipv4 {
+        return None;
+    }
+    let mask: std::net::Ipv4Addr = text.parse().ok()?;
+    let bits = u32::from(mask);
+    contiguous_prefix(bits).or_else(|| contiguous_prefix(!bits))
+}
+
+/// The prefix length of a contiguous run of ones, or `None` if the bits are
+/// not `1*0*`.
+fn contiguous_prefix(bits: u32) -> Option<u8> {
+    let ones = bits.leading_ones();
+    // Everything after the leading ones must be zero. `leading_ones() == 32`
+    // means the shift below would be undefined, so it is answered first.
+    if ones == 32 {
+        return Some(32);
+    }
+    if bits << ones == 0 {
+        Some(ones as u8)
+    } else {
+        None
+    }
+}
+
+/// `str(ipaddress.ip_network(raw, strict=False))`, or `None` where CPython
+/// raises `ValueError`.
+///
+/// Used by `firewall-blocklist-run`, which normalises third-party lists
+/// downloaded from the internet, and so must agree with the CPython the bash
+/// helper shells out to on **every** line - including the ones it throws
+/// away. A line Rust keeps and CPython drops puts an address into the
+/// firewall that the administrator's list did not ask for; a line Rust drops
+/// and CPython keeps quietly shrinks the blocklist.
+///
+/// Unlike [`IpOrCidr::parse`] this does not trim: CPython refuses
+/// `" 1.2.3.4"`, and the blocklist splitter has already removed whitespace by
+/// the time a token reaches here, so trimming would only paper over a
+/// splitter that had stopped working.
+///
+/// One difference is deliberate and is checked by test: CPython accepts a
+/// scoped address such as `fe80::1%eth0` and returns `fe80::1%eth0/128`. That
+/// string is not something `nft` will load, so the bash writes a blocklist
+/// entry that fails at the point of use. This returns `None` for it instead.
+/// Only link-local addresses carry a zone, and those are never routed.
+pub fn normalized_network(raw: &str) -> Option<String> {
+    let (addr_part, prefix_part) = match raw.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (raw, None),
+    };
+    let addr: std::net::IpAddr = addr_part.parse().ok()?;
+    let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+    let prefix = match prefix_part {
+        Some(p) => prefix_len(p, addr.is_ipv4())?,
+        None => max_prefix,
+    };
+    if prefix > max_prefix {
+        return None;
+    }
+    Some(
+        IpOrCidr {
+            addr,
+            prefix,
+            explicit_prefix: prefix_part.is_some(),
+        }
+        .normalized(),
+    )
 }
 
 impl fmt::Display for IpOrCidr {
@@ -1267,5 +1356,144 @@ mod tests {
         for raw in ["root", "www-data", "mysql", "nginx", "snpanel", "nobody"] {
             assert!(PanelUsername::parse(raw).is_err(), "{raw} is reserved");
         }
+    }
+
+    /// `normalized_network` against CPython's `ipaddress`, over 1,560 inputs.
+    ///
+    /// Recorded from the interpreter the bash helper actually shells out to,
+    /// and re-checked on Debian 13's CPython 3.13.5 before being committed -
+    /// 0 of the 1,560 differ between that and the 3.14 the corpus was written
+    /// on.
+    ///
+    /// The rejected cases matter as much as the accepted ones. This
+    /// normalises third-party lists downloaded from the internet: a line Rust
+    /// keeps and CPython drops puts an address into the firewall that nobody
+    /// asked to block, and a line Rust drops and CPython keeps quietly
+    /// shrinks the blocklist.
+    #[test]
+    fn ip_networks_normalize_exactly_as_cpython_does() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            raw: String,
+            normalized: Option<String>,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/ip_network.json");
+        let raw = std::fs::read_to_string(&path).expect("the ip_network corpus");
+        let cases: Vec<Case> = serde_json::from_str(&raw).expect("the corpus parses");
+        assert!(cases.len() > 1_500, "the corpus is {} cases", cases.len());
+
+        // The one deliberate difference, spelled out so it cannot grow
+        // quietly: CPython accepts a scoped address and returns the zone with
+        // it, which is not a string `nft` will load.
+        let scoped: &[&str] = &["fe80::1%eth0", "fe80::1%1"];
+
+        let mut accepted = 0;
+        let mut rejected = 0;
+        for case in &cases {
+            let got = normalized_network(&case.raw);
+            if scoped.contains(&case.raw.as_str()) {
+                assert!(
+                    case.normalized.is_some(),
+                    "{:?} is listed as a scoped exception but CPython rejects it too, \
+                     so the exception is stale",
+                    case.raw
+                );
+                assert_eq!(got, None, "{:?} must be dropped here", case.raw);
+                continue;
+            }
+            assert_eq!(
+                got.as_deref(),
+                case.normalized.as_deref(),
+                "on input {:?}",
+                case.raw
+            );
+            if case.normalized.is_some() {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+        // A corpus that had drifted to all-rejects would pass every assertion
+        // above while proving nothing.
+        assert!(accepted > 1_400, "only {accepted} accepted");
+        assert!(rejected > 50, "only {rejected} rejected");
+    }
+
+    /// The three prefix spellings `ipaddress` accepts, and the masks that are
+    /// not prefix lengths at all.
+    ///
+    /// `255.0.0.255` names no prefix. Rounding it to something plausible
+    /// would produce a firewall rule covering more addresses than it was
+    /// written to cover, so it is refused.
+    #[test]
+    fn a_prefix_may_be_a_number_a_netmask_or_a_hostmask() {
+        let n = |s: &str| normalized_network(s);
+
+        assert_eq!(n("192.0.2.130/24").as_deref(), Some("192.0.2.0/24"));
+        assert_eq!(
+            n("192.0.2.130/255.255.255.0").as_deref(),
+            Some("192.0.2.0/24")
+        );
+        assert_eq!(n("192.0.2.130/0.0.0.255").as_deref(), Some("192.0.2.0/24"));
+        // `032` parses as a number, so it never reaches the mask spellings.
+        assert_eq!(n("192.0.2.130/032").as_deref(), Some("192.0.2.130/32"));
+
+        // The extremes, where a shift by the full width would be undefined.
+        assert_eq!(n("192.0.2.130/0.0.0.0").as_deref(), Some("0.0.0.0/0"));
+        assert_eq!(
+            n("192.0.2.130/255.255.255.255").as_deref(),
+            Some("192.0.2.130/32")
+        );
+        assert_eq!(n("192.0.2.130/0").as_deref(), Some("0.0.0.0/0"));
+        assert_eq!(n("192.0.2.130/32").as_deref(), Some("192.0.2.130/32"));
+
+        // Not contiguous: neither a netmask nor a hostmask.
+        assert_eq!(n("192.0.2.130/255.0.0.255"), None);
+        assert_eq!(n("192.0.2.130/0.255.0.255"), None);
+
+        // Out of range for the family, in both spellings.
+        assert_eq!(n("192.0.2.130/33"), None);
+        assert_eq!(n("2001:db8::1/129"), None);
+        assert_eq!(n("192.0.2.130/-1"), None);
+        assert_eq!(n("192.0.2.130/300"), None);
+
+        // The mask spellings are IPv4 only.
+        assert_eq!(n("2001:db8::/ffff::"), None);
+        assert_eq!(
+            n("2001:db8::dead:beef/64").as_deref(),
+            Some("2001:db8::/64")
+        );
+
+        // A bare address gains its full-length prefix.
+        assert_eq!(n("203.0.113.44").as_deref(), Some("203.0.113.44/32"));
+        assert_eq!(n("::").as_deref(), Some("::/128"));
+
+        // No trimming: CPython refuses these and so does this.
+        assert_eq!(n(" 1.2.3.4"), None);
+        assert_eq!(n("1.2.3.4 "), None);
+        assert_eq!(n(""), None);
+    }
+
+    /// A dotted-quad mask reaches `IpOrCidr::parse` too.
+    ///
+    /// `require_ip_or_cidr` guards firewall rule input with
+    /// `^[0-9a-fA-F.:/]+$`, which lets `255.255.255.0` through, and the bash
+    /// then resolves it through the same CPython call. Parsing the prefix
+    /// only as an integer - which is what this did - refused a rule an
+    /// administrator could add through the bash helper.
+    #[test]
+    fn a_firewall_rule_may_be_written_with_a_netmask() {
+        let parsed = IpOrCidr::parse("10.0.0.5/255.0.0.0").expect("a netmask is a prefix");
+        assert_eq!(parsed.prefix(), 8);
+        assert_eq!(parsed.normalized(), "10.0.0.0/8");
+
+        let parsed = IpOrCidr::parse("10.0.0.5/0.255.255.255").expect("a hostmask too");
+        assert_eq!(parsed.prefix(), 8);
+        assert_eq!(parsed.normalized(), "10.0.0.0/8");
+
+        assert!(IpOrCidr::parse("10.0.0.5/255.0.0.255").is_err());
+        assert!(IpOrCidr::parse("10.0.0.5/33").is_err());
+        assert!(IpOrCidr::parse("2001:db8::/ffff::").is_err());
     }
 }

@@ -496,6 +496,12 @@ impl HelperRequest {
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
                 content: String::from_utf8_lossy(&stdin()).into_owned(),
             },
+            ("firewall-blocklist-run", 0)
+            | ("nginx-blocklist-run", 0)
+            | ("ufw-blocklist-run", 0) => HelperRequest::FirewallBlocklistRun,
+            ("firewall-blocklist-status", 0)
+            | ("nginx-blocklist-status", 0)
+            | ("ufw-blocklist-status", 0) => HelperRequest::FirewallBlocklistStatus,
             ("firewall-blocklist-add", 1)
             | ("nginx-blocklist-add", 1)
             | ("ufw-blocklist-add", 1)

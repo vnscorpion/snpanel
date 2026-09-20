@@ -365,6 +365,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::NginxUpgradeMapEnsure => packages::upgrade_map_ensure(),
         HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
         HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
+        HelperRequest::FirewallBlocklistRun => {
+            firewall::blocklist_run(ctx.panel_port, &ctx.ssh_ports)
+        }
+        HelperRequest::FirewallBlocklistStatus => {
+            firewall::blocklist_status(&firewall::load_ruleset(ctx.panel_port, &ctx.ssh_ports))
+        }
         HelperRequest::FirewallBlocklistUrl { url, add } => {
             if *add {
                 firewall::blocklist_add(url)

@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 96 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 98 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,14 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 96 are answered over the socket and
-9 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 98 are answered over the socket and
+7 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
-direction: `snpanel-ipc` defines 109 request variants and the argv layer maps
-121 verb names, which is more than the 96 above. (An earlier draft said 133
+direction: `snpanel-ipc` defines 111 request variants and the argv layer maps
+127 verb names, which is more than the 98 above. (An earlier draft said 133
 variants. Counted two ways — the variants in the `enum HelperRequest` body, and
 the distinct `Self::` arms in its `name()` table — it is 109; more names than
 variants because several verbs are aliases sharing one.) Three of those names
@@ -223,6 +223,58 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### The consumer is not always Python
+
+`firewall-blocklist-status` looked like the safe kind: its Python service
+hands `CommandResult.__dict__` straight to the API, which hands it to the
+browser, so nothing parses it. Nothing in *Python* parses it.
+`parseFirewallBlocklistUrls` in `frontend/src/App.jsx` does — it starts
+collecting at a line that is exactly `URLs:`, stops at exactly `Networks:` or
+`Timer:`, and keeps what begins with `http` in between. Rename a header and
+the panel's URL table empties while the verb still looks like it answered.
+
+So the rule from the entry above needs widening. "Displayed verbatim" is not
+the end of the search; it is the point at which the search moves to the
+browser. Every `.stdout` use in `frontend/src/App.jsx` was read — there are
+13 — and **two** of them are reads, not renders:
+
+- `parseFirewallBlocklistUrls`, above.
+- The Services page, which decides each card's badge with
+  `text.includes('active (running)')` and
+  `text.includes('inactive') || text.includes('failed')` over
+  `service-status`. Rust passes `systemctl status` through unchanged, so this
+  one already agreed — checked rather than assumed.
+
+The same sweep turned up a third problem in a verb nobody parses at all.
+`updates-status` answered with `with_data(update-status.json)`; the Updates
+page renders that verb's stdout verbatim, and the bash writes **six** labelled
+sections. What the administrator saw was the release blob alone — no
+upgradable package list, no unattended-upgrades state, neither service state,
+neither journal. Not a parse failure, an information loss, and invisible for
+the same reason as the rest: nothing errored.
+
+### A test can pass because it never ran
+
+Three mutations in this session were reported as caught when nothing had run:
+the mutation runner filtered on `ops::waf::tests::…` while the tests had
+landed in `conf_tests`, cargo matched no test, exited 0, and exit 0 was read
+as "the test still passes". A mutation runner must assert that exactly one
+test ran, not merely that the run failed.
+
+Two tests were also toothless for reasons of their own, and both are the same
+mistake in different clothes — **asserting against something the test itself
+produced**:
+
+- `the_rule_set_is_looked_for_where_distributions_put_it` probed the
+  filesystem, so on any machine without CRS installed it was true whatever
+  the search list said.
+- `the_blocklist_status_headers_are_what_the_browser_parses` parsed a sample
+  string written in the test, so renaming the real header changed nothing it
+  looked at.
+
+Both now assert against the constant or the formatter the production path
+uses.
 
 ### A ported verb can answer in a shape its caller cannot read
 

@@ -1,0 +1,167 @@
+[
+ {
+  "name": "empty",
+  "input": "",
+  "output": []
+ },
+ {
+  "name": "blank lines only",
+  "input": "\n\n   \n\t\n",
+  "output": []
+ },
+ {
+  "name": "plain v4",
+  "input": "1.2.3.4\n5.6.7.8\n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32"
+  ]
+ },
+ {
+  "name": "cidr",
+  "input": "10.0.0.0/8\n192.168.0.0/16\n",
+  "output": [
+   "10.0.0.0/8",
+   "192.168.0.0/16"
+  ]
+ },
+ {
+  "name": "host bits set",
+  "input": "10.0.0.5/8\n192.168.1.99/16\n",
+  "output": [
+   "10.0.0.0/8",
+   "192.168.0.0/16"
+  ]
+ },
+ {
+  "name": "hash comments",
+  "input": "# spamhaus drop\n1.2.3.0/24 # a spammer\n; another\n5.6.7.0/24;note\n",
+  "output": [
+   "1.2.3.0/24",
+   "5.6.7.0/24"
+  ]
+ },
+ {
+  "name": "comma separated",
+  "input": "1.2.3.4,bad actor\n5.6.7.8, 2024-01-01\n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32"
+  ]
+ },
+ {
+  "name": "tabs",
+  "input": "1.2.3.4\tbad\n5.6.7.8\tworse\n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32"
+  ]
+ },
+ {
+  "name": "duplicates",
+  "input": "1.2.3.4\n1.2.3.4\n1.2.3.4/32\n1.2.3.0/24\n1.2.3.99/24\n",
+  "output": [
+   "1.2.3.4/32",
+   "1.2.3.0/24"
+  ]
+ },
+ {
+  "name": "v6",
+  "input": "2001:db8::/32\n2001:DB8::1\nfe80::1\n::1\n::/0\n",
+  "output": [
+   "2001:db8::/32",
+   "2001:db8::1/128",
+   "fe80::1/128",
+   "::1/128",
+   "::/0"
+  ]
+ },
+ {
+  "name": "mixed families",
+  "input": "1.2.3.4\n2001:db8::1\n10.0.0.0/8\n2001:db8:abcd::/48\n",
+  "output": [
+   "1.2.3.4/32",
+   "2001:db8::1/128",
+   "10.0.0.0/8",
+   "2001:db8:abcd::/48"
+  ]
+ },
+ {
+  "name": "netmask form",
+  "input": "1.2.3.4/255.255.255.0\n10.0.0.0/255.0.0.0\n",
+  "output": [
+   "1.2.3.0/24",
+   "10.0.0.0/8"
+  ]
+ },
+ {
+  "name": "hostmask form",
+  "input": "1.2.3.4/0.0.0.255\n",
+  "output": [
+   "1.2.3.0/24"
+  ]
+ },
+ {
+  "name": "garbage mixed in",
+  "input": "# header\nnot-an-address\n1.2.3.4\n999.999.999.999\nexample.com\n5.6.7.8\n012.1.1.1\n1.2.3\n<html>\n  9.9.9.9  \n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32",
+   "9.9.9.9/32"
+  ]
+ },
+ {
+  "name": "html error page",
+  "input": "<!DOCTYPE html>\n<html><head><title>404</title></head>\n<body>Not Found</body></html>\n",
+  "output": []
+ },
+ {
+  "name": "leading separators",
+  "input": "#1.2.3.4\n;5.6.7.8\n,9.9.9.9\n   1.1.1.1\n",
+  "output": [
+   "1.1.1.1/32"
+  ]
+ },
+ {
+  "name": "crlf",
+  "input": "1.2.3.4\r\n5.6.7.8\r\n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32"
+  ]
+ },
+ {
+  "name": "no trailing newline",
+  "input": "1.2.3.4\n5.6.7.8",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32"
+  ]
+ },
+ {
+  "name": "two lists concatenated",
+  "input": "1.2.3.4\n5.6.7.8\n\n9.9.9.9\n1.2.3.4\n",
+  "output": [
+   "1.2.3.4/32",
+   "5.6.7.8/32",
+   "9.9.9.9/32"
+  ]
+ },
+ {
+  "name": "ipv6 scoped",
+  "input": "fe80::1%eth0\n1.2.3.4\n",
+  "output": [
+   "fe80::1%eth0/128",
+   "1.2.3.4/32"
+  ]
+ },
+ {
+  "name": "wide prefixes",
+  "input": "0.0.0.0/0\n::/0\n255.255.255.255/32\n",
+  "output": [
+   "0.0.0.0/0",
+   "::/0",
+   "255.255.255.255/32"
+  ]
+ }
+]
