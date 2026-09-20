@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 103;
+const ANSWERED_VERBS: usize = 109;
 const BASH_VERBS: usize = 147;
 
 fn print_help(sink: audit::Sink) {
@@ -79,7 +79,9 @@ fn print_help(sink: audit::Sink) {
         "                  log-read, log-clear, logs-read-many, document-root-ensure,",
         "                  populate, archive-extract, runtime-ensure, runtime-move,",
         "                  runtime-delete",
-        "  docker-*        status, prune;         node-list",
+        "  docker-*        status, prune;         node-list, node-install",
+        "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
+        "  updates-panel-run, nginx-upgrade-map-ensure",
         "  site-app-*      write (node, docker), control, logs, delete, dir-ensure,",
         "                  rename, pull, install-deps, export, import, volume-usage,",
         "                  compose-ps, compose-pull",

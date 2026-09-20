@@ -806,6 +806,21 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `node-install` - one Node major under /opt/snpanel/node.
+    NodeInstall {
+        major: String,
+    },
+    /// `certbot-dns-cloudflare-install` - the DNS-01 plugin wildcards need.
+    CertbotDnsCloudflareInstall,
+    /// `clamav-install` - the on-demand malware engine.
+    ClamavInstall,
+    /// `maldet-update-sigs` - refresh LMD's and ClamAV's signatures.
+    MaldetUpdateSigs,
+    /// `nginx-upgrade-map-ensure` - the http-level `map` a proxied vhost needs
+    /// before nginx will load at all.
+    NginxUpgradeMapEnsure,
+    /// `updates-panel-run` - start the panel's own update, detached.
+    UpdatesPanelRun,
     /// `php-pools-retune` - rewrite every site pool against the machine as
     /// it is now.
     PhpPoolsRetune,
@@ -966,6 +981,12 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::NodeInstall { .. } => "node-install",
+            Self::CertbotDnsCloudflareInstall => "certbot-dns-cloudflare-install",
+            Self::ClamavInstall => "clamav-install",
+            Self::MaldetUpdateSigs => "maldet-update-sigs",
+            Self::NginxUpgradeMapEnsure => "nginx-upgrade-map-ensure",
+            Self::UpdatesPanelRun => "updates-panel-run",
             Self::PhpPoolsRetune => "php-pools-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
             Self::FirewallBlocklistUrl { add, .. } => {

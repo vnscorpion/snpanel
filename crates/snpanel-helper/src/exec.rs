@@ -36,7 +36,27 @@ pub fn run(argv: &[&str]) -> std::io::Result<Output> {
 ///
 /// C37: secrets reach a program this way, never through argv, because argv is
 /// world-readable in `/proc/<pid>/cmdline` for as long as the process lives.
+/// Run `argv` with a few extra environment variables on top of the cleared
+/// one.
+///
+/// The environment is cleared on purpose - the helper runs as root and must
+/// not inherit anything the caller chose - so a program that genuinely needs a
+/// variable has to be given it here, by name, at the call site.
+/// `DEBIAN_FRONTEND=noninteractive` is the one that matters: without it
+/// `apt-get` can stop on a prompt nobody will ever answer.
+pub fn run_with_env(argv: &[&str], extra: &[(&str, &str)]) -> std::io::Result<Output> {
+    run_inner(argv, None, extra)
+}
+
 pub fn run_with_stdin(argv: &[&str], stdin_data: Option<&[u8]>) -> std::io::Result<Output> {
+    run_inner(argv, stdin_data, &[])
+}
+
+fn run_inner(
+    argv: &[&str],
+    stdin_data: Option<&[u8]>,
+    extra: &[(&str, &str)],
+) -> std::io::Result<Output> {
     let (program, args) = argv.split_first().expect("argv must not be empty");
 
     let mut cmd = Command::new(program);
@@ -56,6 +76,9 @@ pub fn run_with_stdin(argv: &[&str], stdin_data: Option<&[u8]>) -> std::io::Resu
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         .env("LC_ALL", "C");
+    for (key, value) in extra {
+        cmd.env(key, value);
+    }
 
     let mut child = cmd.spawn()?;
 

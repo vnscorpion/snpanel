@@ -469,6 +469,14 @@ impl HelperRequest {
             // works, so the aliases are here for the same reason the bash
             // keeps them: an operator's muscle memory and a script somebody
             // wrote years ago.
+            ("certbot-dns-cloudflare-install", 0) => HelperRequest::CertbotDnsCloudflareInstall,
+            ("node-install", 1) => HelperRequest::NodeInstall {
+                major: rest[0].clone(),
+            },
+            ("clamav-install", 0) => HelperRequest::ClamavInstall,
+            ("maldet-update-sigs", 0) => HelperRequest::MaldetUpdateSigs,
+            ("nginx-upgrade-map-ensure", 0) => HelperRequest::NginxUpgradeMapEnsure,
+            ("updates-panel-run", 0) => HelperRequest::UpdatesPanelRun,
             ("php-pools-retune", 0) => HelperRequest::PhpPoolsRetune,
             ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
                 version: php_or_none(&rest[0])?

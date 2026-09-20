@@ -18,6 +18,7 @@ pub mod firewall;
 pub mod fwrules;
 pub mod misc;
 pub mod nginx;
+pub mod packages;
 pub mod php;
 pub mod runtime;
 pub mod selinux;
@@ -348,6 +349,14 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
+        HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
+        HelperRequest::NodeInstall { major } => packages::node_install(major),
+        HelperRequest::ClamavInstall => packages::clamav_install(),
+        HelperRequest::MaldetUpdateSigs => packages::maldet_update_sigs("/usr/local/sbin/maldet"),
+        HelperRequest::NginxUpgradeMapEnsure => packages::upgrade_map_ensure(),
+        HelperRequest::UpdatesPanelRun => {
+            packages::panel_update_run("/opt/snpanel-src/installer/update.sh")
+        }
         HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
         HelperRequest::FirewallBlocklistUrl { url, add } => {
             if *add {
