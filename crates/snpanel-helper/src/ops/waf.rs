@@ -287,3 +287,334 @@ mod tests {
         assert_eq!(CrsMode::Off.as_str(), "off");
     }
 }
+
+/// `/etc/nginx/modsec/snpanel-default.conf` - the eight rules every site on
+/// this server gets before its own file is considered.
+///
+/// Source: `write_waf_default_rules`. **Not** the same bytes as
+/// `waf.DEFAULT_RULES` in the panel, and the difference is one character per
+/// line: every `SecRule` here closes its action list with `"` and the panel's
+/// per-site copy does not. Both load - checked against
+/// `ngx_http_modsecurity_module` v1.0.3, which accepts an unterminated action
+/// list - so nothing is broken, but they are two copies of one rule set and
+/// one of them has drifted. Reproducing the bash exactly is what this function
+/// is for; reconciling the two is not a thing to do quietly inside a helper.
+const DEFAULT_RULES: &str = concat!(
+    "# SNPanel default WAF rules: lightweight WordPress, Laravel, and PHP probes only.\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/\.user\.ini(?:\.|$)|/\.git/|/composer\.(?:json|lock)(?:$|[?])|/(?:phpinfo|info)\.php(?:$|[?])|/(?:config|database|db)\.php\.(?:bak|old|save|txt)(?:$|[?]))" "id:1001301,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP sensitive file probe'""#,
+    "\n",
+    r#"SecRule REQUEST_URI|ARGS "@rx (?i)(?:\.\./|\.\.\\|%2e%2e%2f|%252e%252e%252f)" "id:1001302,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP path traversal'""#,
+    "\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/(?:c99|r57|shell|cmd|wso)\.php(?:$|[?])|/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin\.php(?:$|[?]))" "id:1001303,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP runtime probe'""#,
+    "\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/artisan(?:$|[?])|/server\.php(?:$|[?])|/storage/logs/[^?]*\.log(?:$|[?])|/bootstrap/cache/[^?]*\.php(?:$|[?]))" "id:1001201,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel sensitive path'""#,
+    "\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/_ignition/execute-solution(?:$|[?]))" "id:1001202,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel Ignition RCE probe'""#,
+    "\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/wp-config\.php(?:\.|$|[?])|/wp-content/(?:uploads|cache|upgrade)/[^?]*\.php(?:$|[?])|/wp-admin/includes/[^?]*\.php(?:$|[?])|/wp-includes/[^?]*\.php(?:$|[?]))" "id:1001101,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress sensitive path'""#,
+    "\n",
+    r#"SecRule ARGS:author "@rx ^[0-9]+$" "id:1001103,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress author enumeration'""#,
+    "\n",
+    r#"SecRule REQUEST_URI "@rx (?i)(?:/wp-admin/install\.php(?:$|[?])|/wp-admin/setup-config\.php(?:$|[?]))" "id:1001104,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress installer probe'""#,
+    "\n",
+);
+
+const DEFAULT_CONF: &str = "/etc/nginx/modsec/snpanel-default.conf";
+const CUSTOM_CONF: &str = "/etc/nginx/modsec/snpanel-custom.conf";
+const BASE_CONF: &str = "/etc/nginx/modsec/snpanel-base.conf";
+const MAIN_CONF: &str = "/etc/nginx/modsec/snpanel-main.conf";
+
+/// Source: `MAX_CUSTOM_BYTES` in the panel and `-gt 65536` in the bash.
+const MAX_CUSTOM_BYTES: usize = 64 * 1024;
+
+fn ensure_modsec_dir() -> Result<(), HelperResponse> {
+    for dir in [WAF_DIR, WAF_SITE_DIR] {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("creating {dir}: {e}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Source: `write_waf_default_rules`.
+fn write_default_rules() -> Result<(), HelperResponse> {
+    ensure_modsec_dir()?;
+    std::fs::write(DEFAULT_CONF, DEFAULT_RULES).map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {DEFAULT_CONF}: {e}"),
+        )
+    })
+}
+
+/// Source: `write_modsec_base_conf`.
+///
+/// `SecRequestBodyAccess Off` is the line to read twice. With body access off
+/// the nginx connector never runs phase 2 at all, so a `phase:2` rule is
+/// silently dead - it loads, it shows as enabled, and it never matches. Every
+/// rule SNPanel ships is therefore `phase:1`. Turning it on is what a
+/// payload-inspecting rule set needs, and it has to arrive with that rule
+/// set's exclusion tuning: on its own it would make the traversal rule match
+/// `../` inside any post body a customer saves.
+fn write_base_conf() -> Result<(), HelperResponse> {
+    ensure_modsec_dir()?;
+    let mut out = String::new();
+    // The distribution's own configuration, when it ships one.
+    if Path::new("/etc/modsecurity/modsecurity.conf").exists() {
+        out.push_str("Include /etc/modsecurity/modsecurity.conf\n");
+    }
+    out.push_str("SecRuleEngine On\n");
+    out.push_str("SecRequestBodyAccess Off\n");
+    std::fs::write(BASE_CONF, out).map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {BASE_CONF}: {e}"),
+        )
+    })
+}
+
+/// Source: `write_modsec_main_conf` - base, default, custom, in that order.
+///
+/// The order is the load order, and it is why a custom `SecRuleRemoveById`
+/// works: a rule can only be removed after it has been loaded.
+fn write_main_conf() -> Result<(), HelperResponse> {
+    write_default_rules()?;
+    write_base_conf()?;
+    // `touch` - the include must resolve even when nobody has saved a custom
+    // rule, or nginx refuses the whole configuration.
+    if !Path::new(CUSTOM_CONF).exists() {
+        if let Err(e) = std::fs::write(CUSTOM_CONF, "") {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("creating {CUSTOM_CONF}: {e}"),
+            ));
+        }
+    }
+    let main = format!("Include {BASE_CONF}\nInclude {DEFAULT_CONF}\nInclude {CUSTOM_CONF}\n");
+    std::fs::write(MAIN_CONF, main).map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {MAIN_CONF}: {e}"),
+        )
+    })
+}
+
+/// `waf-default-rules` - rewrite the shipped rules, then hand them back.
+///
+/// It writes before it reads, which looks redundant and is not: the panel's
+/// WAF page uses this to show what is actually loaded, and a file edited by
+/// hand would otherwise be reported as SNPanel's own.
+pub fn default_rules() -> HelperResponse {
+    if let Err(resp) = write_default_rules() {
+        return resp;
+    }
+    match std::fs::read_to_string(DEFAULT_CONF) {
+        Ok(text) => HelperResponse::with_stdout(text),
+        Err(e) => HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("reading {DEFAULT_CONF}: {e}"),
+        ),
+    }
+}
+
+/// `waf-custom-rules` - what an administrator has added, if anything.
+pub fn custom_rules() -> HelperResponse {
+    if let Err(resp) = ensure_modsec_dir() {
+        return resp;
+    }
+    // `touch` first: the bash creates the file so a first read answers an
+    // empty string rather than an error.
+    if !Path::new(CUSTOM_CONF).exists() {
+        if let Err(e) = std::fs::write(CUSTOM_CONF, "") {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("creating {CUSTOM_CONF}: {e}"),
+            );
+        }
+    }
+    match std::fs::read_to_string(CUSTOM_CONF) {
+        Ok(text) => HelperResponse::with_stdout(text),
+        Err(e) => HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("reading {CUSTOM_CONF}: {e}"),
+        ),
+    }
+}
+
+/// `waf-custom-save` - arbitrary ModSecurity directives, from an administrator.
+///
+/// The two checks are the bash's and they are not decoration. A NUL byte would
+/// truncate the file at the point nginx reads it, so what loads is not what was
+/// reviewed. The size limit keeps one paste from producing a configuration
+/// nginx spends a second parsing on every reload.
+///
+/// `nginx -t` runs before the reload, and a rejected file is **not** rolled
+/// back here - the bash does not roll it back either. That is a real
+/// difference from `waf-site-save`, which does, and it is the bash's choice:
+/// a server-wide file that fails the test leaves the previous configuration
+/// running because the reload never happens.
+pub fn custom_rules_save(content: &str) -> HelperResponse {
+    if content.as_bytes().contains(&0) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "WAF rules cannot contain NUL bytes".to_string(),
+        );
+    }
+    if content.len() > MAX_CUSTOM_BYTES {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "WAF custom rules must be 64 KB or smaller".to_string(),
+        );
+    }
+    if let Err(resp) = write_default_rules() {
+        return resp;
+    }
+    if let Err(e) = std::fs::write(CUSTOM_CONF, content) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {CUSTOM_CONF}: {e}"),
+        );
+    }
+    if let Err(resp) = write_main_conf() {
+        return resp;
+    }
+    let checked = exec::run(&["nginx", "-t"]);
+    if !matches!(&checked, Ok(o) if o.ok()) {
+        return exec::respond("nginx -t", checked);
+    }
+    let reloaded = exec::run(&["systemctl", "reload", "nginx"]);
+    if !matches!(&reloaded, Ok(o) if o.ok()) {
+        return exec::respond("systemctl reload nginx", reloaded);
+    }
+    HelperResponse::with_stdout("WAF custom rules saved\n".to_string())
+}
+
+/// `waf-update` - rewrite every file the engine loads and reload nginx.
+pub fn update_rules() -> HelperResponse {
+    if let Err(resp) = write_main_conf() {
+        return resp;
+    }
+    let checked = exec::run(&["nginx", "-t"]);
+    if !matches!(&checked, Ok(o) if o.ok()) {
+        return exec::respond("nginx -t", checked);
+    }
+    let reloaded = exec::run(&["systemctl", "reload", "nginx"]);
+    if !matches!(&reloaded, Ok(o) if o.ok()) {
+        return exec::respond("systemctl reload nginx", reloaded);
+    }
+    HelperResponse::with_stdout("SNPanel lightweight WAF rules refreshed\n".to_string())
+}
+
+#[cfg(test)]
+mod conf_tests {
+    use super::*;
+
+    fn fixture() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/waf_helper_conf.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the waf conf fixture"))
+            .expect("the fixture parses")
+    }
+
+    /// The eight rules every site on the server loads, byte for byte against
+    /// what the **bash helper actually wrote** on a live Debian 13.
+    ///
+    /// Taken by running the helper rather than by reading its heredoc: a
+    /// heredoc is easy to transcribe slightly wrong, and the failure mode is
+    /// a rule that still loads and no longer matches.
+    #[test]
+    fn the_default_rules_are_the_bash_helpers_bytes() {
+        let want = fixture()["snpanel-default.conf"]
+            .as_str()
+            .expect("the default rules")
+            .to_string();
+        assert_eq!(
+            DEFAULT_RULES, want,
+            "the shipped WAF rules differ from what the bash helper writes"
+        );
+    }
+
+    /// `snpanel-base.conf`, whose two lines decide whether any rule runs.
+    ///
+    /// The fixture was taken on a box with no `/etc/modsecurity/modsecurity.conf`,
+    /// so it has two lines; the include is added when the distribution ships
+    /// one. The test therefore compares against the branch the fixture
+    /// recorded and says which branch that was.
+    #[test]
+    fn the_base_conf_matches_the_bash_helper() {
+        let fixture = fixture();
+        let want = fixture["snpanel-base.conf"]
+            .as_str()
+            .expect("the base conf");
+        let distro_conf = fixture["modsecurity_conf_present"]
+            .as_bool()
+            .expect("the flag");
+        assert!(
+            !distro_conf,
+            "the fixture was taken with a distribution modsecurity.conf; \
+             regenerate it or teach this test the other branch"
+        );
+        assert_eq!(want, "SecRuleEngine On\nSecRequestBodyAccess Off\n");
+
+        // `SecRequestBodyAccess Off` is why every rule SNPanel ships is
+        // phase:1. With body access off the nginx connector never runs phase
+        // 2, so a phase:2 rule loads, shows as enabled, and never matches.
+        assert!(want.contains("SecRequestBodyAccess Off"));
+        for line in DEFAULT_RULES.lines().filter(|l| l.starts_with("SecRule")) {
+            assert!(
+                line.contains("phase:1"),
+                "a rule that is not phase:1 would be silently dead: {line}"
+            );
+        }
+    }
+
+    /// The include order is the load order, and it is why a custom
+    /// `SecRuleRemoveById` works at all: a rule can only be removed after it
+    /// has been loaded.
+    #[test]
+    fn the_main_conf_loads_base_then_default_then_custom() {
+        let want = fixture()["snpanel-main.conf"]
+            .as_str()
+            .expect("the main conf")
+            .to_string();
+        let built = format!("Include {BASE_CONF}\nInclude {DEFAULT_CONF}\nInclude {CUSTOM_CONF}\n");
+        assert_eq!(built, want);
+    }
+
+    /// The two refusals `waf-custom-save` makes before it writes anything.
+    #[test]
+    fn custom_rules_are_refused_before_they_are_written() {
+        let nul = custom_rules_save("SecRuleEngine On\0");
+        assert!(!nul.ok);
+        assert!(
+            nul.error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("NUL bytes")),
+            "{nul:?}"
+        );
+
+        let big = custom_rules_save(&"x".repeat(MAX_CUSTOM_BYTES + 1));
+        assert!(!big.ok);
+        assert!(
+            big.error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("64 KB")),
+            "{big:?}"
+        );
+
+        // Exactly at the limit is allowed *through the size check*. It will
+        // then fail `nginx -t` on a box without the module, which is a
+        // different refusal and not this one's business.
+        let edge = custom_rules_save(&"x".repeat(MAX_CUSTOM_BYTES));
+        assert!(
+            !edge
+                .error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("64 KB")),
+            "the limit is inclusive: {edge:?}"
+        );
+    }
+}

@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 63 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 76 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,14 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 63 are answered over the socket and
-42 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 76 are answered over the socket and
+29 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
 direction: `snpanel-ipc` defines 133 request variants and the argv layer maps
-83 verb names, which is more than the 63 above. Three of those names
+97 verb names, which is more than the 76 above. Three of those names
 (`firewall-migrate-nft`, `selinux-port-add`, `selinux-restore-site`) have no
 caller in Python and no arm in the bash helper. They are Rust-side surface
 running ahead of its callers, not coverage.

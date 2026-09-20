@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 73;
+const ANSWERED_VERBS: usize = 78;
 const BASH_VERBS: usize = 112;
 
 fn print_help(sink: audit::Sink) {
@@ -70,8 +70,10 @@ fn print_help(sink: audit::Sink) {
         "  firewall-*      apply, flush, status, list, migrate-nft, allow-ip,",
         "                  deny-ip, allow-port, panel-allow-port, delete,",
         "                  enable, disable",
-        "  nginx-*         test, reload, custom-write, custom-delete",
-        "  panel-user-*    ensure, delete, password (password on stdin)",
+        "  nginx-*         test, reload, custom-write, custom-delete;",
+        "                  http-flood-zones-save",
+        "  panel-user-*    ensure, delete, password (password on stdin),",
+        "                  lock, unlock",
         "  site-*          mkdir, rm, path-fix, file-write, file-install, chmod,",
         "                  log-read, log-clear, logs-read-many, document-root-ensure,",
         "                  populate, archive-extract, runtime-ensure, runtime-move,",
@@ -87,7 +89,8 @@ fn print_help(sink: audit::Sink) {
         "  ipv6-*          status, enable, disable, apply",
         "  time-*          status, sync;          cron-list, cron-write",
         "  updates-*       status, os-run, os-auto",
-        "  waf-*           status, crs-status, crs-mode, site-save, site-delete",
+        "  waf-*           status, crs-status, crs-mode, site-save, site-delete,",
+        "                  default-rules, custom-rules, custom-save, update",
         "  clamav-*        status, start, stop;   maldet-status",
         "  systemctl, daemon-reload, service-status, fastcgi-cache-clear",
         "  selinux-*       restore-site, port-add (no-op off the RHEL family)",

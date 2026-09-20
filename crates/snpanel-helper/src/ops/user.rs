@@ -245,6 +245,43 @@ fn remove_php_pools(user: &PanelUsername) {
     }
 }
 
+/// `panel-user-lock` and `panel-user-unlock` - the Linux account of a
+/// suspended customer.
+///
+/// **This verb has never existed.** `site_users.lock_linux_user` has called it
+/// since suspension was written, the bash helper has no arm for it, and the
+/// `usermod -L` fallback beside the call only applies when the helper is *not
+/// installed* - which on a production box it always is. Checked on a live
+/// Debian 13:
+///
+/// ```text
+/// $ sudo -u snpanel sudo -n /usr/local/sbin/snpanel-helper panel-user-lock admin
+/// snpanel-helper: unknown command: panel-user-lock
+/// exit=1
+/// shadow field before: $y$    after: $y$
+/// ```
+///
+/// `suspend_user` says it will "block login, rewrite nginx, lock SFTP, kill
+/// sessions". The first, second and fourth happen. The third did not: a
+/// suspended customer kept their SFTP and SSH password. The call is made with
+/// `check=False`, so the refusal was swallowed and nothing was logged.
+///
+/// What this does is the fallback the Python declares - `usermod -L`, which
+/// puts a `!` in front of the password hash so no password matches. Two things
+/// it deliberately does **not** do, because they are not what the Python asked
+/// for and this is a port:
+///
+/// - it does not touch `authorized_keys`, so a customer with an SSH key keeps
+///   key-based access. That is a real gap in suspension and it is the Python's
+///   gap; widening the verb here would hide it rather than fix it.
+/// - it does not kill the customer's running sessions. `suspend_user` bumps
+///   `token_version` for the *panel*, which is a different thing.
+pub fn lock(user: &PanelUsername, locked: bool) -> HelperResponse {
+    let flag = if locked { "-L" } else { "-U" };
+    let out = exec::run(&["usermod", flag, user.as_str()]);
+    exec::respond(if locked { "usermod -L" } else { "usermod -U" }, out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

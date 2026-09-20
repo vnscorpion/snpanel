@@ -806,6 +806,36 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `panel-user-lock` / `panel-user-unlock` - a suspended customer's
+    /// Linux account.
+    ///
+    /// One variant with a flag rather than two verbs, because they are one
+    /// operation with a direction and nothing else differs.
+    PanelUserLock {
+        user: PanelUsername,
+        locked: bool,
+    },
+    /// `http-flood-zones-save` - the server-wide `limit_req_zone` file.
+    ///
+    /// On stdin, like the WAF rules and for the same reason: it is rendered
+    /// from every website on the box and can run to hundreds of lines.
+    HttpFloodZonesSave {
+        content: String,
+    },
+    /// `waf-default-rules` - the shipped rules, rewritten and read back.
+    WafDefaultRules,
+    /// `waf-custom-rules` - whatever an administrator added.
+    WafCustomRules,
+    /// `waf-custom-save` - arbitrary ModSecurity directives.
+    ///
+    /// The content is a `String` and not a path: the bash reads it from stdin
+    /// for the reason C37 gives, and a directive set is exactly the kind of
+    /// thing that must not appear in `ps`.
+    WafCustomSave {
+        content: String,
+    },
+    /// `waf-update` - rewrite every file the engine loads and reload nginx.
+    WafUpdate,
     ClamavStatus,
     ClamavControl {
         start: bool,
@@ -908,6 +938,18 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::PanelUserLock { locked, .. } => {
+                if *locked {
+                    "panel-user-lock"
+                } else {
+                    "panel-user-unlock"
+                }
+            }
+            Self::HttpFloodZonesSave { .. } => "http-flood-zones-save",
+            Self::WafDefaultRules => "waf-default-rules",
+            Self::WafCustomRules => "waf-custom-rules",
+            Self::WafCustomSave { .. } => "waf-custom-save",
+            Self::WafUpdate => "waf-update",
             Self::ClamavStatus => "clamav-status",
             Self::ClamavControl { .. } => "clamav-control",
             Self::MaldetStatus => "maldet-status",

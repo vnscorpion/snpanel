@@ -229,7 +229,9 @@ impl HelperRequest {
             ("nginx-test", 0) => HelperRequest::NginxTest,
             ("nginx-reload", 0) => HelperRequest::NginxReload,
             ("daemon-reload", 0) => HelperRequest::DaemonReload,
-            ("firewall-apply", 0) => HelperRequest::FirewallApply,
+            ("firewall-apply", 0) | ("firewall-reload", 0) | ("ufw-reload", 0) => {
+                HelperRequest::FirewallApply
+            }
             ("firewall-flush", 0) => HelperRequest::FirewallFlush,
             ("firewall-status", 0) => HelperRequest::FirewallStatus,
             ("firewall-migrate-nft", 0) => HelperRequest::FirewallMigrateNft,
@@ -461,6 +463,22 @@ impl HelperRequest {
                 };
                 HelperRequest::WafCrsMode { mode }
             }
+            ("panel-user-lock", 1) | ("panel-user-unlock", 1) => HelperRequest::PanelUserLock {
+                user: user_of(&rest[0])?,
+                locked: op == "panel-user-lock",
+            },
+            ("http-flood-zones-save", 0) => HelperRequest::HttpFloodZonesSave {
+                content: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
+            ("waf-default-rules", 0) => HelperRequest::WafDefaultRules,
+            ("waf-custom-rules", 0) => HelperRequest::WafCustomRules,
+            ("waf-update", 0) => HelperRequest::WafUpdate,
+            // The rules arrive on stdin, and `stdin` is a closure for the
+            // reason Stage B found: an unmapped verb must leave the payload
+            // for the bash fallthrough to read.
+            ("waf-custom-save", 0) => HelperRequest::WafCustomSave {
+                content: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
             ("waf-site-delete", 1) => match snpanel_core::Domain::parse(&rest[0]) {
                 Ok(domain) => HelperRequest::WafSiteDelete { domain },
                 Err(e) => return Err(InvocationError::invalid(e.to_string())),
@@ -951,6 +969,94 @@ mod tests {
 
     fn map(parts: &[&str]) -> Result<HelperRequest, InvocationError> {
         HelperRequest::from_argv(&argv(parts), no_stdin)
+    }
+
+    /// The verbs Stage D added, and the argument counts the bash enforces.
+    ///
+    /// A verb that maps with the wrong arity is worse than one that does not
+    /// map at all: the unmapped one falls through to the bash and still works,
+    /// while a wrong arity is a refusal the customer sees.
+    #[test]
+    fn the_stage_d_verbs_map_with_the_bashs_arities() {
+        // No arguments and no payload.
+        for verb in ["waf-default-rules", "waf-custom-rules", "waf-update"] {
+            assert!(map(&[verb]).is_ok(), "{verb} should map with no arguments");
+            assert!(
+                map(&[verb, "unexpected"]).is_err(),
+                "{verb} takes no arguments"
+            );
+        }
+
+        // No arguments, payload on stdin - so these get a real one. Using
+        // `map` would trip the guard that catches a verb reading stdin when it
+        // should not, which is exactly the guard these two are allowed past.
+        let with_payload = |parts: &[&str]| {
+            HelperRequest::from_argv(&argv(parts), || b"SecRuleEngine On\n".to_vec())
+        };
+        for verb in ["waf-custom-save", "http-flood-zones-save"] {
+            assert!(with_payload(&[verb]).is_ok(), "{verb} should map");
+            assert!(
+                with_payload(&[verb, "unexpected"]).is_err(),
+                "{verb} takes no arguments"
+            );
+        }
+
+        // One argument, a panel username.
+        for verb in ["panel-user-lock", "panel-user-unlock"] {
+            assert!(map(&[verb, "alice"]).is_ok(), "{verb} alice");
+            assert!(map(&[verb]).is_err(), "{verb} needs a user");
+            assert!(map(&[verb, "alice", "extra"]).is_err(), "{verb} takes one");
+            // The same refusal every other user-taking verb makes.
+            assert!(map(&[verb, "root"]).is_err(), "{verb} root is reserved");
+            assert!(map(&[verb, "UPPER"]).is_err(), "{verb} is not normalised");
+        }
+    }
+
+    /// `panel-user-lock` and `panel-user-unlock` are one operation with a
+    /// direction, and the direction has to survive the mapping.
+    #[test]
+    fn locking_and_unlocking_are_told_apart() {
+        let locked = map(&["panel-user-lock", "alice"]).expect("lock");
+        let unlocked = map(&["panel-user-unlock", "alice"]).expect("unlock");
+        assert_eq!(locked.op_name(), "panel-user-lock");
+        assert_eq!(unlocked.op_name(), "panel-user-unlock");
+        // Compared through Debug rather than PartialEq: `HelperRequest`
+        // carries a `SecretString` in other variants, and a derived equality
+        // would compare secrets byte by byte in variable time.
+        assert_ne!(format!("{locked:?}"), format!("{unlocked:?}"));
+    }
+
+    /// `firewall-reload` is an alias. The bash runs `firewall_apply` for
+    /// `firewall-reload`, `ufw-reload` and `firewall-apply` alike, so all
+    /// three have to arrive at the same request - not at three of them.
+    #[test]
+    fn the_firewall_reload_aliases_are_one_operation() {
+        let apply = map(&["firewall-apply"]).expect("apply");
+        for alias in ["firewall-reload", "ufw-reload"] {
+            assert_eq!(
+                format!("{:?}", map(&[alias]).expect(alias)),
+                format!("{apply:?}"),
+                "{alias}"
+            );
+        }
+    }
+
+    /// A payload verb must not consume stdin when the verb is unknown.
+    ///
+    /// Stage B's finding, re-checked for the two payload verbs added here: the
+    /// bash fallthrough reads the same stdin, and a closure that had already
+    /// been called would hand it an empty file.
+    #[test]
+    fn an_unknown_verb_leaves_the_payload_alone() {
+        let called = std::cell::Cell::new(false);
+        let argv: Vec<String> = vec!["no-such-verb".into(), "x".into()];
+        let err = HelperRequest::from_argv(&argv, || {
+            called.set(true);
+            Vec::new()
+        })
+        .expect_err("unknown");
+        assert!(err.is_unmapped());
+        assert!(!called.get(), "stdin was consumed by an unmapped verb");
     }
 
     // -- the distinction the cutover rests on --------------------------------
