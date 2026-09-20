@@ -463,6 +463,21 @@ impl HelperRequest {
                 };
                 HelperRequest::WafCrsMode { mode }
             }
+            // The bash answers three names per arm; the two older ones are
+            // from when this was an nginx and then a ufw feature. A verb the
+            // mapping does not know falls through to the bash and still
+            // works, so the aliases are here for the same reason the bash
+            // keeps them: an operator's muscle memory and a script somebody
+            // wrote years ago.
+            ("firewall-blocklist-add", 1)
+            | ("nginx-blocklist-add", 1)
+            | ("ufw-blocklist-add", 1)
+            | ("firewall-blocklist-delete", 1)
+            | ("nginx-blocklist-delete", 1)
+            | ("ufw-blocklist-delete", 1) => HelperRequest::FirewallBlocklistUrl {
+                url: rest[0].clone(),
+                add: op.ends_with("-add"),
+            },
             ("docker-status", 0) => HelperRequest::DockerStatus,
             ("docker-prune", 0) => HelperRequest::DockerPrune,
             ("node-list", 0) => HelperRequest::NodeList,

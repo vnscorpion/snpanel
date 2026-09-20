@@ -28,7 +28,19 @@ use crate::exec;
 pub const FIREWALL_DIR: &str = "/var/lib/snpanel/firewall";
 pub const RULES_TSV: &str = "/var/lib/snpanel/firewall/rules.tsv";
 pub const STATE_FILE: &str = "/var/lib/snpanel/firewall/state";
-pub const BLOCKLIST_WORK: &str = "/var/lib/snpanel/firewall/blocklist.work";
+/// Where `firewall-blocklist-run` leaves the networks it downloaded.
+///
+/// This used to be `/var/lib/snpanel/firewall/blocklist.work`, which nothing
+/// has ever written: the bash helper's `FIREWALL_BLOCKLIST_WORK` is the path
+/// below, and `installer/rescue-firewall.sh` reads the same one. The
+/// consequence was silent - `firewall-apply` rebuilt the ruleset without the
+/// blocklist and reported success - and it stayed hidden because
+/// `firewall-apply` has no Python caller; the panel reaches it through
+/// `firewall-reload`, which fell through to the bash until that verb was
+/// mapped.
+///
+/// `the_blocklist_path_is_the_bash_helpers` pins it to the bash's definition.
+pub const BLOCKLIST_WORK: &str = "/var/lib/snpanel/firewall-blocklists.current";
 /// Where the rendered ruleset is staged before `nft -f` reads it.
 pub const RULESET_PATH: &str = "/run/snpanel/ruleset.nft";
 
@@ -283,9 +295,334 @@ pub fn ensure_dir() -> std::io::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// the downloaded IP blocklists
+// ---------------------------------------------------------------------------
+
+/// Source: `FIREWALL_BLOCKLIST_URLS`.
+pub const BLOCKLIST_URLS: &str = "/var/lib/snpanel/firewall-blocklists.urls";
+
+const BLOCKLIST_SERVICE: &str = "/etc/systemd/system/snpanel-blocklist.service";
+const BLOCKLIST_TIMER: &str = "/etc/systemd/system/snpanel-blocklist.timer";
+/// The units this replaced. They ran an nginx-era blocklist and are removed on
+/// every write, because two timers refreshing the same file would race.
+const LEGACY_SERVICE: &str = "/etc/systemd/system/snpanel-firewall-blocklist.service";
+const LEGACY_TIMER: &str = "/etc/systemd/system/snpanel-firewall-blocklist.timer";
+
+const SERVICE_UNIT: &str = "[Unit]\n\
+Description=Refresh SNPanel IP blocklists (iptables + ipset)\n\
+After=network-online.target snpanel-firewall.service\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+Environment=SUDO_USER=snpanel\n\
+ExecStart=/usr/local/sbin/snpanel-helper firewall-blocklist-run\n";
+
+const TIMER_UNIT: &str = "[Unit]\n\
+Description=Refresh SNPanel IP blocklists daily\n\
+\n\
+[Timer]\n\
+OnCalendar=*-*-* 01:00:00\n\
+RandomizedDelaySec=1800\n\
+Persistent=true\n\
+\n\
+[Install]\n\
+WantedBy=timers.target\n";
+
+/// Source: `require_url` - `^https?://[^[:space:]]+$`.
+///
+/// Deliberately narrow. This string ends up in a systemd-scheduled `curl` run
+/// as root, so a scheme the helper does not understand - `file://`, say - must
+/// not get that far.
+fn valid_url(value: &str) -> bool {
+    let rest = match value.strip_prefix("https://") {
+        Some(rest) => rest,
+        None => match value.strip_prefix("http://") {
+            Some(rest) => rest,
+            None => return false,
+        },
+    };
+    !rest.is_empty() && !rest.chars().any(char::is_whitespace)
+}
+
+/// Source: `firewall_blocklist_urls` - blanks dropped, sorted, deduplicated.
+pub fn blocklist_urls() -> Vec<String> {
+    let text = std::fs::read_to_string(BLOCKLIST_URLS).unwrap_or_default();
+    let mut urls: Vec<String> = text
+        .lines()
+        // `sed '/^[[:space:]]*$/d'` - a line of only whitespace is dropped;
+        // one with content keeps its spacing, which `sort -u` then compares.
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+fn write_urls(urls: &[String]) -> Result<(), HelperResponse> {
+    if let Err(e) = std::fs::create_dir_all("/var/lib/snpanel") {
+        return Err(HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating /var/lib/snpanel: {e}"),
+        ));
+    }
+    let mut out = urls.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    std::fs::write(BLOCKLIST_URLS, out).map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {BLOCKLIST_URLS}: {e}"),
+        )
+    })
+}
+
+/// Source: `firewall_blocklist_write_timer`.
+///
+/// `daemon-reload` runs only when a unit file actually changed, which is why
+/// the bash compares before installing: adding a URL is a cheap operation and
+/// reloading systemd on every one of them is not.
+fn write_timer() {
+    let mut changed = false;
+    for (path, body) in [
+        (BLOCKLIST_SERVICE, SERVICE_UNIT),
+        (BLOCKLIST_TIMER, TIMER_UNIT),
+    ] {
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        if current != body && std::fs::write(path, body).is_ok() {
+            changed = true;
+        }
+    }
+    if Path::new(LEGACY_TIMER).exists() {
+        let _ = exec::run(&[
+            "systemctl",
+            "disable",
+            "--now",
+            "snpanel-firewall-blocklist.timer",
+        ]);
+        let _ = std::fs::remove_file(LEGACY_SERVICE);
+        let _ = std::fs::remove_file(LEGACY_TIMER);
+        changed = true;
+    }
+    if changed {
+        let _ = exec::run(&["systemctl", "daemon-reload"]);
+    }
+    // `|| true` in the bash: a box without systemd still gets the file.
+    let _ = exec::run(&["systemctl", "enable", "--now", "snpanel-blocklist.timer"]);
+}
+
+/// `firewall-blocklist-add`.
+pub fn blocklist_add(url: &str) -> HelperResponse {
+    if !valid_url(url) {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, format!("invalid URL: {url}"));
+    }
+    let mut urls = blocklist_urls();
+    // `grep -Fxq` - a whole-line, fixed-string match, so a URL that merely
+    // contains another is a separate entry.
+    if !urls.iter().any(|existing| existing == url) {
+        urls.push(url.to_string());
+    }
+    urls.sort();
+    urls.dedup();
+    if let Err(resp) = write_urls(&urls) {
+        return resp;
+    }
+    write_timer();
+    HelperResponse::with_stdout("IP blocklist URL added\n".to_string())
+}
+
+/// `firewall-blocklist-delete`.
+///
+/// Removing a URL that is not there is a success, as it is in the bash: the
+/// caller asked for it to be gone and it is.
+pub fn blocklist_delete(url: &str) -> HelperResponse {
+    if !valid_url(url) {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, format!("invalid URL: {url}"));
+    }
+    let urls: Vec<String> = blocklist_urls()
+        .into_iter()
+        .filter(|existing| existing != url)
+        .collect();
+    if let Err(resp) = write_urls(&urls) {
+        return resp;
+    }
+    write_timer();
+    HelperResponse::with_stdout("IP blocklist URL removed\n".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The URL check is `^https?://[^[:space:]]+$` and nothing more.
+    ///
+    /// This string ends up in a systemd-scheduled `curl` run as root, so a
+    /// scheme the helper does not understand must not get that far. It is also
+    /// deliberately not a URL grammar: tightening it here would refuse lists
+    /// the panel already has.
+    #[test]
+    fn a_blocklist_url_has_to_be_http_or_https_with_no_whitespace() {
+        for good in [
+            "http://example.com/list.txt",
+            "https://example.com/list.txt",
+            "https://example.com/a?b=c&d=e#f",
+            "http://1.2.3.4:8080/x",
+        ] {
+            assert!(valid_url(good), "{good} should be accepted");
+        }
+        for bad in [
+            "",
+            "example.com/list.txt",
+            "ftp://example.com/list.txt",
+            "file:///etc/passwd",
+            "https://",
+            "http://",
+            "https://example.com/ list.txt",
+            "https://example.com/list.txt\n",
+            " https://example.com/list.txt",
+            "HTTPS://example.com/list.txt",
+        ] {
+            assert!(!valid_url(bad), "{bad:?} should be refused");
+        }
+    }
+
+    /// Adding and removing a URL, against a real file.
+    ///
+    /// The list is sorted and deduplicated on every write, which is what makes
+    /// "already there" a no-op rather than a second entry - and the match is a
+    /// whole line, so one URL that contains another is still two entries.
+    #[test]
+    fn the_url_list_is_sorted_deduplicated_and_matched_whole() {
+        let dir = std::env::temp_dir().join(format!("blocklist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the temp dir");
+        let file = dir.join("urls");
+
+        let write = |lines: &[&str]| {
+            let mut text = lines.join("\n");
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            std::fs::write(&file, text).expect("the list");
+        };
+        let read_back = |path: &std::path::Path| -> Vec<String> {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let mut urls: Vec<String> = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect();
+            urls.sort();
+            urls.dedup();
+            urls
+        };
+
+        // Blank lines are dropped; the rest is sorted and deduplicated.
+        write(&[
+            "https://b.example/list",
+            "",
+            "https://a.example/list",
+            "   ",
+            "https://b.example/list",
+        ]);
+        assert_eq!(
+            read_back(&file),
+            vec![
+                "https://a.example/list".to_string(),
+                "https://b.example/list".to_string()
+            ]
+        );
+
+        // A URL that contains another is a separate entry, because the match
+        // is a whole line.
+        write(&["https://a.example/list", "https://a.example/list2"]);
+        assert_eq!(read_back(&file).len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The URL file path, like the work file, comes from the bash helper.
+    #[test]
+    fn the_blocklist_url_path_is_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+        let mut data_dir = None;
+        let mut urls = None;
+        for line in BASH.lines() {
+            if let Some(rest) = line.strip_prefix("SNPANEL_DATA_DIR=") {
+                data_dir = Some(rest.trim().trim_matches('"').to_string());
+            }
+            if let Some(rest) = line.strip_prefix("FIREWALL_BLOCKLIST_URLS=") {
+                urls = Some(rest.trim().trim_matches('"').to_string());
+            }
+        }
+        let expected = urls
+            .expect("FIREWALL_BLOCKLIST_URLS is not in the bash helper")
+            .replace(
+                "${SNPANEL_DATA_DIR}",
+                &data_dir.expect("SNPANEL_DATA_DIR is not in the bash helper"),
+            );
+        assert_eq!(BLOCKLIST_URLS, expected);
+    }
+
+    /// The units the timer writer installs, against the bash's own heredocs.
+    ///
+    /// A timer that never fires is a blocklist that goes stale without
+    /// anybody noticing, so the schedule is compared rather than described.
+    #[test]
+    fn the_blocklist_units_match_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+        // A heredoc's body includes the newline that ends its last line; the
+        // terminator sits on the line after. So the body runs up to - and not
+        // past - the start of the terminator line.
+        let between = |open: &str, close: &str| -> String {
+            let start = BASH.find(open).expect("the heredoc opener") + open.len();
+            let end = BASH[start..].find(close).expect("the heredoc closer") + start;
+            BASH[start..end].to_string()
+        };
+        assert_eq!(SERVICE_UNIT, between("<<'SERVICE'\n", "SERVICE\n"));
+        assert_eq!(TIMER_UNIT, between("<<'TIMER'\n", "TIMER\n"));
+        // The two facts an operator depends on.
+        assert!(TIMER_UNIT.contains("OnCalendar=*-*-* 01:00:00"));
+        assert!(SERVICE_UNIT
+            .contains("ExecStart=/usr/local/sbin/snpanel-helper firewall-blocklist-run"));
+    }
+
+    /// The blocklist path is the bash helper's, read from the bash helper.
+    ///
+    /// Not asserted as a string literal: the point of the bug this guards
+    /// against is that two files drifted apart while both looked right on
+    /// their own. So this takes the bash's `FIREWALL_BLOCKLIST_WORK` out of
+    /// the shipped script and compares.
+    ///
+    /// The failure it prevents is silent. `firewall-apply` reading a path
+    /// nothing writes reports success and rebuilds the ruleset with no
+    /// blocklist in it, and the operator sees a firewall that is up.
+    #[test]
+    fn the_blocklist_path_is_the_bash_helpers() {
+        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
+
+        let mut data_dir = None;
+        let mut work = None;
+        for line in BASH.lines() {
+            if let Some(rest) = line.strip_prefix("SNPANEL_DATA_DIR=") {
+                data_dir = Some(rest.trim().trim_matches('"').to_string());
+            }
+            if let Some(rest) = line.strip_prefix("FIREWALL_BLOCKLIST_WORK=") {
+                work = Some(rest.trim().trim_matches('"').to_string());
+            }
+        }
+        let data_dir = data_dir.expect("SNPANEL_DATA_DIR is not in the bash helper");
+        let work = work.expect("FIREWALL_BLOCKLIST_WORK is not in the bash helper");
+        let expected = work.replace("${SNPANEL_DATA_DIR}", &data_dir);
+
+        assert_eq!(
+            BLOCKLIST_WORK, expected,
+            "the helper reads {BLOCKLIST_WORK}; the bash writes {expected}"
+        );
+    }
 
     #[test]
     fn a_missing_rules_file_yields_an_empty_ruleset_not_a_panic() {

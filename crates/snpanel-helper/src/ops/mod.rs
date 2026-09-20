@@ -347,6 +347,13 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafSiteSave { domain, content } => waf::site_rules_save(domain, content),
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
+        HelperRequest::FirewallBlocklistUrl { url, add } => {
+            if *add {
+                firewall::blocklist_add(url)
+            } else {
+                firewall::blocklist_delete(url)
+            }
+        }
         HelperRequest::DockerStatus => runtime::docker_status(),
         HelperRequest::DockerPrune => runtime::docker_prune(),
         HelperRequest::NodeList => runtime::node_list(),

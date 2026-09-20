@@ -806,6 +806,16 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `firewall-blocklist-add` / `firewall-blocklist-delete` - the list of
+    /// URLs the nightly refresh downloads from.
+    ///
+    /// The URL is a `String` rather than a parsed type because the bash's
+    /// check is a shape (`^https?://\S+$`) and not a URL grammar; parsing it
+    /// more strictly here would refuse lists the panel already has.
+    FirewallBlocklistUrl {
+        url: String,
+        add: bool,
+    },
     /// `docker-status` - installed, running, and what the images cost.
     DockerStatus,
     /// `docker-prune` - dangling layers and build cache only.
@@ -944,6 +954,13 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::FirewallBlocklistUrl { add, .. } => {
+                if *add {
+                    "firewall-blocklist-add"
+                } else {
+                    "firewall-blocklist-delete"
+                }
+            }
             Self::DockerStatus => "docker-status",
             Self::DockerPrune => "docker-prune",
             Self::NodeList => "node-list",

@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 79 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 81 of the 105 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,14 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 79 are answered over the socket and
-26 still fall through to 5,993 lines of bash. Falling through is the design,
+of the 105 verbs the panel's Python calls, 81 are answered over the socket and
+24 still fall through to 5,993 lines of bash. Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
 direction: `snpanel-ipc` defines 133 request variants and the argv layer maps
-97 verb names, which is more than the 76 above. Three of those names
+102 verb names, which is more than the 81 above. Three of those names
 (`firewall-migrate-nft`, `selinux-port-add`, `selinux-restore-site`) have no
 caller in Python and no arm in the bash helper. They are Rust-side surface
 running ahead of its callers, not coverage.
@@ -80,7 +80,11 @@ looks least impressive in a status report.
 **Five verbs had no caller and have been removed**: `chown-www`,
 `docker-firewall-guard`, `malware-scan-server-estimate`,
 `site-app-volume-list`, `waf-site-rules`. The helper went from 6,030 to 5,993
-lines, and **112 live verbs** remain.
+lines, and **147 verb names** remain across its arms — 112 of them
+distinct arms, the rest legacy aliases sharing an implementation
+(`ufw-*` and `nginx-*` names from before the feature moved). The
+smaller figure was what an extractor that skipped `a|b|c)` arms
+measured, and it is the count Stage D's exit used to be phrased in.
 
 An earlier version of this section listed eight, and getting that wrong is the
 part worth keeping:
@@ -144,7 +148,7 @@ is a defect in the bash it replaces:
   "nginx says the config is bad" from "nginx is not installed" without
   parsing English out of stderr.
 
-93 variants are defined; 112 live verbs need one.
+133 variants are defined; the 105 verbs the panel's Python calls need one.
 
 ---
 
@@ -489,7 +493,8 @@ Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 `certbot` (6), `maldet` (6), `clamav` (4), `docker` (4), `ipv6` (4), `updates`
 (4), `cron` (2), `time` (2), `node` (2), and the singletons. The five dead verbs in §3 are already gone.
 
-**Exit:** 112 live verbs answered by Rust; the bash helper is no longer
+**Exit:** every verb the panel's Python calls answered by Rust — 105 of
+them, of which 81 are today; the bash helper is no longer
 installed on new installations.
 
 ### Stage E — the remaining routers

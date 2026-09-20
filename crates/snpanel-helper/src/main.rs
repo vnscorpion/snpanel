@@ -58,8 +58,8 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 81;
-const BASH_VERBS: usize = 112;
+const ANSWERED_VERBS: usize = 101;
+const BASH_VERBS: usize = 147;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -69,7 +69,8 @@ fn print_help(sink: audit::Sink) {
     for line in [
         "  firewall-*      apply, flush, status, list, migrate-nft, allow-ip,",
         "                  deny-ip, allow-port, panel-allow-port, delete,",
-        "                  enable, disable",
+        "                  enable, disable, reload;",
+        "                  blocklist-add, blocklist-delete",
         "  nginx-*         test, reload, custom-write, custom-delete;",
         "                  http-flood-zones-save",
         "  panel-user-*    ensure, delete, password (password on stdin),",
@@ -449,19 +450,27 @@ mod tests {
         const BASH: &str = include_str!("../../../installer/files/snpanel-helper.sh");
         const MAPPING: &str = include_str!("../../../crates/snpanel-ipc/src/argv.rs");
 
-        // `  <verb>)` at the top level of the helper's case statement.
+        // `  <verb>)` at the top level of the helper's case statement - and
+        // `  <verb>|<alias>|<alias>)`, which is how a third of them are
+        // written. Matching only the first form counted a subset of the
+        // helper and called it the whole.
         let verbs: Vec<&str> = BASH
             .lines()
             .filter_map(|line| {
                 let rest = line.strip_prefix("  ")?;
-                let name = rest.strip_suffix(')')?;
-                let ok = !name.is_empty()
-                    && name.starts_with(|c: char| c.is_ascii_lowercase())
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-                ok.then_some(name)
+                let arm = rest.strip_suffix(')')?;
+                let names: Vec<&str> = arm.split('|').collect();
+                let ok = !names.is_empty()
+                    && names.iter().all(|name| {
+                        !name.is_empty()
+                            && name.starts_with(|c: char| c.is_ascii_lowercase())
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    });
+                ok.then_some(names)
             })
+            .flatten()
             .collect();
 
         let mapping = match MAPPING.find("pub fn from_argv") {
