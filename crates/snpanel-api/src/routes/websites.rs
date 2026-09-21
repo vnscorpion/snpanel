@@ -25,7 +25,7 @@
 use axum::extract::Request;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::permissions;
@@ -75,6 +75,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/websites/{website_id}/ssl/cloudflare-zone",
             get(cloudflare_zone).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/ssl/shared",
+            post(install_shared_ssl).fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/ssl/sources",
@@ -1914,6 +1918,237 @@ async fn ssl_sources(
     axum::Json(out).into_response()
 }
 
+/// Source: `_shared_dependents` + `_block_if_source`.
+///
+/// A site whose certificate others borrow cannot change it without breaking
+/// theirs, and the refusal names them: an administrator told only "no" would
+/// have to go looking for which sites to fix first.
+async fn block_if_source(state: &AppState, website: &snpanel_db::Website) -> Result<(), Response> {
+    let dependents = state
+        .db
+        .websites()
+        .shared_dependents(&website.domain)
+        .await
+        .map_err(|e| {
+            tracing::error!("looking up shared dependents failed: {e}");
+            internal_error()
+        })?;
+    if dependents.is_empty() {
+        return Ok(());
+    }
+    let domains: Vec<&str> = dependents.iter().map(|d| d.domain.as_str()).collect();
+    Err(crate::errors::error(
+        axum::http::StatusCode::CONFLICT,
+        &shared_source_refusal(&domains),
+    ))
+}
+
+/// The message `_block_if_source` raises, sorted.
+///
+/// An administrator told only "no" has to go looking for which sites to fix,
+/// so the message is the list - and sorted, so it reads the same twice.
+fn shared_source_refusal(domains: &[&str]) -> String {
+    let mut names: Vec<&str> = domains.to_vec();
+    names.sort_unstable();
+    format!(
+        "{} website(s) borrow this certificate ({}). Change their SSL first.",
+        domains.len(),
+        names.join(", ")
+    )
+}
+
+/// Source: `cert_name = source.ssl_source_domain or source.domain`.
+///
+/// If B borrows from A and C then borrows from B, C stores **A**. The
+/// certificate C serves is A's file, and a chain that stored B would name one
+/// that does not exist - and `shared_dependents` looks rows up by that stored
+/// name, so getting it wrong also hides C from the check that stops A
+/// changing its certificate.
+fn shared_cert_name(source: &snpanel_db::Website) -> String {
+    source
+        .ssl_source_domain
+        .clone()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| source.domain.clone())
+}
+
+/// `POST /websites/{website_id}/ssl/shared`.
+///
+/// Source: `install_shared_ssl`. One site serves another's certificate rather
+/// than asking a certificate authority for a second one covering a name it
+/// has already signed — and it renews with the source, which a second
+/// certificate would not.
+///
+/// The row moves before the wiring and is **put back if the wiring fails**.
+/// The alternative — commit first, wire after — leaves a row saying the site
+/// is on a shared certificate while nginx is still serving whatever it served
+/// before, and nothing afterwards would notice.
+async fn install_shared_ssl(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = block_if_source(&state, &website).await {
+        return r;
+    }
+
+    let source_domain = payload
+        .get("source_domain")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if source_domain == website.domain {
+        return bad_request("A website cannot borrow its own certificate");
+    }
+
+    let source = match state.db.websites().by_domain(&source_domain).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return not_found("Source website not found"),
+        Err(e) => {
+            tracing::error!("source lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    // Borrowing reaches into another account's certificate, so it takes the
+    // same permission as touching that account's website would.
+    if source.owner_id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return not_enough_permissions();
+    }
+
+    let cert_name = shared_cert_name(&source);
+
+    let (_not_after, sans) = cert_info(&state, &cert_name).await;
+    if sans.is_empty() {
+        return bad_request(&format!(
+            "No usable certificate found for {}",
+            source.domain
+        ));
+    }
+    if !cert_covers(&sans, &website.domain) {
+        return bad_request(&format!(
+            "{}'s certificate does not cover {}",
+            source.domain, website.domain
+        ));
+    }
+
+    let previous = (
+        website.ssl_enabled,
+        website.ssl_mode.clone(),
+        website.ssl_source_domain.clone(),
+    );
+    let now = snpanel_db::sqlalchemy_now();
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_ssl_state(
+            website.id,
+            true,
+            "shared",
+            Some(&cert_name),
+            None,
+            None,
+            None,
+            &now,
+        )
+        .await
+    {
+        tracing::error!("updating the SSL state failed: {e}");
+        return internal_error();
+    }
+
+    // The row the wiring reads has to be the row that was just written.
+    let mut updated = website.clone();
+    updated.ssl_enabled = true;
+    updated.ssl_mode = "shared".to_string();
+    updated.ssl_source_domain = Some(cert_name.clone());
+    updated.ssl_cert_path = None;
+    updated.ssl_key_path = None;
+    updated.ssl_ca_path = None;
+
+    let wired = wire_shared_ssl(&state, &updated).await;
+    if let Err(message) = wired {
+        // `except Exception: roll the row back on any wiring failure`.
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_ssl_state(
+                website.id,
+                previous.0,
+                &previous.1,
+                previous.2.as_deref(),
+                website.ssl_cert_path.as_deref(),
+                website.ssl_key_path.as_deref(),
+                website.ssl_ca_path.as_deref(),
+                &now,
+            )
+            .await
+        {
+            tracing::error!("rolling the SSL state back failed: {e}");
+        }
+        return bad_request(&message);
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "install_shared_ssl",
+        &website.domain,
+    )
+    .await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, false, ssl_enabled)).into_response()
+}
+
+/// The three things that have to succeed together for a borrowed certificate
+/// to actually be served.
+async fn wire_shared_ssl(state: &AppState, website: &snpanel_db::Website) -> Result<(), String> {
+    let waf =
+        crate::waf::sync_website_rules(state.settings.command_dry_run, website, &server_crs_mode())
+            .await
+            .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(waf
+            .failure_detail("Could not save WAF rules")
+            .trim()
+            .to_string());
+    }
+    if website.http_flood_enabled {
+        sync_http_flood_zones(state)
+            .await
+            .map_err(|_| "Could not write the HTTP flood zones".to_string())?;
+    }
+    rewrite_owned_vhost(state, website, RewriteOverrides::default()).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2227,5 +2462,76 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// A borrower points at the lineage, not at the borrower in front of it.
+    ///
+    /// Source: `cert_name = source.ssl_source_domain or source.domain`. If B
+    /// borrows from A and C then borrows from B, C must store A's name - the
+    /// certificate C serves is A's file, and a chain that stored B would name
+    /// a certificate that does not exist. `shared_dependents` looks rows up by
+    /// that stored name, so getting it wrong also hides C from the check that
+    /// stops A changing its certificate.
+    #[test]
+    fn a_chain_of_borrowers_all_name_the_certificate_that_exists() {
+        // Driving the function the handler calls, not a copy of it.
+        fn cert_name(source_domain: &str, source_ssl_source: Option<&str>) -> String {
+            let mut w = website();
+            w.domain = source_domain.to_string();
+            w.ssl_source_domain = source_ssl_source.map(str::to_string);
+            shared_cert_name(&w)
+        }
+
+        // Borrowing from a site that owns its certificate.
+        assert_eq!(cert_name("a.example.com", None), "a.example.com");
+        // Borrowing from a site that is itself borrowing.
+        assert_eq!(
+            cert_name("b.example.com", Some("a.example.com")),
+            "a.example.com"
+        );
+        // An empty string is not a name: a row written by an older build with
+        // `""` rather than NULL must not become the certificate's name.
+        assert_eq!(cert_name("b.example.com", Some("")), "b.example.com");
+    }
+
+    /// The refusal names the sites that have to be fixed first.
+    ///
+    /// Source: `_block_if_source`. An administrator told only "no" has to go
+    /// looking; the message is the list, sorted so it reads the same twice.
+    #[test]
+    fn refusing_to_change_a_shared_source_lists_the_borrowers() {
+        let message = shared_source_refusal;
+
+        assert_eq!(
+            message(&["b.example.com"]),
+            "1 website(s) borrow this certificate (b.example.com). Change their SSL first."
+        );
+        // Sorted, not in whatever order the query returned.
+        assert_eq!(
+            message(&["c.example.com", "a.example.com", "b.example.com"]),
+            "3 website(s) borrow this certificate \
+             (a.example.com, b.example.com, c.example.com). Change their SSL first."
+        );
+    }
+
+    /// A certificate that does not cover the borrower is refused.
+    ///
+    /// This is the check that matters: serving a name the certificate does
+    /// not carry gives every visitor a TLS error, which is worse than the
+    /// self-signed certificate the site had before.
+    #[test]
+    fn a_borrowed_certificate_has_to_cover_the_borrower() {
+        let sans = vec![
+            "a.example.com".to_string(),
+            "*.wild.example.com".to_string(),
+        ];
+        assert!(cert_covers(&sans, "a.example.com"));
+        assert!(cert_covers(&sans, "one.wild.example.com"));
+        // A wildcard covers exactly one more label.
+        assert!(!cert_covers(&sans, "two.levels.wild.example.com"));
+        assert!(!cert_covers(&sans, "wild.example.com"));
+        assert!(!cert_covers(&sans, "b.example.com"));
+        // No certificate at all is not "covers everything".
+        assert!(!cert_covers(&[], "a.example.com"));
     }
 }

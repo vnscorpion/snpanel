@@ -145,6 +145,70 @@ impl<'a> WebsiteRepo<'a> {
     /// Source: `_sync_live_ssl_flags` - a certificate that appeared on disk
     /// without the panel doing it (a manual certbot run, a restored backup)
     /// turns the flag on so the UI stops offering to issue one.
+    /// Websites borrowing `source_domain`'s certificate.
+    ///
+    /// Source: `_shared_dependents`. A site that others borrow from cannot
+    /// change its own certificate without breaking theirs, so this is what
+    /// `_block_if_source` reads before allowing that.
+    /// One website by its domain.
+    ///
+    /// Source: `db.query(Website).filter(Website.domain == ...)`. Domains are
+    /// unique, so the first row is the row.
+    pub async fn by_domain(&self, domain: &str) -> Result<Option<Website>, DbError> {
+        Ok(sqlx::query_as::<_, Website>(&format!(
+            "SELECT {COLUMNS} FROM websites WHERE domain = ?"
+        ))
+        .bind(domain)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    pub async fn shared_dependents(&self, source_domain: &str) -> Result<Vec<Website>, DbError> {
+        Ok(sqlx::query_as::<_, Website>(&format!(
+            "SELECT {COLUMNS} FROM websites \
+             WHERE ssl_mode = 'shared' AND ssl_source_domain = ? ORDER BY domain"
+        ))
+        .bind(source_domain)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// The whole SSL block of one row, written together.
+    ///
+    /// Source: the assignments in `install_shared_ssl` and its siblings. They
+    /// move as a set - a row with `ssl_mode = "shared"` and no
+    /// `ssl_source_domain` names a certificate that does not exist - so they
+    /// are written in one statement rather than one column at a time.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_ssl_state(
+        &self,
+        id: i64,
+        enabled: bool,
+        mode: &str,
+        source_domain: Option<&str>,
+        cert_path: Option<&str>,
+        key_path: Option<&str>,
+        ca_path: Option<&str>,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET ssl_enabled = ?, ssl_mode = ?, ssl_source_domain = ?, \
+             ssl_cert_path = ?, ssl_key_path = ?, ssl_ca_path = ?, ssl_updated_at = ? \
+             WHERE id = ?",
+        )
+        .bind(enabled)
+        .bind(mode)
+        .bind(source_domain)
+        .bind(cert_path)
+        .bind(key_path)
+        .bind(ca_path)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn set_ssl_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
         sqlx::query("UPDATE websites SET ssl_enabled = ? WHERE id = ?")
             .bind(enabled)
