@@ -959,9 +959,135 @@ sudoers_understands_requiretty() {
   return "$rc"
 }
 
+# --- the Rust binaries ------------------------------------------------------
+#
+# A fresh install has to end with the Rust helper in place. It did not: this
+# script installed the bash helper and the Rust one arrived later, through
+# installer/files/helper-cutover.sh, which is a migration script rather than
+# part of installing the panel. Stage D's exit says a new installation carries
+# no bash helper, and that clause was not met while this file said otherwise.
+#
+# The binaries cannot be built here. A Rust toolchain is about a gigabyte and
+# several minutes of one vCPU, which is not a thing to ask of a customer's VPS
+# during an install - so they are built once, for musl, and attached to the
+# release. `file` reports them static-pie, so one build serves every supported
+# distribution.
+#
+# Empty when no binaries are available, and everything below degrades to what
+# this script did before.
+RUST_BIN_DIR=""
+RUST_ASSET_BASE="snpanel-rust-x86_64-linux-musl"
+
+resolve_release_tag() {
+  local tag="${SNPANEL_VERSION:-}"
+  if [[ -z "$tag" && -f "${PROJECT_ROOT}/VERSION" ]]; then
+    tag="v$(tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION")"
+  fi
+  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  printf '%s' "$tag"
+}
+
+fetch_rust_binaries() {
+  # A tree that has been built wins. Somebody running this from a checkout is
+  # testing what they built, and downloading a release over it would make the
+  # install say nothing about their work.
+  local built="${PROJECT_ROOT}/target/x86_64-unknown-linux-musl/release"
+  if [[ -x "${built}/snpanel-helper" ]]; then
+    RUST_BIN_DIR="$built"
+    log "Using locally built Rust binaries from ${built}"
+    return 0
+  fi
+
+  local tag
+  if ! tag="$(resolve_release_tag)"; then
+    log "No release tag to fetch Rust binaries for; the bash helper will be installed"
+    return 1
+  fi
+
+  local base="${SNPANEL_RUST_ASSET_BASE:-${SNPANEL_GITHUB}/releases/download/${tag}}"
+  local tmp archive sums
+  tmp="$(mktemp -d)"
+  archive="${tmp}/${RUST_ASSET_BASE}.tar.gz"
+  sums="${tmp}/SHA256SUMS"
+
+  if ! curl -fsSL --connect-timeout 10 --max-time 300 \
+        "${base}/${RUST_ASSET_BASE}.tar.gz" -o "$archive"; then
+    rm -rf -- "$tmp"
+    log "No Rust binaries published for ${tag}; the bash helper will be installed"
+    return 1
+  fi
+  # The checksum is not optional. These binaries run as root, and a release
+  # asset is fetched over the network from a host this script does not
+  # otherwise trust with anything.
+  if ! curl -fsSL --connect-timeout 10 --max-time 60 "${base}/SHA256SUMS" -o "$sums"; then
+    rm -rf -- "$tmp"
+    fail "Rust binaries for ${tag} have no SHA256SUMS; refusing to install them"
+  fi
+  if ! ( cd "$tmp" && sha256sum --check --ignore-missing --status SHA256SUMS ); then
+    rm -rf -- "$tmp"
+    fail "The Rust binaries for ${tag} do not match their published checksums"
+  fi
+  if ! tar xzf "$archive" -C "$tmp"; then
+    rm -rf -- "$tmp"
+    fail "Could not unpack the Rust binaries for ${tag}"
+  fi
+
+  local unpacked="${tmp}/${RUST_ASSET_BASE}"
+  [[ -d "$unpacked" ]] || unpacked="$tmp"
+  local missing=()
+  local name
+  for name in snpanel-helper snpanel-extract snpanel-api snpanel; do
+    [[ -x "${unpacked}/${name}" ]] || missing+=("$name")
+  done
+  if (( ${#missing[@]} )); then
+    rm -rf -- "$tmp"
+    fail "The Rust archive for ${tag} is missing: ${missing[*]}"
+  fi
+
+  RUST_BIN_DIR="$unpacked"
+  RUST_BIN_TMP="$tmp"
+  log "Fetched Rust binaries for ${tag}"
+}
+
+install_rust_helper() {
+  # The bash helper stays, at the name the Rust one `exec`s for a verb it does
+  # not answer. That is the same arrangement helper-cutover.sh creates; doing
+  # it here means a fresh box is never in the state the cutover exists to move
+  # it out of.
+  install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" \
+    /usr/local/sbin/snpanel-helper.sh
+  sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" \
+    /usr/local/sbin/snpanel-helper.sh
+  install -m 0750 -o root -g snpanel "${RUST_BIN_DIR}/snpanel-helper" \
+    /usr/local/sbin/snpanel-helper
+  install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-extract" \
+    /usr/local/sbin/snpanel-extract
+
+  # The socket, so the panel reaches the helper without a sudo fork per call.
+  # `sudo` still works and is still what an administrator uses by hand.
+  local unit
+  for unit in snpanel-helper.service snpanel-helper.socket; do
+    if [[ -f "${SCRIPT_DIR}/files/${unit}" ]]; then
+      install -m 0644 -o root -g root "${SCRIPT_DIR}/files/${unit}" \
+        "/etc/systemd/system/${unit}"
+    fi
+  done
+  systemctl daemon-reload
+  systemctl enable --now snpanel-helper.socket >/dev/null 2>&1 \
+    || log "WARNING: snpanel-helper.socket did not start; the panel will use sudo"
+}
+
 install_privileged_helper() {
-  install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
-  sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
+  fetch_rust_binaries || true
+  if [[ -n "$RUST_BIN_DIR" ]]; then
+    install_rust_helper
+  else
+    # No binaries available: what this script did before, unchanged. An
+    # install that cannot reach the release must still produce a working
+    # panel.
+    install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
+    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
+  fi
   install -m 0755 -o root -g root "${SCRIPT_DIR}/update.sh" /usr/local/sbin/snpanel-update
   install -m 0440 -o root -g root "${SCRIPT_DIR}/files/snpanel-sudoers" /etc/sudoers.d/snpanel
   # `requiretty` was removed in sudo 1.9.17. Ubuntu 26.04's build rejects the
@@ -982,6 +1108,12 @@ install_privileged_helper() {
 }
 
 install_panel_cli() {
+  # `snpanelctl` is the bash rescue menu and stays; the Rust `snpanel` CLI is a
+  # different program with a different name, installed beside it when the
+  # archive carries one.
+  if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel" ]]; then
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
+  fi
   install -m 0755 -o root -g root "${SCRIPT_DIR}/files/snpanelctl" /usr/local/sbin/snpanel
   ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
   sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
@@ -1724,6 +1856,12 @@ STATE
   chmod 0640 /var/lib/snpanel/update-status.json
 }
 
+cleanup_rust_binaries() {
+  [[ -n "${RUST_BIN_TMP:-}" ]] || return 0
+  rm -rf -- "$RUST_BIN_TMP"
+  RUST_BIN_TMP=""
+}
+
 cleanup_release_source() {
   [[ "${CLEAN_RELEASE_SOURCE:-true}" == "true" ]] || return 0
   [[ "$PROJECT_ROOT" == "/opt/snpanel-source" ]] || return 0
@@ -1881,6 +2019,7 @@ main() {
   write_update_state
 
   print_summary
+  cleanup_rust_binaries
   cleanup_release_source
 }
 

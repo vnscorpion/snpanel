@@ -1,0 +1,93 @@
+# Build the Rust binaries a fresh install needs, and attach them to the tag.
+#
+# `install.sh` downloads `/archive/refs/tags/<tag>.tar.gz`, which is source.
+# The frontend is built on the machine with node and the backend is Python, so
+# neither needs anything shipped - but Rust does, and a toolchain is about a
+# gigabyte and several minutes of one vCPU. That is not a thing to ask of a
+# customer's server during an install, so the binaries are built once here.
+#
+# musl, and therefore static: `file` reports them `static-pie linked`, so one
+# build serves Ubuntu 24.04, Debian 12 and 13, and AlmaLinux 10 alike. Building
+# per distribution would mean four assets and four chances for the installer to
+# pick the wrong one.
+#
+# `SHA256SUMS` is not decoration. `install.sh` refuses to install binaries whose
+# checksum it cannot verify, and these run as root.
+
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  # So the artifact can be produced for a tag that was pushed before this
+  # workflow existed, without moving the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and attach to'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+  ASSET: snpanel-rust-x86_64-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install the musl target
+        run: |
+          rustup target add "$TARGET"
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # `--locked`, because a release must build the dependency versions the
+      # repository was tested with and not whatever resolves today.
+      - name: Build
+        run: |
+          cargo build --release --locked --target "$TARGET" \
+            -p snpanel-helper -p snpanel-api -p snpanel-cli
+
+      - name: Check they are static
+        run: |
+          set -euo pipefail
+          for b in snpanel-helper snpanel-extract snpanel-api snpanel; do
+            path="target/${TARGET}/release/${b}"
+            file "$path"
+            # A dynamically linked binary would work on the machine that built
+            # it and fail on a customer's, which is the failure that is hardest
+            # to see from here.
+            file "$path" | grep -q 'static-pie linked' \
+              || { echo "::error::${b} is not static"; exit 1; }
+          done
+
+      - name: Assemble the archive
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${ASSET}"
+          for b in snpanel-helper snpanel-extract snpanel-api snpanel; do
+            install -m 0755 "target/${TARGET}/release/${b}" "dist/${ASSET}/${b}"
+          done
+          ( cd dist && tar czf "${ASSET}.tar.gz" "${ASSET}" && rm -rf "${ASSET}" )
+          ( cd dist && sha256sum "${ASSET}.tar.gz" > SHA256SUMS )
+          cat "dist/SHA256SUMS"
+
+      # The names `install.sh` fetches: `<base>/<ASSET>.tar.gz` and
+      # `<base>/SHA256SUMS`, where the base is the release download URL for the
+      # tag. Renaming either of these breaks a fresh install silently - the
+      # installer falls back to the bash helper and says so only in its log.
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/${{ env.ASSET }}.tar.gz
+            dist/SHA256SUMS

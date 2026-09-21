@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket; a fresh install still deploys the bash one (Stage F) |
+| Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket, and a fresh install deploys the Rust one |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -228,6 +228,31 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### A harness that reports on state it did not create
+
+Verifying the new installer step took four attempts, and three of the faults
+were the harness rather than the code:
+
+1. Files were copied to `/var/lib/machines/deb13/tmp`, which is not the
+   container's `/tmp` — it has its own. The container saw nothing, and the
+   checks passed anyway **because an earlier redeploy had left a Rust helper
+   on that box**.
+2. `install_rust_helper` reads `${SCRIPT_DIR}/files/...` and the harness put
+   the files directly in `SCRIPT_DIR`, so installing the bash helper failed
+   with `cannot stat`. The harness ran without `set -e` and carried on; the
+   real installer runs under `set -euo pipefail` and would have aborted.
+3. The check that the bash helper had landed then passed — again on the file
+   the earlier cutover had left.
+
+The fix is one line of principle: **remove what you are about to install
+before you check that it installed.** The harness now deletes both helpers and
+disables the socket first, runs under the same flags the installer does, and
+reports the before-state so a reader can see it started from nothing.
+
+This is the same failure as the three test faults above, in a shell script
+instead of a test file, and it is worth counting: an assertion is only worth
+what it would have caught.
 
 ### I dropped half an exit criterion while rewriting it
 
@@ -784,14 +809,14 @@ Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 **Exit:** every verb the panel's Python calls answered by Rust, *and* the
 bash helper no longer installed on new installations.
 
-**The first half is done; the second is not, and I removed it from this
-sentence when I rewrote it.** `install.sh` still runs
-`install -m 0750 ... files/snpanel-helper.sh /usr/local/sbin/snpanel-helper`:
-a fresh install today is a bash-helper install, and the Rust helper arrives
-only through `helper-cutover.sh`, which is migration scaffolding rather than
-part of installing the panel. Fixing that is an installer change, so it is
-Stage F's first job and is listed there - but it belongs in Stage D's ledger,
-not quietly in another stage's.
+**Both halves are done.** The second was not, and I had removed it from
+this sentence when I rewrote it: `install.sh` installed
+`files/snpanel-helper.sh` at `/usr/local/sbin/snpanel-helper`, so every fresh
+install was a bash-helper install and the Rust one arrived only through
+`helper-cutover.sh`. `install.sh` now fetches the published binaries, verifies
+them, and installs the Rust helper with the bash one beside it at the name the
+Rust one `exec`s - the arrangement the cutover script creates, done at install
+time so a new box is never in the state that script exists to move it out of.
 
 All **106** verbs — the figure was 105 until
 `every_bash_verb_is_mapped_or_listed_as_unported` found two the hand-kept
@@ -832,23 +857,36 @@ lines) are data, installed as they are.
 seam: a Rust installer can take them one at a time, the way the API and the
 helper were taken.
 
-**Two things have to be settled before any phase moves, and neither is a
-line of bash.**
+**The bootstrap is solved, and it was the thing blocking everything else.**
+`install.sh` downloads `/archive/refs/tags/<tag>.tar.gz`, which is source. The
+frontend is built on the machine with node and the backend is Python, so
+neither needs anything shipped; Rust needed either a toolchain on every
+customer's VPS — about a gigabyte and several minutes of one vCPU — or
+prebuilt binaries attached to the release.
 
-1. **A fresh install does not get the Rust helper.** Stage D's exit says it
-   should; `install.sh` installs the bash one. This is the first job.
-2. **There is no way to get a Rust binary onto a fresh box.** `install.sh`
-   downloads `/archive/refs/tags/<tag>.tar.gz` — source only. The frontend is
-   built on the machine with node; the backend is Python and needs no build.
-   Rust needs either a toolchain on every customer's VPS (a gigabyte and
-   several minutes on one vCPU) or **prebuilt musl binaries attached to the
-   release**, which is what the repo already builds locally for the container
-   tests. The second is the answer, and it needs a release workflow that does
-   not exist yet.
+Prebuilt, and **musl**, so `file` reports them `static-pie linked` and one
+build serves all four distributions. `.github/workflows/release.yml` builds
+them on a tag and attaches the archive with a `SHA256SUMS` beside it;
+`install.sh` fetches both and **refuses to install binaries whose checksum it
+cannot verify**, because these run as root and the archive comes over the
+network.
 
-Until (2) lands, no phase of the installer can be answered by Rust on a real
-install, so Stage F's early work is what can be checked without it: the two
-copies of the platform table now have a test that compares them.
+Three behaviours, each checked on Debian 13 against a real archive:
+
+- a good archive installs the Rust helper (0750 root:snpanel), the extractor,
+  the bash helper at the name the Rust one `exec`s, the socket units, and
+  enables the socket;
+- a tampered `SHA256SUMS` refuses the install and says why;
+- a missing asset returns non-zero with a reason, and the caller installs the
+  bash helper exactly as before - an install that cannot reach the release
+  must still produce a working panel.
+
+A tree that has already been built wins over the release, so running the
+installer from a checkout tests what was built rather than what was published.
+
+With that in place the phases can move one at a time. The platform table has
+a test comparing the shell's copy with `snpanel-osabi`'s, which is the other
+thing that could be checked without a running installer.
 
 **Exit:** a fresh install on each supported distribution performed entirely by
 the Rust installer, the bash helper absent from a new installation, and
