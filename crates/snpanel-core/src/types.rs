@@ -58,6 +58,14 @@ pub enum ParseError {
     Domain(String),
     #[error("invalid panel username: {0}")]
     Username(String),
+    /// Source: `deny "reserved panel Linux user: $1"`.
+    ///
+    /// A separate variant from `Username` because the bash has a separate
+    /// message, and the difference is the whole of what it tells the
+    /// administrator: `snpanel` is a perfectly well-shaped name, and being
+    /// told it is "invalid" sends them looking at the wrong thing.
+    #[error("reserved panel Linux user: {0}")]
+    ReservedUsername(String),
     #[error("invalid site path: {0}")]
     SitePath(String),
     #[error("unsupported PHP version: {0}")]
@@ -379,7 +387,7 @@ impl PanelUsername {
             return Err(ParseError::Username(raw.to_string()));
         }
         if RESERVED_LINUX_USERS.contains(&raw) {
-            return Err(ParseError::Username(raw.to_string()));
+            return Err(ParseError::ReservedUsername(raw.to_string()));
         }
         Ok(Self(raw.to_string()))
     }
@@ -1495,5 +1503,35 @@ mod tests {
         assert!(IpOrCidr::parse("10.0.0.5/255.0.0.255").is_err());
         assert!(IpOrCidr::parse("10.0.0.5/33").is_err());
         assert!(IpOrCidr::parse("2001:db8::/ffff::").is_err());
+    }
+
+    /// The two refusals `require_linux_user` has, kept apart.
+    ///
+    /// Found by A/B against the installed bash helper, not by reading it: the
+    /// bash answered "reserved panel Linux user: snpanel" where this said
+    /// "invalid panel username: snpanel". `snpanel` is a perfectly
+    /// well-shaped name, so being told it is invalid sends an administrator
+    /// looking at the shape of a name that has nothing wrong with its shape.
+    #[test]
+    fn a_reserved_username_says_so_rather_than_invalid() {
+        for reserved in ["root", "snpanel", "www-data", "mysql", "nobody"] {
+            let err = PanelUsername::parse(reserved).expect_err(reserved);
+            assert_eq!(
+                err.to_string(),
+                format!("reserved panel Linux user: {reserved}")
+            );
+        }
+
+        let too_long = "a".repeat(33);
+        for malformed in ["ab", "1abc", "Abc", "a b", "", too_long.as_str()] {
+            let err = PanelUsername::parse(malformed).expect_err(malformed);
+            assert_eq!(
+                err.to_string(),
+                format!("invalid panel username: {malformed}")
+            );
+        }
+
+        // A name that is neither is accepted.
+        assert!(PanelUsername::parse("bp_example").is_ok());
     }
 }
