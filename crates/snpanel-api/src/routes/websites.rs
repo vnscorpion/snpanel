@@ -77,6 +77,10 @@ pub fn router() -> Router<AppState> {
             get(cloudflare_zone).fallback(crate::fallback),
         )
         .route(
+            "/websites/{website_id}/ssl/manual",
+            post(install_manual_ssl).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/ssl/shared",
             post(install_shared_ssl).fallback(crate::fallback),
         )
@@ -992,7 +996,7 @@ async fn cert_sans(state: &AppState, domain: &str) -> Vec<String> {
 
 /// Source: `ssl._hostname_matches` - an exact name, or a wildcard that covers
 /// exactly one more label.
-fn hostname_matches(domain: &str, pattern: &str) -> bool {
+pub(crate) fn hostname_matches(domain: &str, pattern: &str) -> bool {
     if pattern == domain {
         return true;
     }
@@ -2149,9 +2153,585 @@ async fn wire_shared_ssl(state: &AppState, website: &snpanel_db::Website) -> Res
     Ok(())
 }
 
+/// Source: `manual_ssl_paths` - the three files a manual certificate lives in.
+///
+/// The row stores the paths rather than deriving them, because a site whose
+/// certificate later moves has to keep serving from where the file actually
+/// is until something rewrites the row.
+fn manual_ssl_paths(domain: &str) -> (String, String, String) {
+    let base = format!("/etc/nginx/snpanel/ssl/sites/{domain}");
+    (
+        format!("{base}/cert.crt"),
+        format!("{base}/privkey.key"),
+        format!("{base}/ca.crt"),
+    )
+}
+
+/// What was on disk before the upload replaced it.
+///
+/// Source: `ManualSslSnapshot`. The files are `root:snpanel 0640`, so the
+/// panel account can read them without the helper; putting them **back**
+/// needs the helper, because writing there does not.
+struct ManualSslSnapshot {
+    domain: String,
+    certificate: Option<Vec<u8>>,
+    private_key: Option<Vec<u8>>,
+    ca_bundle: Option<Vec<u8>>,
+}
+
+/// Source: `snapshot_manual_ssl_domain`.
+async fn snapshot_manual_ssl(domain: &str) -> ManualSslSnapshot {
+    let (cert, key, ca) = manual_ssl_paths(domain);
+    let read = |p: String| async move { tokio::fs::read(&p).await.ok() };
+    ManualSslSnapshot {
+        domain: domain.to_string(),
+        certificate: read(cert).await,
+        private_key: read(key).await,
+        ca_bundle: read(ca).await,
+    }
+}
+
+/// Source: `restore_manual_ssl`, whose body is wrapped in `except (RuntimeError,
+/// OSError): pass`.
+///
+/// Rolling back is best-effort **on purpose**: the caller is already on its
+/// way to a 400 with the real reason, and a failure here would replace that
+/// reason with a second one about the rollback. The site is the loser either
+/// way; the administrator at least gets told what they actually did wrong.
+///
+/// A site that had no manual certificate before has its directory removed
+/// rather than left holding half an upload, which is what `remove_manual_ssl`
+/// does on the Python's `else` branch.
+async fn restore_manual_ssl(state: &AppState, snapshot: &ManualSslSnapshot) {
+    let verb = rollback_verb(snapshot);
+    let payload = match (&snapshot.certificate, &snapshot.private_key) {
+        (Some(cert), Some(key)) => Some(manual_ssl_payload(
+            cert,
+            key,
+            snapshot.ca_bundle.as_deref().unwrap_or(b""),
+        )),
+        _ => None,
+    };
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        verb,
+        &[&snapshot.domain],
+        payload.as_deref(),
+        None,
+    )
+    .await;
+    if !result.ok() {
+        tracing::error!(
+            "{verb} for {} failed while rolling back: {}",
+            snapshot.domain,
+            result.failure_detail("no detail").trim()
+        );
+    }
+}
+
+/// Which verb puts the previous state back.
+///
+/// Source: `ManualSslSnapshot.restore` - `if cert and key:` write them back,
+/// `else:` remove the directory. **Half a snapshot is not a snapshot**: a site
+/// that had only a certificate on disk and no key had nothing serving, and
+/// writing that half back would leave exactly the state the rollback exists to
+/// avoid - a certificate nobody has the key for, which nginx refuses to load.
+fn rollback_verb(snapshot: &ManualSslSnapshot) -> &'static str {
+    match (&snapshot.certificate, &snapshot.private_key) {
+        (Some(_), Some(_)) => "manual-ssl-install",
+        _ => "manual-ssl-remove",
+    }
+}
+
+/// The JSON `manual-ssl-install` reads on stdin.
+///
+/// Source: `_write_manual_ssl_files`. It goes on **stdin, not argv** for the
+/// reason C37 gives: a private key in `argv` is readable in
+/// `/proc/<pid>/cmdline` by every account on the machine for as long as the
+/// process lives, and a shared host has plenty of those.
+fn manual_ssl_payload(certificate: &[u8], private_key: &[u8], ca_bundle: &[u8]) -> String {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    serde_json::json!({
+        "certificate": text(certificate),
+        "private_key": text(private_key),
+        "ca_bundle": if ca_bundle.is_empty() { String::new() } else { text(ca_bundle) },
+    })
+    .to_string()
+}
+
+/// One of the three parts, from whichever of its two form fields carried it.
+///
+/// Source: `_read_ssl_input`. A file part wins **only if it has a filename** -
+/// a browser that submits an empty file input sends the part anyway, with an
+/// empty filename, and treating that as "the administrator uploaded a file"
+/// would refuse the text they typed into the box next to it.
+fn read_ssl_input(
+    upload: Option<&(String, Vec<u8>)>,
+    text: &str,
+    label: &str,
+    required: bool,
+) -> Result<Vec<u8>, String> {
+    match upload {
+        Some((filename, data)) if !filename.is_empty() => crate::manual_ssl::read_ssl_part(
+            &crate::manual_ssl::SslPart::Upload { filename, data },
+            label,
+            required,
+        ),
+        _ => crate::manual_ssl::read_ssl_part(
+            &crate::manual_ssl::SslPart::Text(text),
+            label,
+            required,
+        ),
+    }
+}
+
+/// The six form fields the manual-SSL form submits.
+#[derive(Default)]
+struct ManualSslForm {
+    uploads: std::collections::HashMap<String, (String, Vec<u8>)>,
+    texts: std::collections::HashMap<String, String>,
+}
+
+impl ManualSslForm {
+    fn upload(&self, name: &str) -> Option<&(String, Vec<u8>)> {
+        self.uploads.get(name)
+    }
+
+    fn text(&self, name: &str) -> &str {
+        self.texts.get(name).map(String::as_str).unwrap_or("")
+    }
+}
+
+/// Read the form, whichever of the two encodings it arrived in.
+///
+/// The panel's own page sends `FormData`, which is `multipart/form-data`. An
+/// API client that sends only the three text fields may use
+/// `application/x-www-form-urlencoded` instead, and FastAPI's `Form()` accepts
+/// that - so a port that took multipart alone would refuse a request the
+/// Python answers.
+async fn read_manual_ssl_form(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    body: axum::body::Body,
+) -> Result<ManualSslForm, Response> {
+    let content_type = parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let mut form = ManualSslForm::default();
+
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        let bytes = axum::body::to_bytes(body, MAX_MANUAL_SSL_BODY)
+            .await
+            .map_err(|_| bad_request("Could not read the form"))?;
+        // Parsed with the panel's own decoder rather than a crate's, because
+        // `auth::read_form` already has one and two decoders that disagree
+        // about `+` is how a certificate arrives with a space in its base64.
+        for pair in bytes.split(|b| *b == b'&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (k, v) = match pair.iter().position(|b| *b == b'=') {
+                Some(i) => (&pair[..i], &pair[i + 1..]),
+                None => (pair, &[][..]),
+            };
+            form.texts.insert(
+                super::auth::percent_decode(k),
+                super::auth::percent_decode(v),
+            );
+        }
+        return Ok(form);
+    }
+
+    use axum::extract::FromRequest as _;
+    let request = Request::from_parts(parts.clone(), body);
+    let mut multipart = axum::extract::Multipart::from_request(request, state)
+        .await
+        .map_err(|e| bad_request(&e.body_text()))?;
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                let Some(name) = field.name().map(str::to_string) else {
+                    continue;
+                };
+                let filename = field.file_name().map(str::to_string);
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| bad_request(&e.body_text()))?
+                    .to_vec();
+                match filename {
+                    // A part with a filename is a file part even when the
+                    // filename is empty - that is exactly the case
+                    // `read_ssl_input` has to see in order to fall through to
+                    // the text field.
+                    Some(filename) => {
+                        form.uploads.insert(name, (filename, bytes));
+                    }
+                    None => {
+                        form.texts
+                            .insert(name, String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(bad_request(&e.body_text())),
+        }
+    }
+    Ok(form)
+}
+
+/// Three parts at 256 KiB apiece, with room for the boundaries around them.
+const MAX_MANUAL_SSL_BODY: usize = 4 * 1024 * 1024;
+
+/// `POST /websites/{website_id}/ssl/manual`.
+///
+/// Source: `install_manual_ssl`. A certificate an administrator bought from
+/// somewhere else, rather than one certbot issued.
+///
+/// **What is on disk is captured before anything is written and put back if
+/// any later step fails.** Unlike the Let's Encrypt path there is nothing to
+/// re-issue from: if the upload half-lands and the vhost rewrite then fails,
+/// the site is left serving a certificate nobody has the key for, and the only
+/// copy of what it was serving before is the one taken here.
+async fn install_manual_ssl(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = block_if_source(&state, &website).await {
+        return r;
+    }
+
+    let form = match read_manual_ssl_form(&state, &parts, body).await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    // `except ValueError as exc: raise HTTPException(400, str(exc))` - the
+    // message names which of the three parts is wrong, because the
+    // administrator is holding three files and has to know which to look at.
+    let read = |file: &str, text: &str, label: &str, required: bool| {
+        read_ssl_input(form.upload(file), form.text(text), label, required)
+    };
+    let certificate = match read("certificate", "certificate_text", "certificate", true) {
+        Ok(v) => v,
+        Err(message) => return bad_request(&message),
+    };
+    let private_key = match read("private_key", "private_key_text", "private_key", true) {
+        Ok(v) => v,
+        Err(message) => return bad_request(&message),
+    };
+    let ca_bundle = match read("ca_bundle", "ca_bundle_text", "ca_bundle", false) {
+        Ok(v) => v,
+        Err(message) => return bad_request(&message),
+    };
+
+    let aliases_rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    // `aliases=_ssl_domains(website)` - the aliases and the redirects, both,
+    // because nginx serves every one of them from this certificate and a name
+    // it does not carry is a TLS error rather than a missing page.
+    let ssl_domains: Vec<String> = domains_by_mode(&aliases_rows, "alias")
+        .into_iter()
+        .chain(domains_by_mode(&aliases_rows, "redirect"))
+        .collect();
+
+    let snapshot = snapshot_manual_ssl(&website.domain).await;
+    match install_manual_ssl_files(
+        &state,
+        &website,
+        &certificate,
+        &private_key,
+        &ca_bundle,
+        &ssl_domains,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(message) => {
+            restore_manual_ssl(&state, &snapshot).await;
+            return bad_request(&message);
+        }
+    }
+
+    // `_resync_shared_dependents(db, website.domain)` - a site borrowing this
+    // certificate is serving the file that was just replaced, so its vhost is
+    // repointed at the new one. Each failure is swallowed, as in the Python:
+    // one borrower with a broken vhost does not undo an upload that worked.
+    resync_shared_dependents(&state, &website.domain).await;
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "install_manual_ssl",
+        &website.domain,
+    )
+    .await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, false, ssl_enabled)).into_response()
+}
+
+/// Validate, write, record and wire - the whole of the Python's `try:` block.
+///
+/// It is one function because every step in it is inside one rollback: the
+/// caller restores the snapshot on any error from here, and a step that
+/// returned early past the caller would leave the site half-changed.
+async fn install_manual_ssl_files(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    certificate: &[u8],
+    private_key: &[u8],
+    ca_bundle: &[u8],
+    ssl_domains: &[String],
+) -> Result<(), String> {
+    crate::manual_ssl::validate_manual_ssl(
+        &website.domain,
+        certificate,
+        private_key,
+        ca_bundle,
+        ssl_domains,
+        chrono::Utc::now().timestamp(),
+    )?;
+    let domain = crate::manual_ssl::safe_domain(&website.domain)?;
+
+    let payload = manual_ssl_payload(certificate, private_key, ca_bundle);
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "manual-ssl-install",
+        &[&domain],
+        Some(&payload),
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return Err(result
+            .failure_detail("Could not install manual SSL")
+            .trim()
+            .to_string());
+    }
+
+    let (cert_path, key_path, ca_path) = manual_ssl_paths(&domain);
+    // `paths["ca"] = None` when no bundle was uploaded: the row must not name
+    // a file the helper just deleted, or the vhost written from it points at
+    // nothing.
+    let ca_path = if ca_bundle.is_empty() {
+        None
+    } else {
+        Some(ca_path)
+    };
+    let now = snpanel_db::sqlalchemy_now();
+    state
+        .db
+        .websites()
+        .set_ssl_state(
+            website.id,
+            true,
+            "manual",
+            // `install_manual_ssl` writes five SSL columns and
+            // `ssl_source_domain` is **not** one of them, so a site moving off
+            // a borrowed certificate keeps the stale name. Inert - every
+            // reader of that column first checks `ssl_mode in {cloudflare,
+            // shared}` - and carried across rather than tidied up, because a
+            // port that also cleans is a port whose rows stop matching.
+            website.ssl_source_domain.as_deref(),
+            Some(&cert_path),
+            Some(&key_path),
+            ca_path.as_deref(),
+            &now,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("updating the SSL state failed: {e}");
+            "Could not record the certificate".to_string()
+        })?;
+
+    // The row the wiring reads has to be the row that was just written.
+    let mut updated = website.clone();
+    updated.ssl_enabled = true;
+    updated.ssl_mode = "manual".to_string();
+    updated.ssl_cert_path = Some(cert_path);
+    updated.ssl_key_path = Some(key_path);
+    updated.ssl_ca_path = ca_path;
+
+    let waf = crate::waf::sync_website_rules(
+        state.settings.command_dry_run,
+        &updated,
+        &server_crs_mode(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(waf
+            .failure_detail("Could not save WAF rules")
+            .trim()
+            .to_string());
+    }
+    if updated.http_flood_enabled {
+        sync_http_flood_zones(state)
+            .await
+            .map_err(|_| "Could not write the HTTP flood zones".to_string())?;
+    }
+    rewrite_owned_vhost(state, &updated, RewriteOverrides::default()).await?;
+    Ok(())
+}
+
+/// Source: `_resync_shared_dependents` - a source's certificate just changed,
+/// so every borrower's vhost is repointed at it.
+async fn resync_shared_dependents(state: &AppState, source_domain: &str) {
+    let dependents = match state.db.websites().shared_dependents(source_domain).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("listing the borrowers of {source_domain} failed: {e}");
+            return;
+        }
+    };
+    for dependent in dependents {
+        // `except (RuntimeError, ValueError): pass`.
+        if let Err(message) =
+            rewrite_owned_vhost(state, &dependent, RewriteOverrides::default()).await
+        {
+            tracing::error!("repointing {} failed: {message}", dependent.domain);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The typed-in text is used when the file input was left empty.
+    ///
+    /// Source: `_read_ssl_input` - `if upload is not None and upload.filename`.
+    /// A browser submits an empty `<input type=file>` as a part with an empty
+    /// filename rather than not submitting it, so "a part arrived" is not the
+    /// same question as "a file was chosen". Reading it as the former throws
+    /// away what the administrator pasted into the box and tells them the
+    /// certificate is required while it is on screen in front of them.
+    #[test]
+    fn an_empty_file_input_does_not_shadow_the_pasted_certificate() {
+        let pasted = "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----";
+        let want = format!("{pasted}\n").into_bytes();
+
+        // No file part at all.
+        assert_eq!(
+            read_ssl_input(None, pasted, "certificate", true),
+            Ok(want.clone())
+        );
+        // A file part with an empty filename - the empty file input.
+        let empty_input = (String::new(), Vec::new());
+        assert_eq!(
+            read_ssl_input(Some(&empty_input), pasted, "certificate", true),
+            Ok(want.clone())
+        );
+        // A file part with a filename wins over the text, even when both came.
+        let chosen = ("cert.crt".to_string(), b"from the file\n".to_vec());
+        assert_eq!(
+            read_ssl_input(Some(&chosen), pasted, "certificate", true),
+            Ok(b"from the file\n".to_vec())
+        );
+        // And the filename is still checked when a file really was chosen.
+        let wrong_kind = ("cert.txt".to_string(), b"x\n".to_vec());
+        assert_eq!(
+            read_ssl_input(Some(&wrong_kind), pasted, "certificate", true),
+            Err("certificate must be .crt, .pem, .key, or .ca".to_string())
+        );
+        // Neither: the message names the part, not "invalid input".
+        assert_eq!(
+            read_ssl_input(None, "", "private_key", true),
+            Err("private_key is required".to_string())
+        );
+        // The CA bundle is the one that may be absent.
+        assert_eq!(read_ssl_input(None, "", "ca_bundle", false), Ok(Vec::new()));
+    }
+
+    /// The key never goes in `argv`.
+    ///
+    /// C37. `/proc/<pid>/cmdline` is world-readable, and a shared host is full
+    /// of accounts that are not the administrator uploading this. The payload
+    /// is JSON on stdin; the only argument is the domain.
+    #[test]
+    fn the_private_key_travels_on_stdin_as_json() {
+        let payload = manual_ssl_payload(b"CERT\n", b"KEY\n", b"CA\n");
+        let parsed: Value = serde_json::from_str(&payload).expect("it is JSON");
+        assert_eq!(parsed["certificate"], json!("CERT\n"));
+        assert_eq!(parsed["private_key"], json!("KEY\n"));
+        assert_eq!(parsed["ca_bundle"], json!("CA\n"));
+
+        // No bundle is an empty string rather than a missing key: the helper
+        // reads `ca_bundle` unconditionally and an absent one would leave the
+        // previous CA file in place beside a `fullchain.crt` that no longer
+        // includes it.
+        let none = manual_ssl_payload(b"CERT\n", b"KEY\n", b"");
+        let parsed: Value = serde_json::from_str(&none).expect("it is JSON");
+        assert_eq!(parsed["ca_bundle"], json!(""));
+    }
+
+    /// The row names the files the helper actually wrote.
+    ///
+    /// Source: `manual_ssl_paths`, and `paths["ca"] = None` when no bundle was
+    /// uploaded. A row that names `ca.crt` after the helper deleted it gives
+    /// the vhost an `ssl_trusted_certificate` pointing at nothing, and nginx
+    /// refuses to reload - after the row already says the site has SSL.
+    #[test]
+    fn the_row_names_the_files_that_exist() {
+        let (cert, key, ca) = manual_ssl_paths("a.example.com");
+        assert_eq!(cert, "/etc/nginx/snpanel/ssl/sites/a.example.com/cert.crt");
+        assert_eq!(
+            key,
+            "/etc/nginx/snpanel/ssl/sites/a.example.com/privkey.key"
+        );
+        assert_eq!(ca, "/etc/nginx/snpanel/ssl/sites/a.example.com/ca.crt");
+    }
+
+    /// Rolling back distinguishes "there was one" from "there was not".
+    ///
+    /// Source: `ManualSslSnapshot.restore` - `if cert and key:` write them
+    /// back, `else:` remove the directory. A site that had no manual
+    /// certificate before a failed upload must not be left holding half of
+    /// one: the next reload would serve a certificate whose key is missing.
+    #[test]
+    fn a_rollback_with_nothing_to_restore_removes_rather_than_writes() {
+        let verb = |cert: Option<&[u8]>, key: Option<&[u8]>| {
+            rollback_verb(&ManualSslSnapshot {
+                domain: "a.example.com".to_string(),
+                certificate: cert.map(<[u8]>::to_vec),
+                private_key: key.map(<[u8]>::to_vec),
+                ca_bundle: None,
+            })
+        };
+        assert_eq!(verb(Some(b"CERT"), Some(b"KEY")), "manual-ssl-install");
+        assert_eq!(verb(None, None), "manual-ssl-remove");
+        // Half a snapshot is not a snapshot. Writing back a certificate with
+        // no key would leave exactly the state the rollback exists to avoid.
+        assert_eq!(verb(Some(b"CERT"), None), "manual-ssl-remove");
+        assert_eq!(verb(None, Some(b"KEY")), "manual-ssl-remove");
+    }
 
     /// The `http_flood_config` column, byte for byte.
     ///

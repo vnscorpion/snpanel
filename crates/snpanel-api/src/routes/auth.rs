@@ -947,7 +947,7 @@ async fn read_form(body: axum::body::Body) -> Result<BTreeMap<String, String>, R
 }
 
 /// Form encoding: `+` is a space and `%XX` is a byte.
-fn percent_decode(raw: &[u8]) -> String {
+pub(super) fn percent_decode(raw: &[u8]) -> String {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {

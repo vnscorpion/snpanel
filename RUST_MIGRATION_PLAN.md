@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **134 of 211** | 63% |
+| API endpoints answered by Rust | **135 of 211** | 63% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -553,6 +553,86 @@ produced**:
 Both now assert against the constant or the formatter the production path
 uses.
 
+### An endpoint counter that says the work is more finished than it is
+
+Three bugs in the endpoint counters, found by making the two of them agree.
+Every one of them erred in the same direction — reporting an endpoint as
+ported when it was not:
+
+- `list-missing-endpoints.py` read only `.route("/p", get(h))` and missed the
+  chained `.route("/p", get(a).put(b))`. It reported a `PUT` that was already
+  there as unported, and I nearly wrote it a second time.
+- Its path pattern was `"([^"]+)"`, which cannot match `@router.post("")` —
+  the collection endpoints, whose path is the router's own prefix. Four
+  endpoints were invisible to it: `POST /websites`, `POST /users`,
+  `POST /databases`, and `GET`/`PATCH /panel-settings`.
+- A suffix rule — *a Rust path ending in the Python's path counts* — then
+  paired those invisible endpoints with any Rust route sharing their verb,
+  so all of them read as ported. The same rule paired
+  `DELETE /websites/{website_id}` with `DELETE
+  /websites/{website_id}/aliases/{alias_id}`: **deleting a website read as
+  ported because deleting an alias was.**
+
+The rule existed because the prefix was guessed from the module name, which
+is wrong for `panel_settings` (`/panel-settings`, a hyphen). Reading the
+prefix out of `APIRouter(prefix=…)` removes the need for it.
+
+Measured coverage did not move — `endpoint-coverage.py` had the right total
+throughout — but *which* endpoints were left was wrong by four, and the list
+is what the work is picked from.
+
+`check-counters-agree.py` now runs in `verify-all.sh` and fails if the two
+counters disagree module by module. They are built differently on purpose;
+a disagreement means one of them is lying, and twice now the liar was the
+optimist.
+
+### The two ways a PEM file can be wrong are not the same way
+
+Measured against `cryptography` 50.0.0, not reasoned about — and it
+contradicted the guess twice:
+
+- a PEM block whose **base64 does not decode** poisons the whole file. Even
+  the single-certificate reader refuses, and even when the bad block sits
+  *after* a perfectly good certificate;
+- a block that decodes to **bytes that are not a certificate** is only a
+  problem for whoever reads it. The single-certificate reader takes the first
+  block and never looks further, so junk after a good certificate loads and
+  junk before one does not. A CA bundle reads all of them, so junk anywhere
+  refuses.
+
+The first corpus could not see any of this: its "malformed" fixture was
+`ZZZZ`, which is *valid* base64 — four legal characters decoding to three
+bytes of nonsense DER. Three mutations survived against it and looked like
+code gaps. They were corpus gaps, and the fix was `!!!!`.
+
+Getting this backwards accepts a file OpenSSL will refuse at reload, after
+the row already says the site has SSL.
+
+### Two things wrong at once is the only way to see which check runs first
+
+A corpus of inputs with one fault each cannot pin the **order** of the
+checks, and the order is what the administrator reads: they are holding
+three files and the message tells them which to go and find again. Three
+mutations survived the first teeth run purely for this reason — reorder the
+extension and size checks, reorder the certificate and key checks — and all
+three died once the corpus carried a case that was over the size limit *and*
+had the wrong extension, junk in the certificate *and* junk in the key.
+
+### A key type the Python accepts and ring does not
+
+`_validate_key_matches_certificate` signs with the uploaded key and verifies
+with the certificate, which works for RSA, ECDSA, Ed25519 **and Ed448**; the
+`isinstance` chain then falls through to comparing SubjectPublicKeyInfo for
+anything else, which covers DSA. `rustls`/`ring` implements neither Ed448
+nor DSA, so a matching key of either type is refused here with `private_key
+does not match certificate`.
+
+Recorded rather than hidden. No public certificate authority issues either,
+and the difference fails in the refusing direction — the administrator is
+told no rather than handed a site nginx cannot start on. If it ever matters,
+the fix is a PKCS#8 reader that pulls the SPKI out without a signing
+operation, not a second crypto provider.
+
 ### A ported verb can answer in a shape its caller cannot read
 
 `shell.privileged` runs `sudo snpanel-helper <verb>` and captures **stdout as
@@ -900,9 +980,16 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`waf` (16 left), `malware` (11), `panel_settings` (8), `users` (4),
-`databases` (4), `addons` (2), `services` (1), `terminal` (1), then
-`provisioning` (13) and `site_apps` (10), which need the `docker` domain.
+`maintenance` (31), `malware` (11), `websites` (7), `users` (2), `waf` (1),
+`databases` (1), then `provisioning` (13) and `site_apps` (10), which need
+the `docker` domain. **76 endpoints**, counted by
+`list-missing-endpoints.py`; `check-counters-agree.py` fails the build if
+that disagrees with `endpoint-coverage.py`.
+
+Two are recorded as **not portable as they stand**: `waf GET /access-logs`
+and the `malware` job endpoints read `_file_jobs`, an in-memory dict that
+Python background threads write. Moving them needs the job state somewhere
+both processes can see, which is a Stage G question and not a routing one.
 
 **Exit:** endpoint coverage **100%**; the proxy path is never taken in normal
 operation.
