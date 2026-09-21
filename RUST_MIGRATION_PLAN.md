@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **129 of 211** | 61% |
+| API endpoints answered by Rust | **130 of 211** | 61% |
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -228,6 +228,30 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### There are two `is_domain`s in the Python and they disagree about IPs
+
+`panel_settings.is_domain` is `^(?!-)([a-z0-9-]{1,63}\.)+[a-z]{2,}$` — its
+**last label is letters only**. `site_users.is_domain`, the bash helper's, and
+`snpanel_core::Domain::parse` all allow all-digit labels, so they accept
+`192.0.2.1` as a domain.
+
+Porting `POST /panel-settings/ssl`, I reached for `Domain::parse`. It compiles,
+it reads correctly, and it lets an IP address through to certbot — which is the
+one thing that check exists to prevent, because Let's Encrypt will not sign an
+address and by the time certbot fails it has already spent attempts against a
+rate-limited account.
+
+The test caught it, because the test asserted the behaviour rather than the
+call: `192.0.2.1` must not reach certbot. It now also asserts that
+`Domain::parse` accepts it, so the trap is written down where the next reader
+meets it.
+
+The right rule was already in this file, inside `is_reportable_host`, whose own
+doc comment records the incident that produced it: the Debian test machine
+`snpanel.deb13` was reported by one implementation and not the other, because
+its top level has digits in it. It is lifted out as `is_panel_domain` rather
+than written a third time.
 
 ### I wrote the bug I had just spent two commits diagnosing
 

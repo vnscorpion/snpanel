@@ -1,9 +1,12 @@
 //! `/api/panel-settings` - ported from `api/panel_settings.py`.
 //!
-//! The reads, the settings write, the two certificate switches and the IPv6
-//! toggle. Uploading branding and changing the admin account stay with Python:
-//! one is multipart, the other needs the step-up check that guards a password
-//! change.
+//! The reads, the settings write, all three certificate paths and the IPv6
+//! toggle. Uploading branding and changing the admin account stay with
+//! Python: the first is multipart, the second needs the step-up check that
+//! guards a password change.
+//!
+//! `POST /ssl` was here until Stage D: it needs `panel-ssl-install`, and that
+//! verb was still bash.
 //!
 //! **`/public` is the only unauthenticated endpoint in the panel.** The login
 //! page needs the panel's name and its artwork; what certificate the panel
@@ -48,6 +51,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/panel-settings",
             get(full).patch(update_settings).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/ssl",
+            post(install_panel_ssl).fallback(crate::fallback),
         )
         .route(
             "/panel-settings/ssl/use-domain",
@@ -124,8 +131,27 @@ fn is_reportable_host(host: &str) -> bool {
     {
         return true;
     }
-    // A domain: at least two labels, the last all letters and at least two of
-    // them, no label empty or longer than 63, and none starting with a hyphen.
+    is_panel_domain(host)
+}
+
+/// Source: `panel_settings.is_domain`, which is
+/// `^(?!-)([a-z0-9-]{1,63}\.)+[a-z]{2,}$`.
+///
+/// **Not** `snpanel_core::Domain::parse`. There are two domain predicates in
+/// the Python and they disagree exactly where it matters here: this one's
+/// last label is letters only, so `192.0.2.1` is refused, while the other -
+/// used by `site_users` and the bash helper, and mirrored by `Domain` - allows
+/// all-digit labels and accepts an address.
+///
+/// The panel offers to request a certificate for this hostname, and Let's
+/// Encrypt will not sign an address. Using the wrong predicate sends certbot
+/// to the CA for something it cannot have, and those attempts are spent from
+/// a rate-limited account whether or not they succeed.
+///
+/// `(?!-)` guards only the very first character, not each label, so
+/// `a.-b.com` matches in Python and matches here.
+fn is_panel_domain(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
     if host.starts_with('-') {
         return false;
     }
@@ -948,6 +974,176 @@ async fn toggle_ipv6(State(state): State<AppState>, req: Request) -> Response {
     axum::Json(to_response_model(&settings)).into_response()
 }
 
+/// Source: `default_ssl_email` - `admin@<host>`, and empty for an address.
+///
+/// A certificate authority will not register an account against an IP, and
+/// an empty string is what makes the helper pass
+/// `--register-unsafely-without-email` instead of an address it would refuse.
+fn default_ssl_email(host: &str) -> String {
+    if is_panel_domain(host) {
+        format!("admin@{}", host.to_lowercase())
+    } else {
+        String::new()
+    }
+}
+
+/// Source: `(email or settings.ssl_email or default_ssl_email(host)).strip()`.
+///
+/// The administrator's own address first, then the server-wide one, then a
+/// constructed `admin@<host>`. All three may be empty, and empty is not an
+/// error: the helper then registers the ACME account without an address
+/// instead of handing the CA one it would refuse.
+///
+/// Named rather than written inline so the test drives this and not a copy.
+fn certbot_email(user_email: &str, configured: &str, host: &str) -> String {
+    [user_email, configured, &default_ssl_email(host)]
+        .into_iter()
+        .map(str::trim)
+        .find(|candidate| !candidate.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `POST /panel-settings/ssl` - issue a certificate for the panel's own name.
+///
+/// Source: `install_panel_ssl`. Proxied until now because the helper verb it
+/// needs, `panel-ssl-install`, was still bash.
+///
+/// The refusal that matters is the domain check. Let's Encrypt will not sign
+/// an IP address, so asking certbot for one fails after it has already talked
+/// to the CA - and on a rate-limited account that failure is expensive. The
+/// panel says no before any of that happens.
+async fn install_panel_ssl(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // `if panel_hostname: ... elif panel_url: ... else: raise` - the hostname
+    // wins when both are sent, which is the order the Python tries them in.
+    let hostname = payload
+        .get("panel_hostname")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let url = payload
+        .get("panel_url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+
+    let fallback_port = state.settings.panel_port.get() as i64;
+    let (host, port) = if !hostname.is_empty() {
+        let host = match normalize_panel_hostname(hostname) {
+            Ok(h) => h,
+            Err(e) => return bad_request(&e),
+        };
+        let port = match normalize_panel_port(
+            payload.get("panel_port").and_then(Value::as_i64),
+            fallback_port,
+        ) {
+            Ok(p) => p,
+            Err(e) => return bad_request(&e),
+        };
+        (host, port)
+    } else if !url.is_empty() {
+        let (host, port) = parse_panel_url(url, fallback_port);
+        match normalize_panel_hostname(&host) {
+            Ok(h) => (h, port),
+            Err(e) => return bad_request(&e),
+        }
+    } else {
+        return bad_request("Panel hostname is required");
+    };
+
+    if !is_panel_domain(&host) {
+        return bad_request("Panel SSL requires a domain name, not an IP address");
+    }
+
+    let email = certbot_email(&current.user.email, &state.settings.ssl_email, &host);
+
+    let port_text = port.to_string();
+    let mut args: Vec<&str> = vec![&host, &port_text];
+    if !email.is_empty() {
+        args.push(&email);
+    }
+    // Minutes, not seconds: certbot answers an HTTP-01 challenge over the
+    // network. The same 300s the sibling switch uses.
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "panel-ssl-install",
+        &args,
+        None,
+        Some(&["bash", "-lc", "true"]),
+        Some(300),
+    )
+    .await;
+    if !result.ok() {
+        return internal_error_with(&tail_500(
+            &result.failure_detail("Could not install panel SSL"),
+        ));
+    }
+
+    // `data["panel_url"] = f"https://{host}:{port}"` - written to the settings
+    // file, not merely returned, because the panel reads it back on restart to
+    // know what it is reachable as.
+    let mut raw = raw_settings();
+    if let Some(map) = raw.as_object_mut() {
+        map.insert(
+            "panel_url".to_string(),
+            Value::String(format!("https://{host}:{port}")),
+        );
+    }
+    if let Err(e) = write_raw(&raw) {
+        tracing::error!("writing the panel settings failed: {e}");
+        return crate::errors::internal_error();
+    }
+
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "install_panel_ssl",
+        &format!("https://{host}:{port}"),
+    )
+    .await;
+
+    let mut out = current_settings(&state).await;
+    if let Some(map) = out.as_object_mut() {
+        let message = result.stdout.trim();
+        map.insert(
+            "message".to_string(),
+            Value::String(if message.is_empty() {
+                format!("Panel SSL enabled for {host}")
+            } else {
+                message.to_string()
+            }),
+        );
+    }
+    axum::Json(out).into_response()
+}
+
+/// A 500 carrying the reason, which is what `RuntimeError` becomes in
+/// FastAPI's handler here - not a 400.
+///
+/// The distinction is not cosmetic: a 400 tells the administrator they asked
+/// for something wrong, and certbot failing to reach the CA is not that.
+fn internal_error_with(detail: &str) -> Response {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(json!({ "detail": detail })),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,5 +1338,81 @@ mod tests {
             parse_panel_url("https://example.com", 2222),
             ("example.com".to_string(), 2222)
         );
+    }
+
+    /// The address certbot registers with, and why empty is allowed.
+    ///
+    /// Source: `(email or settings.ssl_email or default_ssl_email(host)).strip()`.
+    /// An empty result is not a failure - it makes the helper pass
+    /// `--register-unsafely-without-email`, which is the right answer when
+    /// there is no address to give and better than handing a CA one it will
+    /// refuse.
+    #[test]
+    fn the_certbot_address_falls_back_in_the_pythons_order() {
+        // The administrator's own, first.
+        assert_eq!(
+            certbot_email("admin@example.com", "ops@example.net", "panel.example.org"),
+            "admin@example.com"
+        );
+        // Then the server-wide one.
+        assert_eq!(
+            certbot_email("", "ops@example.net", "panel.example.org"),
+            "ops@example.net"
+        );
+        // Then one built from the host.
+        assert_eq!(
+            certbot_email("", "", "panel.example.org"),
+            "admin@panel.example.org"
+        );
+        // Whitespace is not an address: `.strip()` runs before the test for
+        // emptiness, so a settings file with a stray space falls through
+        // rather than sending certbot a blank.
+        assert_eq!(
+            certbot_email("   ", "  ", "panel.example.org"),
+            "admin@panel.example.org"
+        );
+        assert_eq!(
+            certbot_email("  admin@example.com  ", "", "panel.example.org"),
+            "admin@example.com"
+        );
+
+        // An IP address gets no constructed address, so the whole chain can
+        // come back empty - and that is the case the helper handles by
+        // registering without one.
+        assert_eq!(certbot_email("", "", "192.0.2.1"), "");
+        assert_eq!(default_ssl_email("192.0.2.1"), "");
+        assert_eq!(default_ssl_email("localhost"), "");
+        assert_eq!(
+            default_ssl_email("PANEL.Example.ORG"),
+            "admin@panel.example.org"
+        );
+    }
+
+    /// Let's Encrypt will not sign an IP address.
+    ///
+    /// The refusal has to happen before certbot is called, not after: by the
+    /// time certbot fails it has already talked to the CA, and on a
+    /// rate-limited account those attempts are spent.
+    ///
+    /// This is the same check the handler makes, on the same type.
+    #[test]
+    fn panel_ssl_refuses_an_address_before_certbot_is_reached() {
+        for host in ["panel.example.org", "xn--bcher-kva.example", "a.io"] {
+            assert!(is_panel_domain(host), "{host} should be accepted");
+        }
+        // An address, a bare name, and the case that made this fail first:
+        // `Domain::parse` - the *other* domain predicate in the Python -
+        // accepts every one of these, which is why using it here let
+        // `192.0.2.1` through to certbot.
+        for host in ["192.0.2.1", "10.0.0.1", "localhost", "", "::1", "a.b"] {
+            assert!(!is_panel_domain(host), "{host} must not reach certbot");
+        }
+        assert!(
+            snpanel_core::Domain::parse("192.0.2.1").is_ok(),
+            "the other predicate accepts an address - that is the trap"
+        );
+        // The top level is letters only: the Debian test machine
+        // `snpanel.deb13` is a real host and is not one certbot can serve.
+        assert!(!is_panel_domain("snpanel.deb13"));
     }
 }
