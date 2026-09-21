@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **130 of 211** | 61% |
+| API endpoints answered by Rust | **131 of 211** | 62% |
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |

@@ -1,12 +1,13 @@
 //! `/api/panel-settings` - ported from `api/panel_settings.py`.
 //!
 //! The reads, the settings write, all three certificate paths and the IPv6
-//! toggle. Uploading branding and changing the admin account stay with
-//! Python: the first is multipart, the second needs the step-up check that
-//! guards a password change.
+//! toggle, and the administrator's own account. Uploading branding stays
+//! with Python, because it is multipart.
 //!
-//! `POST /ssl` was here until Stage D: it needs `panel-ssl-install`, and that
-//! verb was still bash.
+//! `POST /ssl` was proxied until Stage D: it needs `panel-ssl-install`, and
+//! that verb was still bash. `PATCH /admin-account` was proxied for the
+//! step-up check, which `users::set_password` already carried - the two share
+//! it now rather than holding a copy each.
 //!
 //! **`/public` is the only unauthenticated endpoint in the panel.** The login
 //! page needs the panel's name and its artwork; what certificate the panel
@@ -28,7 +29,7 @@
 
 use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::config::Settings;
@@ -51,6 +52,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/panel-settings",
             get(full).patch(update_settings).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/admin-account",
+            patch(update_admin_account).fallback(crate::fallback),
         )
         .route(
             "/panel-settings/ssl",
@@ -1142,6 +1147,186 @@ fn internal_error_with(detail: &str) -> Response {
         axum::Json(json!({ "detail": detail })),
     )
         .into_response()
+}
+
+/// `PATCH /panel-settings/admin-account` - the signed-in administrator's own
+/// email and password.
+///
+/// Source: `update_admin_account`. Proxied until now for the step-up check,
+/// which `users::set_password` already carries: changing your own password
+/// takes the current one, and the TOTP code as well when 2FA is on. Being an
+/// administrator is not enough on its own, because a stolen admin session
+/// would otherwise be able to change that admin's own password and lock the
+/// owner out.
+///
+/// The order is the Python's and it matters at one point: the email
+/// uniqueness check runs **before** the password is set. The other way round
+/// leaves a request that changed the password, failed on the email, and
+/// reported failure - so the administrator does not know their password moved.
+async fn update_admin_account(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Pydantic validates the model before the handler runs, so the field
+    // checks come before the role check. That is not only a status code: the
+    // other order would tell a caller whether they are an administrator
+    // before looking at what they sent.
+    let password = match payload.get("password") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => return crate::errors::string_type("password", other),
+    };
+    if let Some(password) = password.as_deref() {
+        if let Err(r) = crate::errors::check_length("password", password, 12, 72) {
+            return r;
+        }
+        if let Err(r) = super::users::check_linux_login_password(password) {
+            return r;
+        }
+    }
+    let email = match payload.get("email") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(other) => return crate::errors::string_type("email", other),
+    };
+    if let Some(email) = email.as_deref() {
+        if snpanel_core::Email::parse(email).is_err() {
+            return crate::errors::value_error(
+                "email",
+                "value is not a valid email address",
+                &Value::String(email.to_string()),
+            );
+        }
+    }
+
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+
+    // `password_changed = bool(payload.password)` - an empty string is
+    // falsy, so sending `""` changes nothing rather than setting an empty
+    // password. The length check above has already refused it anyway.
+    let password_changed = password.as_deref().is_some_and(|p| !p.is_empty());
+    if password_changed {
+        if let Err(r) = super::users::require_step_up(&state, &current, &payload) {
+            return r;
+        }
+    }
+
+    // Before anything is written.
+    let email_changed = email
+        .as_deref()
+        .is_some_and(|e| e != current.user.email.as_str());
+    if email_changed {
+        let candidate = email.as_deref().unwrap_or_default();
+        match state
+            .db
+            .users()
+            .email_taken_by_other(candidate, current.user.id)
+            .await
+        {
+            Ok(true) => {
+                return crate::errors::error(
+                    axum::http::StatusCode::CONFLICT,
+                    "Email already in use",
+                )
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!("checking the email failed: {e}");
+                return crate::errors::internal_error();
+            }
+        }
+    }
+
+    if password_changed {
+        let password = password.clone().unwrap_or_default();
+        // The system account first, as `set_panel_user_password` does: a
+        // panel password that changed while SFTP kept the old one is the
+        // confusing half.
+        let linux_user = match snpanel_core::types::PanelUsername::parse(
+            current.user.username.trim().to_lowercase().as_str(),
+        ) {
+            Ok(u) => u,
+            Err(e) => return bad_request(&format!("invalid username: {e}")),
+        };
+        let result = crate::shell::privileged(
+            state.settings.command_dry_run,
+            "panel-user-password",
+            &[linux_user.as_str()],
+            Some(&format!("{password}\n")),
+            Some(&["true"]),
+        )
+        .await;
+        if !result.ok() {
+            tracing::error!(
+                "setting the system password failed: {}",
+                result.failure_detail("panel-user-password")
+            );
+            return crate::errors::internal_error();
+        }
+
+        let hashed = match snpanel_core::crypto::password::hash_password(&password) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!("hashing failed: {e}");
+                return crate::errors::internal_error();
+            }
+        };
+        if let Err(e) = state
+            .db
+            .users()
+            .set_hashed_password(current.user.id, &hashed)
+            .await
+        {
+            tracing::error!("storing the password failed: {e}");
+            return crate::errors::internal_error();
+        }
+        // `token_version += 1` - every session issued before this one ends,
+        // which is the point of changing a password you think was stolen.
+        if let Err(e) = state.db.users().bump_token_version(current.user.id).await {
+            tracing::error!("bumping the token version failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
+
+    if email_changed {
+        let fields = snpanel_db::UserFields {
+            email: email.clone(),
+            ..Default::default()
+        };
+        if let Err(e) = state
+            .db
+            .users()
+            .update(current.user.id, &fields, false)
+            .await
+        {
+            tracing::error!("updating the admin email failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
+
+    audit_panel(
+        &state,
+        &parts,
+        current.user.id,
+        "update_admin_account",
+        &current.user.username,
+    )
+    .await;
+
+    axum::Json(json!({
+        "message": "Admin account updated",
+        "password_changed": password_changed,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

@@ -468,6 +468,68 @@ fn literal_error(field: &str, input: &Value) -> Response {
 /// first and the database moves second, so a refusal leaves nothing changed
 /// anywhere. The other order would leave the panel and SFTP disagreeing about
 /// what the password is, with no way to tell which one a user should try.
+/// Source: `require_sensitive_action_step_up`.
+///
+/// Changing your own password takes the current one, and the TOTP code as
+/// well when 2FA is on. Being an administrator is deliberately not enough: a
+/// stolen admin session would otherwise change that admin's own password and
+/// lock the owner out of their own panel.
+///
+/// Named and shared because `panel_settings::update_admin_account` guards the
+/// same thing the same way, and two copies of an authentication check is one
+/// more than should exist.
+pub(super) fn require_step_up(
+    state: &AppState,
+    current: &CurrentUser,
+    payload: &Value,
+) -> Result<(), Response> {
+    let given = payload
+        .get("current_password")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if given.is_empty()
+        || !snpanel_core::crypto::password::verify_password(given, &current.user.hashed_password)
+    {
+        return Err(crate::errors::error(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Current password is incorrect",
+        ));
+    }
+    if current.user.totp_enabled {
+        let code = payload.get("code").and_then(|v| v.as_str()).unwrap_or("");
+        if !super::auth::verify_totp(state, &current.user, code) {
+            return Err(crate::errors::error(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Invalid authentication code",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Source: `_validate_linux_login_password`.
+///
+/// The panel password is synced to the Linux account, and `chpasswd` reads
+/// `user:password` lines - so a colon or a newline in it is not a weak
+/// password, it is a different instruction. A newline could set a second
+/// account's password entirely.
+///
+/// The helper refuses these too, and that is the boundary that matters. This
+/// exists so the refusal is the 422 Pydantic produces rather than the 500 a
+/// helper failure becomes: the caller is told what is wrong with what they
+/// sent, not that the server broke.
+pub(super) fn check_linux_login_password(value: &str) -> Result<(), Response> {
+    if value.contains([':', '\r', '\n', '\0']) {
+        return Err(crate::errors::value_error(
+            "password",
+            "password cannot contain ':', newlines, or NUL characters because it is \
+             synced to the Linux/SFTP account",
+            &Value::String(value.to_string()),
+        ));
+    }
+    Ok(())
+}
+
 async fn set_password(
     State(state): State<AppState>,
     Path(user_id): Path<i64>,
@@ -497,37 +559,21 @@ async fn set_password(
     if let Err(r) = crate::errors::check_length("password", password, 12, 72) {
         return r;
     }
+    // `validate_sftp_password` on the model. This was missing: the helper
+    // refuses a colon or a newline - which is the boundary that matters - but
+    // its refusal reached the caller as a 500 instead of the 422 Pydantic
+    // produces for the same input.
+    if let Err(r) = check_linux_login_password(password) {
+        return r;
+    }
     let password = password.to_string();
 
     if user_id != current.user.id {
         if let Err(r) = require_admin(&current) {
             return r;
         }
-    } else {
-        let given = payload
-            .get("current_password")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if given.is_empty()
-            || !snpanel_core::crypto::password::verify_password(
-                given,
-                &current.user.hashed_password,
-            )
-        {
-            return crate::errors::error(
-                axum::http::StatusCode::UNAUTHORIZED,
-                "Current password is incorrect",
-            );
-        }
-        if current.user.totp_enabled {
-            let code = payload.get("code").and_then(|v| v.as_str()).unwrap_or("");
-            if !super::auth::verify_totp(&state, &current.user, code) {
-                return crate::errors::error(
-                    axum::http::StatusCode::UNAUTHORIZED,
-                    "Invalid authentication code",
-                );
-            }
-        }
+    } else if let Err(r) = require_step_up(&state, &current, &payload) {
+        return r;
     }
 
     let user = match state.db.users().by_id(user_id).await {
@@ -956,5 +1002,39 @@ mod tests {
         // that is easiest to drop.
         assert_eq!(vhost_overrides(true).aliases.as_deref(), Some(&[][..]));
         assert_eq!(vhost_overrides(false).aliases, None);
+    }
+
+    /// `_validate_linux_login_password`.
+    ///
+    /// The panel password is synced to the Linux account, and `chpasswd`
+    /// reads `user:password` lines. A newline in it is not a weak password -
+    /// it is a second line, and a second line sets **another account's**
+    /// password. A colon is a field separator.
+    ///
+    /// The helper refuses these too, and that is the boundary that matters;
+    /// this exists so the refusal reaches the caller as the 422 Pydantic
+    /// produces rather than the 500 a helper failure becomes.
+    #[test]
+    fn a_panel_password_may_not_carry_a_colon_or_a_newline() {
+        assert!(check_linux_login_password("correct horse battery").is_ok());
+        assert!(check_linux_login_password("p@ssw0rd!#$%^&*()-_=+").is_ok());
+        // Unicode is fine: the rule is about four specific characters.
+        assert!(check_linux_login_password("mật-khẩu-rất-dài-12").is_ok());
+
+        for bad in [
+            "pass:word-long",
+            "pass\nword-long",
+            "pass\rword-long",
+            "pass\0word-long",
+            // The shape that matters: a newline followed by another account.
+            "aaaaaaaaaaaa\nroot:owned",
+        ] {
+            let err = check_linux_login_password(bad).expect_err(bad);
+            assert_eq!(
+                err.status(),
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "{bad:?} must be a 422, not a 500 from the helper"
+            );
+        }
     }
 }

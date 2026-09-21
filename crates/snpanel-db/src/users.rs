@@ -91,6 +91,21 @@ impl<'a> UserRepo<'a> {
         Ok(row)
     }
 
+    /// Is this address already on **another** account?
+    ///
+    /// Source: `db.query(User).filter(User.email == next_email, User.id != id)`.
+    /// The exclusion is what lets an administrator submit their own address
+    /// unchanged without being told it is taken.
+    pub async fn email_taken_by_other(&self, email: &str, id: i64) -> Result<bool, DbError> {
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1")
+                .bind(email)
+                .bind(id)
+                .fetch_optional(self.pool)
+                .await?;
+        Ok(found.is_some())
+    }
+
     pub async fn count(&self) -> Result<i64, DbError> {
         Ok(sqlx::query_scalar("SELECT COUNT(*) FROM users")
             .fetch_one(self.pool)
