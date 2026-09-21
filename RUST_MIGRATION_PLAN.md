@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **135 of 211** | 63% |
+| API endpoints answered by Rust | **137 of 211** | 64% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -553,6 +553,67 @@ produced**:
 Both now assert against the constant or the formatter the production path
 uses.
 
+### A comment saying "not ported yet" was load-bearing, and I read it as a note
+
+`rewrite_website_vhost` carried this:
+
+> a borrowed one (cloudflare, shared) is resolved from its source domain,
+> which is not ported yet, so those fall back to no explicit paths and
+> `preserve_existing_ssl` keeps whatever certbot left in the file.
+
+True and harmless while nothing put a site *into* shared mode. Then
+`POST /websites/{id}/ssl/shared` shipped on top of it, one commit later, and
+a site newly borrowing a certificate has nothing in its file to preserve —
+so the row said `ssl_enabled = true` and the vhost served no certificate at
+all. **Exactly the disagreement that endpoint's rollback exists to prevent**,
+arriving through the one path the rollback does not watch: the wiring
+succeeded, it just wired nothing.
+
+Two lessons, and the second is the one that generalises:
+
+- a "not ported yet" comment is a **precondition on every future caller**,
+  not a note. Nothing checks it, and the next endpoint to call that function
+  inherits the gap silently;
+- the rollback protects the row against a wiring *failure*. It cannot see a
+  wiring success that did nothing, and no test asked what the wiring
+  actually produced.
+
+### `include_ssl` and `preserve_existing_ssl` are different switches
+
+Both end in a vhost serving no TLS, which is why they read as one:
+
+- **suspend** throws `preserve_existing_ssl=False`: stop carrying forward
+  whatever certbot wrote into the file. A suspended site on an uploaded
+  certificate still *names* it, because the row still says that is what it
+  has;
+- **Let's Encrypt** throws `include_ssl=False`: name no certificate at all,
+  because certbot is about to edit the file and the uploaded files are about
+  to be deleted. A vhost still pointing at them leaves nginx unable to reload
+  the moment they go.
+
+The decision is now `vhost_ssl_paths`, named rather than two lines inside an
+async database-reading function that no test could drive. The suspend test
+builds its own `VhostInput`, so it would have passed whatever `include_ssl`
+did — the same shape of hole that once made every mutation of the suspend
+handler pass.
+
+### Two mutations that could not be caught, again
+
+Both survived this session's teeth run and neither was a code gap:
+
+- *compare the alias raw rather than folded* in `certbot_domains`. The fold
+  is the Python's and it is **redundant**: `safe_domain_list` folds and
+  de-duplicates afterwards, so pushing a `www.` that is already an alias
+  under a different spelling changes nothing. Kept for parity, recorded as
+  redundant in the code, mutation removed;
+- *prefer stdout over stderr* was written against the wrong function — a
+  no-op chain in `command_error` that never changed behaviour. The order
+  lives in `CommandResult::failure_detail`, and the mutation now points
+  there.
+
+A mutation that cannot fail proves nothing about the test, and leaving it in
+the list is worse than having no mutation: it reads as coverage.
+
 ### An endpoint counter that says the work is more finished than it is
 
 Three bugs in the endpoint counters, found by making the two of them agree.
@@ -980,9 +1041,9 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `websites` (7), `users` (2), `waf` (1),
+`maintenance` (31), `malware` (11), `websites` (5), `users` (2), `waf` (1),
 `databases` (1), then `provisioning` (13) and `site_apps` (10), which need
-the `docker` domain. **76 endpoints**, counted by
+the `docker` domain. **74 endpoints**, counted by
 `list-missing-endpoints.py`; `check-counters-agree.py` fails the build if
 that disagrees with `endpoint-coverage.py`.
 

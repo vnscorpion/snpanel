@@ -696,7 +696,7 @@ async fn unsuspend(
 /// suspended customer's alias domains stop being served too. Unsuspending
 /// passes no overrides at all, so every setting comes back from the site's
 /// own row.
-fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverrides {
+pub(super) fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverrides {
     if !suspending {
         return super::websites::RewriteOverrides::default();
     }
@@ -707,6 +707,11 @@ fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverrides {
         app_type: Some("static"),
         rewrite_mode: Some("none"),
         preserve_existing_ssl: Some(false),
+        // Suspension does not pass `include_ssl=False`: the Python leaves the
+        // keyword at its default here, and the certificate paths are dropped
+        // by `preserve_existing_ssl` instead. The two are not the same switch
+        // and only one of them is thrown on this path.
+        include_ssl: None,
     }
 }
 

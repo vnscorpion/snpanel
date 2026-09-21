@@ -104,6 +104,17 @@ impl<'a> DatabaseRepo<'a> {
         .fetch_optional(self.pool)
         .await?)
     }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.website_id ==
+    /// website.id).first()` - the database a site is deleted along with.
+    pub async fn by_website(&self, website_id: i64) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE website_id = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(website_id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
 }
 
 #[cfg(test)]

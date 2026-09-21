@@ -366,13 +366,30 @@ pub(super) async fn audit_action(
     action: &str,
     target: &str,
 ) {
+    audit_action_detail(state, parts, actor_id, action, target, "").await
+}
+
+/// [`audit_action`] with the Python's `detail=` argument.
+///
+/// `delete_website` passes the certificate note, which is the only record
+/// that a lineage was **kept** - the row it was attached to is gone, and
+/// without this the next administrator has no way to know the certificate is
+/// still on the machine.
+pub(super) async fn audit_action_detail(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    actor_id: i64,
+    action: &str,
+    target: &str,
+    detail: &str,
+) {
     let ip = crate::client::audit_ip(parts);
     let ua = parts
         .headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let detail = snpanel_db::AuditRepo::detail_with_request("", &ip, ua);
+    let detail = snpanel_db::AuditRepo::detail_with_request(detail, &ip, ua);
     if let Err(e) = state
         .db
         .audits()

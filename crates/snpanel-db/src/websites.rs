@@ -458,6 +458,52 @@ impl<'a> WebsiteRepo<'a> {
             .await?;
         Ok(count > 0)
     }
+
+    /// Every other site's domain, for deciding whether a certificate is still
+    /// in use.
+    ///
+    /// Source: `release_site_certificates` - `db.query(Website.domain)` with
+    /// `Website.id != exclude_website_id`.
+    pub async fn domains_except(&self, exclude_id: i64) -> Result<Vec<String>, DbError> {
+        Ok(
+            sqlx::query_scalar::<_, String>("SELECT domain FROM websites WHERE id != ?")
+                .bind(exclude_id)
+                .fetch_all(self.pool)
+                .await?,
+        )
+    }
+
+    /// The same for aliases, excluding the deleted site's own.
+    pub async fn alias_domains_except(&self, exclude_id: i64) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT domain FROM website_aliases WHERE website_id != ?",
+        )
+        .bind(exclude_id)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Source: `db.query(WebsiteAlias).filter(...).delete()`.
+    pub async fn alias_delete_all(&self, website_id: i64) -> Result<u64, DbError> {
+        let done = sqlx::query("DELETE FROM website_aliases WHERE website_id = ?")
+            .bind(website_id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Source: `db.delete(website)`.
+    ///
+    /// The aliases go first and separately: SQLite enforces foreign keys only
+    /// when `PRAGMA foreign_keys` is on, so a cascade cannot be relied on to
+    /// take them.
+    pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM websites WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
 }
 
 /// `id, domain` -> `w.id, w.domain`, so the join above is unambiguous.

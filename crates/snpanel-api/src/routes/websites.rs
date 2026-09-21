@@ -41,6 +41,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/websites", get(list).fallback(crate::fallback))
         .route(
+            "/websites/{website_id}",
+            axum::routing::delete(delete_website).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/aliases",
             get(aliases).post(create_alias).fallback(crate::fallback),
         )
@@ -71,6 +75,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/websites/{website_id}/nginx-config/reset",
             axum::routing::post(reset_nginx_config).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/ssl",
+            post(enable_ssl).fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/ssl/cloudflare-zone",
@@ -823,6 +831,87 @@ fn domains_by_mode(aliases: &[snpanel_db::WebsiteAlias], mode: &str) -> Vec<Stri
         .collect()
 }
 
+/// Which certificate paths a rewrite writes into the file.
+///
+/// Source: `_rewrite_website_vhost` - `if overrides.pop("include_ssl", True):
+/// rewrite_kwargs.update(_rewrite_ssl_kwargs(website))`.
+///
+/// `include_ssl` and `preserve_existing_ssl` are **different switches** and
+/// only one of them is thrown on any given path. Suspension throws the
+/// second: the certificate paths certbot left in the file are not carried
+/// into a vhost deliberately serving nothing, but a suspended site on an
+/// uploaded certificate still names it, because the row still says that is
+/// what it has. The Let's Encrypt path throws the first: the file is
+/// rewritten with no certificate at all, because certbot is about to edit it
+/// and the uploaded files are about to be deleted.
+fn vhost_ssl_paths(
+    website: &snpanel_db::Website,
+    overrides: &RewriteOverrides,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if overrides.include_ssl == Some(false) {
+        return (None, None, None);
+    }
+    rewrite_ssl_paths(website)
+}
+
+/// Source: `_rewrite_ssl_kwargs`.
+///
+/// Which certificate this site's vhost should point at, by mode.
+fn rewrite_ssl_paths(
+    website: &snpanel_db::Website,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let filled = |v: &Option<String>| v.clone().filter(|s| !s.is_empty());
+    if website.ssl_mode == "manual" {
+        let cert = filled(&website.ssl_cert_path);
+        let key = filled(&website.ssl_key_path);
+        if cert.is_some() && key.is_some() {
+            return (cert, key, filled(&website.ssl_ca_path));
+        }
+        return (None, None, None);
+    }
+    if matches!(website.ssl_mode.as_str(), "cloudflare" | "shared") {
+        if let Some(source) = filled(&website.ssl_source_domain) {
+            return borrowed_ssl_paths(&source);
+        }
+    }
+    (None, None, None)
+}
+
+/// Source: `_borrowed_ssl_paths` - where the certificate a site is *borrowing*
+/// actually lives.
+///
+/// Its own manual directory first, because that one is group-readable by the
+/// panel and can be checked. Otherwise the source's certbot lineage, returned
+/// **unchecked**: `/etc/letsencrypt/live` is root-only, so stat'ing it as
+/// `snpanel` answers "no certificate" for every site that has one. Whoever put
+/// this site into shared or cloudflare mode has already verified the
+/// certificate through the helper.
+fn borrowed_ssl_paths(source_domain: &str) -> (Option<String>, Option<String>, Option<String>) {
+    borrowed_ssl_paths_with(source_domain, |p| PathBuf::from(p).is_file())
+}
+
+/// [`borrowed_ssl_paths`] with the existence check handed in.
+///
+/// It is an argument so the choice can be tested without a filesystem: a test
+/// that stats real paths is true on any machine where those paths do not
+/// exist, whatever the code under it says.
+fn borrowed_ssl_paths_with(
+    source_domain: &str,
+    exists: impl Fn(&str) -> bool,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let (cert, key, ca) = manual_ssl_paths(source_domain);
+    if exists(&cert) && exists(&key) {
+        let ca = exists(&ca).then_some(ca);
+        return (Some(cert), Some(key), ca);
+    }
+    let live = PathBuf::from("/etc/letsencrypt/live").join(source_domain);
+    (
+        Some(live.join("fullchain.pem").to_string_lossy().into_owned()),
+        Some(live.join("privkey.pem").to_string_lossy().into_owned()),
+        None,
+    )
+}
+
 /// What a rewrite may override, as `_rewrite_website_vhost`'s keyword
 /// arguments do.
 #[derive(Default)]
@@ -838,6 +927,11 @@ pub(super) struct RewriteOverrides {
     /// paths certbot left in the file are not carried into a vhost that is
     /// deliberately serving nothing.
     pub(super) preserve_existing_ssl: Option<bool>,
+    /// `include_ssl=False` on the Let's Encrypt path: the file is rewritten
+    /// **without** a certificate on purpose, because `certbot --nginx` edits a
+    /// plain HTTP server block and cannot work from one that already claims to
+    /// serve TLS from a file that is about to be deleted.
+    pub(super) include_ssl: Option<bool>,
 }
 
 /// `log_action(db, user.id, action, target)` - a detail of `""` and no
@@ -882,6 +976,8 @@ async fn rewrite_website_vhost(
     website: &snpanel_db::Website,
     overrides: RewriteOverrides,
 ) -> Result<String, Response> {
+    // Read before anything moves a field out of `overrides`.
+    let (cert, key, ca) = vhost_ssl_paths(website, &overrides);
     let aliases_rows = state
         .db
         .websites()
@@ -920,20 +1016,6 @@ async fn rewrite_website_vhost(
         "public_html"
     } else {
         &website.document_root
-    };
-
-    // Source: `_rewrite_ssl_kwargs` - a manual certificate is passed through;
-    // a borrowed one (cloudflare, shared) is resolved from its source domain,
-    // which is not ported yet, so those fall back to no explicit paths and
-    // `preserve_existing_ssl` keeps whatever certbot left in the file.
-    let (cert, key, ca) = if website.ssl_mode == "manual" {
-        (
-            website.ssl_cert_path.clone(),
-            website.ssl_key_path.clone(),
-            website.ssl_ca_path.clone(),
-        )
-    } else {
-        (None, None, None)
     };
 
     let root_path = std::path::PathBuf::from(&website.root_path);
@@ -2621,9 +2703,815 @@ async fn resync_shared_dependents(state: &AppState, source_domain: &str) {
     }
 }
 
+/// The names certbot is asked to put on the certificate.
+///
+/// Source: `ssl.issue_ssl`. **`www.` is added even when nobody asked for it**,
+/// because nginx's own vhost always listens on `www.<domain>` (see
+/// `nginx._server_names`) whether or not it is an alias - a certificate
+/// covering only the bare name leaves every visitor who types "www." with a
+/// hard TLS mismatch instead of the site.
+///
+/// It is added *here* rather than in `safe_domain_list`, which is the shared
+/// helper: that one also builds the list a manually-uploaded certificate is
+/// checked against, and plenty of real certificates cover only the bare domain
+/// on purpose.
+fn certbot_domains(domain: &str, aliases: &[String]) -> Result<Vec<String>, String> {
+    let safe = crate::manual_ssl::safe_domain(domain)?;
+    let mut extra = aliases.to_vec();
+    if !safe.starts_with("www.") {
+        let www = format!("www.{safe}");
+        // The fold here is the Python's (`existing = {_safe_domain(a) for a
+        // in extra_aliases}`) and it is **redundant**: `safe_domain_list`
+        // below folds and de-duplicates too, so pushing a `www.` that is
+        // already an alias under a different spelling changes nothing. Kept
+        // because it is what the Python does, and recorded as redundant
+        // because no test can tell the two apart - a mutation that removed
+        // the fold survived, and that is the honest reason why.
+        let mut already = false;
+        for alias in aliases {
+            if crate::manual_ssl::safe_domain(alias)? == www {
+                already = true;
+            }
+        }
+        if !already {
+            extra.push(www);
+        }
+    }
+    crate::manual_ssl::safe_domain_list(domain, &extra)
+}
+
+/// `_command_error(result)`.
+fn command_error(result: &crate::shell::CommandResult) -> String {
+    result
+        .failure_detail(&format!("Command failed with code {}", result.returncode))
+        .trim()
+        .to_string()
+}
+
+/// Source: `ssl.remove_manual_ssl_files` - the uploaded certificate this site
+/// is no longer using.
+///
+/// Called after the row has been cleared and before it is committed, so a
+/// failure here leaves files behind rather than a row pointing at files that
+/// are gone. That is the right way round: the orphan sweep finds the files.
+///
+/// The Python falls back to unlinking each path itself when the helper verb
+/// fails. That fallback is unreachable on a real installation - the files are
+/// `root:snpanel 0640` in a `0750` directory and the panel account cannot
+/// unlink them - so it is not ported; the failure is logged instead.
+async fn remove_manual_ssl_files(state: &AppState, cert_path: Option<&str>) {
+    let Some(cert_path) = cert_path.filter(|p| !p.is_empty()) else {
+        return;
+    };
+    let Some(domain) = PathBuf::from(cert_path)
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "manual-ssl-remove",
+        &[&domain],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        tracing::error!(
+            "could not remove the uploaded certificate for {domain}: {}",
+            result.failure_detail("no detail").trim()
+        );
+    }
+}
+
+/// `POST /websites/{website_id}/ssl`.
+///
+/// Source: `enable_ssl`. Ask Let's Encrypt for a certificate.
+///
+/// **The manual-certificate case is the whole difficulty.** `certbot --nginx`
+/// edits a plain HTTP server block; it cannot work from one already claiming
+/// to serve TLS from files that are about to be deleted. So a site on an
+/// uploaded certificate has its vhost rewritten *without* SSL first - and if
+/// certbot then fails, the site is left serving nothing at all unless the
+/// uploaded certificate is put back and the vhost rewritten again. Both of
+/// those are on the failure path below, and the site is down until they run.
+async fn enable_ssl(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    current: CurrentUser,
+) -> Response {
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = block_if_source(&state, &website).await {
+        return r;
+    }
+
+    let was_manual = website.ssl_mode == "manual";
+    let previous_cert_path = website.ssl_cert_path.clone();
+    let snapshot = snapshot_manual_ssl(&website.domain).await;
+
+    if was_manual {
+        let prepared = rewrite_website_vhost(
+            &state,
+            &website,
+            RewriteOverrides {
+                preserve_existing_ssl: Some(false),
+                include_ssl: Some(false),
+                ..RewriteOverrides::default()
+            },
+        )
+        .await;
+        if prepared.is_err() {
+            return bad_request(&format!(
+                "Cannot prepare Nginx config for Let's Encrypt: could not rewrite the vhost for {}",
+                website.domain
+            ));
+        }
+    }
+
+    let aliases_rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let ssl_domains: Vec<String> = domains_by_mode(&aliases_rows, "alias")
+        .into_iter()
+        .chain(domains_by_mode(&aliases_rows, "redirect"))
+        .collect();
+    let domains = match certbot_domains(&website.domain, &ssl_domains) {
+        Ok(d) => d,
+        Err(message) => return bad_request(&message),
+    };
+
+    let mut args: Vec<&str> = domains.iter().map(String::as_str).collect();
+    // `helper_args.append(settings.ssl_email)` - the email is the **last**
+    // argument, and the argv parser refuses it anywhere else.
+    let email = state.settings.ssl_email.clone();
+    if !email.is_empty() {
+        args.push(&email);
+    }
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "certbot-issue",
+        &args,
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        if was_manual {
+            restore_manual_ssl(&state, &snapshot).await;
+            // `except (RuntimeError, ValueError): pass` - the 500 below carries
+            // certbot's reason, and a second failure here would replace it.
+            let _ = rewrite_owned_vhost(&state, &website, RewriteOverrides::default()).await;
+        }
+        // A 500, not a 400: the Python distinguishes "you sent something wrong"
+        // from "the certificate authority said no", and an administrator
+        // retrying a rate-limited domain needs to know which one it was.
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &command_error(&result),
+        );
+    }
+
+    let now = snpanel_db::sqlalchemy_now();
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_ssl_state(
+            website.id,
+            true,
+            "letsencrypt",
+            None,
+            None,
+            None,
+            None,
+            &now,
+        )
+        .await
+    {
+        tracing::error!("updating the SSL state failed: {e}");
+        return internal_error();
+    }
+    remove_manual_ssl_files(&state, previous_cert_path.as_deref()).await;
+
+    let mut updated = website.clone();
+    updated.ssl_enabled = true;
+    updated.ssl_mode = "letsencrypt".to_string();
+    updated.ssl_source_domain = None;
+    updated.ssl_cert_path = None;
+    updated.ssl_key_path = None;
+    updated.ssl_ca_path = None;
+
+    // A redirect-domain alias has no server block of its own until this runs
+    // (see `nginx._append_certbot_redirect_vhosts`) - it only gets one here,
+    // reusing the certificate this site now has, never from certbot's own
+    // nginx plugin. That plugin only ever touches `$domain`, for exactly this
+    // reason: it has no way to build a new, correctly confined block for an
+    // alias and falls back to cloning whichever server block it finds first.
+    if !domains_by_mode(&aliases_rows, "redirect").is_empty() {
+        let _ = rewrite_owned_vhost(&state, &updated, RewriteOverrides::default()).await;
+    }
+    sync_alias_ssl_flags(&state, &updated).await;
+    resync_shared_dependents(&state, &website.domain).await;
+
+    // `log_action(db, user.id, "enable_ssl", domain)` - no request, so no IP
+    // or user agent. The other shape is what the manual and shared paths use;
+    // which one is right differs per endpoint and this is the Python's.
+    audit_website(&state, current.user.id, "enable_ssl", &website.domain).await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, false, ssl_enabled)).into_response()
+}
+
+/// Source: `ssl.release_site_certificates`.
+///
+/// **One certificate often covers more than the site it was issued for** - an
+/// alias, a subdomain added later, the hostname the panel itself answers on.
+/// Deleting the lineage in that case takes a *live* site's HTTPS down, so
+/// anything still covering a name this server hosts is left alone and named
+/// in the message an administrator reads.
+///
+/// Never fails the request: a website must stay deletable when certbot is
+/// unhappy. Every failure here becomes a sentence, not a status code.
+async fn release_site_certificates(
+    state: &AppState,
+    domain: &str,
+    exclude_website_id: i64,
+) -> String {
+    let Ok(safe_domain) = crate::manual_ssl::safe_domain(domain) else {
+        return String::new();
+    };
+
+    let mut keep: Vec<String> = Vec::new();
+    let mut add = |name: &str| {
+        let name = name.trim().to_lowercase();
+        if !name.is_empty() && name != safe_domain && !keep.contains(&name) {
+            keep.push(name);
+        }
+    };
+    // `except Exception: return ""` - a broken query must not block a
+    // deletion. It also must not *delete* on no information, which is why the
+    // empty answer is a refusal to touch the certificate rather than an empty
+    // keep-list.
+    let (Ok(domains), Ok(alias_domains)) = (
+        state.db.websites().domains_except(exclude_website_id).await,
+        state
+            .db
+            .websites()
+            .alias_domains_except(exclude_website_id)
+            .await,
+    ) else {
+        return String::new();
+    };
+    for name in domains.iter().chain(alias_domains.iter()) {
+        add(name);
+    }
+    // The panel's own hostname is not a website row when an administrator
+    // pointed it at a domain by hand, so it is read separately. Losing it
+    // would log everyone out of the panel over HTTPS.
+    add(&crate::panel_urls::configured_panel_host(&state.settings));
+
+    if !keep.is_empty() {
+        let sans = cert_sans(state, &safe_domain).await;
+        let mut still_used: Vec<&String> = keep
+            .iter()
+            .filter(|name| cert_covers(&sans, name))
+            .collect();
+        still_used.sort();
+        if !still_used.is_empty() {
+            let names: Vec<&str> = still_used.iter().map(|s| s.as_str()).collect();
+            return format!(
+                "kept the certificate for {safe_domain}: still covers {}",
+                names.join(", ")
+            );
+        }
+    }
+
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "certbot-delete",
+        &[&safe_domain],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return format!(
+            "could not remove the certificate for {safe_domain}: {}",
+            result.failure_detail("").trim()
+        );
+    }
+    result.stdout.trim().to_string()
+}
+
+/// Source: `nginx.delete_wordpress_vhost`.
+///
+/// The file, then the customer's include, then a reload. The reload is last
+/// and its failure is not reported: the vhost is already gone from disk, so
+/// the site is down either way and a 500 here would leave the administrator
+/// thinking the deletion did not happen.
+async fn delete_website_vhost(state: &AppState, domain: &str) {
+    if state.settings.command_dry_run {
+        return;
+    }
+    let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
+        .join(format!("{domain}.conf"));
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::error!("removing {} failed: {e}", path.display());
+        }
+    }
+    let _ = shell::privileged(false, "nginx-custom-delete", &[domain], None, None).await;
+    let _ = shell::privileged(false, "nginx-reload", &[], None, None).await;
+}
+
+/// The sentence the toast shows.
+///
+/// Source: `message = f"Deleted {domain}."` then the certificate note with its
+/// first letter capitalised. **"Kept" is the surprising outcome** - the
+/// administrator needs to know the lineage is still on the machine, or they
+/// will hit the Let's Encrypt rate limit re-issuing a certificate they still
+/// have.
+fn deletion_message(domain: &str, ssl_note: &str) -> String {
+    let message = format!("Deleted {domain}.");
+    if ssl_note.is_empty() {
+        return message;
+    }
+    let mut chars = ssl_note.chars();
+    let first = chars
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    format!("{message} {first}{}", chars.as_str())
+}
+
+/// `DELETE /websites/{website_id}`.
+///
+/// Source: `delete_website`.
+///
+/// The order is the order: the vhost goes before the certificate and the WAF
+/// rules, because both of those are still referenced by the file while it
+/// exists - `waf.remove_site_rules` says so outright, and a missing
+/// `modsecurity_rules_file` fails `nginx -t`, which takes **every** site down
+/// at the next reload, not just this one.
+async fn delete_website(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    req: Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = block_if_source(&state, &website).await {
+        return r;
+    }
+
+    let delete_files = query_flag(&params, "delete_files");
+    let delete_database = query_flag(&params, "delete_database");
+    let domain = website.domain.clone();
+
+    let db_item = state
+        .db
+        .databases()
+        .by_website(website.id)
+        .await
+        .unwrap_or_default();
+    if delete_database {
+        if let Some(item) = &db_item {
+            // `mariadb.drop_database` raises on a bad identifier, and the
+            // Python does not catch it: a row whose name would need quoting
+            // refuses the whole deletion rather than running the SQL.
+            if let Err(e) = crate::mariadb::drop_database(&item.db_name, &item.db_user).await {
+                return bad_request(&e.to_string());
+            }
+        }
+    }
+
+    if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
+        tracing::error!("deleting the aliases of {domain} failed: {e}");
+        return internal_error();
+    }
+    delete_website_vhost(&state, &domain).await;
+
+    // The vhost is gone, so nothing reads the certificate or the rule file any
+    // more: retire both before the row disappears and we no longer know which
+    // names were ours.
+    let ssl_note = release_site_certificates(&state, &domain, website.id).await;
+    let _ = shell::privileged(
+        state.settings.command_dry_run,
+        "waf-site-delete",
+        &[&domain],
+        None,
+        None,
+    )
+    .await;
+
+    // `if website.linux_user: delete_site_runtime(...) else:
+    // wordpress.delete_wordpress(root_path)`. The second branch is the
+    // pre-site-user layout, where the files were owned by the panel account
+    // and it could remove them itself. Nothing the installer builds today
+    // produces a site without a Linux user, and the helper has no verb for
+    // that shape, so a row without one keeps its files and says so.
+    if delete_files {
+        match website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+            Some(linux_user) => {
+                let _ = shell::privileged(
+                    state.settings.command_dry_run,
+                    "site-runtime-delete",
+                    &[linux_user, &website.root_path],
+                    None,
+                    None,
+                )
+                .await;
+            }
+            None => tracing::warn!(
+                "{domain} has no Linux user, so its files under {} were left in place",
+                website.root_path
+            ),
+        }
+    }
+
+    if let Some(item) = &db_item {
+        if let Err(e) = state.db.databases().delete(item.id).await {
+            tracing::error!("deleting the database row for {domain} failed: {e}");
+            return internal_error();
+        }
+    }
+    if let Err(e) = state.db.websites().delete(website.id).await {
+        tracing::error!("deleting the row for {domain} failed: {e}");
+        return internal_error();
+    }
+    // After the row is gone, so the zone file no longer names it.
+    if website.http_flood_enabled {
+        if let Err(r) = sync_http_flood_zones(&state).await {
+            return r;
+        }
+    }
+
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "delete_website",
+        &domain,
+        &ssl_note,
+    )
+    .await;
+
+    axum::Json(json!({
+        "ok": true,
+        "message": deletion_message(&domain, &ssl_note),
+    }))
+    .into_response()
+}
+
+/// A FastAPI `bool = True` query parameter.
+///
+/// Source: pydantic's bool parsing, which is what `delete_files: bool = True`
+/// gets. Absent means **true**, and the false spellings are the ones pydantic
+/// accepts - a caller who passes `?delete_files=0` expects the files kept,
+/// and a port that only understood `false` would delete them.
+fn query_flag(params: &HashMap<String, String>, name: &str) -> bool {
+    match params.get(name) {
+        None => true,
+        Some(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "f" | "false" | "n" | "no"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `?delete_files=0` keeps the files.
+    ///
+    /// Source: `delete_files: bool = True` - pydantic's bool parsing, not
+    /// Rust's. Absent means **true**, and a caller who passes `0`, `off` or
+    /// `no` expects the files kept. A port that understood only `false` would
+    /// delete a customer's site because their client spelled it `0`, and
+    /// there is nothing to undo that with.
+    #[test]
+    fn a_falsey_query_flag_keeps_the_files() {
+        let flag = |value: Option<&str>| {
+            let mut params = HashMap::new();
+            if let Some(v) = value {
+                params.insert("delete_files".to_string(), v.to_string());
+            }
+            query_flag(&params, "delete_files")
+        };
+
+        // Absent is the default, which is true.
+        assert!(flag(None));
+        for falsey in ["0", "off", "f", "false", "n", "no", "FALSE", " No "] {
+            assert!(!flag(Some(falsey)), "{falsey:?} deleted the files");
+        }
+        for truthy in ["1", "on", "t", "true", "y", "yes", "TRUE"] {
+            assert!(flag(Some(truthy)), "{truthy:?} kept the files");
+        }
+        // Anything pydantic would refuse is not a reason to keep them: the
+        // Python 422s, and the closest this can do without changing the
+        // response shape is the default.
+        assert!(flag(Some("maybe")));
+    }
+
+    /// The toast says what happened to the certificate.
+    ///
+    /// Source: `message = f"Deleted {domain}."` plus the note with its first
+    /// letter capitalised. **"Kept" is the surprising outcome**: the row is
+    /// gone, so this sentence is the only thing telling an administrator the
+    /// lineage is still on the machine. Without it they re-issue a
+    /// certificate they already have and spend a Let's Encrypt rate limit on
+    /// it.
+    #[test]
+    fn the_deletion_message_says_what_became_of_the_certificate() {
+        assert_eq!(
+            deletion_message("a.example.com", ""),
+            "Deleted a.example.com."
+        );
+        assert_eq!(
+            deletion_message(
+                "a.example.com",
+                "kept the certificate for a.example.com: still covers b.example.com"
+            ),
+            "Deleted a.example.com. Kept the certificate for a.example.com: \
+             still covers b.example.com"
+        );
+        assert_eq!(
+            deletion_message("a.example.com", "could not remove the certificate"),
+            "Deleted a.example.com. Could not remove the certificate"
+        );
+        // A one-character note does not lose its only character.
+        assert_eq!(
+            deletion_message("a.example.com", "x"),
+            "Deleted a.example.com. X"
+        );
+    }
+
+    /// `include_ssl` and `preserve_existing_ssl` are different switches.
+    ///
+    /// Source: `_rewrite_website_vhost`. Suspension throws the second one and
+    /// leaves the first alone; the Let's Encrypt path throws the first. Both
+    /// end up with a vhost that serves no TLS, which is why they read as the
+    /// same switch and are not:
+    ///
+    /// - **suspend** stops carrying forward whatever certbot wrote into the
+    ///   file, but a suspended site on an uploaded certificate still names it,
+    ///   because the row still says that is what it has;
+    /// - **Let's Encrypt** names no certificate at all, because certbot is
+    ///   about to edit the file and those uploaded files are about to be
+    ///   deleted. A vhost still pointing at them would leave nginx unable to
+    ///   reload the moment they went.
+    #[test]
+    fn only_the_letsencrypt_path_rewrites_a_vhost_with_no_certificate() {
+        let mut manual = website();
+        manual.ssl_mode = "manual".to_string();
+        manual.ssl_cert_path = Some("/etc/nginx/snpanel/ssl/sites/a/cert.crt".into());
+        manual.ssl_key_path = Some("/etc/nginx/snpanel/ssl/sites/a/privkey.key".into());
+        manual.ssl_ca_path = None;
+        let its_own = (
+            manual.ssl_cert_path.clone(),
+            manual.ssl_key_path.clone(),
+            None,
+        );
+
+        // An ordinary rewrite names what the row has.
+        assert_eq!(
+            vhost_ssl_paths(&manual, &RewriteOverrides::default()),
+            its_own
+        );
+
+        // Suspension still names it - this is the assertion that says the two
+        // switches have not been collapsed into one.
+        assert_eq!(
+            vhost_ssl_paths(&manual, &super::super::users::vhost_overrides(true)),
+            its_own
+        );
+
+        // The Let's Encrypt path names nothing.
+        assert_eq!(
+            vhost_ssl_paths(
+                &manual,
+                &RewriteOverrides {
+                    include_ssl: Some(false),
+                    preserve_existing_ssl: Some(false),
+                    ..RewriteOverrides::default()
+                }
+            ),
+            (None, None, None)
+        );
+    }
+
+    /// Certbot is asked for `www.` whether or not anyone added it.
+    ///
+    /// Source: `ssl.issue_ssl`. nginx's own vhost listens on `www.<domain>`
+    /// regardless (`nginx._server_names`), so a certificate covering only the
+    /// bare name gives every visitor who types "www." a hard TLS mismatch
+    /// rather than the site. It is added here and **not** in
+    /// `safe_domain_list`, which also builds the list an uploaded certificate
+    /// is checked against - plenty of real certificates cover only the bare
+    /// domain on purpose, and checking them against a `www.` nobody bought
+    /// would refuse them.
+    #[test]
+    fn certbot_is_always_asked_for_the_www_name_too() {
+        let names = |domain: &str, aliases: &[&str]| {
+            certbot_domains(
+                domain,
+                &aliases.iter().map(|a| (*a).to_string()).collect::<Vec<_>>(),
+            )
+            .expect("valid")
+        };
+
+        assert_eq!(
+            names("example.com", &[]),
+            vec!["example.com", "www.example.com"]
+        );
+        // The site's own name first, then the aliases in order, then `www.`.
+        assert_eq!(
+            names("example.com", &["shop.example.com"]),
+            vec!["example.com", "shop.example.com", "www.example.com"]
+        );
+        // Already an alias: asked for once, not twice. Certbot refuses a
+        // duplicate `-d`.
+        assert_eq!(
+            names("example.com", &["www.example.com"]),
+            vec!["example.com", "www.example.com"]
+        );
+        // Case and whitespace are folded before the comparison, so a `WWW.`
+        // alias is still not added a second time.
+        assert_eq!(
+            names("example.com", &[" WWW.Example.com "]),
+            vec!["example.com", "www.example.com"]
+        );
+        // A site that *is* the www name does not get `www.www.`.
+        assert_eq!(names("www.example.com", &[]), vec!["www.example.com"]);
+        // A name that could escape the certificate directory is refused
+        // before certbot ever sees it.
+        assert!(certbot_domains("../etc", &[]).is_err());
+        assert!(certbot_domains("example.com", &["a/b".to_string()]).is_err());
+    }
+
+    /// The message an administrator gets when a command fails.
+    ///
+    /// Source: `_command_error` - stderr, else stdout, else the exit code.
+    /// The last case matters: a command that fails silently would otherwise
+    /// produce an empty toast, which reads as "nothing happened".
+    #[test]
+    fn a_failed_command_always_says_something() {
+        let result = |out: &str, err: &str, code: i32| {
+            command_error(&crate::shell::CommandResult {
+                command: "certbot-issue".to_string(),
+                returncode: code,
+                stdout: out.to_string(),
+                stderr: err.to_string(),
+            })
+        };
+        assert_eq!(result("out", "err", 1), "err");
+        assert_eq!(result("out", "  ", 1), "out");
+        assert_eq!(result("", "", 43), "Command failed with code 43");
+        assert_eq!(result("  \n padded \n ", "", 1), "padded");
+    }
+
+    /// A site borrowing a certificate has to be pointed at the file.
+    ///
+    /// Source: `_rewrite_ssl_kwargs`. This one shipped wrong: the vhost
+    /// renderer returned no paths for `shared` and `cloudflare`, leaving
+    /// `preserve_existing_ssl` to carry over whatever the file already had.
+    /// For a site that had never had a certificate there was nothing to carry,
+    /// so `POST /websites/{id}/ssl/shared` wrote a row saying the site had SSL
+    /// and a vhost serving none - the exact disagreement that endpoint's
+    /// rollback exists to prevent.
+    #[test]
+    fn a_borrowed_certificate_is_the_one_the_vhost_points_at() {
+        let paths = |mode: &str, source: Option<&str>, cert: Option<&str>, key: Option<&str>| {
+            let mut w = website();
+            w.ssl_mode = mode.to_string();
+            w.ssl_source_domain = source.map(str::to_string);
+            w.ssl_cert_path = cert.map(str::to_string);
+            w.ssl_key_path = key.map(str::to_string);
+            w.ssl_ca_path = None;
+            rewrite_ssl_paths(&w)
+        };
+
+        // Borrowing resolves through the source, not through this row's own
+        // (empty) path columns.
+        for mode in ["shared", "cloudflare"] {
+            let (cert, key, _ca) = paths(mode, Some("a.example.com"), None, None);
+            assert_eq!(
+                cert.as_deref(),
+                Some("/etc/letsencrypt/live/a.example.com/fullchain.pem"),
+                "{mode} resolved no certificate"
+            );
+            assert_eq!(
+                key.as_deref(),
+                Some("/etc/letsencrypt/live/a.example.com/privkey.pem")
+            );
+        }
+        // A borrowing row with no source names nothing rather than guessing
+        // its own domain: the certificate would not be there.
+        assert_eq!(paths("shared", None, None, None), (None, None, None));
+
+        // A manual certificate is its own, and a half-filled row is refused
+        // rather than passed to nginx as a path with no key beside it.
+        assert_eq!(
+            paths("manual", None, Some("/c.crt"), Some("/k.key")),
+            (Some("/c.crt".to_string()), Some("/k.key".to_string()), None)
+        );
+        assert_eq!(
+            paths("manual", None, Some("/c.crt"), None),
+            (None, None, None)
+        );
+
+        // Let's Encrypt passes nothing: certbot wrote the paths into the file
+        // and `preserve_existing_ssl` keeps them.
+        assert_eq!(
+            paths("letsencrypt", None, Some("/c.crt"), Some("/k.key")),
+            (None, None, None)
+        );
+    }
+
+    /// The source's own uploaded certificate wins over its certbot lineage.
+    ///
+    /// Source: `_borrowed_ssl_paths`. The manual directory is group-readable
+    /// by the panel and can be checked; `/etc/letsencrypt/live` is root-only,
+    /// so that path is returned **unchecked** - stat'ing it as `snpanel`
+    /// answers "no certificate" for every site that has one.
+    #[test]
+    fn a_borrowed_path_prefers_what_it_can_actually_see() {
+        let base = "/etc/nginx/snpanel/ssl/sites/a.example.com";
+        let with = |present: &[&str]| {
+            let present: Vec<String> = present.iter().map(|s| (*s).to_string()).collect();
+            borrowed_ssl_paths_with("a.example.com", move |p| present.iter().any(|q| q == p))
+        };
+
+        // An uploaded certificate, with a CA bundle beside it.
+        assert_eq!(
+            with(&[
+                &format!("{base}/cert.crt"),
+                &format!("{base}/privkey.key"),
+                &format!("{base}/ca.crt"),
+            ]),
+            (
+                Some(format!("{base}/cert.crt")),
+                Some(format!("{base}/privkey.key")),
+                Some(format!("{base}/ca.crt")),
+            )
+        );
+        // The same, without one. The row must not name a CA file that is not
+        // there: nginx refuses to load an `ssl_trusted_certificate` it cannot
+        // open, and the site stops serving rather than serving without it.
+        assert_eq!(
+            with(&[&format!("{base}/cert.crt"), &format!("{base}/privkey.key")]),
+            (
+                Some(format!("{base}/cert.crt")),
+                Some(format!("{base}/privkey.key")),
+                None,
+            )
+        );
+        // A certificate with no key beside it is not half a certificate; it
+        // falls through to the lineage.
+        assert_eq!(
+            with(&[&format!("{base}/cert.crt")]),
+            (
+                Some("/etc/letsencrypt/live/a.example.com/fullchain.pem".to_string()),
+                Some("/etc/letsencrypt/live/a.example.com/privkey.pem".to_string()),
+                None,
+            )
+        );
+        // Nothing on disk: the lineage, unchecked.
+        assert_eq!(
+            with(&[]),
+            (
+                Some("/etc/letsencrypt/live/a.example.com/fullchain.pem".to_string()),
+                Some("/etc/letsencrypt/live/a.example.com/privkey.pem".to_string()),
+                None,
+            )
+        );
+    }
 
     /// The typed-in text is used when the file input was left empty.
     ///
