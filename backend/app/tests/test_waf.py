@@ -5,7 +5,17 @@ import pytest
 
 from app.services import waf
 
-HELPER_SCRIPT = Path(__file__).resolve().parents[3] / "installer" / "files" / "snpanel-helper.sh"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+HELPER_SCRIPT = REPO_ROOT / "installer" / "files" / "snpanel-helper.sh"
+
+# Every place the default rule set is written. There are four, and a guard
+# that reads one of them is how two dead rules survived in the installer's
+# copy from 2026-09-13 until they were found.
+RULE_SOURCES = (
+    REPO_ROOT / "installer" / "install.sh",
+    REPO_ROOT / "installer" / "files" / "snpanel-helper.sh",
+    REPO_ROOT / "crates" / "snpanel-helper" / "src" / "ops" / "waf.rs",
+)
 
 
 def test_default_rules_only_cover_wordpress_laravel_and_php():
@@ -65,6 +75,26 @@ def test_waf_rules_are_phase_1():
         rule["id"] for rule in waf.DEFAULT_RULES if "phase:1," not in rule["rules"]
     ]
     assert offenders == [], f"these rules would never fire: {offenders}"
+
+    # And the other three copies. This test read only the one above until the
+    # installer's copy turned out to have kept `phase:2` on 1001302 (path
+    # traversal) and 1001103 (author enumeration) - rules that load, are
+    # counted, show the WAF as enabled, and match nothing.
+    #
+    # Scoped to the ids SNPanel ships in its own default set: 10011xx
+    # WordPress, 10012xx Laravel, 10013xx PHP. The CRS integration also emits
+    # a `phase:2` rule (1009001, detect mode's score report) and a `phase:4`
+    # one (1009002), and those are deliberate - the CRS inbound score is only
+    # final after phase 2.
+    own_rule = re.compile(r"id:(10011\d\d|10012\d\d|10013\d\d)")
+    for source in RULE_SOURCES:
+        text = source.read_text(encoding="utf-8")
+        dead = [
+            line.strip()
+            for line in text.splitlines()
+            if own_rule.search(line) and "phase:2" in line
+        ]
+        assert dead == [], f"{source.name} ships rules that would never fire: {dead}"
 
 
 def test_removing_site_rules_goes_through_the_helper(monkeypatch):

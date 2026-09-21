@@ -265,12 +265,34 @@ only one of the three that was wrong — and the note in the code about "one
 character per line" is about the panel's copy, which is a different file, not
 about this pair.
 
-Two things generalise:
+**There was already a guard, and it was green the whole time.**
+`test_waf_rules_are_phase_1` in the Python suite has existed since 2026-09-13,
+and its docstring names this exact failure: "Two shipped rules sat like that
+until 2026-09-13." It reads `waf.DEFAULT_RULES` — **one of the four copies**.
+The fix reached the Python copy and the bash helper; the installer's copy was
+outside what the guard could see, and stayed wrong for as long as the guard
+stayed green.
 
+Both guards now cover every copy: the Rust test compares `DEFAULT_RULES`
+against both shell copies, and the Python one scans all three files for a
+`phase:2` rule among the ids SNPanel ships. Proven by putting the bug back in
+each of the four places in turn.
+
+Widening the Python guard first flagged `1009001`, which is **not** a bug: it
+is CRS detect mode's score report, deliberately `phase:2` because the CRS
+inbound score is only final after phase 2, with a `phase:4` sibling for the
+outbound score. The guard is scoped to SNPanel's own ids. Whether those two
+CRS rules fire is a separate question - the probe above ran without CRS
+loaded - and it is recorded rather than guessed at.
+
+Three things generalise:
+
+- **A guard has to cover as many copies as exist, and nothing said how many
+  there were.** This one covered a quarter of them and read as complete.
 - **A difference recorded once is not the only difference.** The trailing
   quote was written down; nobody had compared the rest of the line. The test
-  that exists now compares the whole line, and found the phases in its first
-  run because I first wrote it to strip the quote off the wrong pair.
+  that exists now compares the whole line, and found the phases on its first
+  run — because I had first written it to strip that quote off the wrong pair.
 - **Dead configuration is worse than absent configuration.** An absent rule is
   visible. A rule that loads, is counted, and matches nothing reads as
   protection on every page that reports it.

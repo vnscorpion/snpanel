@@ -931,24 +931,39 @@ mod tests {
     /// rules, so the installer was the only one of the three that was wrong.
     #[test]
     fn the_installers_copy_of_the_rules_matches_this_one() {
-        let installer = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/install.sh"),
-        )
-        .expect("install.sh");
-
+        // Both shell copies. The Python guard reads a third - `waf.DEFAULT_RULES`
+        // - and the installer's was outside it, which is how it kept two dead
+        // rules for the whole time that guard was green.
         const OPEN: &str = "cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'\n";
-        let start = installer.find(OPEN).expect("the heredoc") + OPEN.len();
-        let end = installer[start..].find("\nRULES\n").expect("its end") + start;
-        let theirs: Vec<&str> = installer[start..end]
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .collect();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for label in ["installer/install.sh", "installer/files/snpanel-helper.sh"] {
+            let text = std::fs::read_to_string(root.join(label))
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            let start = text
+                .find(OPEN)
+                .unwrap_or_else(|| panic!("{label}: no rule heredoc"))
+                + OPEN.len();
+            let end = text[start..]
+                .find("\nRULES\n")
+                .unwrap_or_else(|| panic!("{label}: the heredoc never closes"))
+                + start;
+            compare_rules(label, &text[start..end]);
+        }
+    }
+
+    /// One shell copy of the rule set against `DEFAULT_RULES`.
+    fn compare_rules(label: &str, shell: &str) {
+        let theirs: Vec<&str> = shell.lines().filter(|l| !l.trim().is_empty()).collect();
         let ours: Vec<&str> = DEFAULT_RULES
             .lines()
             .filter(|l| !l.trim().is_empty())
             .collect();
 
-        assert_eq!(ours.len(), theirs.len(), "the two copies differ in length");
+        assert_eq!(
+            ours.len(),
+            theirs.len(),
+            "{label} differs from DEFAULT_RULES in length"
+        );
         assert!(
             ours.len() >= 8,
             "only {} lines; the scan is broken",
@@ -980,7 +995,7 @@ mod tests {
             assert_eq!(
                 ours_line,
                 theirs_line,
-                "rule {:?} differs between the helper and the installer",
+                "rule {:?} differs between DEFAULT_RULES and {label}",
                 rule_id(ours_line)
             );
             compared += 1;
@@ -992,7 +1007,7 @@ mod tests {
         for line in ours.iter().chain(theirs.iter()) {
             assert!(
                 !line.contains("phase:2"),
-                "a phase:2 rule loads, is counted, and matches nothing: {line}"
+                "{label}: a phase:2 rule loads, is counted, and matches nothing: {line}"
             );
         }
     }
