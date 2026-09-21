@@ -898,6 +898,104 @@ mod tests {
         assert_eq!(rewrite_rule_engine("SecRuleEngine Off"), "SecRuleEngine On");
         assert_eq!(rewrite_rule_engine(""), "");
     }
+
+    /// The default rule set exists twice, and the copies must agree.
+    ///
+    /// `DEFAULT_RULES` here, and the heredoc in `write_waf_default_rules` in
+    /// `installer/install.sh`. Both write
+    /// `/etc/nginx/modsec/snpanel-default.conf`; whichever ran last wins, so a
+    /// box that has never called `waf-update` is running the installer's copy
+    /// and every other box is running this one.
+    ///
+    /// They had drifted, and not only in the way the comment on
+    /// `DEFAULT_RULES` records. Two rules were `phase:2` in the installer -
+    /// 1001302, path traversal, and 1001103, author enumeration - and on the
+    /// nginx connector a `phase:2` rule never runs. Measured on Debian 13
+    /// against the running module, on GET and on POST, with
+    /// `SecRequestBodyAccess` both Off and On:
+    ///
+    /// ```text
+    /// phase:1 on REQUEST_URI          -> 401   fires
+    /// phase:2 on REQUEST_URI          -> 404   does not
+    /// phase:1 on ARGS (query string)  -> 405   fires
+    /// phase:2 on ARGS (query string)  -> 404   does not
+    /// ```
+    ///
+    /// So those two loaded, were counted, showed the WAF as enabled, and
+    /// matched nothing - on every box the installer had set up.
+    ///
+    /// The two are compared with nothing stripped. The trailing-quote
+    /// difference `DEFAULT_RULES` documents is with a **third** copy -
+    /// `backend/app/services/waf.py`, which builds the per-site catalogue and
+    /// writes a different file. That copy already used `phase:1` for both
+    /// rules, so the installer was the only one of the three that was wrong.
+    #[test]
+    fn the_installers_copy_of_the_rules_matches_this_one() {
+        let installer = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/install.sh"),
+        )
+        .expect("install.sh");
+
+        const OPEN: &str = "cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'\n";
+        let start = installer.find(OPEN).expect("the heredoc") + OPEN.len();
+        let end = installer[start..].find("\nRULES\n").expect("its end") + start;
+        let theirs: Vec<&str> = installer[start..end]
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let ours: Vec<&str> = DEFAULT_RULES
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+
+        assert_eq!(ours.len(), theirs.len(), "the two copies differ in length");
+        assert!(
+            ours.len() >= 8,
+            "only {} lines; the scan is broken",
+            ours.len()
+        );
+
+        fn rule_id(line: &str) -> Option<&str> {
+            let at = line.find("id:")? + 3;
+            let rest = &line[at..];
+            let end = rest.find(|c: char| !c.is_ascii_digit())?;
+            Some(&rest[..end])
+        }
+
+        let mut compared = 0;
+        for (ours_line, theirs_line) in ours.iter().zip(theirs.iter()) {
+            if !ours_line.starts_with("SecRule") {
+                // The header comment, which is identical.
+                assert_eq!(ours_line, theirs_line);
+                continue;
+            }
+            assert_eq!(
+                rule_id(ours_line),
+                rule_id(theirs_line),
+                "the rules are in a different order"
+            );
+            // The whole line. Both write the same file, so a phase, a
+            // status, a pattern or a message that has moved on one side only
+            // is a disagreement about what that file should contain.
+            assert_eq!(
+                ours_line,
+                theirs_line,
+                "rule {:?} differs between the helper and the installer",
+                rule_id(ours_line)
+            );
+            compared += 1;
+        }
+        assert!(compared >= 8, "only {compared} rules compared");
+
+        // And the property the drift hid: nothing SNPanel ships is `phase:2`,
+        // because on this connector a `phase:2` rule never matches.
+        for line in ours.iter().chain(theirs.iter()) {
+            assert!(
+                !line.contains("phase:2"),
+                "a phase:2 rule loads, is counted, and matches nothing: {line}"
+            );
+        }
+    }
 }
 
 /// `/etc/nginx/modsec/snpanel-default.conf` - the eight rules every site on

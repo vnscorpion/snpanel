@@ -229,6 +229,52 @@ set of conditionals.
 
 ## 7. Risks, named
 
+### Two WAF rules the installer shipped never matched anything
+
+Looking for what `install.sh` re-implements that the helper now answers, the
+survey found thirteen functions writing paths the helper also writes. The
+first one read was `write_waf_default_rules`, and its copy of the rule set
+differed from the helper's in two rules — not in the way the code already
+records, but in the **phase**:
+
+    1001302  path traversal          installer phase:2, helper phase:1
+    1001103  author enumeration      installer phase:2, helper phase:1
+
+Measured on Debian 13 against the running `ngx_http_modsecurity_module`, with
+throwaway rules on a throwaway vhost:
+
+```text
+phase:1 on REQUEST_URI          -> 401   fires
+phase:2 on REQUEST_URI          -> 404   does not
+phase:1 on ARGS (query string)  -> 405   fires
+phase:2 on ARGS (query string)  -> 404   does not
+```
+
+and not on a POST, and not with `SecRequestBodyAccess On` either. On this
+connector a `phase:2` rule is loaded, counted, shown as enabled, and matches
+nothing.
+
+So on every box `install.sh` has set up, the path-traversal rule and the
+author-enumeration rule were dead — until something called `waf-update` and
+the helper overwrote the file with its own copy.
+
+**There are three copies of this rule set**, not two: `install.sh`'s heredoc,
+`DEFAULT_RULES` in the helper, and `backend/app/services/waf.py`'s per-site
+catalogue. The last already used `phase:1` for both, so the installer was the
+only one of the three that was wrong — and the note in the code about "one
+character per line" is about the panel's copy, which is a different file, not
+about this pair.
+
+Two things generalise:
+
+- **A difference recorded once is not the only difference.** The trailing
+  quote was written down; nobody had compared the rest of the line. The test
+  that exists now compares the whole line, and found the phases in its first
+  run because I first wrote it to strip the quote off the wrong pair.
+- **Dead configuration is worse than absent configuration.** An absent rule is
+  visible. A rule that loads, is counted, and matches nothing reads as
+  protection on every page that reports it.
+
 ### A harness that reports on state it did not create
 
 Verifying the new installer step took four attempts, and three of the faults
