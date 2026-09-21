@@ -177,6 +177,21 @@ impl<'a> WebsiteRepo<'a> {
     /// A site created before the panel wrote this column gets it filled in the
     /// first time a cron job is installed, so the job and the files agree
     /// about which account owns them.
+    /// `website.status = "suspended"` / `"active"`.
+    ///
+    /// Suspending a customer marks every site they own, and the status is
+    /// what the panel lists them by - so a vhost rewritten to serve nothing
+    /// and a row still saying "active" would disagree in the direction that
+    /// looks like a bug in the panel rather than a suspended account.
+    pub async fn set_status(&self, id: i64, status: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_linux_user(&self, id: i64, linux_user: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE websites SET linux_user = ? WHERE id = ?")
             .bind(linux_user)

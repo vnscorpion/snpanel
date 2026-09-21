@@ -818,10 +818,18 @@ fn domains_by_mode(aliases: &[snpanel_db::WebsiteAlias], mode: &str) -> Vec<Stri
 /// What a rewrite may override, as `_rewrite_website_vhost`'s keyword
 /// arguments do.
 #[derive(Default)]
-struct RewriteOverrides {
-    aliases: Option<Vec<String>>,
-    redirects: Option<Vec<String>>,
-    custom_directives: Option<String>,
+pub(super) struct RewriteOverrides {
+    pub(super) aliases: Option<Vec<String>>,
+    pub(super) redirects: Option<Vec<String>>,
+    pub(super) custom_directives: Option<String>,
+    /// Suspension renders the site as `static`, whatever it really is, so
+    /// nothing dynamic runs while the account is blocked.
+    pub(super) app_type: Option<&'static str>,
+    pub(super) rewrite_mode: Option<&'static str>,
+    /// `preserve_existing_ssl=False` on the suspend path: the certificate
+    /// paths certbot left in the file are not carried into a vhost that is
+    /// deliberately serving nothing.
+    pub(super) preserve_existing_ssl: Option<bool>,
 }
 
 /// `log_action(db, user.id, action, target)` - a detail of `""` and no
@@ -839,6 +847,21 @@ async fn audit_website(state: &AppState, actor_id: i64, action: &str, target: &s
     {
         tracing::error!("could not write the {action} audit entry: {e}");
     }
+}
+
+/// [`rewrite_website_vhost`] for another router.
+///
+/// `users::suspend` renders every site a customer owns, and it renders them
+/// through this rather than through a copy: the suspended shape differs only
+/// in its overrides, and a second renderer is how two of them drift apart.
+pub(super) async fn rewrite_owned_vhost(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    overrides: RewriteOverrides,
+) -> Result<String, String> {
+    rewrite_website_vhost(state, website, overrides)
+        .await
+        .map_err(|_| format!("could not rewrite the vhost for {}", website.domain))
 }
 
 /// Source: `_rewrite_website_vhost` followed by `nginx.rewrite_vhost`.
@@ -869,10 +892,10 @@ async fn rewrite_website_vhost(
     let custom = snpanel_nginx::CustomDirectives::validate(&custom_text)
         .map_err(|e| bad_request(&e.to_string()))?;
 
-    let app_type = if website.app_type.is_empty() {
-        "wordpress"
-    } else {
-        &website.app_type
+    let app_type = match overrides.app_type {
+        Some(forced) => forced,
+        None if website.app_type.is_empty() => "wordpress",
+        None => &website.app_type,
     };
     // Source: `runtime_php_version` - a static or proxied site gets no pool.
     let runtime_php = matches!(app_type, "wordpress" | "php")
@@ -880,10 +903,10 @@ async fn rewrite_website_vhost(
         .filter(|v| !v.is_empty());
     let socket = site_fpm_socket(website, runtime_php);
 
-    let rewrite_mode = if website.nginx_rewrite_mode.is_empty() {
-        "none"
-    } else {
-        &website.nginx_rewrite_mode
+    let rewrite_mode = match overrides.rewrite_mode {
+        Some(forced) => forced,
+        None if website.nginx_rewrite_mode.is_empty() => "none",
+        None => &website.nginx_rewrite_mode,
     };
     let document_root = if website.document_root.is_empty() {
         "public_html"
@@ -929,8 +952,14 @@ async fn rewrite_website_vhost(
     };
     let sites = std::path::PathBuf::from(&state.settings.nginx_sites_available);
     let existing = read_vhost(state, &website.domain).await;
-    let plan = snpanel_nginx::plan_rewrite(&input, &env, &sites, existing.as_deref(), true)
-        .map_err(|e| bad_request(&e.to_string()))?;
+    let plan = snpanel_nginx::plan_rewrite(
+        &input,
+        &env,
+        &sites,
+        existing.as_deref(),
+        overrides.preserve_existing_ssl.unwrap_or(true),
+    )
+    .map_err(|e| bad_request(&e.to_string()))?;
 
     // The customer's snippet goes to its own include file, through the helper.
     if !state.settings.command_dry_run {
@@ -1099,6 +1128,7 @@ async fn create_alias(
         aliases: Some(domains_by_mode(&rows, "alias")),
         redirects: Some(domains_by_mode(&rows, "redirect")),
         custom_directives: None,
+        ..RewriteOverrides::default()
     };
     if let Err(r) = rewrite_website_vhost(&state, &website, overrides).await {
         let _ = state
@@ -1166,6 +1196,7 @@ async fn delete_alias(
         aliases: Some(keep("alias")),
         redirects: Some(keep("redirect")),
         custom_directives: None,
+        ..RewriteOverrides::default()
     };
     // nginx first: a row removed from a vhost that still serves the name is
     // recoverable; a name nginx still claims with no row behind it is not.

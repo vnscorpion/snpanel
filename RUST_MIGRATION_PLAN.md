@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **127 of 211** | 60% |
+| API endpoints answered by Rust | **129 of 211** | 61% |
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -228,6 +228,35 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### I wrote the bug I had just spent two commits diagnosing
+
+The first test for `suspend_user` built its own `VhostInput` with
+`app_type = "static"` written into the test, then asserted that the result
+reached no interpreter. It passed. So did every mutation of the handler -
+leaving the site on its real app type, dropping the `# SUSPENDED` marker,
+ignoring the forced app type in the renderer. The test proved something true
+about `snpanel-nginx` and nothing whatever about suspension.
+
+That is the third instance this session of **asserting against something the
+test itself produced**, and the first two were mine to diagnose in code I did
+not write:
+
+- `the_rule_set_is_looked_for_where_distributions_put_it` probed the
+  filesystem, so on a machine without CRS it was true whatever the list said;
+- `the_blocklist_status_headers_are_what_the_browser_parses` parsed a sample
+  string the test had written.
+
+Diagnosing a pattern twice is not the same as not repeating it. The fix is the
+one that worked for `status_lines` and `crs_status_lines`: name the decision -
+`vhost_overrides(suspending)` - have the handler call it, and point the test
+at the name. Four mutations now fail.
+
+A fourth mutation survived the fixed test too, for a different reason: the
+render used `existing: None`, so `preserve_existing_ssl` had no certificate to
+preserve and flipping it changed nothing. The test renders against a vhost
+carrying what certbot leaves, and now asserts that a suspended site stops
+presenting the customer's certificate as well as stopping PHP.
 
 ### The same test rotted twice, in two files
 

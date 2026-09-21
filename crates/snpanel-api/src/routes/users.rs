@@ -50,6 +50,14 @@ pub fn router() -> Router<AppState> {
             "/users/{user_id}/password",
             post(set_password).fallback(crate::fallback),
         )
+        .route(
+            "/users/{user_id}/suspend",
+            post(suspend).fallback(crate::fallback),
+        )
+        .route(
+            "/users/{user_id}/unsuspend",
+            post(unsuspend).fallback(crate::fallback),
+        )
 }
 
 fn require_admin(current: &CurrentUser) -> Result<(), Response> {
@@ -593,6 +601,174 @@ async fn set_password(
     .into_response()
 }
 
+/// `POST /users/{user_id}/suspend`.
+///
+/// Source: `suspend_user`. "Full suspend: block login, rewrite nginx, lock
+/// SFTP, kill sessions."
+///
+/// Four things happen and the order is not arbitrary. The account is
+/// deactivated and its token version bumped **first**, because that is what
+/// invalidates the sessions already issued - a customer holding a valid token
+/// while their sites come down would otherwise keep using the panel. Then
+/// every site is rewritten as a static vhost, then the Linux accounts are
+/// locked so SFTP stops too.
+///
+/// The Linux lock is best-effort in the Python (`except Exception: pass`) and
+/// is here as well: a site row whose Linux account was removed by hand must
+/// not stop the suspension of the other nine.
+async fn suspend(
+    State(state): State<AppState>,
+    Path(user_id): Path<i64>,
+    req: Request,
+) -> Response {
+    set_suspended(state, user_id, req, true).await
+}
+
+/// `POST /users/{user_id}/unsuspend`.
+///
+/// Source: `unsuspend_user`. The mirror of the above, with one deliberate
+/// asymmetry: the token version is **not** bumped. Suspending has to end the
+/// sessions that exist; unsuspending only has to let new ones start.
+async fn unsuspend(
+    State(state): State<AppState>,
+    Path(user_id): Path<i64>,
+    req: Request,
+) -> Response {
+    set_suspended(state, user_id, req, false).await
+}
+
+/// How a customer's vhost is rendered in each direction.
+///
+/// Source: the `nginx.write_vhost(...)` call in `suspend_user` and the
+/// `nginx.rewrite_vhost(...)` in `unsuspend_user`.
+///
+/// Named rather than written inline so that the test drives *this*, and a
+/// change to it is a change the test sees. Built inline, it was invisible to
+/// every assertion about suspension.
+///
+/// Suspending passes no aliases or redirects, which is not an oversight: a
+/// suspended customer's alias domains stop being served too. Unsuspending
+/// passes no overrides at all, so every setting comes back from the site's
+/// own row.
+fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverrides {
+    if !suspending {
+        return super::websites::RewriteOverrides::default();
+    }
+    super::websites::RewriteOverrides {
+        aliases: Some(Vec::new()),
+        redirects: Some(Vec::new()),
+        custom_directives: Some("# SUSPENDED".to_string()),
+        app_type: Some("static"),
+        rewrite_mode: Some("none"),
+        preserve_existing_ssl: Some(false),
+    }
+}
+
+async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: bool) -> Response {
+    let (mut parts, _body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current) {
+        return r;
+    }
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return not_found("User not found"),
+        Err(e) => {
+            tracing::error!("loading user {user_id} failed: {e}");
+            return internal_error();
+        }
+    };
+    // Only on the way in: the Python guards `suspend` alone, and an
+    // administrator may un-suspend themselves. Suspending yourself locks you
+    // out of the panel you would need in order to undo it.
+    if suspending && user_id == current.user.id {
+        return bad_request("Cannot suspend yourself");
+    }
+
+    let websites = match state.db.websites().list(Some(user.id), "").await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("listing websites for user {user_id} failed: {e}");
+            return internal_error();
+        }
+    };
+
+    // The account first: the token bump is what ends the sessions already
+    // issued, and doing it after the vhosts would leave a window in which the
+    // customer is still signed in and their sites are already down.
+    let fields = UserFields {
+        is_active: Some(!suspending),
+        ..Default::default()
+    };
+    if let Err(e) = state.db.users().update(user.id, &fields, suspending).await {
+        tracing::error!("updating user {user_id} failed: {e}");
+        return internal_error();
+    }
+
+    for website in &websites {
+        let status = if suspending { "suspended" } else { "active" };
+        if let Err(e) = state.db.websites().set_status(website.id, status).await {
+            tracing::error!("setting the status of website {} failed: {e}", website.id);
+            return internal_error();
+        }
+
+        let overrides = vhost_overrides(suspending);
+        if let Err(e) = super::websites::rewrite_owned_vhost(&state, website, overrides).await {
+            // One site failing must not abandon the rest half-done: the
+            // account is already deactivated, so stopping here would leave a
+            // customer blocked with some of their sites still serving.
+            tracing::error!("rewriting the vhost for {} failed: {e}", website.domain);
+        }
+
+        let linux_user = website.linux_user.as_deref().unwrap_or_default();
+        if !linux_user.is_empty() && !state.settings.command_dry_run {
+            let result = crate::shell::privileged(
+                false,
+                if suspending {
+                    "panel-user-lock"
+                } else {
+                    "panel-user-unlock"
+                },
+                &[linux_user],
+                None,
+                Some(&["true"]),
+            )
+            .await;
+            if !result.ok() {
+                // `except Exception: pass` - a Linux account removed by hand
+                // is not a reason to leave the other sites unsuspended.
+                tracing::warn!(
+                    "could not {} {}: {}",
+                    if suspending { "lock" } else { "unlock" },
+                    linux_user,
+                    result.failure_detail("no detail").trim()
+                );
+            }
+        }
+    }
+
+    let action = if suspending {
+        "suspend_user"
+    } else {
+        "unsuspend_user"
+    };
+    super::packages::audit_action(&state, &parts, current.user.id, action, &user.username).await;
+
+    let verb = if suspending {
+        "Suspended"
+    } else {
+        "Unsuspended"
+    };
+    axum::Json(json!({
+        "message": format!("{verb} user {}", user.username),
+        "affected_websites": websites.len(),
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     /// The rule this endpoint enforces, written out as a table.
@@ -671,5 +847,114 @@ mod tests {
         // that `normalize_role` would later refuse with a 403 on every request.
         let resp = literal_error("role", &json!("root"));
         assert_eq!(resp.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// A suspended site serves nothing dynamic.
+    ///
+    /// Source: `suspend_user`, which renders each of the customer's sites
+    /// with `app_type="static"`, `rewrite_mode="none"`, `# SUSPENDED` and
+    /// `preserve_existing_ssl=False`. The point is not the comment - it is
+    /// that a suspended WordPress site must stop reaching PHP-FPM. A vhost
+    /// that kept its `fastcgi_pass` would go on serving the customer's
+    /// application to the internet while the panel reported the account as
+    /// blocked.
+    ///
+    /// This drives `vhost_overrides`, which is what the handler calls. An
+    /// earlier version built the input itself with `app_type = "static"`
+    /// written into the test, and every mutation of the handler passed.
+    #[test]
+    fn a_suspended_vhost_reaches_no_interpreter() {
+        use super::vhost_overrides;
+
+        let root = std::path::PathBuf::from("/home/bp_alice/example.com");
+        let env = snpanel_nginx::VhostEnv {
+            ipv6: false,
+            waf_engine: false,
+            default_php_version: "8.4".to_string(),
+            home_root: std::path::PathBuf::from("/home"),
+        };
+        let sites = std::path::PathBuf::from("/etc/nginx/sites-available");
+
+        // The site as its row describes it: WordPress on PHP 8.4.
+        use crate::routes::websites;
+
+        // What certbot leaves in the file. `preserve_existing_ssl` decides
+        // whether a rewrite carries it forward, so without an existing vhost
+        // the flag has nothing to act on and flipping it proves nothing.
+        let existing = concat!(
+            "server {\n",
+            "    listen 443 ssl;\n",
+            "    server_name example.com;\n",
+            "    ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;\n",
+            "    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;\n",
+            "}\n",
+        );
+
+        let render = |overrides: &websites::RewriteOverrides| {
+            let custom_text = overrides.custom_directives.clone().unwrap_or_default();
+            let custom = snpanel_nginx::CustomDirectives::validate(&custom_text).expect("valid");
+            let app_type = overrides.app_type.unwrap_or("wordpress");
+            let rewrite_mode = overrides.rewrite_mode.unwrap_or("front_controller");
+            let mut input = snpanel_nginx::VhostInput::new("example.com", &root, &custom);
+            input.app_type = app_type;
+            input.php_version = Some("8.4");
+            input.document_root = "public_html";
+            input.rewrite_mode = Some(rewrite_mode);
+            snpanel_nginx::plan_rewrite(
+                &input,
+                &env,
+                &sites,
+                Some(existing),
+                overrides.preserve_existing_ssl.unwrap_or(true),
+            )
+            .expect("renders")
+        };
+
+        let live = render(&vhost_overrides(false));
+        assert!(
+            live.content.contains("fastcgi_pass"),
+            "the unsuspended site is the one that reaches PHP:\n{}",
+            live.content
+        );
+
+        let off = render(&vhost_overrides(true));
+        assert!(
+            !off.content.contains("fastcgi_pass"),
+            "a suspended site must not reach PHP-FPM:\n{}",
+            off.content
+        );
+        assert!(
+            !off.content.contains("php-fpm"),
+            "nor name a pool socket:\n{}",
+            off.content
+        );
+        assert!(
+            off.custom_include.contains("# SUSPENDED"),
+            "the marker goes in the customer's include: {:?}",
+            off.custom_include
+        );
+        // Same file, so the site keeps its name and the rewrite is reversible.
+        assert_eq!(off.path, live.path);
+
+        // The certificate certbot left is carried into the live rewrite
+        // and **not** into the suspended one: a vhost that is deliberately
+        // serving nothing should not go on presenting the customer's
+        // certificate for it.
+        assert!(
+            live.content.contains("ssl_certificate"),
+            "an unsuspended rewrite keeps what certbot wrote:\n{}",
+            live.content
+        );
+        assert!(
+            !off.content.contains("ssl_certificate"),
+            "a suspended rewrite drops it:\n{}",
+            off.content
+        );
+
+        // And the aliases: a suspended customer's other names stop being
+        // served too, which is the difference between the two override sets
+        // that is easiest to drop.
+        assert_eq!(vhost_overrides(true).aliases.as_deref(), Some(&[][..]));
+        assert_eq!(vhost_overrides(false).aliases, None);
     }
 }
