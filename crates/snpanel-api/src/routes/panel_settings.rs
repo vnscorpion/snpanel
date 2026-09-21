@@ -1,8 +1,9 @@
 //! `/api/panel-settings` - ported from `api/panel_settings.py`.
 //!
 //! The reads, the settings write, all three certificate paths and the IPv6
-//! toggle, and the administrator's own account. Uploading branding stays
-//! with Python, because it is multipart.
+//! toggle, the administrator's own account and the branding uploads.
+//!
+//! **Whole.** Every endpoint of `api/panel_settings.py` is answered here.
 //!
 //! `POST /ssl` was proxied until Stage D: it needs `panel-ssl-install`, and
 //! that verb was still bash. `PATCH /admin-account` was proxied for the
@@ -35,6 +36,8 @@ use serde_json::{json, Value};
 use snpanel_core::config::Settings;
 use snpanel_core::permissions::{self, Role};
 
+use axum::extract::FromRequest;
+
 use crate::auth::CurrentUser;
 use crate::errors::{bad_request, not_enough_permissions};
 use crate::shell;
@@ -52,6 +55,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/panel-settings",
             get(full).patch(update_settings).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/logo",
+            post(upload_logo).fallback(crate::fallback),
+        )
+        .route(
+            "/panel-settings/favicon",
+            post(upload_favicon).fallback(crate::fallback),
         )
         .route(
             "/panel-settings/admin-account",
@@ -1329,6 +1340,151 @@ async fn update_admin_account(State(state): State<AppState>, req: Request) -> Re
     .into_response()
 }
 
+/// Source: `MAX_ASSET_SIZE`.
+const MAX_ASSET_SIZE: usize = 1024 * 1024;
+
+/// Source: `detect_asset_type`.
+///
+/// The type comes from the **content**, not the filename. A file named
+/// `logo.png` that is actually HTML would otherwise be written to the assets
+/// directory and served back with `Content-Type: image/png` - which is a
+/// stored file the panel vouches for, under a name the panel chose, to every
+/// administrator who loads the login page.
+///
+/// The two error messages are different on purpose and the Python has both:
+/// a file whose *extension* is one of the four allowed types is told its
+/// content does not match, and anything else is told which types are
+/// supported. The first is nearly always a renamed file; the second is
+/// nearly always the wrong file.
+pub(crate) fn detect_asset_type(content: &[u8], filename: &str) -> Result<&'static str, String> {
+    if content.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok("png");
+    }
+    if content.starts_with(b"\xff\xd8\xff") {
+        return Ok("jpg");
+    }
+    // `RIFF....WEBP` - the four bytes at offset 8, after the chunk size.
+    if content.starts_with(b"RIFF") && content.len() >= 12 && &content[8..12] == b"WEBP" {
+        return Ok("webp");
+    }
+    if content.starts_with(b"\x00\x00\x01\x00") {
+        return Ok("ico");
+    }
+    let suffix = filename
+        .rsplit_once('.')
+        .map(|(_, s)| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(suffix.as_str(), "png" | "jpg" | "jpeg" | "webp" | "ico") {
+        return Err("Uploaded file content does not match its image type".to_string());
+    }
+    Err("Only PNG, JPG, WEBP, and ICO images are supported".to_string())
+}
+
+/// `POST /panel-settings/logo` and `POST /panel-settings/favicon`.
+///
+/// Source: `upload_logo` / `upload_favicon`, both of which are
+/// `save_asset(kind, file)`.
+async fn upload_logo(State(state): State<AppState>, req: Request) -> Response {
+    save_asset(state, req, "logo").await
+}
+
+async fn upload_favicon(State(state): State<AppState>, req: Request) -> Response {
+    save_asset(state, req, "favicon").await
+}
+
+async fn save_asset(state: AppState, req: Request, kind: &str) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+
+    let request = Request::from_parts(parts.clone(), body);
+    let mut multipart = match axum::extract::Multipart::from_request(request, &state).await {
+        Ok(m) => m,
+        Err(e) => return crate::errors::bad_request(&e.body_text()),
+    };
+
+    let mut content: Option<Vec<u8>> = None;
+    let mut filename = String::new();
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                // `file: UploadFile = File(...)` - the part is named `file`,
+                // and a form carrying other parts is not an error.
+                if field.name() != Some("file") {
+                    continue;
+                }
+                filename = field.file_name().unwrap_or_default().to_string();
+                match field.bytes().await {
+                    Ok(bytes) => content = Some(bytes.to_vec()),
+                    Err(e) => return crate::errors::bad_request(&e.body_text()),
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return crate::errors::bad_request(&e.body_text()),
+        }
+    }
+
+    let Some(content) = content else {
+        return crate::errors::missing_field("file", Value::Null);
+    };
+    // `upload.read(MAX_ASSET_SIZE + 1)` then `len > MAX_ASSET_SIZE` - reading
+    // one byte more than the limit is how the Python tells "exactly at the
+    // limit" from "over it" without holding the whole upload.
+    if content.len() > MAX_ASSET_SIZE {
+        return crate::errors::bad_request("Image must be 1 MB or smaller");
+    }
+    let ext = match detect_asset_type(&content, &filename) {
+        Ok(ext) => ext,
+        Err(message) => return crate::errors::bad_request(&message),
+    };
+
+    let dir = data_dir().join("assets");
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        tracing::error!("creating {} failed: {e}", dir.display());
+        return crate::errors::internal_error();
+    }
+
+    // The previous file goes first, and its failure is ignored: an asset that
+    // is already gone is not a reason to refuse the new one. It matters
+    // because the extension may change - a PNG replaced by an ICO leaves
+    // `logo.png` behind, still served by the URL in the settings file until
+    // that file is rewritten below.
+    let mut raw = raw_settings();
+    let key = format!("{kind}_filename");
+    if let Some(previous) = raw.get(&key).and_then(Value::as_str) {
+        if !previous.is_empty() && previous != format!("{kind}.{ext}") {
+            let _ = tokio::fs::remove_file(dir.join(previous)).await;
+        }
+    }
+
+    let name = format!("{kind}.{ext}");
+    if let Err(e) = tokio::fs::write(dir.join(&name), &content).await {
+        tracing::error!("writing {name} failed: {e}");
+        return crate::errors::internal_error();
+    }
+    if let Some(map) = raw.as_object_mut() {
+        map.insert(key, Value::String(name));
+    }
+    if let Err(e) = write_raw(&raw) {
+        tracing::error!("writing the panel settings failed: {e}");
+        return crate::errors::internal_error();
+    }
+
+    let action = if kind == "logo" {
+        "upload_panel_logo"
+    } else {
+        "upload_panel_favicon"
+    };
+    audit_panel(&state, &parts, current.user.id, action, "panel").await;
+
+    axum::Json(to_response_model(&current_settings(&state).await)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,5 +1755,69 @@ mod tests {
         // The top level is letters only: the Debian test machine
         // `snpanel.deb13` is a real host and is not one certbot can serve.
         assert!(!is_panel_domain("snpanel.deb13"));
+    }
+
+    /// `detect_asset_type` - the type comes from the content, not the name.
+    ///
+    /// This is the security-relevant half of the upload. A file called
+    /// `logo.png` that is actually HTML would otherwise be written into the
+    /// assets directory and served back as `image/png` from a path the panel
+    /// chose, to every administrator who loads the login page. Sniffing the
+    /// magic bytes is what stops the panel vouching for a file it has not
+    /// looked at.
+    #[test]
+    fn an_asset_is_identified_by_its_bytes_not_its_name() {
+        // The four the Python accepts, each by its signature.
+        assert_eq!(
+            detect_asset_type(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0d", "anything.txt"),
+            Ok("png")
+        );
+        assert_eq!(detect_asset_type(b"\xff\xd8\xff\xe0JFIF", "x"), Ok("jpg"));
+        assert_eq!(
+            detect_asset_type(b"RIFF\x24\x00\x00\x00WEBPVP8 ", "x"),
+            Ok("webp")
+        );
+        assert_eq!(
+            detect_asset_type(b"\x00\x00\x01\x00\x01\x00", "x"),
+            Ok("ico")
+        );
+
+        // A name that claims one of the four, over content that is not: the
+        // Python says the content does not match, and so does this.
+        for name in ["evil.png", "evil.JPG", "evil.jpeg", "evil.webp", "evil.ico"] {
+            assert_eq!(
+                detect_asset_type(b"<!DOCTYPE html><script>alert(1)</script>", name),
+                Err("Uploaded file content does not match its image type".to_string()),
+                "{name}"
+            );
+        }
+
+        // Anything else is told which types are supported.
+        for name in ["notes.txt", "payload.svg", "archive.zip", "", "noextension"] {
+            assert_eq!(
+                detect_asset_type(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>", name),
+                Err("Only PNG, JPG, WEBP, and ICO images are supported".to_string()),
+                "{name}"
+            );
+        }
+
+        // An SVG named `.png` is the case worth naming: SVG can carry script,
+        // and serving one as `image/png` is not a defence if a browser
+        // sniffs. It is refused on content.
+        assert!(detect_asset_type(b"<svg onload=alert(1)>", "logo.png").is_err());
+
+        // `RIFF` alone is not WEBP - the marker is at offset 8, and a short
+        // file must not be read past its end.
+        assert!(detect_asset_type(b"RIFF", "x.webp").is_err());
+        assert!(detect_asset_type(b"RIFF\x00\x00\x00\x00AVI ", "x.webp").is_err());
+        assert!(detect_asset_type(b"", "x.png").is_err());
+
+        // A truncated PNG signature is not a PNG.
+        assert!(detect_asset_type(b"\x89PNG", "x.png").is_err());
+
+        // The limit, checked here because a typo in it is silent: the Python
+        // reads `MAX_ASSET_SIZE + 1` bytes and refuses `len > MAX`, so a file
+        // of exactly one megabyte is accepted and one byte more is not.
+        assert_eq!(MAX_ASSET_SIZE, 1024 * 1024);
     }
 }

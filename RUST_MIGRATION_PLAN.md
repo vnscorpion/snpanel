@@ -19,8 +19,8 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **131 of 211** | 62% |
-| Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
+| API endpoints answered by Rust | **133 of 211** | 63% |
+| Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
 | Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket |
