@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 100 of the 106 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 102 of the 106 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,8 +39,8 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the **106** verbs the panel's Python calls, 100 are answered over the
-socket and 6 still fall through to 5,993 lines of bash. (105 until this week.
+of the **106** verbs the panel's Python calls, 102 are answered over the
+socket and 4 still fall through to 5,993 lines of bash. (105 until this week.
 The scratch survey that produced that figure looks for
 `shell.privileged("<verb>"`, and `backend/app/services/orphans.py` calls
 through a local `_run()` wrapper, so `orphans-scan` and `orphans-clean` were
@@ -50,8 +50,8 @@ not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
-direction: `snpanel-ipc` defines 113 request variants and the argv layer maps
-130 verb names, which is more than the 100 above. (An earlier draft said 133
+direction: `snpanel-ipc` defines 114 request variants and the argv layer maps
+132 verb names, which is more than the 102 above. (An earlier draft said 133
 variants. Counted two ways — the variants in the `enum HelperRequest` body, and
 the distinct `Self::` arms in its `name()` table — it is 109; more names than
 variants because several verbs are aliases sharing one.) Three of those names
@@ -228,6 +228,28 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### `is_domain` accepts an IP address, and the orphan sweep depends on it
+
+`orphan_live_domains` normalises the panel's list with `tr -d '[:space:]'`
+and then checks it with `is_domain`. Two answers there are easy to read past
+and were measured against the bash on Debian 13 rather than inferred:
+
+- whitespace is removed **anywhere**, not trimmed, so `exa mple.com` becomes
+  `example.com` and two names on one line are glued into one;
+- `is_domain`'s regex allows all-digit labels, so `192.0.2.1` passes and
+  stays on the live list.
+
+The second matters. A port that "fixed" it by rejecting IP addresses would
+drop that name from the live set, and the orphan sweep would then see a
+certificate for it as unreferenced and archive-and-delete it. The Rust port
+keeps the behaviour, and the fixture that pins it is 20 inputs replayed
+against the bash.
+
+Everything the sweep removes is copied to `/root/snpanel-removed` first, and
+an empty live list is refused outright at both ends - Python will not ask, and
+the helper will not act. "Unreferenced" is a strong inference, not a
+certainty.
 
 ### A refusal exits 1, and the code said 2 for most of the migration
 

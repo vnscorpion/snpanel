@@ -906,6 +906,17 @@ pub enum HelperRequest {
         version: PhpVersion,
     },
 
+    /// `orphans-scan` / `orphans-clean` - what a deleted website left
+    /// behind.
+    ///
+    /// The live domains arrive on stdin, never in argv: the panel owns that
+    /// truth, and a helper that inferred it from the filesystem it is about
+    /// to delete from would be reasoning in a circle.
+    OrphanCleanup {
+        clean: bool,
+        live_domains: String,
+    },
+
     /// `waf-install` - the nginx ModSecurity module and SNPanel's rules.
     ///
     /// Debian only; refused with the reason on EL, where the connector is not
@@ -1100,6 +1111,13 @@ impl HelperRequest {
             Self::PhpPoolsRetune => "php-pools-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
             Self::PhpInstall { .. } => "php-install",
+            Self::OrphanCleanup { clean, .. } => {
+                if *clean {
+                    "orphans-clean"
+                } else {
+                    "orphans-scan"
+                }
+            }
             Self::WafInstall => "waf-install",
             Self::FirewallBlocklistRun => "firewall-blocklist-run",
             Self::FirewallBlocklistStatus => "firewall-blocklist-status",

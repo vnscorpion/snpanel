@@ -18,6 +18,7 @@ pub mod firewall;
 pub mod fwrules;
 pub mod misc;
 pub mod nginx;
+pub mod orphans;
 pub mod packages;
 pub mod php;
 pub mod runtime;
@@ -382,6 +383,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             (*budget_secs > 0).then_some(*budget_secs),
             *php_version,
         ),
+        HelperRequest::OrphanCleanup {
+            clean,
+            live_domains,
+        } => orphans::cleanup(*clean, live_domains),
         HelperRequest::WafInstall => waf::install_engine(),
         HelperRequest::FirewallBlocklistRun => {
             firewall::blocklist_run(ctx.panel_port, &ctx.ssh_ports)
@@ -479,15 +484,14 @@ mod tests {
         /// transitive closure - 466 to 540 lines of bash apiece - which is
         /// why they are last.
         ///
-        /// `orphans-*` are here because this test found them. The scratch
-        /// survey used to track Stage D looks for `shell.privileged("<verb>"`
-        /// and `backend/app/services/orphans.py` calls through a local
-        /// `_run()` wrapper, so they were counted as having no caller for
-        /// most of the migration.
+        /// `orphans-scan` and `orphans-clean` were here for one commit,
+        /// because this test found them: the scratch survey used to track
+        /// Stage D looks for `shell.privileged("<verb>"` and
+        /// `backend/app/services/orphans.py` calls through a local `_run()`
+        /// wrapper, so they had been counted as having no caller for most of
+        /// the migration. They are answered here now.
         const UNPORTED_WITH_CALLERS: &[&str] = &[
             "cloudflare-ssl-issue",
-            "orphans-clean",
-            "orphans-scan",
             "panel-ssl-install",
             "panel-ssl-use-domain",
             "panel-url-set",

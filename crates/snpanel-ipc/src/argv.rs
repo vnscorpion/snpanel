@@ -560,6 +560,14 @@ impl HelperRequest {
                     php_version,
                 }
             }
+            ("orphans-scan", 0) => HelperRequest::OrphanCleanup {
+                clean: false,
+                live_domains: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
+            ("orphans-clean", 0) => HelperRequest::OrphanCleanup {
+                clean: true,
+                live_domains: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
             ("waf-install", 0) => HelperRequest::WafInstall,
             ("firewall-blocklist-run", 0)
             | ("nginx-blocklist-run", 0)

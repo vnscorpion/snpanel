@@ -232,7 +232,7 @@ pub fn cert_info(domain: &Domain) -> HelperResponse {
 ///
 /// Every occurrence on every line, not the first - a multi-name certificate
 /// lists them all on one line.
-fn dns_names(text: &str) -> Vec<String> {
+pub(crate) fn dns_names(text: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in text.lines() {
         let mut rest = line;
