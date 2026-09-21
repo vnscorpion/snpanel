@@ -40,6 +40,30 @@ const PHP_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/ph
 const STATIC_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/static.conf.j2");
 const PROXY_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/proxy.conf.j2");
 
+/// Source: `_write_placeholder_page`.
+///
+/// **The one template the panel renders with autoescaping on.** The vhost
+/// templates cannot escape - escaping would corrupt the config, which is why
+/// `render_vhost` leaves it off - but this one is HTML. The only variable is
+/// a domain already constrained to `[a-z0-9-.]`, so today the escaping is a
+/// no-op for every value that can reach it; it is here so that constraint
+/// stops being load-bearing.
+pub fn render_placeholder(domain: &str) -> Result<String, RenderError> {
+    const PLACEHOLDER_TEMPLATE: &str =
+        include_str!("../../../backend/app/templates/nginx/placeholder.html.j2");
+
+    let mut environment = minijinja::Environment::new();
+    environment.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+    environment
+        .add_template("placeholder", PLACEHOLDER_TEMPLATE)
+        .map_err(|e| RenderError::Template(e.to_string()))?;
+    environment
+        .get_template("placeholder")
+        .map_err(|e| RenderError::Template(e.to_string()))?
+        .render(minijinja::context! { domain => domain })
+        .map_err(|e| RenderError::Template(e.to_string()))
+}
+
 pub const ALLOWED_PHP_VERSIONS: &[&str] = &["5.6", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"];
 pub const ALLOWED_APP_TYPES: &[&str] = &["wordpress", "php", "static", "application"];
 pub const ALLOWED_REWRITE_MODES: &[&str] = &[

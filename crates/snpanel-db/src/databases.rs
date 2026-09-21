@@ -115,6 +115,69 @@ impl<'a> DatabaseRepo<'a> {
         .fetch_optional(self.pool)
         .await?)
     }
+
+    /// Source: `db.add(DatabaseAccount(...))`.
+    ///
+    /// The password arrives **already encrypted** - C3. Taking it in plain
+    /// here would put one more function between the secret and the column
+    /// that has to hold it encrypted, and that is the column risk R1 is
+    /// about.
+    pub async fn create(
+        &self,
+        owner_id: i64,
+        website_id: Option<i64>,
+        db_name: &str,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query(
+            "INSERT INTO database_accounts (owner_id, website_id, db_name, db_user, db_password) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(owner_id)
+        .bind(website_id)
+        .bind(db_name)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid())
+    }
+
+    /// Source: `db_account.owner_id = ...` in `install_wordpress_on_website` -
+    /// an existing row taken over by the site that just installed on it.
+    pub async fn attach_to_website(
+        &self,
+        id: i64,
+        owner_id: i64,
+        website_id: i64,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE database_accounts SET owner_id = ?, website_id = ?, db_user = ?, \
+             db_password = ? WHERE id = ?",
+        )
+        .bind(owner_id)
+        .bind(website_id)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.db_name ==
+    /// db_info["db_name"]).first()`.
+    pub async fn by_name(&self, db_name: &str) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE db_name = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(db_name)
+        .fetch_optional(self.pool)
+        .await?)
+    }
 }
 
 #[cfg(test)]

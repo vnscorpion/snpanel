@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **137 of 211** | 64% |
+| API endpoints answered by Rust | **140 of 211** | 66% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -553,6 +553,58 @@ produced**:
 Both now assert against the constant or the formatter the production path
 uses.
 
+### `char::is_alphanumeric` is not `str.isalnum`, by 6167 code points
+
+Python's `\w` under `re.UNICODE` is `ch.isalnum() or ch == "_"`, and
+`isalnum` is the letter and number categories. Rust's `is_alphanumeric` is
+`Alphabetic | N*`, and **Alphabetic carries Other_Alphabetic** — the
+combining marks. Scanned, every code point: the standard library counts
+**6167** characters Python does not, and none the other way.
+
+Every one of those is a character a `\w` port would accept where the Python
+refuses. `WP_TITLE_RE` is the first place it bites: a WordPress site title is
+handed to WP-CLI as `--title=`, and the check is flag-injection defence.
+
+`str.isspace` differs in the other direction: it counts U+001C..U+001F, the
+file and record separators, which Rust does not. That one had already been
+hand-written once, in `manual_ssl::python_strip`.
+
+Both now come from `snpanel-core::pyunicode`, generated from Python by
+`gen-unicode-tables.py` — 770 ranges and 10, binary-searched. Generated
+rather than reasoned about, because the first version of the test that says
+why the file exists **named the wrong character**: it asserted `U+0301` was
+alphanumeric to Rust, and the Combining Diacritical Marks block carries
+neither property. The scan found the real set; the recollection did not.
+
+### A dead field found a difference in code that had already shipped
+
+Clippy reported `NewSite.php_version` as never read. It was never read
+because the new handler passed `runtime_php` to the renderer — and so does
+`rewrite_website_vhost`, which shipped weeks ago.
+
+The Python does not. `_rewrite_website_vhost` passes the row's
+`php_version` **always**, and gates only `php_fpm_socket_override` on
+`runtime_php_version`. Inert for the socket, which a static or proxied
+template does not use. Not inert for the check: `_check_php_version` raises
+on an unsupported version whatever the app type, and `None` skips it — so a
+row naming a PHP version the panel does not support was refused by the Python
+on every rewrite and accepted by the Rust on a static site.
+
+Both call sites now pass the declared version.
+
+### `waf_enabled` defaults differently in the model and in the column
+
+`Website.waf_enabled` is `default=True` on the SQLAlchemy model and
+`DEFAULT 0` on the column, and `create_website` sets neither — so SQLAlchemy's
+default is what a new row gets. A raw `INSERT` that left the column out would
+create **every new site with its firewall off**, and nothing in the panel
+would say so: the toggle would read as off on a page nobody opens until
+something goes wrong.
+
+The other model defaults happen to match their columns. That is luck rather
+than design, so `NewWebsite` carries the full set the Python writes rather
+than the set that currently differs.
+
 ### A comment saying "not ported yet" was load-bearing, and I read it as a note
 
 `rewrite_website_vhost` carried this:
@@ -1041,9 +1093,9 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `websites` (5), `users` (2), `waf` (1),
+`maintenance` (31), `malware` (11), `users` (2), `websites` (2), `waf` (1),
 `databases` (1), then `provisioning` (13) and `site_apps` (10), which need
-the `docker` domain. **74 endpoints**, counted by
+the `docker` domain. **71 endpoints**, counted by
 `list-missing-endpoints.py`; `check-counters-agree.py` fails the build if
 that disagrees with `endpoint-coverage.py`.
 

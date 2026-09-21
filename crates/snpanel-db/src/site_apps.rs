@@ -22,6 +22,15 @@ pub struct SiteAppRow {
     pub owner_username: Option<String>,
 }
 
+/// The fields a website needs from an application it is pointed at.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SiteAppTarget {
+    pub id: i64,
+    pub name: String,
+    pub owner_id: i64,
+    pub port: i64,
+}
+
 pub struct SiteAppRepo<'a> {
     pool: &'a SqlitePool,
 }
@@ -29,6 +38,19 @@ pub struct SiteAppRepo<'a> {
 impl<'a> SiteAppRepo<'a> {
     pub fn new(pool: &'a SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// Source: `db.query(SiteApp).filter(SiteApp.id == app_id).first()`.
+    ///
+    /// Carries the port, which is the only field a website needs from it: the
+    /// vhost proxies to `127.0.0.1:<port>`.
+    pub async fn by_id(&self, id: i64) -> Result<Option<SiteAppTarget>, DbError> {
+        Ok(sqlx::query_as::<_, SiteAppTarget>(
+            "SELECT id, name, owner_id, port FROM site_apps WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?)
     }
 
     /// Source: `db.query(SiteApp).filter(SiteApp.owner_id == user.id).all()`.

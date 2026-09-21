@@ -129,6 +129,122 @@ pub async fn change_database_password(db_user: &str, password: &str) -> Result<(
     run_sql(&sql).await.map(|_| ())
 }
 
+/// Source: `random_password`.
+///
+/// `secrets.choice` over this alphabet, 24 characters. The alphabet is
+/// copied exactly rather than "something similar": it is what MariaDB's
+/// `IDENTIFIED BY` is known to take through the panel's own quoting, and a
+/// character added here is a character that has to survive `_quote_sql_string`
+/// and the helper's stdin.
+pub fn random_password(length: usize) -> String {
+    use rand::RngCore;
+
+    const ALPHABET: &[u8] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*_+-";
+    let mut out = String::with_capacity(length);
+    let mut buf = [0u8; 64];
+    while out.len() < length {
+        rand::rngs::OsRng.fill_bytes(&mut buf);
+        for byte in buf {
+            if out.len() == length {
+                break;
+            }
+            // Rejection sampling, not `% len`: the modulo would make the
+            // first `256 % 70` characters of the alphabet slightly likelier,
+            // and this is a password.
+            let limit = (256 / ALPHABET.len()) * ALPHABET.len();
+            if (byte as usize) < limit {
+                out.push(ALPHABET[byte as usize % ALPHABET.len()] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Source: `safe_db_identifier`.
+///
+/// **`str.isalnum()` is Unicode-aware and this deliberately is too.** `café`
+/// keeps its `é`, which `validate_identifier` then refuses because its
+/// character set is ASCII - so an internationalised domain gets a clear 400
+/// rather than a database named after a mangled version of itself. A port
+/// that used `is_ascii_alphanumeric` here would silently name it
+/// `wp_caf__example_com` and create it.
+///
+/// The two slices are the Python's and they are not the same bound: the
+/// domain is cut to 38 characters *before* the prefix is added, and the whole
+/// thing to 63 after.
+pub fn safe_db_identifier(domain: &str, prefix: &str) -> String {
+    let clean: String = domain
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .take(38)
+        .collect();
+    format!("{prefix}_{clean}").chars().take(63).collect()
+}
+
+/// Source: `create_database`.
+///
+/// `if_not_exists` is **false** on the path that installs WordPress onto an
+/// existing website: that one must fail rather than quietly adopt a database
+/// somebody else's site is already using.
+pub async fn create_database(
+    seed: &str,
+    prefix: &str,
+    if_not_exists: bool,
+) -> Result<NewDatabase, SqlError> {
+    let db_name = safe_db_identifier(seed, prefix);
+    let db_name = validate_identifier(&db_name)?.to_string();
+    let db_user = safe_db_identifier(&db_name, "u");
+    let db_user = validate_identifier(&db_user)?.to_string();
+    reject_reserved_user(&db_user)?;
+    let db_password = random_password(24);
+
+    let create_clause = if if_not_exists {
+        "CREATE DATABASE IF NOT EXISTS"
+    } else {
+        "CREATE DATABASE"
+    };
+    // `CREATE USER IF NOT EXISTS` followed by an unconditional `ALTER USER` is
+    // what the Python does here, and it is the pattern
+    // `create_database_credentials` was changed to refuse - because the panel
+    // authenticates with ALL PRIVILEGES ON *.*, so taking over an existing
+    // account resets its password. It is safe on *this* path only because the
+    // name is derived from the database name, which is derived from the
+    // domain, and `reject_reserved_user` covers the accounts that matter.
+    let sql = format!(
+        "{create_clause} {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\
+         CREATE USER IF NOT EXISTS {}@'localhost' IDENTIFIED BY {};\n\
+         ALTER USER {}@'localhost' IDENTIFIED BY {};\n\
+         GRANT ALL PRIVILEGES ON {}.* TO {}@'localhost';\n\
+         FLUSH PRIVILEGES;\n",
+        quote_identifier(&db_name)?,
+        quote_sql_string(&db_user),
+        quote_sql_string(&db_password),
+        quote_sql_string(&db_user),
+        quote_sql_string(&db_password),
+        quote_identifier(&db_name)?,
+        quote_sql_string(&db_user),
+    );
+    run_sql(&sql).await?;
+    Ok(NewDatabase {
+        db_name,
+        db_user,
+        db_password,
+    })
+}
+
+/// What `create_database` hands back.
+///
+/// The password is **plain** here and is encrypted by the caller before it
+/// reaches a column - C3. It exists in this shape for exactly as long as it
+/// takes to write `wp-config.php` and one row.
+pub struct NewDatabase {
+    pub db_name: String,
+    pub db_user: String,
+    pub db_password: String,
+}
+
 /// Source: `drop_database`.
 pub async fn drop_database(db_name: &str, db_user: &str) -> Result<(), SqlError> {
     let safe_user = validate_identifier(db_user)?;
@@ -168,6 +284,94 @@ pub async fn export_database(db_name: &str, output_file: &str) -> Result<(), Sql
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the real Python names a database, replayed.
+    ///
+    /// The case that matters is the one that looks like a bug: `café` keeps
+    /// its `é` because `str.isalnum()` is Unicode-aware, and
+    /// `validate_identifier` then refuses the name because *its* character set
+    /// is ASCII. So an internationalised domain gets a clear refusal rather
+    /// than a database quietly named `wp_caf__example_com`.
+    ///
+    /// The two length cuts are not the same bound either: the domain is cut to
+    /// 38 characters **before** the prefix is added, and the whole name to 63
+    /// after - so `u_` + a 41-character database name comes out at 40, not 43.
+    #[test]
+    fn a_database_is_named_the_way_the_python_names_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/db_identifier.json");
+        let corpus: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the identifier corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["cases"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 22, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let domain = case["domain"].as_str().unwrap_or("");
+            for prefix in ["wp", "u"] {
+                let got = safe_db_identifier(domain, prefix);
+                let want = case[format!("{prefix}_name")].as_str().unwrap_or("");
+                if got != want {
+                    failures.push(format!(
+                        "{domain:?} /{prefix}: python {want:?}, rust {got:?}"
+                    ));
+                }
+                let valid = validate_identifier(&got).is_ok();
+                let want_valid = case[format!("{prefix}_valid")].as_bool().unwrap_or(false);
+                if valid != want_valid {
+                    failures.push(format!(
+                        "{domain:?} /{prefix}: python {} it, rust {} it",
+                        if want_valid { "accepts" } else { "refuses" },
+                        if valid { "accepts" } else { "refuses" },
+                    ));
+                }
+            }
+            // The account name comes from the *database* name, not the domain:
+            // that second pass is where the 63-character cut bites.
+            let got = safe_db_identifier(case["wp_name"].as_str().unwrap_or(""), "u");
+            let want = case["user_from_db"].as_str().unwrap_or("");
+            if got != want {
+                failures.push(format!("{domain:?} /user: python {want:?}, rust {got:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// A generated password is 24 characters from the Python's alphabet.
+    ///
+    /// Not a corpus: the value is random by design. What can be pinned is the
+    /// length, the alphabet, and that two calls differ - a constant password
+    /// would pass any test that only looked at one.
+    #[test]
+    fn a_generated_password_is_from_the_alphabet_and_not_a_constant() {
+        const ALPHABET: &str =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^*_+-";
+        let first = random_password(24);
+        assert_eq!(first.chars().count(), 24);
+        assert!(
+            first.chars().all(|c| ALPHABET.contains(c)),
+            "{first:?} has a character the Python cannot produce"
+        );
+        assert_ne!(first, random_password(24));
+        assert_eq!(random_password(8).chars().count(), 8);
+
+        // Every character of the alphabet must be reachable. A sampler that
+        // dropped the tail - which is what a careless rejection bound does -
+        // would quietly shrink the keyspace and nothing else would notice.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            seen.extend(random_password(64).chars());
+        }
+        let missing: Vec<char> = ALPHABET.chars().filter(|c| !seen.contains(c)).collect();
+        assert!(missing.is_empty(), "never generated: {missing:?}");
+    }
 
     #[test]
     fn an_identifier_is_refused_rather_than_escaped() {

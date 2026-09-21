@@ -346,8 +346,38 @@ pub async fn sync_website_rules(
         "off"
     };
     let enabled = parse_enabled_rule_ids(&website.waf_default_rules);
-    let content = render_site_rules(&website.domain, &enabled, &website.waf_custom_rules, mode)?;
-    let safe_domain = validate_domain(&website.domain)?;
+    sync_site_rules(
+        dry_run,
+        &website.domain,
+        &enabled,
+        &website.waf_custom_rules,
+        mode,
+    )
+    .await
+}
+
+/// Source: `sync_site_rules` - one site's rule file, without a row to read.
+///
+/// **`crs_mode` is an argument with no default here on purpose.** The Python
+/// defaults it to `"off"` rather than to the server-wide setting, and its
+/// docstring says why: whether a site loads CRS is a per-site opt-in with a
+/// memory bill attached, and a caller that has not thought about it must not
+/// turn it on by omission. That is not hypothetical - creating a website on a
+/// server in block mode gave the new site CRS while its own `crs_enabled`
+/// flag said off.
+///
+/// Callers holding a `Website` want [`sync_website_rules`], which reads the
+/// flag.
+pub async fn sync_site_rules(
+    dry_run: bool,
+    domain: &str,
+    enabled_rule_ids: &[String],
+    custom_rules: &str,
+    crs_mode: &str,
+) -> Result<crate::shell::CommandResult, WafError> {
+    let safe_domain = validate_domain(domain)?;
+    let mode = normalize_crs_mode(crs_mode);
+    let content = render_site_rules(&safe_domain, enabled_rule_ids, custom_rules, mode)?;
 
     Ok(crate::shell::privileged(
         dry_run,
@@ -361,6 +391,19 @@ pub async fn sync_website_rules(
         ]),
     )
     .await)
+}
+
+/// Source: `_ensure_default_waf_file` - the rule file a brand-new site gets.
+///
+/// Every default rule on, no custom rules, **CRS off**. The flag on the row
+/// it is about to be given says off too, and a rule file that disagreed with
+/// the flag would make the opt-in mean nothing.
+pub async fn ensure_default_site_rules(
+    dry_run: bool,
+    domain: &str,
+) -> Result<crate::shell::CommandResult, WafError> {
+    let enabled: Vec<String> = DEFAULT_RULES.iter().map(|r| r.id.to_string()).collect();
+    sync_site_rules(dry_run, domain, &enabled, "", "off").await
 }
 
 /// Source: `api.waf.may_manage_waf`.

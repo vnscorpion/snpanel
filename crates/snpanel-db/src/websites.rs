@@ -504,6 +504,105 @@ impl<'a> WebsiteRepo<'a> {
             .await?;
         Ok(done.rows_affected() > 0)
     }
+
+    /// Source: `db.query(Website).filter(Website.owner_id == owner_id).count()`
+    /// - the count a website limit is checked against.
+    pub async fn count_for_owner(&self, owner_id: i64) -> Result<i64, DbError> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM websites WHERE owner_id = ?")
+                .bind(owner_id)
+                .fetch_one(self.pool)
+                .await?,
+        )
+    }
+
+    /// Source: `db.add(Website(...))` in `create_website`.
+    ///
+    /// Every column the Python sets, in one statement, and the new row's id
+    /// back.
+    ///
+    /// **`waf_enabled` and `created_at` are written although `create_website`
+    /// never mentions them.** SQLAlchemy applies the *model's* defaults on
+    /// insert, and two of them disagree with the column defaults this table
+    /// was created with:
+    ///
+    /// - `waf_enabled` is `default=True` on the model and `DEFAULT 0` on the
+    ///   column. A raw insert that left it out would create every new site
+    ///   with its firewall **off**, and nothing in the panel would say so -
+    ///   the toggle would simply read as off on a page nobody opens until
+    ///   something goes wrong;
+    /// - `created_at` is `default=datetime.utcnow` and the column is
+    ///   nullable, so a row without it sorts to one end of every listing that
+    ///   orders by it.
+    ///
+    /// The rest of the model defaults happen to match their columns. That is
+    /// luck, not design, so this list is the full set the Python writes rather
+    /// than the set that currently differs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(&self, new: &NewWebsite<'_>) -> Result<i64, DbError> {
+        let id = sqlx::query(
+            "INSERT INTO websites (domain, owner_id, root_path, document_root, linux_user, \
+             php_version, app_type, nginx_rewrite_mode, app_id, status, waf_enabled, \
+             created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(new.domain)
+        .bind(new.owner_id)
+        .bind(new.root_path)
+        .bind(new.document_root)
+        .bind(new.linux_user)
+        .bind(new.php_version)
+        .bind(new.app_type)
+        .bind(new.nginx_rewrite_mode)
+        .bind(new.app_id)
+        .bind(new.status)
+        .bind(new.waf_enabled)
+        .bind(new.created_at)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid();
+        Ok(id)
+    }
+
+    /// Source: the three assignments after `install_wordpress_on_website`
+    /// succeeds — `root_path`, `app_type` and `nginx_rewrite_mode`.
+    ///
+    /// They move together: a row saying `app_type = "wordpress"` with a
+    /// rewrite mode of `none` would be served without a front controller, so
+    /// every permalink but the home page would 404.
+    pub async fn set_wordpress_installed(&self, id: i64, root_path: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET root_path = ?, app_type = 'wordpress', \
+             nginx_rewrite_mode = 'front_controller' WHERE id = ?",
+        )
+        .bind(root_path)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Every column `create_website` writes.
+///
+/// A struct rather than eleven positional arguments, because `domain`,
+/// `root_path`, `document_root`, `linux_user`, `php_version`, `app_type`,
+/// `nginx_rewrite_mode` and `status` are all `&str` and a call that swapped
+/// two of them would compile.
+pub struct NewWebsite<'a> {
+    pub domain: &'a str,
+    pub owner_id: i64,
+    pub root_path: &'a str,
+    pub document_root: &'a str,
+    pub linux_user: Option<&'a str>,
+    pub php_version: &'a str,
+    pub app_type: &'a str,
+    pub nginx_rewrite_mode: &'a str,
+    pub app_id: Option<i64>,
+    pub status: &'a str,
+    /// The model's default, which is **not** the column's. See [`create`].
+    pub waf_enabled: bool,
+    pub created_at: &'a str,
 }
 
 /// `id, domain` -> `w.id, w.domain`, so the join above is unambiguous.

@@ -39,7 +39,18 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/websites", get(list).fallback(crate::fallback))
+        .route(
+            "/websites",
+            get(list).post(create_website).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/wordpress",
+            post(create_wordpress).fallback(crate::fallback),
+        )
+        .route(
+            "/websites/{website_id}/wordpress",
+            post(install_wordpress_on_website).fallback(crate::fallback),
+        )
         .route(
             "/websites/{website_id}",
             axum::routing::delete(delete_website).fallback(crate::fallback),
@@ -1002,10 +1013,14 @@ async fn rewrite_website_vhost(
         None => &website.app_type,
     };
     // Source: `runtime_php_version` - a static or proxied site gets no pool.
+    // It decides the **socket** and nothing else: the version handed to the
+    // renderer below is the row's, whatever the app type, because
+    // `_check_php_version` runs on it and a `None` would skip that check.
     let runtime_php = matches!(app_type, "wordpress" | "php")
         .then_some(website.php_version.as_str())
         .filter(|v| !v.is_empty());
     let socket = site_fpm_socket(website, runtime_php);
+    let declared_php = Some(website.php_version.as_str()).filter(|v| !v.is_empty());
 
     let rewrite_mode = match overrides.rewrite_mode {
         Some(forced) => forced,
@@ -1021,7 +1036,7 @@ async fn rewrite_website_vhost(
     let root_path = std::path::PathBuf::from(&website.root_path);
     let mut input = snpanel_nginx::VhostInput::new(&website.domain, &root_path, &custom);
     input.app_type = app_type;
-    input.php_version = runtime_php;
+    input.php_version = declared_php;
     input.php_fpm_socket_override = socket.as_deref();
     input.waf_enabled = website.waf_enabled;
     input.http_flood_enabled = website.http_flood_enabled;
@@ -3204,9 +3219,1115 @@ fn query_flag(params: &HashMap<String, String>, name: &str) -> bool {
     }
 }
 
+/// Source: `storage_quota.STATIC_SITE_ESTIMATE_BYTES` and
+/// `WORDPRESS_SITE_ESTIMATE_BYTES`.
+///
+/// A guess at what a site will occupy, charged against the quota **before**
+/// anything is written. A WordPress install is a hundred megabytes of files
+/// this request is about to download; a static site is the placeholder page.
+const STATIC_SITE_ESTIMATE_BYTES: u64 = 1024 * 1024;
+const WORDPRESS_SITE_ESTIMATE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Source: `create_website`'s `install_wp`.
+///
+/// **Both conditions, not either.** `install_wordpress=true` with
+/// `app_type="static"` creates a static site, and the flag is ignored rather
+/// than the type. A port that took the flag alone would install WordPress
+/// into a site the customer asked to be static and then serve it as static -
+/// a hundred megabytes of PHP served as text.
+fn installs_wordpress(install_wordpress: bool, app_type: &str) -> bool {
+    install_wordpress && app_type == "wordpress"
+}
+
+/// Source: `app_type_value` in the non-WordPress branch.
+///
+/// A request for `wordpress` that is *not* installing WordPress becomes
+/// `php` - the vhost has to serve something, and an empty directory rendered
+/// with WordPress's rewrite rules serves nothing but 404s.
+fn site_app_type(install_wp: bool, requested: &str) -> &str {
+    if install_wp {
+        "wordpress"
+    } else if requested == "wordpress" {
+        "php"
+    } else {
+        requested
+    }
+}
+
+/// Source: `nginx_rewrite_mode="front_controller" if app_type_value ==
+/// "wordpress" else "none"`.
+fn site_rewrite_mode(app_type: &str) -> &'static str {
+    if app_type == "wordpress" {
+        "front_controller"
+    } else {
+        "none"
+    }
+}
+
+/// `POST /websites`.
+///
+/// Source: `create_website`. A domain folder and an nginx vhost, and
+/// optionally a database and a WordPress install inside them.
+///
+/// **Everything written before the row exists is cleaned up on failure**, and
+/// the row is written last. The other order leaves a website in the list that
+/// has no files, no vhost and no database, which an administrator can neither
+/// use nor delete without hitting the same failure again.
+async fn create_website(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    create_site_from(state, parts, current, payload, None).await
+}
+
+/// `POST /websites/wordpress`.
+///
+/// Source: `create_wordpress` - "legacy endpoint for backwards
+/// compatibility", which is `create_website` with two fields forced. It is
+/// ported as the same call with the same overrides rather than as a copy,
+/// because a second copy is how the two of them drift apart.
+async fn create_wordpress(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    create_site_from(state, parts, current, payload, Some(true)).await
+}
+
+/// What `WebsiteCreate` carries, after pydantic.
+struct CreateRequest {
+    domain: String,
+    owner_id: Option<i64>,
+    php_version: String,
+    app_type: String,
+    app_id: Option<i64>,
+    install_wordpress: bool,
+    title: String,
+    admin_user: String,
+    admin_password: String,
+    admin_email: String,
+}
+
+/// Source: `WebsiteCreate`'s field defaults.
+fn create_request(payload: &Value, force_wordpress: Option<bool>) -> Result<CreateRequest, String> {
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let domain = text("domain").trim().to_lowercase();
+    if domain.is_empty() {
+        return Err("domain is required".to_string());
+    }
+    let php_version = match payload.get("php_version").and_then(Value::as_str) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        // `WebsiteCreate.php_version` has no default of its own; the column's
+        // is what a row gets, and the vhost renderer needs a value now.
+        _ => String::new(),
+    };
+    let app_type = match payload.get("app_type").and_then(Value::as_str) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => "wordpress".to_string(),
+    };
+    if !snpanel_nginx::ALLOWED_APP_TYPES.contains(&app_type.as_str()) {
+        return Err(format!(
+            "app_type must be one of {:?}",
+            snpanel_nginx::ALLOWED_APP_TYPES
+        ));
+    }
+    Ok(CreateRequest {
+        domain,
+        owner_id: payload.get("owner_id").and_then(Value::as_i64),
+        php_version,
+        app_type: match force_wordpress {
+            Some(true) => "wordpress".to_string(),
+            _ => app_type,
+        },
+        app_id: payload.get("app_id").and_then(Value::as_i64),
+        install_wordpress: force_wordpress.unwrap_or_else(|| {
+            payload
+                .get("install_wordpress")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        }),
+        title: text("title"),
+        admin_user: text("admin_user"),
+        admin_password: text("admin_password"),
+        admin_email: text("admin_email"),
+    })
+}
+
+async fn create_site_from(
+    state: AppState,
+    parts: axum::http::request::Parts,
+    current: CurrentUser,
+    payload: Value,
+    force_wordpress: Option<bool>,
+) -> Response {
+    let request = match create_request(&payload, force_wordpress) {
+        Ok(r) => r,
+        Err(message) => {
+            return crate::errors::error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &message)
+        }
+    };
+
+    // Asking for somebody else's site is an administrator's job, and the
+    // check comes before the domain is even looked at: a customer probing for
+    // which domains exist should not learn it through a 409.
+    if let Some(requested) = request.owner_id {
+        if requested != current.user.id
+            && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+        {
+            return not_enough_permissions();
+        }
+    }
+
+    let taken = state
+        .db
+        .websites()
+        .hostname_taken(&request.domain, None, None)
+        .await
+        .unwrap_or(true);
+    if taken || vhost_exists(&state, &request.domain).await {
+        return crate::errors::error(axum::http::StatusCode::CONFLICT, "Domain already exists");
+    }
+
+    let owner = match request.owner_id {
+        Some(id) => match state.db.users().by_id(id).await {
+            Ok(Some(u)) => u,
+            Ok(None) => return not_found("Owner not found"),
+            Err(e) => {
+                tracing::error!("owner lookup failed: {e}");
+                return internal_error();
+            }
+        },
+        None => current.user.clone(),
+    };
+
+    let count = state
+        .db
+        .websites()
+        .count_for_owner(owner.id)
+        .await
+        .unwrap_or(i64::MAX);
+    if !permissions::is_admin_role(&owner.role) && count >= owner.website_limit {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Website limit reached");
+    }
+
+    let install_wp = installs_wordpress(request.install_wordpress, &request.app_type);
+    let estimate = if install_wp {
+        WORDPRESS_SITE_ESTIMATE_BYTES
+    } else {
+        STATIC_SITE_ESTIMATE_BYTES
+    };
+    if let Err(message) = enforce_owner_quota(&state, &owner, estimate).await {
+        return crate::errors::error(axum::http::StatusCode::PAYLOAD_TOO_LARGE, &message);
+    }
+
+    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&owner.username) else {
+        return internal_error();
+    };
+    let Ok(domain) = snpanel_core::Domain::parse(&request.domain) else {
+        return bad_request("Invalid domain");
+    };
+    let site_root = snpanel_core::types::SitePath::site_root(&panel_user, &domain);
+    let root_path = site_root.as_path().to_string_lossy().into_owned();
+    let linux_user = panel_user.as_str().to_string();
+
+    if install_wp && (request.admin_email.is_empty() || request.admin_password.is_empty()) {
+        return bad_request(
+            "admin_email and admin_password are required when install_wordpress is true",
+        );
+    }
+
+    let app_type = site_app_type(install_wp, &request.app_type).to_string();
+    let rewrite_mode = site_rewrite_mode(&app_type);
+    let runtime_php = matches!(app_type.as_str(), "wordpress" | "php")
+        .then(|| request.php_version.clone())
+        .filter(|v| !v.is_empty());
+
+    // An application-backed site is pointed at an app its owner owns; without
+    // the ownership check a customer could aim their domain at another
+    // tenant's application by guessing an id.
+    let app_port = if app_type == "application" {
+        match resolve_app_for_owner(&state, owner.id, request.app_id, &current).await {
+            Ok(app) => Some(app),
+            Err(r) => return r,
+        }
+    } else {
+        None
+    };
+
+    let outcome = build_new_site(
+        &state,
+        &NewSite {
+            domain: &request.domain,
+            root_path: &root_path,
+            linux_user: &linux_user,
+            app_type: &app_type,
+            rewrite_mode,
+            php_version: &request.php_version,
+            runtime_php: runtime_php.as_deref(),
+            app_port: app_port.as_ref().map(|a| a.port),
+            install_wp,
+            request: &request,
+        },
+    )
+    .await;
+    let db_info = match outcome {
+        Ok(info) => info,
+        Err(message) => return bad_request(&message),
+    };
+
+    let now = snpanel_db::sqlalchemy_now();
+    let new_row = snpanel_db::NewWebsite {
+        domain: &request.domain,
+        owner_id: owner.id,
+        root_path: &root_path,
+        document_root: "public_html",
+        linux_user: Some(&linux_user),
+        php_version: &request.php_version,
+        app_type: &app_type,
+        nginx_rewrite_mode: rewrite_mode,
+        app_id: app_port.as_ref().map(|a| a.id),
+        status: "active",
+        // `Website.waf_enabled` is `default=True` on the model and `DEFAULT 0`
+        // on the column, and `create_website` sets neither - so SQLAlchemy's
+        // default is what a new row gets.
+        waf_enabled: true,
+        created_at: &now,
+    };
+    let website_id = match state.db.websites().create(&new_row).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("creating the row for {} failed: {e}", request.domain);
+            return internal_error();
+        }
+    };
+
+    if let Some(info) = &db_info {
+        // C3: the column holds Fernet ciphertext, never the password.
+        let encrypted =
+            snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &info.db_password);
+        if let Err(e) = state
+            .db
+            .databases()
+            .create(
+                owner.id,
+                Some(website_id),
+                &info.db_name,
+                &info.db_user,
+                &encrypted,
+            )
+            .await
+        {
+            tracing::error!(
+                "creating the database row for {} failed: {e}",
+                request.domain
+            );
+            return internal_error();
+        }
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        if install_wp {
+            "create_wordpress"
+        } else {
+            "create_site"
+        },
+        &request.domain,
+    )
+    .await;
+
+    let row = match state.db.websites().by_id(website_id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    axum::Json(website_json(&row, &[], install_wp, row.ssl_enabled)).into_response()
+}
+
+/// Everything `build_new_site` needs, so its arguments cannot be swapped.
+struct NewSite<'a> {
+    domain: &'a str,
+    root_path: &'a str,
+    linux_user: &'a str,
+    app_type: &'a str,
+    rewrite_mode: &'static str,
+    php_version: &'a str,
+    runtime_php: Option<&'a str>,
+    app_port: Option<i64>,
+    install_wp: bool,
+    request: &'a CreateRequest,
+}
+
+/// Make the files and the vhost, and clean up if any of it fails.
+///
+/// Source: the two `try:` blocks in `create_website`, which differ only in
+/// what they put inside the directory. The cleanup is the point: a half-made
+/// site with no row is invisible to the panel, so nothing would ever come
+/// back for it.
+async fn build_new_site(
+    state: &AppState,
+    site: &NewSite<'_>,
+) -> Result<Option<crate::mariadb::NewDatabase>, String> {
+    let dry = state.settings.command_dry_run;
+
+    // `site-runtime-ensure` makes the home, the public directory and the PHP
+    // pool. `"none"` rather than an empty argument when there is no runtime
+    // PHP: the helper reads the third argument positionally.
+    let php_arg = site.runtime_php.unwrap_or("none");
+    let ensured = shell::privileged(
+        dry,
+        "site-runtime-ensure",
+        &[site.linux_user, site.root_path, php_arg],
+        None,
+        None,
+    )
+    .await;
+    if !ensured.ok() {
+        return Err(ensured
+            .failure_detail("Could not prepare the website directory")
+            .trim()
+            .to_string());
+    }
+
+    let mut db_info = None;
+    if site.install_wp {
+        let created = crate::mariadb::create_database(site.domain, "wp", true)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Err(message) = install_wordpress(state, site, &created).await {
+            // `mariadb.drop_database(...)` then `_cleanup_failed_site(...)`,
+            // in that order and both best-effort: the 400 carries the real
+            // reason and a failure here must not replace it.
+            let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+            cleanup_failed_site(state, site).await;
+            return Err(message);
+        }
+        db_info = Some(created);
+    } else if !dry {
+        // Just the placeholder page, then hand the directory back to the
+        // site's own user.
+        if let Err(message) = write_placeholder_page(state, site).await {
+            cleanup_failed_site(state, site).await;
+            return Err(message);
+        }
+    }
+
+    if let Err(message) = write_new_vhost(state, site).await {
+        if let Some(created) = &db_info {
+            let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+        }
+        cleanup_failed_site(state, site).await;
+        return Err(message);
+    }
+    Ok(db_info)
+}
+
+/// Source: `_ensure_default_waf_file` then `nginx.write_vhost`.
+async fn write_new_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+    let dry = state.settings.command_dry_run;
+    let waf = crate::waf::ensure_default_site_rules(dry, site.domain)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(waf
+            .failure_detail("Could not save WAF rules")
+            .trim()
+            .to_string());
+    }
+
+    let custom = snpanel_nginx::CustomDirectives::validate("").map_err(|e| e.to_string())?;
+    let root = std::path::PathBuf::from(site.root_path);
+    let socket = new_site_fpm_socket(site);
+    let mut input = snpanel_nginx::VhostInput::new(site.domain, &root, &custom);
+    input.app_type = site.app_type;
+    // The requested version, not the runtime one - see the note in
+    // `rewrite_website_vhost`.
+    input.php_version = Some(site.php_version).filter(|v| !v.is_empty());
+    input.php_fpm_socket_override = socket.as_deref();
+    input.document_root = "public_html";
+    input.rewrite_mode = Some(site.rewrite_mode);
+    input.app_port = site.app_port;
+
+    let env = snpanel_nginx::VhostEnv {
+        ipv6: crate::system::ipv6_enabled(),
+        waf_engine: crate::system::waf_engine_available(),
+        default_php_version: state.settings.default_php_version.clone(),
+        home_root: std::path::PathBuf::from("/home"),
+    };
+    let sites = std::path::PathBuf::from(&state.settings.nginx_sites_available);
+    let plan =
+        snpanel_nginx::plan_rewrite(&input, &env, &sites, None, true).map_err(|e| e.to_string())?;
+
+    if !state.settings.command_dry_run {
+        let write = shell::privileged(
+            false,
+            "nginx-custom-write",
+            &[site.domain],
+            Some(plan.custom_include.as_str()),
+            None,
+        )
+        .await;
+        if !write.ok() {
+            return Err(write
+                .failure_detail("Cannot write Nginx config")
+                .trim()
+                .to_string());
+        }
+    }
+    apply_vhost_plan(state, plan).await
+}
+
+/// Source: `site_users.site_php_fpm_socket(linux_user, root_path, php)`.
+///
+/// The same shape as [`site_fpm_socket`], for a site that has no row yet.
+fn new_site_fpm_socket(site: &NewSite<'_>) -> Option<String> {
+    let version = site.runtime_php?;
+    let resolved = std::fs::canonicalize(site.root_path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| site.root_path.to_string());
+    let hash = snpanel_core::types::site_hash(&resolved);
+    Some(format!(
+        "/run/php/snpanel-{}-{hash}-{}.sock",
+        site.linux_user,
+        version.replace('.', "_")
+    ))
+}
+
+/// Source: `_cleanup_failed_site`.
+///
+/// Best-effort, and it removes the files: a directory left behind under the
+/// customer's home counts against their quota for a site that does not exist.
+async fn cleanup_failed_site(state: &AppState, site: &NewSite<'_>) {
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-runtime-delete",
+        &[site.linux_user, site.root_path],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        tracing::error!(
+            "could not clean up {} after a failed creation: {}",
+            site.root_path,
+            result.failure_detail("no detail").trim()
+        );
+    }
+}
+
+/// Source: `nginx.vhost_exists`.
+///
+/// The websites table is the usual source of truth, but a leftover config
+/// from a half-removed site or an out-of-band import would otherwise be
+/// silently overwritten by a fresh create - taking whatever that file was
+/// serving down with it.
+async fn vhost_exists(state: &AppState, domain: &str) -> bool {
+    let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
+        .join(format!("{domain}.conf"));
+    tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
+/// Source: `storage_quota.enforce_user_storage_quota(db, owner, incoming)`.
+///
+/// `replaced_bytes` is zero: a new site replaces nothing.
+async fn enforce_owner_quota(
+    state: &AppState,
+    owner: &snpanel_db::User,
+    incoming_bytes: u64,
+) -> Result<(), String> {
+    let subject = crate::storage_quota::QuotaSubject {
+        dry_run: state.settings.command_dry_run,
+        user_id: owner.id,
+        role: &owner.role,
+        storage_limit_mb: owner.storage_limit_mb,
+        application_installed: super::addons::application_installed(),
+    };
+    crate::storage_quota::enforce_user_storage_quota(&state.db, &subject, incoming_bytes, 0)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Source: `_resolve_app_for_owner`.
+///
+/// The app a website may serve: **one its owner owns**. Without the ownership
+/// check a customer could aim their domain at another tenant's application by
+/// guessing an id, and the proxy would happily serve it.
+///
+/// Application mode belongs to the addon, so the addon check comes first -
+/// whichever route the request arrived on.
+async fn resolve_app_for_owner(
+    state: &AppState,
+    owner_id: i64,
+    app_id: Option<i64>,
+    current: &CurrentUser,
+) -> Result<snpanel_db::SiteAppTarget, Response> {
+    super::addons::require_application()?;
+    let Some(app_id) = app_id else {
+        return Err(bad_request(
+            "Pick an installed application for this website, or choose a different website mode.",
+        ));
+    };
+    let app = match state.db.site_apps().by_id(app_id).await {
+        Ok(Some(app)) => app,
+        Ok(None) => return Err(not_found("Application not found")),
+        Err(e) => {
+            tracing::error!("application lookup failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    if app.owner_id != owner_id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return Err(not_enough_permissions());
+    }
+    Ok(app)
+}
+
+/// Source: `wordpress.install_wordpress`.
+///
+/// Four helper calls in order: download the files, write `wp-config.php`,
+/// hand the directory to the site's user, then run `wp core install`.
+///
+/// **Neither the database password nor the admin password reaches `argv`.**
+/// The config is rendered here and written through the helper's stdin, and
+/// the admin password goes in on stdin too via `--prompt=admin_password`.
+/// C37: `/proc/<pid>/cmdline` is readable by every account on the machine for
+/// as long as the process lives, and a shared host is full of them.
+async fn install_wordpress(
+    state: &AppState,
+    site: &NewSite<'_>,
+    db: &crate::mariadb::NewDatabase,
+) -> Result<(), String> {
+    use crate::wordpress::{self, WpValue};
+
+    let title = if site.request.title.trim().is_empty() {
+        site.domain.to_string()
+    } else {
+        site.request.title.clone()
+    };
+    let title = wordpress::safe_value(&title, WpValue::Title)?;
+    let admin_user = wordpress::safe_value(&site.request.admin_user, WpValue::User)?;
+    let admin_email = wordpress::safe_value(&site.request.admin_email, WpValue::Email)?;
+    wordpress::check_admin_password(&site.request.admin_password)?;
+
+    let dry = state.settings.command_dry_run;
+    let public = format!("{}/public_html", site.root_path);
+    let wp_path = format!("--path={public}");
+    let php_flag = wordpress::wp_php_flag(site.runtime_php);
+
+    let mut download: Vec<&str> = vec![site.linux_user];
+    download.extend(php_flag.iter().map(String::as_str));
+    download.extend(["core", "download", &wp_path]);
+    let result = shell::privileged(dry, "wp-site", &download, None, None).await;
+    if !result.ok() {
+        return Err(result
+            .failure_detail("Could not download WordPress")
+            .trim()
+            .to_string());
+    }
+
+    let config = wordpress::render_wp_config(&db.db_name, &db.db_user, &db.db_password);
+    if !dry {
+        let write = shell::privileged(
+            false,
+            "site-file-write",
+            &[
+                site.linux_user,
+                site.root_path,
+                "public_html/wp-config.php",
+                "0640",
+            ],
+            Some(&config),
+            None,
+        )
+        .await;
+        if !write.ok() {
+            return Err(write
+                .failure_detail("Could not write wp-config.php")
+                .trim()
+                .to_string());
+        }
+    }
+    // `check=False`: the ownership fix is best-effort in the Python too.
+    let _ = shell::privileged(
+        dry,
+        "site-path-fix",
+        &[&public, site.linux_user],
+        None,
+        None,
+    )
+    .await;
+
+    let url = format!("--url=https://{}", site.domain);
+    let title_arg = format!("--title={title}");
+    let user_arg = format!("--admin_user={admin_user}");
+    let email_arg = format!("--admin_email={admin_email}");
+    let mut install: Vec<&str> = vec![site.linux_user];
+    install.extend(php_flag.iter().map(String::as_str));
+    install.extend([
+        "core",
+        "install",
+        &wp_path,
+        &url,
+        &title_arg,
+        &user_arg,
+        &email_arg,
+        "--prompt=admin_password",
+        "--skip-email",
+        "--allow-root",
+    ]);
+    let password_stdin = format!("{}\n", site.request.admin_password);
+    let result = shell::privileged(dry, "wp-site", &install, Some(&password_stdin), None).await;
+    if !result.ok() {
+        return Err(result
+            .failure_detail("Could not install WordPress")
+            .trim()
+            .to_string());
+    }
+
+    // `fix_permissions` then a second `site-file-write` whose only job is the
+    // mode: `wp core install` rewrites `wp-config.php` and leaves it
+    // world-readable, and that file holds the database password.
+    let _ = shell::privileged(
+        dry,
+        "fix-permissions",
+        &[site.root_path, site.linux_user],
+        None,
+        None,
+    )
+    .await;
+    if !dry {
+        let _ = shell::privileged(
+            false,
+            "site-file-write",
+            &[
+                site.linux_user,
+                site.root_path,
+                "public_html/wp-config.php",
+                "0640",
+            ],
+            Some(&config),
+            None,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// Source: `_write_placeholder_page`.
+///
+/// The one template the panel renders with **autoescaping on**. The vhost
+/// templates cannot escape - escaping would corrupt the config - but this one
+/// is HTML, and the only variable is a domain already constrained to
+/// `[a-z0-9-.]`. The escaping is here so that constraint stops being
+/// load-bearing.
+async fn write_placeholder_page(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+    let path = format!("{}/public_html/index.html", site.root_path);
+    if tokio::fs::metadata(&path).await.is_ok() {
+        // `if placeholder.exists(): return` - an import that already put a
+        // page there keeps it.
+        return Ok(());
+    }
+    let rendered = snpanel_nginx::render_placeholder(site.domain).map_err(|e| e.to_string())?;
+    let write = shell::privileged(
+        state.settings.command_dry_run,
+        "site-file-write",
+        &[
+            site.linux_user,
+            site.root_path,
+            "public_html/index.html",
+            "0644",
+        ],
+        Some(&rendered),
+        None,
+    )
+    .await;
+    if !write.ok() {
+        return Err(write
+            .failure_detail("Could not write the placeholder page")
+            .trim()
+            .to_string());
+    }
+    // `site_users.fix_site_path(str(public), linux_user)`.
+    let public = format!("{}/public_html", site.root_path);
+    let _ = shell::privileged(
+        state.settings.command_dry_run,
+        "site-path-fix",
+        &[&public, site.linux_user],
+        None,
+        None,
+    )
+    .await;
+    Ok(())
+}
+
+/// `POST /websites/{website_id}/wordpress`.
+///
+/// Source: `install_wordpress_on_website`. WordPress into a site that already
+/// exists — a static or PHP site the customer now wants WordPress on.
+///
+/// **The database is created with `if_not_exists=False`.** That path must
+/// fail rather than quietly adopt a database another site is already using:
+/// two sites sharing one WordPress database is a data-loss shape, not a
+/// warning.
+async fn install_wordpress_on_website(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if has_wordpress_install(&website) {
+        return bad_request("WordPress is already installed for this website");
+    }
+
+    let owner = match state.db.users().by_id(website.owner_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found("Owner not found"),
+        Err(e) => {
+            tracing::error!("owner lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    if let Err(message) = enforce_owner_quota(&state, &owner, WORDPRESS_SITE_ESTIMATE_BYTES).await {
+        return crate::errors::error(axum::http::StatusCode::PAYLOAD_TOO_LARGE, &message);
+    }
+
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let request = CreateRequest {
+        domain: website.domain.clone(),
+        owner_id: Some(website.owner_id),
+        php_version: website.php_version.clone(),
+        app_type: "wordpress".to_string(),
+        app_id: None,
+        install_wordpress: true,
+        title: text("title"),
+        admin_user: text("admin_user"),
+        admin_password: text("admin_password"),
+        admin_email: text("admin_email"),
+    };
+    let linux_user = website.linux_user.clone().unwrap_or_default();
+    let runtime_php = Some(website.php_version.clone()).filter(|v| !v.is_empty());
+    let site = NewSite {
+        domain: &website.domain,
+        root_path: &website.root_path,
+        linux_user: &linux_user,
+        app_type: "wordpress",
+        rewrite_mode: "front_controller",
+        php_version: &website.php_version,
+        runtime_php: runtime_php.as_deref(),
+        app_port: None,
+        install_wp: true,
+        request: &request,
+    };
+
+    let created = match crate::mariadb::create_database(&website.domain, "wp", false).await {
+        Ok(info) => info,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    // `except (RuntimeError, ValueError, OSError): mariadb.drop_database(...)`
+    // — and **no** `_cleanup_failed_site` here, unlike `create_website`: the
+    // directory belonged to a site that already existed and was serving
+    // before this request arrived. Deleting it would take a working site down
+    // because an install on top of it failed.
+    if let Err(message) = install_wordpress(&state, &site, &created).await {
+        let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+        return bad_request(&message);
+    }
+    if let Err(message) = rewrite_for_wordpress(&state, &website).await {
+        let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+        return bad_request(&message);
+    }
+
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_wordpress_installed(website.id, &website.root_path)
+        .await
+    {
+        tracing::error!(
+            "recording the WordPress install for {} failed: {e}",
+            website.domain
+        );
+        return internal_error();
+    }
+
+    // C3: the column holds Fernet ciphertext, never the password.
+    let encrypted =
+        snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &created.db_password);
+    // `db.query(DatabaseAccount).filter(db_name == ...).first()` — a row may
+    // already carry this name from a site that was deleted without its
+    // database, and the Python takes it over rather than colliding on it.
+    let existing = state
+        .db
+        .databases()
+        .by_name(&created.db_name)
+        .await
+        .unwrap_or_default();
+    let stored = match existing {
+        Some(row) => {
+            state
+                .db
+                .databases()
+                .attach_to_website(
+                    row.id,
+                    website.owner_id,
+                    website.id,
+                    &created.db_user,
+                    &encrypted,
+                )
+                .await
+        }
+        None => state
+            .db
+            .databases()
+            .create(
+                website.owner_id,
+                Some(website.id),
+                &created.db_name,
+                &created.db_user,
+                &encrypted,
+            )
+            .await
+            .map(|_| ()),
+    };
+    if let Err(e) = stored {
+        tracing::error!(
+            "storing the database row for {} failed: {e}",
+            website.domain
+        );
+        return internal_error();
+    }
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "install_wordpress",
+        &website.domain,
+    )
+    .await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, true, ssl_enabled)).into_response()
+}
+
+/// Source: `_ensure_default_waf_file` then `_rewrite_website_vhost(app_type=
+/// "wordpress", rewrite_mode="front_controller")`.
+///
+/// **The rule file goes back to the defaults.** A site that had custom WAF
+/// rules loses them here, because `_ensure_default_waf_file` writes the
+/// default set with no custom block. That is the Python's behaviour and it is
+/// reproduced rather than improved on — but it is worth knowing, because the
+/// endpoint is named after WordPress and says nothing about the firewall.
+async fn rewrite_for_wordpress(
+    state: &AppState,
+    website: &snpanel_db::Website,
+) -> Result<(), String> {
+    let waf =
+        crate::waf::ensure_default_site_rules(state.settings.command_dry_run, &website.domain)
+            .await
+            .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(waf
+            .failure_detail("Could not save WAF rules")
+            .trim()
+            .to_string());
+    }
+    // The row the rewrite reads is the row as it is about to become.
+    let mut updated = website.clone();
+    updated.app_type = "wordpress".to_string();
+    updated.nginx_rewrite_mode = "front_controller".to_string();
+    rewrite_owned_vhost(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some("wordpress"),
+            rewrite_mode: Some("front_controller"),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `install_wordpress=true` on a static site installs nothing.
+    ///
+    /// Source: `install_wp = payload.install_wordpress and payload.app_type ==
+    /// "wordpress"`. **Both, not either.** A port that took the flag alone
+    /// would download a hundred megabytes of PHP into a site the customer
+    /// asked to be static, and then serve it as text - every `.php` file in
+    /// WordPress readable over HTTP, `wp-config.php` among them.
+    #[test]
+    fn installing_wordpress_takes_the_flag_and_the_mode_together() {
+        assert!(installs_wordpress(true, "wordpress"));
+        assert!(!installs_wordpress(true, "static"));
+        assert!(!installs_wordpress(true, "php"));
+        assert!(!installs_wordpress(true, "application"));
+        assert!(!installs_wordpress(false, "wordpress"));
+    }
+
+    /// Asking for WordPress and not getting it leaves a PHP site, not a
+    /// WordPress one.
+    ///
+    /// Source: `app_type_value = "php" if payload.app_type == "wordpress" else
+    /// payload.app_type`. An empty directory rendered with WordPress's
+    /// front-controller rewrite serves nothing but 404s, because every request
+    /// goes to an `index.php` that is not there.
+    #[test]
+    fn a_site_that_did_not_get_wordpress_is_served_as_php() {
+        assert_eq!(site_app_type(true, "wordpress"), "wordpress");
+        assert_eq!(site_app_type(false, "wordpress"), "php");
+        assert_eq!(site_app_type(false, "static"), "static");
+        assert_eq!(site_app_type(false, "php"), "php");
+        assert_eq!(site_app_type(false, "application"), "application");
+
+        // And the rewrite mode follows the type it ends up with.
+        assert_eq!(site_rewrite_mode("wordpress"), "front_controller");
+        for other in ["php", "static", "application"] {
+            assert_eq!(site_rewrite_mode(other), "none", "{other}");
+        }
+    }
+
+    /// The quota is charged for what the request is about to write.
+    ///
+    /// A WordPress install is a hundred megabytes this request downloads; a
+    /// static site is the placeholder page. Charging the static figure for a
+    /// WordPress install lets a customer at their limit start one that then
+    /// fails part-way, leaving files behind that the cleanup has to find.
+    #[test]
+    fn the_quota_estimate_matches_what_is_about_to_be_written() {
+        // Read through a binding: clippy sees straight through a comparison
+        // of two constants and calls it a constant assertion, which it is -
+        // but the constants are the point, and a test that cannot name them
+        // is a test that lets them drift.
+        let wordpress: u64 = WORDPRESS_SITE_ESTIMATE_BYTES;
+        let static_site: u64 = STATIC_SITE_ESTIMATE_BYTES;
+        assert_eq!(wordpress, 100 * 1024 * 1024);
+        assert_eq!(static_site, 1024 * 1024);
+        assert!(wordpress > static_site);
+    }
+
+    /// The legacy endpoint is the same call with two fields forced.
+    ///
+    /// Source: `create_wordpress` - `payload.model_copy(update={
+    /// "install_wordpress": True, "app_type": "wordpress"})`. Forcing both is
+    /// what makes it install anything: forcing the flag alone would fall foul
+    /// of the `and` above and quietly create a static site on an endpoint
+    /// named `/wordpress`.
+    #[test]
+    fn the_legacy_wordpress_endpoint_forces_both_fields() {
+        let payload = json!({
+            "domain": "example.com",
+            "app_type": "static",
+            "install_wordpress": false,
+        });
+        let forced = create_request(&payload, Some(true)).expect("valid");
+        assert_eq!(forced.app_type, "wordpress");
+        assert!(forced.install_wordpress);
+        assert!(installs_wordpress(
+            forced.install_wordpress,
+            &forced.app_type
+        ));
+
+        // The ordinary endpoint leaves the payload alone.
+        let plain = create_request(&payload, None).expect("valid");
+        assert_eq!(plain.app_type, "static");
+        assert!(!plain.install_wordpress);
+    }
+
+    /// The payload's defaults, and the app type it refuses.
+    #[test]
+    fn a_create_payload_defaults_the_way_pydantic_does() {
+        let minimal = create_request(&json!({ "domain": "Example.COM " }), None).expect("valid");
+        // The domain is folded and trimmed before anything looks it up, or
+        // two spellings of one name would both be "available".
+        assert_eq!(minimal.domain, "example.com");
+        assert_eq!(minimal.app_type, "wordpress");
+        assert!(!minimal.install_wordpress);
+        assert_eq!(minimal.owner_id, None);
+
+        assert!(create_request(&json!({ "domain": "  " }), None).is_err());
+        assert!(create_request(&json!({}), None).is_err());
+        // An app type the renderer has no template for is refused here rather
+        // than at render time, after the directory has been made.
+        assert!(create_request(&json!({ "domain": "a.com", "app_type": "django" }), None).is_err());
+        for allowed in snpanel_nginx::ALLOWED_APP_TYPES {
+            assert!(
+                create_request(&json!({ "domain": "a.com", "app_type": allowed }), None).is_ok(),
+                "{allowed} was refused"
+            );
+        }
+    }
+
+    /// The placeholder page escapes what it interpolates.
+    ///
+    /// The only variable is a domain already constrained to `[a-z0-9-.]`, so
+    /// this is a no-op for every value that can reach it today. It is asserted
+    /// so that constraint stops being the only thing standing between a domain
+    /// and a script tag on the page it renders.
+    #[test]
+    fn the_placeholder_page_escapes_its_domain() {
+        let page = snpanel_nginx::render_placeholder("example.com").expect("renders");
+        assert!(page.starts_with("<!DOCTYPE html>"));
+        assert!(page.contains("<title>example.com</title>"));
+
+        let nasty = snpanel_nginx::render_placeholder("a<script>b").expect("renders");
+        assert!(!nasty.contains("<script>b"), "the domain was not escaped");
+        assert!(nasty.contains("a&lt;script&gt;b"));
+    }
 
     /// `?delete_files=0` keeps the files.
     ///

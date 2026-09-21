@@ -80,6 +80,21 @@ fn stored() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Source: `addons.require(addons.APPLICATION)`.
+///
+/// A **409**, not a 403: the caller is not forbidden, the feature is not
+/// there. The message is the panel's own Vietnamese, byte for byte - it is
+/// what an administrator reads, and it tells them where to go.
+pub(super) fn require_application() -> Result<(), axum::response::Response> {
+    if application_installed() {
+        return Ok(());
+    }
+    Err(crate::errors::error(
+        axum::http::StatusCode::CONFLICT,
+        "Addon Application chưa được cài. Vào Addons để cài trước.",
+    ))
+}
+
 /// Source: `addons.is_installed(addons.APPLICATION)`.
 ///
 /// Read from the file every time rather than cached: an administrator turning

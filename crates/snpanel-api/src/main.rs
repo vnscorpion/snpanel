@@ -53,6 +53,7 @@ mod testenv;
 mod tls;
 mod updates;
 mod waf;
+mod wordpress;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
