@@ -917,6 +917,44 @@ pub enum HelperRequest {
         live_domains: String,
     },
 
+    /// `panel-url-set <http|https> <host> <port>`.
+    ///
+    /// Changes how the panel itself is reached, so it opens the port before
+    /// it moves to it and schedules its own restart rather than doing it
+    /// inline.
+    PanelUrlSet {
+        https: bool,
+        host: String,
+        port: Port,
+    },
+
+    /// `panel-ssl-use-domain <domain> <port>` - borrow a website's
+    /// certificate for the panel.
+    PanelSslUseDomain {
+        domain: Domain,
+        port: Port,
+    },
+
+    /// `panel-ssl-install <domain> <port> [email]` - issue one for the panel
+    /// over webroot, so nginx never has to stop.
+    PanelSslInstall {
+        domain: Domain,
+        port: Port,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<Email>,
+    },
+
+    /// `cloudflare-ssl-issue <zone> [email]`, token on stdin.
+    ///
+    /// C37: the API token never reaches argv, where every account on the
+    /// machine could read it out of `/proc/<pid>/cmdline`.
+    CloudflareSslIssue {
+        zone: Domain,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<Email>,
+        token: SecretString,
+    },
+
     /// `waf-install` - the nginx ModSecurity module and SNPanel's rules.
     ///
     /// Debian only; refused with the reason on EL, where the connector is not
@@ -1118,6 +1156,10 @@ impl HelperRequest {
                     "orphans-scan"
                 }
             }
+            Self::PanelUrlSet { .. } => "panel-url-set",
+            Self::PanelSslUseDomain { .. } => "panel-ssl-use-domain",
+            Self::PanelSslInstall { .. } => "panel-ssl-install",
+            Self::CloudflareSslIssue { .. } => "cloudflare-ssl-issue",
             Self::WafInstall => "waf-install",
             Self::FirewallBlocklistRun => "firewall-blocklist-run",
             Self::FirewallBlocklistStatus => "firewall-blocklist-status",

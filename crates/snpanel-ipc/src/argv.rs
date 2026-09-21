@@ -568,6 +568,58 @@ impl HelperRequest {
                 clean: true,
                 live_domains: String::from_utf8_lossy(&stdin()).into_owned(),
             },
+            ("panel-url-set", 3) => {
+                let https = match rest[0].as_str() {
+                    "https" => true,
+                    "http" => false,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid panel scheme: {other}"
+                        )))
+                    }
+                };
+                HelperRequest::PanelUrlSet {
+                    https,
+                    host: rest[1].clone(),
+                    port: snpanel_core::Port::parse(&rest[2])
+                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                }
+            }
+            ("panel-ssl-use-domain", 2) => HelperRequest::PanelSslUseDomain {
+                domain: snpanel_core::Domain::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                port: snpanel_core::Port::parse(&rest[1])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+            },
+            ("panel-ssl-install", n) if (2..=3).contains(&n) => HelperRequest::PanelSslInstall {
+                domain: snpanel_core::Domain::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                port: snpanel_core::Port::parse(&rest[1])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                email: match rest.get(2).filter(|e| !e.is_empty()) {
+                    Some(raw) => Some(
+                        snpanel_core::Email::parse(raw)
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    ),
+                    None => None,
+                },
+            },
+            ("cloudflare-ssl-issue", n) if (1..=2).contains(&n) => {
+                HelperRequest::CloudflareSslIssue {
+                    zone: snpanel_core::Domain::parse(&rest[0])
+                        .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    email: match rest.get(1).filter(|e| !e.is_empty()) {
+                        Some(raw) => Some(
+                            snpanel_core::Email::parse(raw)
+                                .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                        ),
+                        None => None,
+                    },
+                    token: snpanel_core::SecretString::new(
+                        String::from_utf8_lossy(&stdin()).trim().to_string(),
+                    ),
+                }
+            }
             ("waf-install", 0) => HelperRequest::WafInstall,
             ("firewall-blocklist-run", 0)
             | ("nginx-blocklist-run", 0)
@@ -1217,12 +1269,19 @@ mod tests {
 
     #[test]
     fn a_verb_this_build_does_not_answer_is_unmapped_so_the_bash_gets_it() {
-        // `docker-install` was this example until it was ported.
-        // `panel-url-set` is the next one to go, and this has to be
-        // changed again when it does - which is the point: the test
-        // is about the *mechanism*, so it must always name a verb the
-        // mapping really does not answer.
-        let e = map(&["panel-url-set", "http", "example.com", "2222"]).expect_err("not ported");
+        // The example is a name that cannot ever be mapped, not a real verb
+        // awaiting its turn. This test named `docker-install`, then
+        // `panel-url-set`, and had to be edited each time that verb was
+        // ported - which says nothing about the mechanism under test. The
+        // mapping does not know which names the bash helper carries; any
+        // name it does not answer exercises the same path.
+        let e = map(&["not-a-verb-in-any-build", "http", "example.com", "2222"])
+            .expect_err("never mapped");
+        assert!(e.is_unmapped(), "got {e:?}");
+
+        // And with the shape a real unported verb would have had: still
+        // unmapped, still without consuming stdin.
+        let e = map(&["not-a-verb-in-any-build"]).expect_err("never mapped");
         assert!(e.is_unmapped(), "got {e:?}");
     }
 

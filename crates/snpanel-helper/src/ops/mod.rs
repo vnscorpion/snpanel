@@ -20,6 +20,7 @@ pub mod misc;
 pub mod nginx;
 pub mod orphans;
 pub mod packages;
+pub mod panel;
 pub mod php;
 pub mod runtime;
 pub mod selinux;
@@ -387,6 +388,20 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             clean,
             live_domains,
         } => orphans::cleanup(*clean, live_domains),
+        HelperRequest::PanelUrlSet { https, host, port } => {
+            panel::url_set(ctx, *https, host, *port)
+        }
+        HelperRequest::PanelSslUseDomain { domain, port } => {
+            panel::ssl_use_domain(ctx, domain, *port)
+        }
+        HelperRequest::PanelSslInstall {
+            domain,
+            port,
+            email,
+        } => panel::ssl_install(ctx, domain, *port, email.as_ref()),
+        HelperRequest::CloudflareSslIssue { zone, email, token } => {
+            panel::cloudflare_ssl_issue(zone, email.as_ref(), token.expose())
+        }
         HelperRequest::WafInstall => waf::install_engine(),
         HelperRequest::FirewallBlocklistRun => {
             firewall::blocklist_run(ctx.panel_port, &ctx.ssh_ports)
@@ -479,23 +494,20 @@ mod tests {
     fn every_bash_verb_is_mapped_or_listed_as_unported() {
         /// Verbs the panel's Python calls that are still served by bash.
         ///
-        /// This is Stage D's remaining work. `panel-*` and
-        /// `cloudflare-ssl-issue` each drag in `refresh_tools_nginx` and its
-        /// transitive closure - 466 to 540 lines of bash apiece - which is
-        /// why they are last.
+        /// **Empty, and that is Stage D's exit.** Every verb the panel
+        /// invokes is answered by this helper; nothing the panel does falls
+        /// through to `snpanel-helper.sh` any more.
         ///
-        /// `orphans-scan` and `orphans-clean` were here for one commit,
-        /// because this test found them: the scratch survey used to track
-        /// Stage D looks for `shell.privileged("<verb>"` and
-        /// `backend/app/services/orphans.py` calls through a local `_run()`
-        /// wrapper, so they had been counted as having no caller for most of
-        /// the migration. They are answered here now.
-        const UNPORTED_WITH_CALLERS: &[&str] = &[
-            "cloudflare-ssl-issue",
-            "panel-ssl-install",
-            "panel-ssl-use-domain",
-            "panel-url-set",
-        ];
+        /// It is kept rather than deleted because it is the shape the next
+        /// gap would appear in - a verb added to the bash and called from
+        /// Python without an arm here would land in the assertion below, not
+        /// in this list.
+        ///
+        /// The last four were `panel-url-set`, `panel-ssl-install`,
+        /// `panel-ssl-use-domain` and `cloudflare-ssl-issue`, which shared
+        /// `refresh_tools_nginx` and its closure - 466 to 540 lines of bash
+        /// apiece, most of it the same lines.
+        const UNPORTED_WITH_CALLERS: &[&str] = &[];
 
         /// Verbs no caller reaches: aliases kept for a running API process,
         /// and installer-time operations the panel never invokes.

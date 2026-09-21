@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 102 of the 106 verbs Python calls are answered over the socket |
+| Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,8 +39,8 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the **106** verbs the panel's Python calls, 102 are answered over the
-socket and 4 still fall through to 5,993 lines of bash. (105 until this week.
+**all 106** verbs the panel's Python calls are answered over the socket, and
+nothing the panel does falls through to `snpanel-helper.sh` any more. (105 until this week.
 The scratch survey that produced that figure looks for
 `shell.privileged("<verb>"`, and `backend/app/services/orphans.py` calls
 through a local `_run()` wrapper, so `orphans-scan` and `orphans-clean` were
@@ -50,8 +50,8 @@ not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
-direction: `snpanel-ipc` defines 114 request variants and the argv layer maps
-132 verb names, which is more than the 102 above. (An earlier draft said 133
+direction: `snpanel-ipc` defines 118 request variants and the argv layer maps
+136 verb names, which is more than the 106 above. (An earlier draft said 133
 variants. Counted two ways — the variants in the `enum HelperRequest` body, and
 the distinct `Self::` arms in its `name()` table — it is 109; more names than
 variants because several verbs are aliases sharing one.) Three of those names
@@ -228,6 +228,23 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### The same test rotted twice, in two files
+
+`a_verb_this_build_does_not_answer_is_unmapped_so_the_bash_gets_it` named a
+real unported verb as its example, and its own comment predicted the problem:
+*"`panel-url-set` is the next one to go, and this has to be changed again when
+it does"*. It was right — and that is the argument against the pattern, not
+for it. The example had already moved from `docker-install` once.
+
+This is the second test in `argv.rs` with that shape; the first,
+`an_unmapped_verb_does_not_read_stdin`, was fixed one commit earlier. The test
+directly above both of them already used `no-such-verb`, so the right idiom
+was in the file the whole time.
+
+Both now name something that cannot ever be mapped. The rule, stated once:
+**when a test has to be edited every time unrelated work lands, the thing it
+names is not the thing it is testing.**
 
 ### `is_domain` accepts an IP address, and the orphan sweep depends on it
 
@@ -688,9 +705,19 @@ Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 `certbot` (6), `maldet` (6), `clamav` (4), `docker` (4), `ipv6` (4), `updates`
 (4), `cron` (2), `time` (2), `node` (2), and the singletons. The five dead verbs in §3 are already gone.
 
-**Exit:** every verb the panel's Python calls answered by Rust — 105 of
-them, of which 92 are today; the bash helper is no longer
-installed on new installations.
+**Exit:** every verb the panel's Python calls answered by Rust.
+
+**Done.** All **106** of them — the figure was 105 until
+`every_bash_verb_is_mapped_or_listed_as_unported` found two the hand-kept
+survey had never seen. The test owns the list now and it is empty; a verb
+added to the bash and called from Python without an arm here fails that
+assertion rather than falling through and working.
+
+What remains of the bash helper is **16 verbs no caller reaches**: aliases it
+keeps "so an API process that has not been restarted yet keeps working during
+an update" (`ufw-*`, `nginx-blocklist-*`), and installer-time operations the
+panel never invokes. Removing the file is a Stage G question — either those
+aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 

@@ -1,0 +1,66 @@
+[
+ {
+  "ipv6": false,
+  "tls": false,
+  "php_version": "8.4",
+  "cert": "",
+  "key": "",
+  "rendered": "server {\n    listen 80 default_server;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.4-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": false,
+  "tls": false,
+  "php_version": "8.1",
+  "cert": "",
+  "key": "",
+  "rendered": "server {\n    listen 80 default_server;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.1-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": false,
+  "tls": true,
+  "php_version": "8.4",
+  "cert": "/etc/snpanel/panel-fullchain.pem",
+  "key": "/etc/snpanel/panel-privkey.pem",
+  "rendered": "server {\n    listen 80 default_server;\n    listen 443 ssl http2 default_server;\n    ssl_certificate /etc/snpanel/panel-fullchain.pem;\n    ssl_certificate_key /etc/snpanel/panel-privkey.pem;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.4-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": false,
+  "tls": true,
+  "php_version": "8.1",
+  "cert": "/etc/snpanel/panel-fullchain.pem",
+  "key": "/etc/snpanel/panel-privkey.pem",
+  "rendered": "server {\n    listen 80 default_server;\n    listen 443 ssl http2 default_server;\n    ssl_certificate /etc/snpanel/panel-fullchain.pem;\n    ssl_certificate_key /etc/snpanel/panel-privkey.pem;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.1-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": true,
+  "tls": false,
+  "php_version": "8.4",
+  "cert": "",
+  "key": "",
+  "rendered": "server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.4-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": true,
+  "tls": false,
+  "php_version": "8.1",
+  "cert": "",
+  "key": "",
+  "rendered": "server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.1-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": true,
+  "tls": true,
+  "php_version": "8.4",
+  "cert": "/etc/snpanel/panel-fullchain.pem",
+  "key": "/etc/snpanel/panel-privkey.pem",
+  "rendered": "server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    listen 443 ssl http2 default_server;\n    listen [::]:443 ssl http2 default_server;\n    ssl_certificate /etc/snpanel/panel-fullchain.pem;\n    ssl_certificate_key /etc/snpanel/panel-privkey.pem;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.4-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ },
+ {
+  "ipv6": true,
+  "tls": true,
+  "php_version": "8.1",
+  "cert": "/etc/snpanel/panel-fullchain.pem",
+  "key": "/etc/snpanel/panel-privkey.pem",
+  "rendered": "server {\n    listen 80 default_server;\n    listen [::]:80 default_server;\n    listen 443 ssl http2 default_server;\n    listen [::]:443 ssl http2 default_server;\n    ssl_certificate /etc/snpanel/panel-fullchain.pem;\n    ssl_certificate_key /etc/snpanel/panel-privkey.pem;\n    server_name _;\n    client_max_body_size 1100M;\n\n    # Panel certificates are issued through this, so the panel no longer has to\n    # stop nginx to prove it owns its own hostname.\n    location ^~ /.well-known/acme-challenge/ {\n        root /var/www/snpanel-acme;\n        default_type text/plain;\n        try_files $uri =404;\n        access_log off;\n        auth_basic off;\n    }\n    location = /phpmyadmin { return 301 /phpmyadmin/; }\n    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files $uri $uri/ =404; }\n    location ~ ^/phpmyadmin/(.+\\.php)$ { alias /usr/share/phpmyadmin/$1; include fastcgi_params; fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; fastcgi_param SCRIPT_NAME /phpmyadmin/$1; fastcgi_pass unix:/run/php/php8.1-fpm.sock; fastcgi_read_timeout 300; }\n}\n"
+ }
+]
