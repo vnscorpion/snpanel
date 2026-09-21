@@ -150,7 +150,7 @@ pub fn maldet_update_sigs(maldet_bin: &str) -> HelperResponse {
     HelperResponse::with_stdout(out)
 }
 
-fn is_executable(path: &str) -> bool {
+pub(crate) fn is_executable(path: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -713,7 +713,7 @@ pub fn malware_scan_server(job: &str) -> HelperResponse {
 /// The `-m` is what makes it safe to use on a path that may not be there: the
 /// check that follows is about where the path *points*, and a target that
 /// does not exist yet still has a location.
-fn readlink_m(path: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn readlink_m(path: &std::path::Path) -> std::path::PathBuf {
     if let Ok(real) = std::fs::canonicalize(path) {
         return real;
     }

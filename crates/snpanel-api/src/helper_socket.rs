@@ -190,11 +190,13 @@ pub fn not_implemented(response: &HelperResponse) -> bool {
 /// exits with, so a caller that distinguishes "refused" from "failed" keeps
 /// working across the transport change.
 pub fn returncode_of(response: &HelperResponse) -> i32 {
-    if response.ok {
-        0
-    } else {
-        2
+    // A verb that ran a command on the caller's behalf reports the command's
+    // status. `terminal-exec` is the only one: `grep` that matches nothing
+    // exits 1 and must not reach the customer as "refused".
+    if let Some(code) = response.exit_code {
+        return code;
     }
+    response.exit_status()
 }
 
 /// What a refused or failed response says, in the field the panel reads.
@@ -263,6 +265,11 @@ mod tests {
         });
     }
 
+    /// 1, which is what the bash's `deny` exits with.
+    ///
+    /// This asserted 2 until the installed helper was asked: a bad domain, a
+    /// wrong argument count and an unknown verb all exit 1, and only the
+    /// `SUDO_USER` guard exits 2.
     #[test]
     fn a_refusal_reads_as_the_exit_code_the_bash_used() {
         let refused = HelperResponse {
@@ -271,8 +278,9 @@ mod tests {
             stderr: "not allowed".into(),
             data: None,
             error: None,
+            exit_code: None,
         };
-        assert_eq!(returncode_of(&refused), 2);
+        assert_eq!(returncode_of(&refused), 1);
         assert_eq!(stderr_of(&refused), "not allowed");
         assert_eq!(returncode_of(&HelperResponse::ok()), 0);
     }
@@ -285,6 +293,7 @@ mod tests {
             stderr: String::new(),
             data: None,
             error: None,
+            exit_code: None,
         };
         assert!(!stderr_of(&refused).is_empty());
     }

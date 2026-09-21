@@ -202,9 +202,10 @@ pub async fn privileged_timed(
             Err(e) => {
                 return CommandResult {
                     command: quote_argv(&invocation),
-                    // 2 is what the bash's `deny` exits with, so a caller that
-                    // tells "refused" from "failed" keeps working.
-                    returncode: 2,
+                    // 1 is what the bash's `deny` exits with, so a caller
+                    // that tells "refused" from "failed" keeps working. 2 is
+                    // reserved for "you may not call me at all".
+                    returncode: 1,
                     stdout: String::new(),
                     stderr: e.to_string(),
                 };
@@ -619,7 +620,10 @@ mod tests {
         .await;
 
         let result = privileged(false, "nginx-test", &[], None, None).await;
-        assert_eq!(result.returncode, 2, "{result:?}");
+        // An ordinary refusal: 1, the code `deny` uses. The response carries
+        // no `error.kind`, so it is not the not-authorised case even though
+        // its message reads like one.
+        assert_eq!(result.returncode, 1, "{result:?}");
         assert_eq!(result.stderr, "caller is not the panel user");
     }
 
@@ -671,7 +675,8 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(result.returncode, 2, "{result:?}");
+        // Refused before any transport: 1, as `deny` would.
+        assert_eq!(result.returncode, 1, "{result:?}");
         assert!(result.stderr.contains("action not allowed"), "{result:?}");
         assert_ne!(result.stdout, "SHOULD NOT BE SEEN");
     }
@@ -706,6 +711,8 @@ mod tests {
         .await;
 
         let result = privileged(false, "nginx-test", &[], None, None).await;
+        // 2, and deliberately not 1: this is the socket's version of the
+        // bash's `SUDO_USER` guard, which exits 2 for exactly this.
         assert_eq!(result.returncode, 2, "{result:?}");
         assert!(result.stderr.contains("not the panel user"), "{result:?}");
     }

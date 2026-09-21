@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 7 of 17 | `addons`, `auth`, `firewall`, `packages`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **deployed** | 100 of the 105 verbs Python calls are answered over the socket |
+| Privileged helper | **deployed** | 100 of the 106 verbs Python calls are answered over the socket |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -39,14 +39,19 @@ and 38 of them are still Python's.
 it carries real traffic: all 31 site verbs answered by Rust, two power cycles
 identical, a rollback run and re-install restored, and an A/B that took the
 panel from 2 `sudo` invocations to **0**. What is not finished is the surface:
-of the 105 verbs the panel's Python calls, 100 are answered over the socket
-and 5 still fall through to 5,993 lines of bash. Falling through is the design,
+of the **106** verbs the panel's Python calls, 100 are answered over the
+socket and 6 still fall through to 5,993 lines of bash. (105 until this week.
+The scratch survey that produced that figure looks for
+`shell.privileged("<verb>"`, and `backend/app/services/orphans.py` calls
+through a local `_run()` wrapper, so `orphans-scan` and `orphans-clean` were
+counted as having no caller for most of the migration. An in-tree test replaces
+the survey now.) Falling through is the design,
 not a fault — but it is why a router can be "ported" and still be standing on
 bash underneath, and `terminal-exec` is the newest example.
 
 A third line is worth stating because it is easy to over-read in the other
 direction: `snpanel-ipc` defines 113 request variants and the argv layer maps
-129 verb names, which is more than the 100 above. (An earlier draft said 133
+130 verb names, which is more than the 100 above. (An earlier draft said 133
 variants. Counted two ways — the variants in the `enum HelperRequest` body, and
 the distinct `Self::` arms in its `name()` table — it is 109; more names than
 variants because several verbs are aliases sharing one.) Three of those names
@@ -223,6 +228,52 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### A refusal exits 1, and the code said 2 for most of the migration
+
+`REFUSED_EXIT_CODE` was 2, justified by "the bash's `deny` exits 2". It does
+not:
+
+```sh
+deny() { echo "snpanel-helper: $*" >&2; exit 1; }
+```
+
+The `exit 2` that reading picked up is fifteen lines above `deny` and belongs
+to the `SUDO_USER` guard, which is a different answer: not "no, and here is
+why" but "you may not call me at all". Checked against the installed helper on
+Debian 13 rather than read a second time — a bad domain, a wrong argument
+count and an unknown verb all exit 1; only `SUDO_USER=nobody` exits 2.
+
+The test that pinned 2 carried the counter-evidence in its own doc comment:
+*"Found live: `php-tune-write` with a directive outside the allowlist refused
+with the right message and exit 1."* The observation was correct and the
+number was set against it.
+
+Nothing behaved differently, because every caller tests `!= 0`. It matters
+from here because `terminal-exec` passes a command's own status through, and a
+helper that reported refusals as 2 would make every command that legitimately
+exits 2 look like one. Both codes are now mapped the way the bash means them:
+`NotAuthorised` → 2, everything else → 1.
+
+The mapping also existed **twice** — once in the API, once copied into the
+helper's test with a comment reading "Repeated *and* compared: if the two ever
+drift, this is the test that says so." A copy cannot detect drift; it is the
+drift. It now lives in `snpanel-ipc`, which both crates already depend on.
+
+### Two mutants that could not be caught, and were not tests failing
+
+Proving the terminal tests had teeth turned up two mutations that no test
+could catch because neither changes a verdict:
+
+- removing the flag-skip in `check_path_args`: `-la` resolves to `<cwd>/-la`,
+  inside the home, with or without it;
+- making the absolute-path branch unreachable: Rust's `Path::join` with an
+  absolute argument discards the base, so `cwd.join("/etc/passwd")` is already
+  `/etc/passwd`.
+
+Both are equivalent mutants. Reporting them as gaps would have sent someone
+looking for a missing test; the second is now noted in the code, because a
+reader could otherwise take that branch for the check itself.
 
 ### The consumer is not always Python
 

@@ -291,11 +291,49 @@ pub struct AllowlistedArgv {
     args: Vec<String>,
 }
 
-/// Source: the terminal allowlist in the current helper.
+/// Commands run through the PHP binary with `open_basedir` set.
+///
+/// Source: the `php`, `composer`, `wp`, `phpunit` and `artisan` arms. Each
+/// appends its own tool directory to the basedir so the interpreter can read
+/// the phar it is being asked to run.
+pub const TERMINAL_PHP_HOSTED: &[&str] = &["artisan", "composer", "php", "phpunit", "wp"];
+
+/// Commands whose every argument is resolved and required to land inside the
+/// user's home before they start.
+///
+/// Source: the arms that call `require_terminal_path_args`. These can be
+/// pointed at a path, so they are.
+pub const TERMINAL_PATH_CHECKED: &[&str] = &[
+    "awk", "cat", "chmod", "chown", "cp", "df", "diff", "du", "file", "find", "grep", "head",
+    "less", "ls", "mkdir", "mv", "rm", "rmdir", "sed", "sort", "stat", "tail", "tar", "touch",
+    "uniq", "unzip", "wc", "zip",
+];
+
+/// Commands that fetch, and whose output path is checked wherever `-o`/`-O`
+/// names one.
+///
+/// Source: the arms that call `require_terminal_download_args`.
+pub const TERMINAL_DOWNLOAD_CHECKED: &[&str] = &["curl", "wget"];
+
+/// Everything else: commands that cannot be pointed at a path, so their
+/// arguments are not inspected.
+pub const TERMINAL_PLAIN: &[&str] = &[
+    "basename", "clear", "date", "dirname", "echo", "git", "id", "node", "npm", "npx", "printenv",
+    "pwd", "realpath", "uname", "which", "whoami", "yarn",
+];
+
+/// Source: the `case "$cmd"` in `snpanel-helper.sh terminal-exec`.
+///
+/// All 52, in one list for membership tests. The groups above are what
+/// decides how each is run, and a command that appears here but in none of
+/// them would be accepted and then have no arm - which
+/// `every_allowed_command_belongs_to_exactly_one_group` refuses.
 pub const TERMINAL_ALLOWLIST: &[&str] = &[
-    "php", "composer", "wp", "node", "npm", "npx", "yarn", "git", "ls", "cat", "pwd", "whoami",
-    "du", "df", "find", "grep", "tail", "head", "mkdir", "cp", "mv", "rm", "touch", "unzip", "tar",
-    "artisan", "phpunit",
+    "artisan", "awk", "basename", "cat", "chmod", "chown", "clear", "composer", "cp", "curl",
+    "date", "df", "diff", "dirname", "du", "echo", "file", "find", "git", "grep", "head", "id",
+    "less", "ls", "mkdir", "mv", "node", "npm", "npx", "php", "phpunit", "printenv", "pwd",
+    "realpath", "rm", "rmdir", "sed", "sort", "stat", "tail", "tar", "touch", "uname", "uniq",
+    "unzip", "wc", "wget", "which", "whoami", "wp", "yarn", "zip",
 ];
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -956,6 +994,10 @@ pub enum HelperRequest {
         argv: AllowlistedArgv,
         /// Wall-clock budget in seconds. C30: 60s interactive, 900s for a job.
         budget_secs: u64,
+        /// `--php-version=`, so Composer's platform checks see the version the
+        /// site actually runs rather than the system default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        php_version: Option<PhpVersion>,
     },
 }
 
@@ -1140,6 +1182,19 @@ pub struct HelperResponse {
     pub data: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<HelperError>,
+    /// The exit status of a command run on the caller's behalf.
+    ///
+    /// Only `terminal-exec` sets it. Everywhere else a verb either worked or
+    /// refused, and the 0/2 convention says that; here the command's own
+    /// status *is* the answer, and `grep` finding nothing (1) must not reach
+    /// the customer as "refused" (2).
+    ///
+    /// Optional and skipped when absent, so an older API ignores it and a
+    /// newer API falls back to the 0/2 mapping against an older helper.
+    /// Nothing that already exists changes meaning, so the protocol version
+    /// does not move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 impl HelperResponse {
@@ -1150,6 +1205,7 @@ impl HelperResponse {
             stderr: String::new(),
             data: None,
             error: None,
+            exit_code: None,
         }
     }
 
@@ -1167,12 +1223,45 @@ impl HelperResponse {
         }
     }
 
+    /// The exit status a command-line caller sees, and the `returncode` the
+    /// panel reads off the socket.
+    ///
+    /// The bash helper has two refusal codes and they are not
+    /// interchangeable:
+    ///
+    ///   * `deny() { echo ...; exit 1; }` - "no, and here is why".
+    ///   * the `SUDO_USER` guard, `exit 2` - "you may not call me at all".
+    ///
+    /// `NotAuthorised` is the socket's version of the second: the
+    /// peer-credential check failing. Everything else is the first.
+    ///
+    /// A verb that ran a command for the caller reports the command's own
+    /// status instead - `terminal-exec` is the only one, and `grep` finding
+    /// nothing exits 1 without having been refused.
+    ///
+    /// This lives here because the helper and the API both need it and
+    /// both depend on this crate. It used to exist twice, with a comment
+    /// claiming the copies were compared; they were not, and they drifted.
+    pub fn exit_status(&self) -> i32 {
+        if let Some(code) = self.exit_code {
+            return code;
+        }
+        if self.ok {
+            return 0;
+        }
+        if matches!(&self.error, Some(e) if e.kind == HelperErrorKind::NotAuthorised) {
+            return 2;
+        }
+        1
+    }
+
     pub fn failed(kind: HelperErrorKind, message: impl Into<String>) -> Self {
         Self {
             ok: false,
             stdout: String::new(),
             stderr: String::new(),
             data: None,
+            exit_code: None,
             error: Some(HelperError {
                 kind,
                 message: message.into(),

@@ -26,6 +26,7 @@ pub mod site;
 pub mod siteapp;
 pub mod ssl;
 pub mod system;
+pub mod terminal;
 pub mod user;
 pub mod waf;
 
@@ -366,6 +367,21 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
         HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
         HelperRequest::PhpInstall { version } => packages::php_install(*version),
+        HelperRequest::TerminalExec {
+            user,
+            cwd,
+            argv,
+            budget_secs,
+            php_version,
+        } => terminal::exec_as_user(
+            user,
+            cwd.as_str(),
+            argv,
+            // 0 means the caller asked for no budget; the bash treats an
+            // empty `--timeout=` the same way, by not wrapping in `timeout`.
+            (*budget_secs > 0).then_some(*budget_secs),
+            *php_version,
+        ),
         HelperRequest::WafInstall => waf::install_engine(),
         HelperRequest::FirewallBlocklistRun => {
             firewall::blocklist_run(ctx.panel_port, &ctx.ssh_ports)
@@ -410,15 +426,6 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::ClamavStatus => waf::clamav_status(),
         HelperRequest::ClamavControl { start } => waf::clamav_control(*start),
         HelperRequest::MaldetStatus => packages::maldet_status(),
-
-        other => HelperResponse::failed(
-            HelperErrorKind::NotImplemented,
-            format!(
-                "'{}' is not implemented in the Rust helper yet; \
-                 it is still served by snpanel-helper.sh",
-                other.op_name()
-            ),
-        ),
     }
 }
 
@@ -429,34 +436,6 @@ mod tests {
     #[test]
     fn ssh_ports_are_never_empty() {
         assert!(!sshd_ports().is_empty());
-    }
-
-    #[test]
-    fn an_unported_operation_names_itself() {
-        use snpanel_core::{PanelUsername, SitePath};
-
-        // `TerminalExec` is the last variant with a wire type and no
-        // implementation. When it gets one, this test will stop compiling
-        // and should be pointed at whatever is unported then - or deleted,
-        // if nothing is.
-        let ctx = Context::default();
-        let resp = dispatch(
-            &HelperRequest::TerminalExec {
-                user: PanelUsername::parse("bp_site").unwrap(),
-                cwd: SitePath::parse("/home/bp_site/example.com").unwrap(),
-                argv: snpanel_ipc::AllowlistedArgv::parse("ls", vec![]).unwrap(),
-                budget_secs: 60,
-            },
-            &ctx,
-        );
-        assert!(!resp.ok);
-        let err = resp.error.unwrap();
-        // Its own kind, not NotFound. The panel falls through to the bash on
-        // this one and on nothing else, so it must not be confusable with the
-        // thirty-eight places that mean a file or a unit was not there.
-        assert_eq!(err.kind, HelperErrorKind::NotImplemented);
-        assert!(err.message.contains("terminal-exec"));
-        assert!(err.message.contains("snpanel-helper.sh"));
     }
 
     #[test]
@@ -477,69 +456,154 @@ mod tests {
         assert!(!ctx.ssh_ports.is_empty());
     }
 
-    /// Every request the mapping can build must have a dispatch arm.
+    /// Every verb the bash helper answers is either mapped here or listed
+    /// below as deliberately unported.
     ///
-    /// The gap this guards is invisible from the command line. There, a verb
-    /// the mapping does not know is handed to the bash before dispatch is
-    /// reached, so the two tables can disagree without anything going wrong.
-    /// Over the socket there is no such step: a mapped verb with no arm comes
-    /// back as `NotImplemented`, and while the panel falls through on that,
-    /// it does so after a round trip and a log line for an operation that was
-    /// never going to be served here.
+    /// This replaced a test that checked the opposite direction - that a
+    /// mapped variant has a dispatch arm. The `match` in `dispatch` is
+    /// exhaustive, so the compiler guarantees that one and the test could not
+    /// fail.
     ///
-    /// The sets agree today - measured, 73 of the bash helper's 112 verbs
-    /// and no gaps. (92 was the count of quoted strings in the mapping's
-    /// arms, which includes argument literals; it is not a verb count.)
-    /// Nothing keeps
-    /// them agreeing except this.
+    /// This direction is the one nothing catches. A verb the bash answers and
+    /// the mapping does not is **invisible**: the call falls through and
+    /// works, so the only sign is that the cutover never finishes. The list
+    /// is the remaining Stage D work, and emptying it is Stage D's exit.
+    ///
+    /// When the bash helper is deleted in Stage G, so is this test.
     #[test]
-    fn every_variant_the_mapping_builds_has_a_dispatch_arm() {
-        const MAPPING: &str = include_str!("../../../snpanel-ipc/src/argv.rs");
-        const DISPATCH: &str = include_str!("mod.rs");
+    fn every_bash_verb_is_mapped_or_listed_as_unported() {
+        /// Verbs the panel's Python calls that are still served by bash.
+        ///
+        /// This is Stage D's remaining work. `panel-*` and
+        /// `cloudflare-ssl-issue` each drag in `refresh_tools_nginx` and its
+        /// transitive closure - 466 to 540 lines of bash apiece - which is
+        /// why they are last.
+        ///
+        /// `orphans-*` are here because this test found them. The scratch
+        /// survey used to track Stage D looks for `shell.privileged("<verb>"`
+        /// and `backend/app/services/orphans.py` calls through a local
+        /// `_run()` wrapper, so they were counted as having no caller for
+        /// most of the migration.
+        const UNPORTED_WITH_CALLERS: &[&str] = &[
+            "cloudflare-ssl-issue",
+            "orphans-clean",
+            "orphans-scan",
+            "panel-ssl-install",
+            "panel-ssl-use-domain",
+            "panel-url-set",
+        ];
 
-        /// The variant names after `HelperRequest::`, up to the test module.
-        fn variants(source: &str) -> std::collections::BTreeSet<String> {
-            let body = match source.find("#[cfg(test)]") {
-                Some(at) => &source[..at],
-                None => source,
+        /// Verbs no caller reaches: aliases kept for a running API process,
+        /// and installer-time operations the panel never invokes.
+        ///
+        /// The `ufw-*` and `*-blocklist-timer-install` names are the first
+        /// kind - the bash keeps them "so an API process that has not been
+        /// restarted yet keeps working during an update", and the Rust
+        /// mapping answers their current names. They cost nothing today and
+        /// they are a Stage G question, not a Stage D one: when the bash goes,
+        /// either the aliases go with it or they need arms here.
+        const UNPORTED_UNCALLED: &[&str] = &[
+            "certbot-auto-renew-install",
+            "certbot-renew-soon",
+            "firewall-blocklist-timer-install",
+            "firewall-migrate",
+            "maldet-report",
+            "mariadb-retune",
+            "nginx-blocklist-timer-install",
+            "php-fpm-retune",
+            "ufw-allow-port",
+            "ufw-blocklist-timer-install",
+            "ufw-disable",
+            "ufw-enable",
+            "ufw-list",
+            "ufw-panel-allow-port",
+            "ufw-status",
+            "waf-crs-install",
+        ];
+
+        let bash = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../installer/files/snpanel-helper.sh"),
+        )
+        .expect("the bash helper");
+
+        // The dispatcher's `case` arms: `  verb)` or `  verb|alias|alias)` at
+        // exactly two spaces of indentation. Counting only the first name of
+        // each arm is what undercounted this by five earlier in the
+        // migration, so every name is taken.
+        let mut bash_verbs = std::collections::BTreeSet::new();
+        for line in bash.lines() {
+            let Some(rest) = line.strip_prefix("  ") else {
+                continue;
             };
-            // Comment lines do not count. Without this a variant named only
-            // in a doc comment would read as dispatched, and the guard would
-            // be satisfied by prose.
-            let code: String = body
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut found = std::collections::BTreeSet::new();
-            let needle = "HelperRequest::";
-            let mut rest = code.as_str();
-            while let Some(at) = rest.find(needle) {
-                rest = &rest[at + needle.len()..];
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric())
-                    .collect();
-                if !name.is_empty() {
-                    found.insert(name);
+            if rest.starts_with(' ') {
+                continue;
+            }
+            let Some(labels) = rest.strip_suffix(')') else {
+                continue;
+            };
+            if labels.is_empty() || labels.contains(char::is_whitespace) {
+                continue;
+            }
+            for name in labels.split('|') {
+                if !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    && name.contains('-')
+                {
+                    bash_verbs.insert(name.to_string());
                 }
             }
-            found
         }
-
-        let mapped = variants(MAPPING);
-        let dispatched = variants(DISPATCH);
         assert!(
-            mapped.len() > 80,
-            "the mapping scan found only {} variants; the scan is broken, not the code",
-            mapped.len()
+            bash_verbs.len() > 100,
+            "the bash scan found only {} verbs; the scan is broken, not the code",
+            bash_verbs.len()
         );
 
-        let missing: Vec<_> = mapped.difference(&dispatched).cloned().collect();
+        const MAPPING: &str = include_str!("../../../snpanel-ipc/src/argv.rs");
+        let body = match MAPPING.find("#[cfg(test)]") {
+            Some(at) => &MAPPING[..at],
+            None => MAPPING,
+        };
+        let mut mapped = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(at) = rest.find("(\"") {
+            rest = &rest[at + 2..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                .collect();
+            if rest[name.len()..].starts_with('"') && name.contains('-') {
+                mapped.insert(name);
+            }
+        }
+
+        let unmapped: Vec<&String> = bash_verbs
+            .iter()
+            .filter(|v| {
+                !mapped.contains(*v)
+                    && !UNPORTED_WITH_CALLERS.contains(&v.as_str())
+                    && !UNPORTED_UNCALLED.contains(&v.as_str())
+            })
+            .collect();
         assert!(
-            missing.is_empty(),
-            "the mapping builds these with no dispatch arm, so the socket would \
-             answer NotImplemented where the bash answers today: {missing:?}"
+            unmapped.is_empty(),
+            "these bash verbs are neither mapped nor listed as unported, so the \
+             panel is silently still on bash for them: {unmapped:?}"
+        );
+
+        // And the list does not keep names that have since been ported: a
+        // stale entry would hide the next real gap.
+        let stale: Vec<&&str> = UNPORTED_WITH_CALLERS
+            .iter()
+            .chain(UNPORTED_UNCALLED.iter())
+            .filter(|v| mapped.contains(**v))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "ported, but still listed as unported: {stale:?}"
         );
     }
 }

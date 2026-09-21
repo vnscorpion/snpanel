@@ -14,6 +14,15 @@
 //! Every operation is dispatched through the same `ops::dispatch`, so the two
 //! paths cannot drift apart.
 
+// An operation that fails returns the `HelperResponse` it wants sent, so
+// `Result<T, HelperResponse>` is the shape of every internal early return.
+// That type grew past the lint's 128-byte threshold when `exit_code` was
+// added for `terminal-exec`; boxing twelve signatures would add an
+// allocation to the failure path of every operation and say nothing about
+// what the code does. `snpanel-api` carries the same allow for the same
+// reason, one type up.
+#![allow(clippy::result_large_err)]
+
 mod audit;
 mod exec;
 mod ops;
@@ -58,7 +67,7 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 124;
+const ANSWERED_VERBS: usize = 125;
 const BASH_VERBS: usize = 147;
 
 fn print_help(sink: audit::Sink) {
@@ -358,17 +367,22 @@ fn cli(args: &[String]) -> ExitCode {
         println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
     }
 
+    // A command run on the caller's behalf reports its own status. Only
+    // `terminal-exec` sets this; see `HelperResponse::exit_code`.
+    if let Some(code) = response.exit_code {
+        // `ExitCode` is a u8, and a process that died on a signal is reported
+        // by the shell convention 128+N, which is what the bash's `exec`
+        // would have produced here too.
+        return ExitCode::from((code & 0xff) as u8);
+    }
     if response.ok {
         ExitCode::SUCCESS
     } else {
         if let Some(err) = &response.error {
             eprintln!("snpanel-helper: {}", err.message);
         }
-        // **2, not 1.** The bash's `deny` exits 2, and
-        // `helper_socket::returncode_of` maps every non-ok response to 2. A
-        // refusal that came back as 1 here would mean the code a caller sees
-        // depends on whether the socket or sudo answered - and making that
-        // invisible is the whole point of the cutover.
+        // The same code the bash's `deny` exits with, so what a caller
+        // sees does not depend on whether the socket or sudo answered.
         ExitCode::from(REFUSED_EXIT_CODE)
     }
 }
@@ -401,7 +415,7 @@ fn delegate_to_bash(args: &[String]) -> ExitCode {
              {BASH_HELPER} is not installed to fall back to",
             args[0]
         );
-        return ExitCode::from(2);
+        return ExitCode::from(CANNOT_SERVE_EXIT_CODE);
     }
 
     tracing::info!(
@@ -426,13 +440,28 @@ fn read_stdin_bytes() -> Vec<u8> {
 
 /// What a refusal exits with, on every path.
 ///
-/// The bash's `deny` uses 2 and `helper_socket::returncode_of` maps every
-/// non-ok response to 2. One constant so the two cannot drift.
-pub(crate) const REFUSED_EXIT_CODE: u8 = 2;
+/// **1, and the bash agrees.** `deny() { echo ...; exit 1; }`. An earlier
+/// version of this constant was 2, justified by "the bash's `deny` exits 2" -
+/// a misreading of the `exit 2` fifteen lines above `deny`, which belongs to
+/// the `SUDO_USER` guard and means something else entirely: not "refused" but
+/// "you may not call me at all".
+///
+/// Measured against the installed helper rather than read again:
+/// `ssl-cert-info 'not a domain'` exits 1, `ipv6-status extra-arg` exits 1,
+/// an unknown verb exits 1, and only `SUDO_USER=nobody` exits 2.
+///
+/// It matters from here rather than before because `terminal-exec` passes a
+/// command's own status through: a helper that reported refusals as 2 would
+/// make every command that legitimately exits 2 indistinguishable from one.
+pub(crate) const REFUSED_EXIT_CODE: u8 = 1;
+
+/// The helper cannot serve this call at all - the bash's `SUDO_USER` guard
+/// exits 2 for the same class of thing.
+const CANNOT_SERVE_EXIT_CODE: u8 = 2;
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("snpanel-helper: {message}");
-    ExitCode::from(2)
+    ExitCode::from(REFUSED_EXIT_CODE)
 }
 
 fn is_root() -> bool {
@@ -448,18 +477,21 @@ fn current_uid() -> u32 {
 mod tests {
     use super::*;
 
-    /// A refusal is exit 2 whichever transport answered it.
+    /// A refusal is exit **1** whichever transport answered it - the code
+    /// the bash's `deny` uses.
     ///
     /// The panel reaches a mapped verb over the socket and an unmapped one
-    /// through sudo, and `shell.rs` documents 2 as the code that tells
-    /// "refused" from "failed". If the two paths disagreed, the code a caller
-    /// sees would depend on how far the cutover had got - which is the one
-    /// thing the cutover must not be visible for.
+    /// through sudo. If the two disagreed, the code a caller sees would
+    /// depend on how far the cutover had got, which is the one thing the
+    /// cutover must not be visible for.
     ///
-    /// Found live: `php-tune-write` with a directive outside the allowlist
-    /// refused with the right message and exit 1.
+    /// This asserted 2 for most of the migration, on a comment that misread
+    /// the `SUDO_USER` guard's `exit 2` as `deny`'s. Its own doc comment
+    /// carried the counter-evidence - "Found live: `php-tune-write` with a
+    /// directive outside the allowlist refused with the right message and
+    /// exit 1" - and the number was set against it anyway.
     #[test]
-    fn a_refusal_is_exit_two_on_both_transports() {
+    fn a_refusal_is_exit_one_on_both_transports() {
         use snpanel_ipc::{HelperErrorKind, HelperResponse};
 
         let refused = HelperResponse::failed(
@@ -467,23 +499,21 @@ mod tests {
             "unsupported PHP tuning directive: display_errors".to_string(),
         );
         // What the socket reports - the same mapping the panel reads.
-        assert_eq!(socket_returncode(&refused), 2);
+        assert_eq!(socket_returncode(&refused), 1);
         // And what the CLI reports, which is the constant below.
-        assert_eq!(REFUSED_EXIT_CODE, 2);
+        assert_eq!(REFUSED_EXIT_CODE, 1);
+        // 2 is reserved for "you may not call me at all", which is what the
+        // bash's `SUDO_USER` guard means and is a different answer.
+        assert_ne!(REFUSED_EXIT_CODE, CANNOT_SERVE_EXIT_CODE);
 
         let fine = HelperResponse::ok();
         assert_eq!(socket_returncode(&fine), 0);
     }
 
-    /// `helper_socket::returncode_of`, repeated here because the helper crate
-    /// does not depend on the API crate. Repeated *and* compared: if the two
-    /// ever drift, this is the test that says so.
+    /// What the socket reports, which is now the same function the API
+    /// calls rather than a copy of it.
     fn socket_returncode(response: &snpanel_ipc::HelperResponse) -> i32 {
-        if response.ok {
-            0
-        } else {
-            2
-        }
+        response.exit_status()
     }
 
     /// The two numbers in `--help` are the measured ones.

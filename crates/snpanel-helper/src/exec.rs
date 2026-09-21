@@ -171,6 +171,7 @@ pub fn respond(operation: &str, result: std::io::Result<Output>) -> HelperRespon
             stderr: out.stderr,
             data: None,
             error: None,
+            exit_code: None,
         },
         Ok(out) if out.status.is_none() => HelperResponse::failed(
             HelperErrorKind::Timeout,

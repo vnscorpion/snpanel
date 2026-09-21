@@ -500,6 +500,66 @@ impl HelperRequest {
                 version: snpanel_core::PhpVersion::parse(&rest[0])
                     .map_err(|e| InvocationError::invalid(e.to_string()))?,
             },
+            ("terminal-exec", n) if n >= 3 => {
+                // `<user> <cwd> [--timeout=N] [--php-version=V] <cmd> [args...]`
+                //
+                // The flags are consumed only while they lead, exactly as the
+                // bash's `while`/`break` does: once a non-flag is seen the
+                // rest is the command and its arguments, so a customer
+                // running `grep --timeout=5 foo` gets grep's own flag and not
+                // a budget.
+                let user = snpanel_core::PanelUsername::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?;
+                let cwd = snpanel_core::SitePath::parse(&rest[1])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?;
+                let mut i = 2;
+                let mut budget_secs = 0u64;
+                let mut php_version = None;
+                while i < rest.len() {
+                    if let Some(value) = rest[i].strip_prefix("--php-version=") {
+                        php_version = Some(
+                            snpanel_core::PhpVersion::parse(value)
+                                .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                        );
+                    } else if let Some(value) = rest[i].strip_prefix("--timeout=") {
+                        // `^[0-9]{1,4}$` and then 1..=1800. Checked here so a
+                        // budget of 0 or 99999 is a refusal rather than a
+                        // command that runs for ever.
+                        let valid = (1..=4).contains(&value.len())
+                            && value.bytes().all(|b| b.is_ascii_digit());
+                        let secs: u64 = if valid { value.parse().unwrap_or(0) } else { 0 };
+                        if !valid {
+                            return Err(InvocationError::invalid(format!(
+                                "invalid terminal timeout: {value}"
+                            )));
+                        }
+                        if !(1..=1800).contains(&secs) {
+                            return Err(InvocationError::invalid(
+                                "terminal timeout out of range".to_string(),
+                            ));
+                        }
+                        budget_secs = secs;
+                    } else {
+                        break;
+                    }
+                    i += 1;
+                }
+                if i >= rest.len() {
+                    return Err(InvocationError::invalid(
+                        "usage: terminal-exec <site-user> <cwd> [--timeout=<sec>] \
+[--php-version=<version>] <command> [args...]"
+                            .to_string(),
+                    ));
+                }
+                let argv = snpanel_ipc_allowlisted(&rest[i], rest[i + 1..].to_vec())?;
+                HelperRequest::TerminalExec {
+                    user,
+                    cwd,
+                    argv,
+                    budget_secs,
+                    php_version,
+                }
+            }
             ("waf-install", 0) => HelperRequest::WafInstall,
             ("firewall-blocklist-run", 0)
             | ("nginx-blocklist-run", 0)
@@ -1024,6 +1084,19 @@ impl HelperRequest {
         };
         Ok(request)
     }
+}
+
+/// `AllowlistedArgv::parse`, with its error turned into an invocation error.
+///
+/// A command that is not on the list is a **refusal**, not an unmapped verb:
+/// falling through to bash would have bash refuse it too, but with the helper
+/// answering `terminal-exec` the refusal belongs here, and it has to keep the
+/// bash's exit code rather than becoming a delegation.
+fn snpanel_ipc_allowlisted(
+    binary: &str,
+    args: Vec<String>,
+) -> Result<crate::AllowlistedArgv, InvocationError> {
+    crate::AllowlistedArgv::parse(binary, args).map_err(|e| InvocationError::invalid(e.to_string()))
 }
 
 #[cfg(test)]
