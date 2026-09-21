@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **140 of 211** | 66% |
+| API endpoints answered by Rust | **141 of 211** | 66% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -1094,10 +1094,10 @@ aliases go with it, or they need arms here first.
 ### Stage E — the remaining routers
 
 `maintenance` (31), `malware` (11), `users` (2), `websites` (2), `waf` (1),
-`databases` (1), then `provisioning` (13) and `site_apps` (10), which need
-the `docker` domain. **71 endpoints**, counted by
-`list-missing-endpoints.py`; `check-counters-agree.py` fails the build if
-that disagrees with `endpoint-coverage.py`.
+then `provisioning` (13) and `site_apps` (10), which need the `docker`
+domain. **70 endpoints**, counted by `list-missing-endpoints.py`;
+`check-counters-agree.py` fails the build if that disagrees with
+`endpoint-coverage.py`.
 
 Two are recorded as **not portable as they stand**: `waf GET /access-logs`
 and the `malware` job endpoints read `_file_jobs`, an in-memory dict that

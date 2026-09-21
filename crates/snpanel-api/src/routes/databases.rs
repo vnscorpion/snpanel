@@ -38,7 +38,10 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/databases", get(list).fallback(crate::fallback))
+        .route(
+            "/databases",
+            get(list).post(create_database).fallback(crate::fallback),
+        )
         .route(
             "/databases/{database_id}",
             axum::routing::delete(delete_database).fallback(crate::fallback),
@@ -381,9 +384,375 @@ async fn download_database(
         .into_response()
 }
 
+/// Source: `mariadb.user_exists`.
+///
+/// Asked of **MariaDB**, not of the panel's own table: the whole point is to
+/// notice accounts the panel does not know about, which is exactly what the
+/// table cannot tell you. A restore or a DirectAdmin import can leave one
+/// behind, and taking it over would reset its password.
+async fn mariadb_user_exists(db_user: &str) -> Result<bool, crate::mariadb::SqlError> {
+    let safe = crate::mariadb::validate_identifier(db_user)?.to_string();
+    let sql = format!(
+        "SELECT 1 FROM mysql.user WHERE user = {} LIMIT 1;\n",
+        crate::mariadb::quote_sql_string(&safe)
+    );
+    // `check=False` - a MariaDB that will not answer is not a reason to say
+    // the account is free.
+    Ok(crate::mariadb::run_sql(&sql)
+        .await
+        .map(|out| out.contains('1'))
+        .unwrap_or(false))
+}
+
+/// Source: `mariadb.create_database_credentials`.
+///
+/// **`CREATE USER IF NOT EXISTS` with no `ALTER USER` behind it.** The pair
+/// used to mean "create it, or take it over" - and since the panel
+/// authenticates with ALL PRIVILEGES ON *.*, any caller who asked for
+/// `db_user=root` got root's password reset to a value of their choosing,
+/// handed back in the response. On a stock Ubuntu box root is `IDENTIFIED VIA
+/// mysql_native_password USING 'invalid' OR unix_socket`, so the `ALTER` also
+/// dropped the socket clause and locked the system's own root out of MariaDB.
+///
+/// Creating now refuses an account that already exists. The restore paths
+/// legitimately recreate an account their archive owned; they are not this
+/// one.
+async fn create_database_credentials(
+    db_name: &str,
+    db_user: &str,
+    db_password: &str,
+) -> Result<(), crate::mariadb::SqlError> {
+    let db_name = crate::mariadb::validate_identifier(db_name)?.to_string();
+    let db_user = crate::mariadb::validate_identifier(db_user)?.to_string();
+    crate::mariadb::reject_reserved_user(&db_user)?;
+
+    if mariadb_user_exists(&db_user).await? {
+        return Err(crate::mariadb::SqlError::Invalid(format!(
+            "MariaDB account '{db_user}' already exists. Choose another database user name."
+        )));
+    }
+
+    let quoted_user = crate::mariadb::quote_sql_string(&db_user);
+    let sql = format!(
+        "CREATE DATABASE IF NOT EXISTS {} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\
+         CREATE USER IF NOT EXISTS {quoted_user}@'localhost' IDENTIFIED BY {};\n\
+         GRANT ALL PRIVILEGES ON {}.* TO {quoted_user}@'localhost';\n\
+         FLUSH PRIVILEGES;\n",
+        crate::mariadb::quote_identifier(&db_name)?,
+        crate::mariadb::quote_sql_string(db_password),
+        crate::mariadb::quote_identifier(&db_name)?,
+    );
+    crate::mariadb::run_sql(&sql).await.map(|_| ())
+}
+
+/// Source: `DatabaseCreate`'s three fields and their validators.
+///
+/// The validators run in `mode="before"`, so `db_name` and `db_user` are
+/// **trimmed and lowered before the pattern sees them**: `  MyDB ` is accepted
+/// and stored as `mydb`, not refused for its capitals. A port that checked the
+/// pattern first would refuse a name the panel takes today.
+///
+/// `""` maps to `None` for the two optional fields, which is why an empty
+/// `db_password` means "generate one" rather than "a password of length zero"
+/// - the `min_length=12` never sees it.
+fn database_create_fields(payload: &Value) -> Result<(String, String, Option<String>), Value> {
+    let field = |key: &str| payload.get(key).and_then(Value::as_str);
+    let pattern = |name: &str, value: &str| {
+        json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["body", name],
+            "msg": "String should match pattern '^[a-z0-9_]+$'",
+            "input": value,
+            "ctx": { "pattern": "^[a-z0-9_]+$" },
+        })
+    };
+    // `Field(min_length=..., max_length=...)`, as the entry rather than a
+    // response - see the note on this function's return type.
+    let length = |name: &str, value: &str, min: usize, max: usize| -> Result<(), Value> {
+        let chars = value.chars().count();
+        if chars < min {
+            return Err(json!({
+                "type": "string_too_short",
+                "loc": ["body", name],
+                "msg": format!("String should have at least {min} characters"),
+                "input": value,
+                "ctx": { "min_length": min },
+            }));
+        }
+        if chars > max {
+            return Err(json!({
+                "type": "string_too_long",
+                "loc": ["body", name],
+                "msg": format!("String should have at most {max} characters"),
+                "input": value,
+                "ctx": { "max_length": max },
+            }));
+        }
+        Ok(())
+    };
+    let ok_identifier = |v: &str| {
+        !v.is_empty()
+            && v.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+
+    let raw_name = field("db_name").unwrap_or("").trim().to_lowercase();
+    if raw_name.is_empty() {
+        // `raise ValueError("db_name is required")` from a `field_validator`,
+        // which pydantic renders as a **`value_error`** - not the
+        // `string_too_short` the length bound below would give for the same
+        // empty string. Both are 422 and they are not the same answer.
+        return Err(json!({
+            "type": "value_error",
+            "loc": ["body", "db_name"],
+            "msg": "Value error, db_name is required",
+            "input": payload.get("db_name").unwrap_or(&Value::Null),
+            "ctx": { "error": {} },
+        }));
+    }
+    length("db_name", &raw_name, 1, 64)?;
+    if !ok_identifier(&raw_name) {
+        return Err(pattern("db_name", &raw_name));
+    }
+
+    // `db_user: Optional[str]` with `"" -> None`, then `db_user or db_name`.
+    let raw_user = match field("db_user").map(|v| v.trim().to_lowercase()) {
+        Some(v) if !v.is_empty() => v,
+        _ => raw_name.clone(),
+    };
+    length("db_user", &raw_user, 1, 64)?;
+    if !ok_identifier(&raw_user) {
+        return Err(pattern("db_user", &raw_user));
+    }
+
+    // `db_password: Optional[str]` with `min_length=12, max_length=128`. The
+    // validator maps `""` to `None`, so an empty string means "generate one"
+    // rather than "a password of length zero".
+    let password = match field("db_password") {
+        Some(v) if !v.is_empty() => {
+            length("db_password", v, 12, 128)?;
+            Some(v.to_string())
+        }
+        _ => None,
+    };
+    Ok((raw_name, raw_user, password))
+}
+
+/// `POST /databases`.
+///
+/// Source: `create_database`. A database the customer asked for by name,
+/// rather than one a website install created.
+///
+/// **The plain password is in the response and nowhere else.** The column
+/// holds Fernet ciphertext (C3); this is the only moment the caller can read
+/// it, which is why a generated one is worth 24 characters.
+async fn create_database(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let (db_name, db_user, given_password) = match database_create_fields(&payload) {
+        Ok(v) => v,
+        Err(entry) => return crate::errors::validation_error(vec![entry]),
+    };
+    let db_password = given_password.unwrap_or_else(|| crate::mariadb::random_password(24));
+
+    // Two separate 409s, because the caller has to know which name to change.
+    match state.db.databases().by_name(&db_name).await {
+        Ok(Some(_)) => {
+            return crate::errors::error(
+                axum::http::StatusCode::CONFLICT,
+                "Database name already exists",
+            )
+        }
+        Err(e) => {
+            tracing::error!("database name lookup failed: {e}");
+            return internal_error();
+        }
+        Ok(None) => {}
+    }
+    match state.db.databases().by_user(&db_user).await {
+        Ok(Some(_)) => {
+            return crate::errors::error(
+                axum::http::StatusCode::CONFLICT,
+                "Database user already exists",
+            )
+        }
+        Err(e) => {
+            tracing::error!("database user lookup failed: {e}");
+            return internal_error();
+        }
+        Ok(None) => {}
+    }
+
+    if let Err(e) = create_database_credentials(&db_name, &db_user, &db_password).await {
+        // `except ValueError -> 409`, everything else -> 500. A reserved
+        // account, or one MariaDB already has without the panel knowing, is
+        // the caller's mistake and not a fault.
+        return match e {
+            crate::mariadb::SqlError::Invalid(message) => {
+                crate::errors::error(axum::http::StatusCode::CONFLICT, &message)
+            }
+            other => {
+                tracing::error!("creating the MariaDB database or user failed: {other}");
+                crate::errors::error(
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("MariaDB error: {other}"),
+                )
+            }
+        };
+    }
+
+    let encrypted = snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &db_password);
+    let id = match state
+        .db
+        .databases()
+        .create(current.user.id, None, &db_name, &db_user, &encrypted)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("storing the database row failed: {e}");
+            return internal_error();
+        }
+    };
+
+    axum::Json(json!({
+        "id": id,
+        "owner_id": current.user.id,
+        "website_id": Value::Null,
+        "db_name": db_name,
+        "db_user": db_user,
+        "db_password": db_password,
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The validators run **before** the pattern, not after.
+    ///
+    /// Source: `DatabaseCreate`'s three `field_validator(mode="before")`. So
+    /// `  MyDB ` is trimmed and lowered and then matches `^[a-z0-9_]+$` - it
+    /// is accepted and stored as `mydb`. A port that checked the pattern on
+    /// what arrived would refuse a name the panel takes today, and the caller
+    /// would see a 422 for a name that looks fine to them.
+    #[test]
+    fn a_database_name_is_folded_before_the_pattern_sees_it() {
+        let fields = |payload: Value| database_create_fields(&payload);
+
+        let (name, user, password) = fields(json!({ "db_name": "  MyDB " })).expect("accepted");
+        assert_eq!(name, "mydb");
+        // `db_user or db_name` - the account is named after the database when
+        // nothing else was asked for.
+        assert_eq!(user, "mydb");
+        // No password given means one is generated, not one of length zero.
+        assert_eq!(password, None);
+
+        let (_, user, _) = fields(json!({ "db_name": "a", "db_user": " B_2 " })).expect("ok");
+        assert_eq!(user, "b_2");
+
+        // An empty string is `None` to the validator, so it falls back rather
+        // than failing the pattern.
+        let (_, user, password) =
+            fields(json!({ "db_name": "a", "db_user": "", "db_password": "" })).expect("ok");
+        assert_eq!(user, "a");
+        assert_eq!(password, None);
+
+        // A given password is carried through, not regenerated.
+        let (_, _, password) =
+            fields(json!({ "db_name": "a", "db_password": "correcthorsebattery" })).expect("ok");
+        assert_eq!(password.as_deref(), Some("correcthorsebattery"));
+    }
+
+    /// The names a database may not have, and **which** check refuses them.
+    ///
+    /// The entry rather than the status, because every refusal here is 422
+    /// and the shapes are what differ: a `field_validator` that raised gives
+    /// pydantic's `value_error`, a length bound gives `string_too_short` or
+    /// `string_too_long`, and the pattern gives `string_pattern_mismatch`.
+    /// A test that read only the status could not tell one from another, and
+    /// two mutations survived on exactly that.
+    #[test]
+    fn a_database_name_that_would_need_quoting_is_refused() {
+        let refusal = |payload: Value| -> (String, String) {
+            let entry = database_create_fields(&payload).expect_err("refused");
+            (
+                entry["type"].as_str().unwrap_or("").to_string(),
+                entry["loc"][1].as_str().unwrap_or("").to_string(),
+            )
+        };
+
+        // Missing, empty or whitespace: the validator raising, **not** the
+        // length bound - which would refuse the same empty string with a
+        // different answer.
+        for missing in [
+            json!({}),
+            json!({ "db_name": "" }),
+            json!({ "db_name": "   " }),
+        ] {
+            assert_eq!(
+                refusal(missing.clone()),
+                ("value_error".to_string(), "db_name".to_string()),
+                "{missing}"
+            );
+        }
+
+        // Anything outside `[a-z0-9_]` after folding.
+        for bad in ["a-b", "a.b", "a b", "a;b", "a`b", "a'b", "café", "a/b"] {
+            assert_eq!(
+                refusal(json!({ "db_name": bad })),
+                ("string_pattern_mismatch".to_string(), "db_name".to_string()),
+                "{bad:?} was accepted"
+            );
+        }
+
+        // 64 characters is the limit, counted after folding.
+        //
+        // The user name is given explicitly on the long case: it falls back
+        // to the database name, so *its* 64-character bound would refuse the
+        // row whatever `db_name`'s bound said, and the thing under test would
+        // never be the thing doing the refusing.
+        assert!(database_create_fields(&json!({ "db_name": "a".repeat(64) })).is_ok());
+        assert_eq!(
+            refusal(json!({ "db_name": "a".repeat(65), "db_user": "ok" })),
+            ("string_too_long".to_string(), "db_name".to_string())
+        );
+        // And the user name is held to both rules in its own right.
+        assert_eq!(
+            refusal(json!({ "db_name": "ok", "db_user": "root-user" })),
+            ("string_pattern_mismatch".to_string(), "db_user".to_string())
+        );
+        assert_eq!(
+            refusal(json!({ "db_name": "ok", "db_user": "a".repeat(65) })),
+            ("string_too_long".to_string(), "db_user".to_string())
+        );
+
+        // The password bounds. Eleven characters, counted rather than
+        // eyeballed: the first version of this used `"eleven_chr"`, which is
+        // ten, so a mutation moving the bound to eleven survived.
+        let eleven = "abcdefghijk";
+        assert_eq!(eleven.chars().count(), 11);
+        assert_eq!(
+            refusal(json!({ "db_name": "ok", "db_password": eleven })),
+            ("string_too_short".to_string(), "db_password".to_string())
+        );
+        assert!(
+            database_create_fields(&json!({ "db_name": "ok", "db_password": "twelve_chars" }))
+                .is_ok()
+        );
+        assert_eq!(
+            refusal(json!({ "db_name": "ok", "db_password": "x".repeat(129) })),
+            ("string_too_long".to_string(), "db_password".to_string())
+        );
+    }
 
     #[test]
     fn the_listing_never_carries_a_password() {

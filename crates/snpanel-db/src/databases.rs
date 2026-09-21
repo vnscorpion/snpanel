@@ -178,6 +178,20 @@ impl<'a> DatabaseRepo<'a> {
         .fetch_optional(self.pool)
         .await?)
     }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.db_user ==
+    /// db_user).first()`.
+    ///
+    /// Asked separately from `by_name` because the two 409s say different
+    /// things: the caller has to know which of the two names to change.
+    pub async fn by_user(&self, db_user: &str) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE db_user = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(db_user)
+        .fetch_optional(self.pool)
+        .await?)
+    }
 }
 
 #[cfg(test)]
