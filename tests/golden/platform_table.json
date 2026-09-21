@@ -1,0 +1,41 @@
+{
+ "platform_debian": {
+  "BASE_PACKAGES": "software-properties-common",
+  "CLAMAV_SERVICE": "clamav-daemon.service",
+  "CRON_SERVICE": "cron",
+  "NODE_FROM_NODESOURCE": "yes",
+  "NOLOGIN_SHELL": "/usr/sbin/nologin",
+  "OS_FAMILY": "debian",
+  "PHPMYADMIN_CONF_DIR": "/etc/phpmyadmin",
+  "PHPMYADMIN_ROOT": "/usr/share/phpmyadmin",
+  "PHP_FROM_PPA": "yes",
+  "PHP_FROM_SURY": "no",
+  "PLATFORM_PHP_DEFAULT": "8.4",
+  "PLATFORM_PHP_VERSIONS": "8.3 8.4",
+  "REDIS_SERVICE": "redis-server",
+  "SSH_SERVICE": "ssh",
+  "WAF_AVAILABLE": "yes",
+  "WEB_GROUP": "www-data",
+  "WEB_USER": "www-data"
+ },
+ "platform_rhel10": {
+  "BASE_PACKAGES": "ca-certificates",
+  "CLAMAV_SERVICE": "clamd@scan.service",
+  "CRON_SERVICE": "crond",
+  "EXTRA_PACKAGES": "certbot",
+  "NODE_FROM_NODESOURCE": "no",
+  "NOLOGIN_SHELL": "/sbin/nologin",
+  "OS_FAMILY": "rhel",
+  "PHPMYADMIN_CONF_DIR": "/etc/phpMyAdmin",
+  "PHPMYADMIN_ROOT": "/usr/share/phpMyAdmin",
+  "PHP_FROM_PPA": "no",
+  "PHP_FROM_SURY": "no",
+  "PLATFORM_PHP_DEFAULT": "8.4",
+  "PLATFORM_PHP_VERSIONS": "8.3 8.4",
+  "REDIS_SERVICE": "valkey",
+  "SSH_SERVICE": "sshd",
+  "WAF_AVAILABLE": "no",
+  "WEB_GROUP": "nginx",
+  "WEB_USER": "nginx"
+ }
+}

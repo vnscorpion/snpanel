@@ -2331,6 +2331,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "serde_json",
  "snpanel-core",
  "thiserror 2.0.20",
 ]

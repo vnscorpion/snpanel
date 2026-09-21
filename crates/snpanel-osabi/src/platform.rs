@@ -144,3 +144,108 @@ pub trait Platform: Send + Sync {
 pub fn php_fpm_socket_dir() -> PathBuf {
     PathBuf::from("/run/php")
 }
+
+#[cfg(test)]
+mod shell_table_tests {
+    use super::*;
+
+    /// The platform table exists twice: here, and in `installer/platform.sh`.
+    ///
+    /// `platform.sh`'s own header says so - "The Rust side solves this with
+    /// `snpanel_osabi::platform::Platform`; this is the same table for the
+    /// shell" - and two copies of a table is how two copies of a table drift.
+    /// Its header also records what drift costs: "writing this from EL9 habits
+    /// produced four wrong values that measuring on AlmaLinux 10.2
+    /// corrected".
+    ///
+    /// The fixture is produced by **running** both `platform_debian` and
+    /// `platform_rhel10`, not by reading them: several values are built from
+    /// others, and a regex over the file records the expression rather than
+    /// the answer.
+    ///
+    /// This is Stage F's first check. The installer is still bash, and while
+    /// it is, every value it sets has to agree with the one the panel uses
+    /// afterwards - a web user of `nginx` in the installer and `www-data` in
+    /// the panel is a box where nothing can read a customer's files.
+    #[test]
+    fn the_shell_installers_table_agrees_with_this_one() {
+        #[derive(serde::Deserialize)]
+        struct Tables {
+            platform_debian: std::collections::BTreeMap<String, String>,
+            platform_rhel10: std::collections::BTreeMap<String, String>,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/platform_table.json");
+        let raw = std::fs::read_to_string(&path).expect("the platform fixture");
+        let tables: Tables = serde_json::from_str(&raw).expect("it parses");
+
+        let debian: &dyn Platform = &crate::debian::Debian13;
+        let rhel: &dyn Platform = &crate::rhel::AlmaLinux10;
+
+        for (name, table, platform) in [
+            ("debian", &tables.platform_debian, debian),
+            ("rhel", &tables.platform_rhel10, rhel),
+        ] {
+            let shell = |key: &str| -> &str {
+                table
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{name}: the shell table has no {key}"))
+                    .as_str()
+            };
+
+            assert_eq!(platform.web_user(), shell("WEB_USER"), "{name} WEB_USER");
+            assert_eq!(platform.web_group(), shell("WEB_GROUP"), "{name} WEB_GROUP");
+            assert_eq!(
+                platform.redis_service(),
+                shell("REDIS_SERVICE"),
+                "{name} REDIS_SERVICE"
+            );
+            assert_eq!(
+                platform.cron_service(),
+                shell("CRON_SERVICE"),
+                "{name} CRON_SERVICE"
+            );
+            assert_eq!(
+                platform.nologin_shell().to_string_lossy(),
+                shell("NOLOGIN_SHELL"),
+                "{name} NOLOGIN_SHELL"
+            );
+            assert_eq!(
+                platform.phpmyadmin_root().to_string_lossy(),
+                shell("PHPMYADMIN_ROOT"),
+                "{name} PHPMYADMIN_ROOT"
+            );
+
+            // One deliberate difference, and it is contextual rather than a
+            // value disagreement: the shell writes its name into
+            // `After=network.target ${CLAMAV_SERVICE}` in a unit file, where
+            // the `.service` suffix is the conventional spelling; this side
+            // hands the name to `systemctl is-active`, which takes either.
+            // Compared with the suffix stripped so the *unit* still has to
+            // match.
+            assert_eq!(
+                platform.clamav_service(),
+                shell("CLAMAV_SERVICE")
+                    .strip_suffix(".service")
+                    .unwrap_or_else(|| panic!(
+                        "{name}: the shell's CLAMAV_SERVICE lost its .service suffix, \
+                         so the two spellings are no longer the documented difference"
+                    )),
+                "{name} CLAMAV_SERVICE"
+            );
+
+            // The family name the shell picks has to be the one this side
+            // would pick, or every branch downstream of it differs.
+            let family = match platform.family() {
+                Family::Debian => "debian",
+                Family::Rhel => "rhel",
+            };
+            assert_eq!(family, shell("OS_FAMILY"), "{name} OS_FAMILY");
+        }
+
+        // The fixture has to be a real table, not an empty one that satisfies
+        // every lookup by never being asked.
+        assert!(tables.platform_debian.len() >= 15);
+        assert!(tables.platform_rhel10.len() >= 15);
+    }
+}

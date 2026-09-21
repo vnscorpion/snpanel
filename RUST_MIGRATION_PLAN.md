@@ -23,7 +23,7 @@ resolving.
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
-| Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket |
+| Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket; a fresh install still deploys the bash one (Stage F) |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
 
@@ -228,6 +228,29 @@ set of conditionals.
 ---
 
 ## 7. Risks, named
+
+### I dropped half an exit criterion while rewriting it
+
+Stage D's exit read: "every verb the panel's Python calls answered by Rust —
+105 of them, of which 92 are today; **the bash helper is no longer installed
+on new installations**." Declaring the stage complete, I rewrote that sentence
+and kept only the first clause.
+
+The second clause is not met. `install.sh` installs
+`files/snpanel-helper.sh` as `/usr/local/sbin/snpanel-helper`; the Rust helper
+reaches a box only through `helper-cutover.sh`, which is a migration script
+rather than part of installing the panel. So every *fresh* install is still a
+bash-helper install, and the live verification that ran in that container ran
+against a box that had been cut over by hand.
+
+Nothing about the verb work was wrong, and the measurement — 106 of 106 — was
+right. What was wrong was editing a definition of done while claiming to have
+met it. The clause is restored, and closing it is Stage F's first job rather
+than a footnote in a stage that has been called finished.
+
+The general form, and it is the third variant of the same thing this session:
+**a test, a survey or a criterion that is edited by the person reporting
+against it needs the edit stated out loud.**
 
 ### There are two `is_domain`s in the Python and they disagree about IPs
 
@@ -758,9 +781,19 @@ Runs in parallel with C. The domains with no Rust module: `panel` (9 verbs),
 `certbot` (6), `maldet` (6), `clamav` (4), `docker` (4), `ipv6` (4), `updates`
 (4), `cron` (2), `time` (2), `node` (2), and the singletons. The five dead verbs in §3 are already gone.
 
-**Exit:** every verb the panel's Python calls answered by Rust.
+**Exit:** every verb the panel's Python calls answered by Rust, *and* the
+bash helper no longer installed on new installations.
 
-**Done.** All **106** of them — the figure was 105 until
+**The first half is done; the second is not, and I removed it from this
+sentence when I rewrote it.** `install.sh` still runs
+`install -m 0750 ... files/snpanel-helper.sh /usr/local/sbin/snpanel-helper`:
+a fresh install today is a bash-helper install, and the Rust helper arrives
+only through `helper-cutover.sh`, which is migration scaffolding rather than
+part of installing the panel. Fixing that is an installer change, so it is
+Stage F's first job and is listed there - but it belongs in Stage D's ledger,
+not quietly in another stage's.
+
+All **106** verbs — the figure was 105 until
 `every_bash_verb_is_mapped_or_listed_as_unported` found two the hand-kept
 survey had never seen. The test owns the list now and it is empty; a verb
 added to the bash and called from Python without an arm here fails that
@@ -783,13 +816,43 @@ operation.
 
 ### Stage F — the installer
 
-9,944 lines of bash, and the part a customer meets first: `install.sh`
-(1,857), `update.sh` (1,749), `platform.sh` (308), `snpanel-helper.sh` (6,030
-— retired by Stage D). Built on `snpanel-osabi`, which already carries the
-table.
+Measured rather than quoted: **12,120 lines across 18 files**, of which
+`snpanel-helper.sh` (5,993) is retired by Stage D and four more are migration
+scaffolding to be deleted in Stage G, not ported — `helper-cutover.sh` (280),
+`api-cutover.sh` (199), `api-browser-check.sh` (132), `api-shadow-check.sh`
+(91).
+
+What is left to port is **~3,400 lines**: `install.sh` (1,887), `update.sh`
+(1,763), `snpanelctl` (729), `platform.sh` (316), `platform-check.sh` (275),
+`build-modsecurity-el.sh` (138), `rescue-firewall.sh` (84),
+`nginx-module-guard-install.sh` (59). The unit files and sudoers rule (174
+lines) are data, installed as they are.
+
+`install.sh`'s `main()` is a linear sequence of about 25 phases, which is the
+seam: a Rust installer can take them one at a time, the way the API and the
+helper were taken.
+
+**Two things have to be settled before any phase moves, and neither is a
+line of bash.**
+
+1. **A fresh install does not get the Rust helper.** Stage D's exit says it
+   should; `install.sh` installs the bash one. This is the first job.
+2. **There is no way to get a Rust binary onto a fresh box.** `install.sh`
+   downloads `/archive/refs/tags/<tag>.tar.gz` — source only. The frontend is
+   built on the machine with node; the backend is Python and needs no build.
+   Rust needs either a toolchain on every customer's VPS (a gigabyte and
+   several minutes on one vCPU) or **prebuilt musl binaries attached to the
+   release**, which is what the repo already builds locally for the container
+   tests. The second is the answer, and it needs a release workflow that does
+   not exist yet.
+
+Until (2) lands, no phase of the installer can be answered by Rust on a real
+install, so Stage F's early work is what can be checked without it: the two
+copies of the platform table now have a test that compares them.
 
 **Exit:** a fresh install on each supported distribution performed entirely by
-the Rust installer, and `installer/files/platform-check.sh` passing at the
+the Rust installer, the bash helper absent from a new installation, and
+`installer/files/platform-check.sh` passing at the
 count the bash reaches today (Debian 13: 31/31).
 
 ### Stage G — remove Python
