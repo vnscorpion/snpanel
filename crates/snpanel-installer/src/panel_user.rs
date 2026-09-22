@@ -1,0 +1,260 @@
+//! The `snpanel` account, its groups, and how it reaches MariaDB.
+//!
+//! Source: `setup_panel_user`.
+//!
+//! Everything the panel does to a customer's files it does as this account
+//! or through the helper, so the group memberships here are the whole of
+//! what it can read — and the `.my.cnf` is the whole of how it reaches the
+//! database. Both are written once and then depended on by every later
+//! phase.
+
+/// The groups created before the account is.
+pub const SYSTEM_GROUPS: &[&str] = &["snpanel-sites", "snpanel-sftp"];
+
+/// One directory the installer makes, with the ownership and mode it needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedDir {
+    pub path: &'static str,
+    pub owner: &'static str,
+    pub group: &'static str,
+    pub mode: u32,
+}
+
+/// The two nginx directories the panel writes vhosts into.
+///
+/// `2775` — group-writable **and setgid**, so a file the panel creates
+/// inherits the `snpanel` group rather than root's. Without the setgid bit
+/// the first vhost written after an update belongs to root and the panel
+/// cannot rewrite it, which looks like a permissions bug in the panel and is
+/// not.
+pub fn nginx_dirs() -> Vec<ManagedDir> {
+    vec![
+        ManagedDir {
+            path: "/etc/nginx/conf.d",
+            owner: "root",
+            group: "snpanel",
+            mode: 0o2775,
+        },
+        ManagedDir {
+            path: "/etc/nginx/snpanel/custom",
+            owner: "root",
+            group: "snpanel",
+            mode: 0o2775,
+        },
+    ]
+}
+
+/// The panel's own data directories, including the DirectAdmin staging
+/// areas.
+///
+/// `0750`: the panel's group can read them and nobody else can. A backup
+/// archive holds a customer's whole account, and the import staging areas
+/// hold their database dumps in plaintext while an import runs.
+pub fn data_dirs(app_dir: &'static str, backup_root: &'static str) -> Vec<ManagedDir> {
+    [
+        app_dir,
+        backup_root,
+        "/home/admin/snpanel_backups/da",
+        "/var/lib/snpanel/da-import",
+        "/var/lib/snpanel/import-stage",
+    ]
+    .into_iter()
+    .map(|path| ManagedDir {
+        path,
+        owner: "snpanel",
+        group: "snpanel",
+        mode: 0o750,
+    })
+    .collect()
+}
+
+/// `openssl rand -base64 32 | tr -d '/+=' | cut -c1-32`.
+///
+/// The `tr` is there because the password is interpolated into SQL and into
+/// an ini file, and `/`, `+` and `=` are each awkward in one of those. The
+/// `cut` then takes the first thirty-two of what is left — which is always
+/// enough, because base64 of thirty-two bytes is forty-four characters and
+/// only a handful are ever stripped.
+pub fn shape_password(base64_bytes: &str) -> String {
+    base64_bytes
+        .chars()
+        .filter(|c| !matches!(c, '/' | '+' | '='))
+        .take(32)
+        .collect()
+}
+
+/// The SQL that makes the account, whether or not it is already there.
+///
+/// **`ALTER` as well as `CREATE`.** `CREATE USER IF NOT EXISTS` does nothing
+/// when the account exists — including nothing to its password — so a second
+/// install run would write a new password into `.my.cnf` while the account
+/// kept the old one, and every database action in the panel would then fail
+/// with "Access denied for user 'snpanel'@'localhost'". Re-running the
+/// installer after a failure is a normal thing to do, so it has to converge
+/// rather than half-apply.
+pub fn grant_sql(password: &str) -> String {
+    format!(
+        "
+    CREATE USER IF NOT EXISTS 'snpanel'@'localhost' IDENTIFIED BY '{password}';
+    ALTER USER 'snpanel'@'localhost' IDENTIFIED BY '{password}';
+    GRANT ALL PRIVILEGES ON *.* TO 'snpanel'@'localhost' WITH GRANT OPTION;
+    FLUSH PRIVILEGES;
+  "
+    )
+}
+
+/// `$APP_DIR/.my.cnf`, mode `0600`, owned by `snpanel`.
+///
+/// Two sections, because `mysqldump` does not read `[client]` for every
+/// option it needs and a backup that cannot authenticate is a backup that
+/// silently produces an empty file.
+pub fn my_cnf(password: &str) -> String {
+    format!(
+        "[client]
+user=snpanel
+password=\"{password}\"
+host=localhost
+
+[mysqldump]
+user=snpanel
+password=\"{password}\"
+host=localhost
+"
+    )
+}
+
+/// `0600`. It is the credential for an account with `GRANT OPTION` on
+/// everything.
+pub const MY_CNF_MODE: u32 = 0o600;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Base64 of thirty-two bytes is forty-four characters, so there is
+    /// always more than thirty-two left after the strip — the `cut` is what
+    /// decides the length, not what survived the `tr`.
+    #[test]
+    fn a_password_is_thirty_two_characters_of_the_safe_alphabet() {
+        let raw = "ab+cd/ef=ghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let password = shape_password(raw);
+        assert_eq!(password.len(), 32);
+        assert!(!password.contains(['/', '+', '=']));
+        assert!(password.starts_with("abcdefghij"));
+    }
+
+    /// A short input is not padded — `cut -c1-32` gives what there is. Worth
+    /// a test because it is the one case where the length is not thirty-two,
+    /// and a caller that assumed otherwise would build a shorter credential
+    /// without noticing.
+    #[test]
+    fn a_short_input_yields_a_short_password() {
+        assert_eq!(shape_password("abc+def"), "abcdef");
+        assert_eq!(shape_password(""), "");
+    }
+
+    /// The alphabet the strip leaves is what makes the two interpolations
+    /// safe: the password goes into a `'...'` SQL literal and a `"..."` ini
+    /// value, and neither is escaped.
+    ///
+    /// Asserted over **base64's own alphabet**, which is what `openssl rand
+    /// -base64` produces. An earlier version of this walked all of ASCII and
+    /// proved nothing: `shape_password` takes the first thirty-two, and the
+    /// first thirty-two that survive the strip are the control characters —
+    /// none of which is a quote either.
+    #[test]
+    fn nothing_that_survives_the_strip_can_close_a_quote() {
+        let base64_alphabet: String = ('A'..='Z')
+            .chain('a'..='z')
+            .chain('0'..='9')
+            .chain(['+', '/', '='])
+            .collect();
+        assert_eq!(base64_alphabet.len(), 65, "base64 is 64 symbols and a pad");
+
+        let survivors: String = base64_alphabet
+            .chars()
+            .filter(|c| !matches!(c, '/' | '+' | '='))
+            .collect();
+        assert_eq!(survivors.len(), 62);
+        for ch in survivors.chars() {
+            assert!(
+                ch.is_ascii_alphanumeric(),
+                "a password character that is not alphanumeric: {ch:?}"
+            );
+        }
+
+        // And `shape_password` is what applies that strip.
+        let password = shape_password(&base64_alphabet);
+        assert!(password.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert!(!password.contains(['/', '+', '=']));
+    }
+
+    /// Re-running the installer is normal after a failure, and this is the
+    /// line that makes it converge rather than leave the account and the
+    /// file disagreeing.
+    #[test]
+    fn the_grant_alters_the_password_as_well_as_creating_the_account() {
+        let sql = grant_sql("s3cret");
+        assert!(sql.contains("CREATE USER IF NOT EXISTS 'snpanel'@'localhost'"));
+        assert!(
+            sql.contains("ALTER USER 'snpanel'@'localhost' IDENTIFIED BY 's3cret'"),
+            "without the ALTER, a re-run writes a new password into .my.cnf \
+             while the account keeps the old one"
+        );
+        assert!(sql.contains("FLUSH PRIVILEGES"));
+    }
+
+    /// `mysqldump` does not read `[client]` for everything it needs, and a
+    /// backup that cannot authenticate produces an empty file rather than an
+    /// error anyone sees.
+    #[test]
+    fn the_credentials_file_has_a_section_for_mysqldump() {
+        let cnf = my_cnf("s3cret");
+        assert!(cnf.contains("[client]\nuser=snpanel\npassword=\"s3cret\""));
+        assert!(cnf.contains("[mysqldump]\nuser=snpanel\npassword=\"s3cret\""));
+    }
+
+    #[test]
+    fn the_credentials_file_is_readable_by_nobody_else() {
+        assert_eq!(MY_CNF_MODE & 0o077, 0);
+    }
+
+    /// Setgid on both nginx directories. Without it the first vhost written
+    /// after an update belongs to root and the panel cannot rewrite it,
+    /// which looks like a bug in the panel and is not.
+    #[test]
+    fn the_nginx_directories_are_setgid_to_the_panels_group() {
+        for dir in nginx_dirs() {
+            assert_eq!(dir.group, "snpanel", "{}", dir.path);
+            assert_eq!(dir.mode & 0o2000, 0o2000, "{} is not setgid", dir.path);
+            assert_eq!(
+                dir.mode & 0o020,
+                0o020,
+                "{} is not group-writable",
+                dir.path
+            );
+        }
+    }
+
+    /// A backup archive holds a customer's whole account, and the import
+    /// staging areas hold their database dumps in plaintext while an import
+    /// runs. None of it is anybody else's to read.
+    #[test]
+    fn nothing_the_panel_stores_is_world_readable() {
+        for dir in data_dirs("/opt/snpanel", "/var/backups/snpanel") {
+            assert_eq!(dir.mode & 0o007, 0, "{} is world-readable", dir.path);
+            assert_eq!(dir.owner, "snpanel", "{}", dir.path);
+        }
+    }
+
+    #[test]
+    fn the_staging_areas_are_among_the_directories_made() {
+        let paths: Vec<&str> = data_dirs("/opt/snpanel", "/var/backups/snpanel")
+            .iter()
+            .map(|dir| dir.path)
+            .collect();
+        assert!(paths.contains(&"/var/lib/snpanel/import-stage"));
+        assert!(paths.contains(&"/var/lib/snpanel/da-import"));
+        assert!(paths.contains(&"/home/admin/snpanel_backups/da"));
+    }
+}

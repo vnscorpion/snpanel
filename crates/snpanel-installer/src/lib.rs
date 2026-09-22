@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod nginx_conf;
 pub mod panel_ssl;
 pub mod panel_url;
+pub mod panel_user;
 pub mod php;
 pub mod systemd_units;
 pub mod tools_vhost;
