@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 31 of 67 |
+| `maintenance` | 24 of 67 |
 | `provisioning` | 13 of 13 — needs the `docker` domain |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
@@ -764,11 +764,73 @@ not fail, it reports a different setting. And `str.strip()` is the same
 whitespace predicate as `\S`, not Rust's `White_Space`. Both are replayed
 against CPython over 89 and 27 cases.
 
+### The first job registry, and the archive checks behind it
+
+`POST /files/extract` and the two endpoints that watch it, moved together
+because the registry they share is process-local — see the plan for why
+that makes them one chunk rather than a blocker.
+
+The checks are the point. Every one of them stands between a customer's
+upload and the rest of a shared machine, and the corpus is built from real
+archives carried base64 so the Rust reader sees the same bytes rather than a
+description of them: 23 zips, 10 tars, 5 destinations that already hold
+something, and 29 member names.
+
+Three behaviours that a reading of the Python would not give you:
+
+- **A zip entry has three ways to be a directory.** A trailing slash, or
+  directory mode bits with a zero size, or being the implied parent of
+  another member — and each of the three is the only one that fires for
+  some archiver's output. `zip` on Linux writes directory entries without
+  the slash.
+- **The implied-parent test needs the zero size.** A non-empty file called
+  `d` in an archive that also holds `d/x.txt` stays a file.
+- **Overwriting a symlink is refused as "Archive contains unsafe paths"**,
+  not as "Refusing to overwrite a symlink". Resolving the target follows
+  the link out of the tree, so the earlier check fires first. A port that
+  produced the later message would still be safe and would still be a
+  different answer on the customer's screen.
+
+And one the tar side does not share with the zip side: tar can carry a hard
+link, a FIFO and a device node, and **all** of them are refused, not only
+symlinks. A device node unpacked into a customer's tree with the helper's
+privileges is a hole nothing else here would catch.
+
+54 mutations, all caught — but it took five runs, and two of the reasons
+are worth writing down.
+
+**The tar test was proving its own reader.** It classified each member
+itself with a copy of the production logic, so breaking `read_tar_entries`
+— the function that actually decides whether a device node reaches the scan
+— changed nothing it could see. Three mutations survived on that alone. The
+test now reads the archive the way the handler does.
+
+**And one run was invalidated by interference.** A mutation runner holds a
+snapshot of the files it edits and restores them at the end; editing the
+tree while it runs, or starting a second one, produces results that are
+noise. That happened here and left `file_jobs.rs` sitting in a mutated
+state that the test suite still passed — because the mutation was the one
+whose test had not been written yet. The rule is simple and was broken
+anyway: confirm no runner is alive before touching anything.
+
+Two other things the port had to reproduce rather than improve. The
+registry evicts the oldest **finished** jobs and never a running or queued
+one, so a busy box exceeds fifty entries rather than forgetting what it is
+doing. And the work is limited to two at a time, which on a shared machine
+is the ceiling on how much disk an extraction storm can move at once — an
+unbounded `tokio::spawn` would have been the obvious port and the wrong one.
+
+One porting bug found while writing it: `sorted(..., reverse=True)` does
+**not** reverse ties, and a Python dict is ordered, so two jobs created in
+the same second come back in the order they were queued. A `HashMap` gives
+neither, and the stamp has one-second resolution, so the two cards would
+have swapped places between one poll and the next.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **66 endpoints**, which is `maintenance` (31),
+Measured, not recalled: **59 endpoints**, which is `maintenance` (24),
 `provisioning` (13), `malware` (11), `site_apps` (10) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the

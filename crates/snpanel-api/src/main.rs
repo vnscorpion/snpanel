@@ -25,11 +25,13 @@
 #![allow(clippy::result_large_err)]
 
 mod access_log;
+mod archive;
 mod auth;
 mod backups;
 mod client;
 mod cron;
 mod errors;
+mod file_jobs;
 mod files;
 mod helper_socket;
 mod malware;

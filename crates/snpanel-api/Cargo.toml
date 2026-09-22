@@ -18,6 +18,9 @@ snpanel-nginx = { path = "../snpanel-nginx" }
 # Reading a backup's manifest out of its archive.
 tar.workspace = true
 flate2.workspace = true
+# Already in the lock file for the helper, which unpacks the archives this
+# crate only inspects.
+zip.workspace = true
 snpanel-osabi = { path = "../snpanel-osabi" }
 
 anyhow.workspace = true

@@ -78,6 +78,21 @@ pub fn router() -> Router<AppState> {
             "/maintenance/files/write",
             post(write_file).fallback(crate::fallback),
         )
+        // These three move together on purpose: the registry they share is
+        // process-local, so the endpoint that creates a job and the two
+        // that read it have to be on the same side of the proxy.
+        .route(
+            "/maintenance/files/extract",
+            post(extract_archive).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/files/jobs",
+            get(list_file_jobs).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/files/jobs/{job_id}",
+            get(get_file_job).fallback(crate::fallback),
+        )
         .route(
             "/maintenance/da-import/backups",
             get(list_da_backups)
@@ -2064,6 +2079,317 @@ async fn retune_php_pools(State(state): State<AppState>, req: axum::extract::Req
         "output": snpanel_core::pyunicode::tail(result.stdout.trim(), 4000),
     }))
     .into_response()
+}
+
+/// `POST /maintenance/files/extract`.
+///
+/// Source: `extract_archive`.
+///
+/// The archive is **opened** before the job is queued, not just named: a
+/// corrupt upload is a 400 the customer sees immediately rather than a job
+/// card that fails ten seconds later with nothing to act on. The scan that
+/// decides what may be unpacked runs in the worker, because on a large
+/// archive it is the slow part.
+async fn extract_archive(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let archive_path = match string_field(&payload, "archive_path") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let destination_path = payload
+        .get("destination_path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let archive_file = match files::safe_path(&website.root_path, &archive_path, false) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if !archive_file.is_file() {
+        return bad_request("Archive not found");
+    }
+    if std::fs::symlink_metadata(&archive_file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return bad_request("Symlinks are not allowed");
+    }
+    let name = archive_file
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let is_zip = name.ends_with(".zip");
+    let is_tar = name.ends_with(".tar.gz") || name.ends_with(".tgz");
+    if !is_zip && !is_tar {
+        return bad_request("Only .zip, .tar.gz, and .tgz archives are supported");
+    }
+    // Opened and closed again: this only asks whether the container is
+    // readable, which is what `with zipfile.ZipFile(...) as _: pass` does.
+    if is_zip {
+        if crate::archive::read_zip_entries(&archive_file).is_err() {
+            return bad_request("Invalid or corrupted ZIP archive");
+        }
+    } else if crate::archive::read_tar_entries(&archive_file).is_err() {
+        return bad_request("Invalid or corrupted tar archive");
+    }
+
+    let job_id = crate::file_jobs::new_job_id();
+    let target_key = crate::file_jobs::target_key(Some(website.id), None);
+    let public = crate::file_jobs::remember(crate::file_jobs::FileJob {
+        sequence: 0,
+        job_id: job_id.clone(),
+        kind: "extract_archive".to_string(),
+        status: "queued".to_string(),
+        user_id: current.user.id,
+        website_id: Some(website.id),
+        target_key: target_key.clone(),
+        archive_path: archive_path.clone(),
+        destination_path: destination_path.clone(),
+        target: String::new(),
+        message: "Extraction queued".to_string(),
+        error: String::new(),
+        created_at: crate::file_jobs::now_iso(),
+        started_at: String::new(),
+        finished_at: String::new(),
+    });
+
+    let worker_state = state.clone();
+    let worker_user = current.user.id;
+    let worker_job = job_id.clone();
+    let worker_key = target_key.clone();
+    let worker_archive = archive_path.clone();
+    let worker_destination = destination_path.clone();
+    tokio::spawn(async move {
+        // Two at a time, as the Python's `ThreadPoolExecutor(max_workers=2)`
+        // allows. On a shared box this is the ceiling on how much disk an
+        // extraction storm can move at once, not an accident.
+        let permit = crate::file_jobs::worker_permit().await;
+        crate::file_jobs::update(&worker_job, |job| {
+            job.status = "running".to_string();
+            job.started_at = crate::file_jobs::now_iso();
+            job.message = "Extracting archive".to_string();
+        });
+        let outcome = run_extract_job(
+            &worker_state,
+            worker_user,
+            &worker_key,
+            &worker_archive,
+            &worker_destination,
+        )
+        .await;
+        match outcome {
+            Ok(target) => crate::file_jobs::update(&worker_job, |job| {
+                job.status = "done".to_string();
+                job.target = target;
+                job.message = "Extraction completed".to_string();
+                job.finished_at = crate::file_jobs::now_iso();
+            }),
+            Err(error) => crate::file_jobs::update(&worker_job, |job| {
+                job.status = "error".to_string();
+                job.error = error;
+                job.message = "Extraction failed".to_string();
+                job.finished_at = crate::file_jobs::now_iso();
+            }),
+        }
+        drop(permit);
+    });
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "extract_archive_queued",
+        &website.domain,
+        &archive_path,
+    )
+    .await;
+    let mut body = public;
+    body["message"] = json!("Extraction started in the background");
+    axum::Json(body).into_response()
+}
+
+/// `GET /maintenance/files/jobs`.
+async fn list_file_jobs(
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let website_id = match params.get("website_id") {
+        Some(raw) => match raw.trim().parse::<i64>() {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return crate::errors::validation_error(vec![json!({
+                    "type": "int_parsing",
+                    "loc": ["query", "website_id"],
+                    "msg": "Input should be a valid integer, unable to parse string as an integer",
+                    "input": raw,
+                })])
+            }
+        },
+        None => None,
+    };
+    let is_admin = permissions::has_role(&current.user.role, permissions::Role::Admin);
+    axum::Json(json!({
+        "jobs": crate::file_jobs::list(current.user.id, is_admin, website_id),
+    }))
+    .into_response()
+}
+
+/// `GET /maintenance/files/jobs/{job_id}`.
+///
+/// Source: `get_file_job`. A job that is not there is a 404 and a job that
+/// belongs to somebody else is a 403 — **not** both answered as 404. The
+/// ids are random, so the difference tells a caller nothing they could not
+/// already tell by whether they made the job.
+async fn get_file_job(AxumPath(job_id): AxumPath<String>, current: CurrentUser) -> Response {
+    let Some(job) = crate::file_jobs::get(&job_id) else {
+        return not_found("File job not found");
+    };
+    if job.user_id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Access denied");
+    }
+    axum::Json(job.public()).into_response()
+}
+
+/// Source: `_run_extract_job` and `file_manager.extract_archive`.
+///
+/// **The ownership check runs again here.** The job carries only a key, and
+/// by the time the worker picks it up the request that queued it is long
+/// gone — a site that changed hands, or a user that was deactivated, must
+/// not have work done on its behalf because a queue entry outlived the
+/// decision.
+async fn run_extract_job(
+    state: &AppState,
+    user_id: i64,
+    target_key: &str,
+    archive_path: &str,
+    destination_path: &str,
+) -> Result<String, String> {
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(user)) if user.is_active => user,
+        Ok(_) => return Err("User not found".to_string()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let website_id: i64 = target_key
+        .strip_prefix("site:")
+        .and_then(|raw| raw.parse().ok())
+        .ok_or_else(|| "Website not found".to_string())?;
+    let website = match state.db.websites().by_id(website_id).await {
+        Ok(Some(w)) => w,
+        Ok(None) => return Err("Website not found".to_string()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if website.owner_id != user.id && !permissions::has_role(&user.role, permissions::Role::Admin) {
+        return Err("Access denied".to_string());
+    }
+
+    let archive_file =
+        files::safe_path(&website.root_path, archive_path, false).map_err(|e| e.to_string())?;
+    if !archive_file.is_file() {
+        return Err("Archive not found".to_string());
+    }
+    if std::fs::symlink_metadata(&archive_file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("Symlinks are not allowed".to_string());
+    }
+    // `destination_path or str(Path(archive_path).parent)` — an empty
+    // destination unpacks beside the archive, not at the site root.
+    let destination_rel = if destination_path.is_empty() {
+        std::path::Path::new(archive_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        destination_path.to_string()
+    };
+    let destination =
+        files::safe_path(&website.root_path, &destination_rel, false).map_err(|e| e.to_string())?;
+    if !destination.is_dir() {
+        return Err("Extract destination not found".to_string());
+    }
+
+    let name = archive_file
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let archive_kind = if name.ends_with(".zip") {
+        let entries = crate::archive::read_zip_entries(&archive_file)
+            .map_err(|_| "Invalid or corrupted ZIP archive".to_string())?;
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        let implied = crate::archive::implied_dirs(&names);
+        crate::archive::zip_uncompressed_size(&entries, &destination, &archive_file, &implied)?;
+        "zip"
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        let entries = crate::archive::read_tar_entries(&archive_file)
+            .map_err(|_| "Invalid or corrupted tar archive".to_string())?;
+        crate::archive::tar_uncompressed_size(&entries, &destination, &archive_file)?;
+        "tar.gz"
+    } else {
+        return Err("Only .zip, .tar.gz, and .tgz archives can be extracted".to_string());
+    };
+
+    let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+        // No runtime user means a development box with no helper; the
+        // Python unpacks in-process there, which is not a path this serves.
+        return Err("Website has no runtime user configured".to_string());
+    };
+    let root = std::fs::canonicalize(&website.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+    let root_str = root.to_string_lossy().into_owned();
+    let archive_rel = files::helper_relative_path(&website.root_path, &archive_file);
+    let destination_rel_helper = files::helper_relative_path(&website.root_path, &destination);
+    let max_items = crate::archive::max_archive_items().to_string();
+    let max_bytes = crate::archive::max_archive_uncompressed_bytes().to_string();
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-archive-extract",
+        &[
+            linux_user,
+            &root_str,
+            &archive_rel,
+            &destination_rel_helper,
+            archive_kind,
+            &max_items,
+            &max_bytes,
+        ],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return Err(result
+            .failure_detail("Could not extract the archive")
+            .trim()
+            .to_string());
+    }
+
+    let destination_str = destination.to_string_lossy().into_owned();
+    // Everything the helper just wrote belongs to the site's runtime user,
+    // and nginx is still serving whatever the old files rendered to.
+    fix_site_path(state, &destination_str, website.linux_user.as_deref()).await;
+    clear_fastcgi_cache(state).await;
+    // `log_action(db, user.id, "extract_archive", ...)` — distinct from the
+    // `extract_archive_queued` line the request wrote. One says somebody
+    // asked; only this one says it happened.
+    audit_detail(
+        state,
+        user.id,
+        "extract_archive",
+        &website.domain,
+        archive_path,
+    )
+    .await;
+    Ok(destination_str)
 }
 
 /// Source: `get_php_versions`.
