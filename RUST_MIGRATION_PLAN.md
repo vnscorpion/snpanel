@@ -553,6 +553,44 @@ produced**:
 Both now assert against the constant or the formatter the production path
 uses.
 
+### A package's limits are applied twice, and the second one decides
+
+`update_user` reads:
+
+```python
+package = None
+if "package_id" in payload.model_fields_set:
+    package = _package_for_payload(db, payload.package_id)
+    _apply_package_limits(user, package)      # first
+if payload.website_limit is not None:
+    user.website_limit = payload.website_limit
+if payload.storage_limit_mb is not None:
+    user.storage_limit_mb = payload.storage_limit_mb
+if package:
+    _apply_package_limits(user, package)      # second, and it wins
+```
+
+The port applied it **once** and let the explicit limit override, with a
+comment claiming that was the Python's order. So
+`{"package_id": 3, "website_limit": 999}` gave the customer 999 websites here
+and the package's number there.
+
+Shipped, and the Rust was the **permissive** one — the wrong direction for a
+limit. Found while reading `create_user`, which reaches the same answer by
+the opposite route: it builds the row with the payload's numbers and then
+calls `_apply_package_limits` once. Two handlers, one rule, and only one of
+them looks like it.
+
+The decision is now `resolve_package_limits`, named rather than written as an
+order inside an async database-reading handler — which is what made the
+original wrong version untestable. A mutation reinstating the old behaviour
+is in the teeth run.
+
+**Third shipped bug this migration found by reading the Python beside the
+Rust rather than by a test.** The pattern is the same each time: the Rust was
+written from what the Python *looked like it meant*, and the second read
+found what it does.
+
 ### There are two `validate_document_root`s and they disagree
 
 `schemas._validate_document_root` and `site_users.validate_document_root`

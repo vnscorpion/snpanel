@@ -133,6 +133,41 @@ async fn me(State(state): State<AppState>, current: CurrentUser) -> Response {
     axum::Json(user_out(&state, &current.user).await).into_response()
 }
 
+/// What a user's limits end up as, given a package and the request's own
+/// numbers.
+///
+/// Source: `update_user`, which calls `_apply_package_limits` **twice** —
+/// once where the package is resolved and once at the end, with the explicit
+/// limits assigned in between. So the second call wins and **a package
+/// overrides an explicit limit in the same request**.
+///
+/// `create_user` reaches the same answer by a different route: it builds the
+/// row with the payload's numbers and then calls `_apply_package_limits`
+/// once. Two handlers, one rule, and only one of them looks like it.
+///
+/// The first port of this applied the package once and let the explicit limit
+/// win — so `{"package_id": 3, "website_limit": 999}` gave the customer 999
+/// websites here and the package's number there. It shipped. A limit is not
+/// a field to be generous with.
+fn resolve_package_limits(
+    package: Option<&snpanel_db::Package>,
+    website_limit: Option<i64>,
+    storage_limit_mb: Option<i64>,
+) -> (Option<i64>, Option<i64>, Option<bool>) {
+    match package {
+        // The package decides all three, whatever else was asked for.
+        Some(package) => (
+            Some(package.website_limit),
+            Some(package.storage_limit_mb),
+            Some(package.terminal_enabled),
+        ),
+        // No package in this request: the explicit numbers stand, and
+        // `terminal_enabled` is left alone because nothing in the payload
+        // sets it.
+        None => (website_limit, storage_limit_mb, None),
+    }
+}
+
 async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Request) -> Response {
     let (mut parts, body) = req.into_parts();
     let current = match CurrentUser::from_parts(&mut parts, &state).await {
@@ -157,6 +192,9 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     };
 
     let mut fields = UserFields::default();
+    // The package, kept because its limits are applied **twice** - see
+    // the second application below.
+    let mut assigned_package: Option<snpanel_db::Package> = None;
     let mut bump = false;
 
     // Two guards that stop an administrator locking themselves out of their
@@ -210,6 +248,9 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     // make it impossible to take a package away from a customer.
     if let Some(raw) = payload.get("package_id") {
         if raw.is_null() {
+            // `_package_for_payload(db, None)` returns `None`, so an explicit
+            // null clears the package **and** leaves the limits alone - the
+            // second `_apply_package_limits` is skipped for a null.
             fields.package_id = Some(None);
         } else {
             let Some(id) = raw.as_i64() else {
@@ -224,9 +265,7 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
                     // Assigning a package copies its limits onto the user -
                     // including terminal_enabled, which is the only thing that
                     // makes that flag mean anything.
-                    fields.website_limit = Some(package.website_limit);
-                    fields.storage_limit_mb = Some(package.storage_limit_mb);
-                    fields.terminal_enabled = Some(package.terminal_enabled);
+                    assigned_package = Some(package);
                 }
                 Ok(None) => return not_found("Package not found"),
                 Err(e) => {
@@ -237,8 +276,8 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         }
     }
 
-    // These come *after* the package copy, so an explicit limit in the same
-    // request wins over the package's - the order is the Python's.
+    // Read and range-checked here; whether they survive is
+    // `resolve_package_limits`'s answer, below.
     for (name, min, max) in [
         ("website_limit", 0i64, 1000i64),
         ("storage_limit_mb", 0, 1024 * 1024),
@@ -257,6 +296,17 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
             "storage_limit_mb" => fields.storage_limit_mb = Some(value),
             _ => unreachable!(),
         }
+    }
+
+    let (website_limit, storage_limit_mb, terminal_enabled) = resolve_package_limits(
+        assigned_package.as_ref(),
+        fields.website_limit,
+        fields.storage_limit_mb,
+    );
+    fields.website_limit = website_limit;
+    fields.storage_limit_mb = storage_limit_mb;
+    if terminal_enabled.is_some() {
+        fields.terminal_enabled = terminal_enabled;
     }
 
     let updated = match state.db.users().update(user_id, &fields, bump).await {
@@ -822,6 +872,63 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A package overrides an explicit limit in the same request.
+    ///
+    /// Source: `update_user` calls `_apply_package_limits` **twice** — once
+    /// where the package is resolved and once at the end, with the explicit
+    /// limits assigned in between. The second call decides.
+    ///
+    /// The first port of this applied it once and let the explicit limit win,
+    /// so `{"package_id": 3, "website_limit": 999}` gave the customer 999
+    /// websites here and the package's number there. **It shipped**, and the
+    /// Rust was the permissive one — which is the wrong direction for a
+    /// limit.
+    #[test]
+    fn a_package_overrides_a_limit_asked_for_in_the_same_request() {
+        let package = snpanel_db::Package {
+            id: 3,
+            name: "Starter".into(),
+            slug: None,
+            website_limit: 5,
+            storage_limit_mb: 1024,
+            database_limit: 1,
+            alias_limit: 1,
+            backup_retention_days: 7,
+            terminal_enabled: false,
+            waf_enabled: true,
+            wordpress_enabled: true,
+            node_apps_limit: 0,
+            node_app_memory_mb: 0,
+            created_at: None,
+        };
+
+        // Both given: the package wins, on all three fields.
+        assert_eq!(
+            resolve_package_limits(Some(&package), Some(999), Some(999_999)),
+            (Some(5), Some(1024), Some(false))
+        );
+        // A package and nothing else: the package's numbers.
+        assert_eq!(
+            resolve_package_limits(Some(&package), None, None),
+            (Some(5), Some(1024), Some(false))
+        );
+        // No package: the explicit numbers stand, and `terminal_enabled` is
+        // left alone rather than defaulted - nothing in the payload sets it,
+        // and writing `false` would turn a customer's terminal off for a
+        // request that never mentioned it.
+        assert_eq!(
+            resolve_package_limits(None, Some(999), Some(999_999)),
+            (Some(999), Some(999_999), None)
+        );
+        assert_eq!(resolve_package_limits(None, None, None), (None, None, None));
+        // One of the two given, without a package.
+        assert_eq!(
+            resolve_package_limits(None, Some(7), None),
+            (Some(7), None, None)
+        );
+    }
     /// The rule this endpoint enforces, written out as a table.
     ///
     /// Source: `update_user_password`. Changing someone else's password is an
@@ -869,8 +976,6 @@ mod tests {
             assert_eq!(derived.as_str(), expected, "for {panel}");
         }
     }
-
-    use super::*;
 
     #[test]
     fn the_limit_window_is_the_pythons() {
