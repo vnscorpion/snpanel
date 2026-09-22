@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **155 of 211** | 73% |
+| API endpoints answered by Rust | **161 of 211** | 76% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -1223,10 +1223,17 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (21), `malware` (11), `websites` (1), then `provisioning`
-(13) and `site_apps` (10), which need the `docker` domain. **56 endpoints**,
+`maintenance` (21), `malware` (11), `provisioning` (7), `websites` (1),
+then `site_apps` (10), which needs the `docker` domain. **50 endpoints**,
 counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
 build if that disagrees with `endpoint-coverage.py`.
+
+**`provisioning` does not need the `docker` domain.** That was written
+down early and never re-checked: the router imports `mariadb`, `nginx`,
+`site_users`, `storage_quota` and `wordpress`, every one of which is
+already ported. What it needed was two repositories — `api_tokens` and
+`provisioning_accounts` — and now has them. The seven left are the ones
+that create and destroy hosting accounts.
 
 `waf` is finished. `GET /access-logs` was on the blocked list beside the
 malware job endpoints, recorded as reading `_file_jobs` — **that note was

@@ -229,6 +229,24 @@ impl TryFrom<String> for AppName {
 ///
 /// The sequence is in the digest because two identical lines in one file are
 /// two different entries, and the page keys its rows on this.
+/// Hex SHA-256 of a string.
+///
+/// Source: `provisioning.hash_token` — `sha256(raw.encode()).hexdigest()`.
+/// The provisioning tokens are stored as this and never as themselves, so
+/// the digest has to be byte-identical or every existing token stops
+/// authenticating the moment the Rust front door answers.
+pub fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn access_entry_id(domain: &str, sequence: u64, line: &str) -> String {
     use sha2::{Digest, Sha256};
 

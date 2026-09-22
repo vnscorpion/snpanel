@@ -1,0 +1,718 @@
+//! `/api/provisioning/v1` — the router a billing system talks to.
+//!
+//! Source: `app/api/provisioning.py`.
+//!
+//! **This router does not use the panel's session.** Its callers are
+//! machines: a Bearer token, its own scopes and its own IP allowlist. A
+//! token that leaks is a billing system that can terminate customers, so
+//! three things are true of every endpoint here and none of them are
+//! optional — the token must be active and unrevoked, it must carry the
+//! scope the endpoint needs, and it must arrive from an address the token
+//! names.
+//!
+//! The token-management endpoints at the bottom are the exception: those
+//! are the panel's own administrators, through the ordinary session, and
+//! they are what mints the tokens the rest of the router authenticates.
+
+use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get};
+use axum::Router;
+use serde_json::{json, Value};
+use snpanel_core::permissions;
+
+use crate::auth::CurrentUser;
+use crate::errors::{bad_request, error, not_found};
+use crate::state::AppState;
+use snpanel_core::config::Settings;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/provisioning/v1/plans",
+            get(list_plans).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}",
+            get(get_account).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/usage",
+            get(get_usage).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/tokens",
+            get(list_tokens)
+                .post(create_token)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/tokens/{token_id}",
+            delete(revoke_token).fallback(crate::fallback),
+        )
+}
+
+/// Source: `hash_token` — `sha256(raw).hexdigest()`.
+pub fn hash_token(raw: &str) -> String {
+    snpanel_core::types::sha256_hex(raw)
+}
+
+/// Source: `generate_token` — `f"bp_{secrets.token_urlsafe(48)}"`.
+///
+/// Forty-eight random bytes in URL-safe base64 **without padding**, which
+/// is sixty-four characters. The `bp_` prefix is what makes a leaked token
+/// recognisable in a log or a paste.
+pub fn generate_token() -> (String, String) {
+    use base64::Engine;
+    use rand::RngCore;
+
+    let mut buf = [0u8; 48];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    let raw = format!(
+        "bp_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+    );
+    let hash = hash_token(&raw);
+    (raw, hash)
+}
+
+/// Source: `_require_scope` — the comma-separated list on the token.
+///
+/// Split and stripped, and an empty entry is not a scope: a token whose
+/// `scopes` column is `"provisioning:read,"` has one scope, not two, and
+/// certainly not an empty one that matches nothing.
+pub fn has_scope(scopes: &str, wanted: &str) -> bool {
+    scopes
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|s| s == wanted)
+}
+
+/// Source: `check_ip_allowed`.
+///
+/// **An empty allowlist allows everything.** That is the default, and it is
+/// the right default for a panel that has to work before anyone has
+/// configured a billing server's address — but it means the list is a
+/// narrowing, never a widening, and a token with one entry is strictly
+/// safer than one with none.
+pub fn ip_allowed(allowed_ips: &str, client_ip: &str) -> bool {
+    let allowed = allowed_ips.trim();
+    if allowed.is_empty() {
+        return true;
+    }
+    allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .any(|s| s == client_ip)
+}
+
+/// The token behind a provisioning request, or the refusal to answer.
+///
+/// Source: `_get_provisioning_token`. The three refusals are deliberately
+/// different: a missing header is 401 *Missing Bearer token*, an unknown or
+/// revoked token is 401 *Invalid or revoked token*, and a good token from
+/// the wrong address is **403**. Collapsing them would be kinder to an
+/// attacker and useless to the operator reading the log.
+async fn provisioning_token(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+) -> Result<snpanel_db::ApiToken, Response> {
+    let auth = parts
+        .headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let Some(raw) = auth.strip_prefix("Bearer ") else {
+        return Err(error(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Missing Bearer token",
+        ));
+    };
+    let raw = raw.trim();
+    let token = match state.db.api_tokens().by_hash_active(&hash_token(raw)).await {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return Err(error(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Invalid or revoked token",
+            ))
+        }
+        Err(e) => {
+            tracing::error!("api token lookup failed: {e}");
+            return Err(crate::errors::internal_error());
+        }
+    };
+    let client_ip = crate::client::audit_ip(parts);
+    if !ip_allowed(&token.allowed_ips, client_ip.trim()) {
+        return Err(error(axum::http::StatusCode::FORBIDDEN, "IP not allowed"));
+    }
+    // The stamp is written *after* the address check in neither Python nor
+    // here: `authenticate_token` commits it as soon as the hash matches, so
+    // a token used from a refused address still records that it was used.
+    // That is the record an operator wants when a token has leaked.
+    if let Err(e) = state
+        .db
+        .api_tokens()
+        .touch(token.id, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("could not stamp api token {}: {e}", token.id);
+    }
+    Ok(token)
+}
+
+/// `provisioning_token` plus the scope the endpoint needs.
+async fn authorised(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    scope: &str,
+) -> Result<snpanel_db::ApiToken, Response> {
+    let token = provisioning_token(state, parts).await?;
+    if !has_scope(&token.scopes, scope) {
+        return Err(error(
+            axum::http::StatusCode::FORBIDDEN,
+            &format!("Missing scope: {scope}"),
+        ));
+    }
+    Ok(token)
+}
+
+/// `GET /api/provisioning/v1/plans`.
+async fn list_plans(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
+        return r;
+    }
+    let packages = match state.db.packages().list().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("package listing failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    // Not the panel's own package payload: the billing system reads a
+    // narrower shape, and adding fields to it here would change a contract
+    // with software nobody in this repository controls.
+    let plans: Vec<Value> = packages
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": p.name,
+                "slug": p.slug,
+                "website_limit": p.website_limit,
+                "storage_limit_mb": p.storage_limit_mb,
+                "database_limit": p.database_limit,
+                "alias_limit": p.alias_limit,
+                "backup_retention_days": p.backup_retention_days,
+                "terminal_enabled": p.terminal_enabled,
+                "waf_enabled": p.waf_enabled,
+                "wordpress_enabled": p.wordpress_enabled,
+            })
+        })
+        .collect();
+    axum::Json(plans).into_response()
+}
+
+/// Source: `account_to_dict`.
+///
+/// The label is the one a billing system shows on an invoice line, and the
+/// `whmcs:` prefix becomes a `#` because that is the service number the
+/// customer already knows. A terminated account has no user, and the two
+/// name fields are **empty strings rather than null** — the billing module
+/// still reads the row to show the service as terminated.
+pub fn account_payload(view: &snpanel_db::ProvisioningAccountView, panel_url: &str) -> Value {
+    let package_name = view.package_name.clone();
+    let service_label = package_name
+        .clone()
+        .unwrap_or_else(|| "SNPanel Hosting".to_string());
+    let external_label = match view.external_id.strip_prefix("whmcs:") {
+        Some(rest) => format!("#{rest}"),
+        None => view.external_id.clone(),
+    };
+    json!({
+        "external_id": view.external_id,
+        "username": view.username.clone().unwrap_or_default(),
+        "email": view.email.clone().unwrap_or_default(),
+        "domain": view.domain,
+        "package_id": view.package_id,
+        "package_name": package_name,
+        "service_label": format!("{service_label} {external_label}"),
+        "status": view.status,
+        "panel_url": if panel_url.is_empty() {
+            Value::Null
+        } else {
+            json!(panel_url)
+        },
+        "created_at": crate::errors::iso_datetime(view.created_at.as_deref()),
+    })
+}
+
+/// Source: `panel_base_url()` called with **no request**, which is how
+/// `account_to_dict` calls it.
+///
+/// The request-following branch above it in the Python cannot run here:
+/// this payload is built for a billing system, and the hostname it happens
+/// to have reached the panel on is not the hostname the customer logs in
+/// at. So it is the configured URL, then the panel domain, then nothing —
+/// and the field is `null` rather than an empty string when there is
+/// nothing, because the billing module tests it for truth.
+fn panel_base_url(settings: &Settings) -> String {
+    let configured = crate::panel_urls::configured_panel_url(settings);
+    if !configured.is_empty() {
+        return configured.trim_end_matches('/').to_string();
+    }
+    if !settings.panel_domain.is_empty() {
+        return format!(
+            "https://{}:{}",
+            settings.panel_domain,
+            settings.panel_port.get()
+        );
+    }
+    String::new()
+}
+
+/// `GET /api/provisioning/v1/accounts/{external_id}`.
+async fn get_account(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
+        return r;
+    }
+    match state.db.provisioning().view(&external_id).await {
+        Ok(Some(view)) => {
+            let panel_url = panel_base_url(&state.settings);
+            axum::Json(account_payload(&view, &panel_url)).into_response()
+        }
+        Ok(None) => not_found("Account not found"),
+        Err(e) => {
+            tracing::error!("provisioning account lookup failed: {e}");
+            crate::errors::internal_error()
+        }
+    }
+}
+
+/// `GET /api/provisioning/v1/accounts/{external_id}/usage`.
+///
+/// An account with no user is a **400**, not a 404: the row exists and the
+/// billing system asked a reasonable question about it; there is simply
+/// nothing left to measure once the account has been terminated.
+async fn get_usage(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
+        return r;
+    }
+    let account = match state.db.provisioning().by_external_id(&external_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return not_found("Account not found"),
+        Err(e) => {
+            tracing::error!("provisioning account lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    let Some(user_id) = account.user_id else {
+        return bad_request("Account has no user");
+    };
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return bad_request("Account has no user"),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+
+    // `storage_usage_summary(db, user)` with `use_cache` left at its
+    // default of false: the figure a billing system bills from is worth a
+    // walk of the tree, not a five-minute-stale number.
+    let used = crate::storage_quota::user_storage_used_bytes(
+        state.settings.command_dry_run,
+        &state.db,
+        user.id,
+        super::addons::application_installed(),
+    )
+    .await;
+    let limit = crate::storage_quota::user_storage_limit_bytes(&user.role, user.storage_limit_mb);
+    let usage = crate::storage::Usage::new(used as i64, limit.map(|l| l as i64));
+    let (websites, databases) = match state.db.provisioning().usage_counts(user.id).await {
+        Ok(counts) => counts,
+        Err(e) => {
+            tracing::error!("provisioning usage counts failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    axum::Json(json!({
+        "external_id": account.external_id,
+        "storage_used_bytes": usage.used_bytes,
+        "storage_limit_bytes": usage.limit_bytes,
+        "storage_percent": usage.percent,
+        "website_count": websites,
+        "database_count": databases,
+    }))
+    .into_response()
+}
+
+/// Source: `ApiTokenOut` — what an administrator is shown about a token.
+///
+/// **Never the token.** The hash is not in it either: a hash is not a
+/// secret, but showing it invites somebody to compare it with one they
+/// have, and the page has no use for it.
+fn token_payload(token: &snpanel_db::ApiToken) -> Value {
+    json!({
+        "id": token.id,
+        "name": token.name,
+        "scopes": token.scopes,
+        "allowed_ips": token.allowed_ips,
+        "is_active": token.is_active,
+        "last_used_at": crate::errors::iso_datetime(token.last_used_at.as_deref()),
+        "revoked_at": crate::errors::iso_datetime(token.revoked_at.as_deref()),
+        "created_at": crate::errors::iso_datetime(token.created_at.as_deref()),
+    })
+}
+
+/// `GET /api/provisioning/v1/tokens` — the panel's own session, admin only.
+async fn list_tokens(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    match state.db.api_tokens().all().await {
+        Ok(tokens) => {
+            let rows: Vec<Value> = tokens.iter().map(token_payload).collect();
+            axum::Json(rows).into_response()
+        }
+        Err(e) => {
+            tracing::error!("api token listing failed: {e}");
+            crate::errors::internal_error()
+        }
+    }
+}
+
+/// `POST /api/provisioning/v1/tokens`.
+///
+/// **The only time the plaintext exists outside the caller.** It is
+/// returned once, beside the row, and never stored — the table keeps a
+/// hash. An administrator who loses it makes another one.
+async fn create_token(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let name = match payload.get("name") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => return crate::errors::string_type("name", other),
+        None => return crate::errors::missing_field("name", payload.clone()),
+    };
+    // `scopes: str = "provisioning:read,provisioning:write"` and
+    // `allowed_ips: str = ""` — both have defaults, so a body with only a
+    // name is valid and makes a token that can do everything from anywhere.
+    let scopes = payload
+        .get("scopes")
+        .and_then(Value::as_str)
+        .unwrap_or("provisioning:read,provisioning:write")
+        .to_string();
+    let allowed_ips = payload
+        .get("allowed_ips")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let (raw, hash) = generate_token();
+    let token = match state
+        .db
+        .api_tokens()
+        .create(
+            &name,
+            &hash,
+            &scopes,
+            &allowed_ips,
+            &snpanel_db::sqlalchemy_now(),
+        )
+        .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("api token create failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    super::packages::audit_action(&state, &parts, current.user.id, "create_api_token", &name).await;
+    axum::Json(json!({ "token": raw, "info": token_payload(&token) })).into_response()
+}
+
+/// `DELETE /api/provisioning/v1/tokens/{token_id}`.
+async fn revoke_token(
+    State(state): State<AppState>,
+    Path(token_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return crate::errors::not_enough_permissions();
+    }
+    let token = match state.db.api_tokens().by_id(token_id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return not_found("Token not found"),
+        Err(e) => {
+            tracing::error!("api token lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    if let Err(e) = state
+        .db
+        .api_tokens()
+        .revoke(token.id, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("api token revoke failed: {e}");
+        return crate::errors::internal_error();
+    }
+    // The audit line names the token, which is the only thing left that
+    // identifies it once it cannot be used.
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "revoke_api_token",
+        &token.name,
+    )
+    .await;
+    axum::Json(json!({ "ok": true })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn corpus() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/provisioning.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the provisioning corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// The digest every existing token is stored as.
+    ///
+    /// This one is not about edge cases: it is about the tokens already in
+    /// the table. They are `sha256(raw).hexdigest()` and nothing else, so a
+    /// digest that differed by so much as its case would stop every billing
+    /// system authenticating the moment this front door answers.
+    #[test]
+    fn a_token_hashes_to_what_the_python_stored() {
+        let corpus = corpus();
+        let cases = corpus["hash_token"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 10, "the corpus changed size");
+        for case in cases {
+            let raw = case["raw"].as_str().unwrap_or("");
+            let want = case["hash"].as_str().unwrap_or("");
+            assert_eq!(hash_token(raw), want, "for {raw:?}");
+        }
+        // Lower-case hex, sixty-four characters, whatever went in.
+        let digest = hash_token("bp_example");
+        assert_eq!(digest.len(), 64);
+        assert!(digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    /// A new token is a `bp_` prefix and forty-eight random bytes.
+    #[test]
+    fn a_new_token_is_unguessable_and_recognisable() {
+        let tokens: std::collections::BTreeSet<String> =
+            (0..32).map(|_| generate_token().0).collect();
+        assert_eq!(tokens.len(), 32, "two tokens collided");
+        for raw in &tokens {
+            // `bp_` + base64url of 48 bytes with no padding = 3 + 64.
+            assert_eq!(raw.len(), 67, "{raw}");
+            assert!(raw.starts_with("bp_"), "{raw}");
+            let body = &raw[3..];
+            assert!(!body.contains('='), "padding would make it 68: {raw}");
+            assert!(
+                body.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "not url-safe: {raw}"
+            );
+        }
+        // Distinct is not enough, and neither is a varying first
+        // character: a counter in the first byte gives both. Every part of
+        // the token has to move, so the *last* character is sampled too.
+        let tails: std::collections::BTreeSet<char> =
+            tokens.iter().filter_map(|t| t.chars().last()).collect();
+        assert!(tails.len() >= 4, "the tail does not move: {tails:?}");
+
+        // And the hash beside it is the hash of that token.
+        let (raw, hash) = generate_token();
+        assert_eq!(hash, hash_token(&raw));
+    }
+
+    /// Which scopes a token's list actually carries.
+    ///
+    /// Empty entries are not scopes, which matters in both directions: a
+    /// trailing comma does not add one, and asking for `""` never matches.
+    /// Case is **not** folded — `Provisioning:Read` is a different scope,
+    /// and letting it through would be a widening nobody asked for.
+    #[test]
+    fn a_scope_list_is_read_the_way_python_reads_it() {
+        let corpus = corpus();
+        let cases = corpus["has_scope"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 14, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut allowed = 0usize;
+        let mut refused = 0usize;
+        for case in cases {
+            let scopes = case["scopes"].as_str().unwrap_or("");
+            let wanted = case["wanted"].as_str().unwrap_or("");
+            let want = case["allowed"].as_bool().unwrap_or(false);
+            if want {
+                allowed += 1;
+            } else {
+                refused += 1;
+            }
+            let got = has_scope(scopes, wanted);
+            if got != want {
+                failures.push(format!(
+                    "{scopes:?} / {wanted:?}: python {want}, rust {got}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(
+            allowed >= 5 && refused >= 5,
+            "{allowed} allowed, {refused} refused"
+        );
+    }
+
+    /// Whether a token may be used from an address.
+    ///
+    /// **An empty allowlist allows everything**, and so does one that is
+    /// only whitespace — `.strip()` makes them the same. A list of nothing
+    /// but commas is *not* empty and therefore allows nothing, which is the
+    /// one case where a typo fails closed rather than open. And the client
+    /// address is not trimmed here: the caller does that, once, where the
+    /// address is read off the request.
+    #[test]
+    fn an_allowlist_is_read_the_way_python_reads_it() {
+        let corpus = corpus();
+        let cases = corpus["ip_allowed"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 17, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let allowed_ips = case["allowed_ips"].as_str().unwrap_or("");
+            let client_ip = case["client_ip"].as_str().unwrap_or("");
+            let want = case["allowed"].as_bool().unwrap_or(false);
+            let got = ip_allowed(allowed_ips, client_ip);
+            if got != want {
+                failures.push(format!(
+                    "{allowed_ips:?} from {client_ip:?}: python {want}, rust {got}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        // The three that decide whether a misconfiguration fails open.
+        assert!(ip_allowed("", "1.2.3.4"), "an empty list allows everything");
+        assert!(ip_allowed("   ", "1.2.3.4"), "so does whitespace");
+        assert!(
+            !ip_allowed(",", "1.2.3.4"),
+            "a list of commas allows nothing"
+        );
+        assert!(
+            !ip_allowed("1.2.3.4/24", "1.2.3.4"),
+            "the entries are addresses, not networks"
+        );
+    }
+
+    /// What a billing system is told about an account.
+    ///
+    /// The `whmcs:` prefix becomes `#` because that is the service number
+    /// the customer already knows, and a terminated account keeps its row
+    /// with **empty strings** where the user's name and address were — the
+    /// billing module still reads it to show the service as terminated, and
+    /// nulls there would be a different shape for it to handle.
+    #[test]
+    fn an_account_is_described_the_way_python_describes_it() {
+        let corpus = corpus();
+        let cases = corpus["account_to_dict"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 7, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        for case in cases {
+            let label = case["label"].as_str().unwrap_or("");
+            let view = snpanel_db::ProvisioningAccountView {
+                external_id: case["external_id"].as_str().unwrap_or("").to_string(),
+                user_id: None,
+                package_id: case["package_id"].as_i64(),
+                status: case["status"].as_str().unwrap_or("").to_string(),
+                created_at: None,
+                username: case["username"].as_str().map(str::to_string),
+                email: case["email"].as_str().map(str::to_string),
+                domain: case["domain"].as_str().map(str::to_string),
+                package_name: case["package_name"].as_str().map(str::to_string),
+            };
+            let got = account_payload(&view, case["panel_url"].as_str().unwrap_or(""));
+            let want = &case["payload"];
+            for key in [
+                "external_id",
+                "username",
+                "email",
+                "domain",
+                "package_id",
+                "package_name",
+                "service_label",
+                "status",
+                "panel_url",
+                "created_at",
+            ] {
+                if got[key] != want[key] {
+                    failures.push(format!(
+                        "{label} /{key}\n  python {}\n  rust   {}",
+                        want[key], got[key]
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        // A panel with no URL configured sends `null`, not an empty string:
+        // the billing module tests the field for truth.
+        let view = snpanel_db::ProvisioningAccountView {
+            external_id: "whmcs:1".to_string(),
+            user_id: None,
+            package_id: None,
+            status: "active".to_string(),
+            created_at: None,
+            username: None,
+            email: None,
+            domain: None,
+            package_name: None,
+        };
+        assert_eq!(account_payload(&view, "")["panel_url"], Value::Null);
+        assert_eq!(account_payload(&view, "")["username"], json!(""));
+        assert_eq!(
+            account_payload(&view, "")["service_label"],
+            json!("SNPanel Hosting #1")
+        );
+    }
+}

@@ -13,6 +13,7 @@ pub mod maintenance;
 pub mod malware;
 pub mod packages;
 pub mod panel_settings;
+pub mod provisioning;
 pub mod services;
 pub mod terminal;
 pub mod updates;
@@ -42,6 +43,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(websites::router())
         .merge(waf::router())
         .merge(terminal::router())
+        .merge(provisioning::router())
         .merge(maintenance::router())
         .merge(malware::router())
         .merge(panel_settings::router())

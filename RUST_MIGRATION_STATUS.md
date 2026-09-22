@@ -248,7 +248,7 @@ none, which read as progress that had already happened.
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
 | `maintenance` | 21 of 67 |
-| `provisioning` | 13 of 13 — needs the `docker` domain |
+| `provisioning` | 7 of 13 — the ones that create and destroy accounts |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
@@ -914,12 +914,55 @@ not evidence, so they are deleted from the count with the reasoning. The
 fourth was a real gap: a `FOUND` line with no colon in it, which is the
 only thing that separates the two halves of that test.
 
+### The billing system's half of `provisioning`
+
+Six endpoints: the three a billing system reads through, and the three an
+administrator manages its tokens with.
+
+This router does **not** use the panel's session. Its callers are machines,
+and three things stand between a Bearer token and the ability to terminate
+a customer: the token must be active and unrevoked, it must carry the scope
+the endpoint needs, and it must arrive from an address the token names. All
+three are a few lines of string handling each, and all three fail open if
+they are read carelessly — so all three are corpus-measured, 44 cases.
+
+What the corpus settled:
+
+- **An empty allowlist allows everything**, and so does one that is only
+  whitespace, because `.strip()` makes them the same. A list of nothing but
+  commas is *not* empty and therefore allows nothing — the one case where a
+  typo fails closed. An entry is an address, not a prefix: `1.2.3.` must
+  not admit the whole `/24`.
+- **Scopes are not case-folded.** `Provisioning:Read` is a different scope,
+  and letting it through would be a widening nobody asked for. An empty
+  entry is not a scope either, in both directions: a trailing comma adds
+  nothing and asking for `""` never matches.
+- **A terminated account keeps its row** with empty strings where the
+  user's name and address were, not nulls — the billing module still reads
+  it to show the service as terminated.
+
+The plan said this router needed the `docker` domain. It does not, and
+never did: it imports `mariadb`, `nginx`, `site_users`, `storage_quota` and
+`wordpress`, all of which were ported stages ago. What it needed was two
+repositories, `api_tokens` and `provisioning_accounts`. That note had been
+sitting there since Stage E was written, keeping thirteen endpoints on the
+"blocked" side of a line they were never on.
+
+25 mutations, all caught. One was deleted rather than fixed: forty-eight
+bytes is a multiple of three, so base64 of it needs no padding and
+`URL_SAFE` and `URL_SAFE_NO_PAD` produce the same sixty-four characters.
+The `NO_PAD` engine stays — it is what `secrets.token_urlsafe` uses — but
+no test can tell them apart at this length. Two others were real gaps in
+the allowlist corpus, and one was a mutation too weak to be worth
+anything: a counter in the *first* byte of a token still varies the first
+character, so the test now samples the last one too.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **56 endpoints**, which is `maintenance` (21),
-`provisioning` (13), `malware` (11), `site_apps` (10) and one on `websites`
+Measured, not recalled: **50 endpoints**, which is `maintenance` (21),
+`malware` (11), `site_apps` (10), `provisioning` (7) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the
 `siteapp`/`docker` helper domain. The `malware` job endpoints read an

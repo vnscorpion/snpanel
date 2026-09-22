@@ -23,18 +23,22 @@ use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
+pub mod api_tokens;
 pub mod backups;
 pub mod cloudflare;
 mod databases;
 pub mod packages;
+pub mod provisioning;
 pub mod site_apps;
 mod users;
 pub mod websites;
 
+pub use api_tokens::{ApiToken, ApiTokenRepo};
 pub use backups::{BackupSchedule, BackupScheduleRepo, ScheduleUsers, SftpTarget, SftpTargetRepo};
 pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
+pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
 pub use site_apps::{SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
 pub use websites::{NewWebsite, Website, WebsiteAlias, WebsiteRepo};
@@ -145,6 +149,14 @@ impl Database {
 
     pub fn packages(&self) -> PackageRepo<'_> {
         PackageRepo::new(&self.pool)
+    }
+
+    pub fn api_tokens(&self) -> ApiTokenRepo<'_> {
+        ApiTokenRepo::new(&self.pool)
+    }
+
+    pub fn provisioning(&self) -> ProvisioningRepo<'_> {
+        ProvisioningRepo::new(&self.pool)
     }
 
     pub fn databases(&self) -> DatabaseRepo<'_> {
