@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 16 of 67 |
+| `maintenance` | 15 of 67 |
 | `provisioning` | 4 of 13 — create, suspend, unsuspend, terminate |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 9 of 12 — the rest wait on the scan worker |
@@ -1026,11 +1026,55 @@ are the same answer. Two real rules were invisible because of it. The
 fixture now starts somewhere else. A test fixture that happens to equal the
 fallback is a quiet way to prove nothing.
 
+### `tarfile.data_filter`, and a trailing slash
+
+`POST /maintenance/restore`. The endpoint is four lines; the filter behind
+it is the whole of the safety on that path, and it is ported here from
+CPython's `_get_filtered_attrs`.
+
+**The filter does two jobs and only one of them is obvious.** It refuses
+members that escape the destination — and it *rewrites* the ones it keeps,
+stripping a leading slash, dropping ownership, and clamping the mode. A
+port that reproduced only the refusals would pass a test suite that only
+looked for errors and would restore a setuid binary owned by root into a
+directory the customer controls. Both halves are measured against CPython
+over 39 members and 78 through the restore's own wrapper, and the mode
+arithmetic is stated separately because it is what a reader has to hold in
+their head to see the filter doing anything: high bits first, then the
+executable bits unless the owner already had one, then the owner gets read
+and write back.
+
+`realpath` had to be written properly rather than lexically. **`..` is
+applied after the symlink before it has been resolved** — `a/../b` is `b`
+when `a` is a directory and something else when `a` is a link out of the
+tree, which is exactly the case the filter exists to catch. There is a test
+that builds that link and checks both answers.
+
+**One real difference found by a mutation that would not die.** The `tar`
+crate's reader keeps the trailing slash a writer puts on a directory
+member; `tarfile.TarInfo.frombuf` ends with
+`if obj.isdir(): obj.name = obj.name.rstrip("/")` and strips it. So a
+member stored as `site` comes out of Python as `site` and out of Rust as
+`site/`. Every rule downstream compares that name against a literal —
+`== "site"`, `starts_with("site/")`, `starts_with("database/")` — so one
+character decided which branch fired. The mutation that looked dead was
+only hidden by it, and fixing the difference made it fail as it should.
+Worth the record: a mutation that survives is sometimes not a weak test but
+a bug standing behind it.
+
+Two checks stay that cannot fail, both for stated reasons: the wrapper's
+`name == "site"` is redundant with the `site/` prefix test on the line
+after it, and `AbsolutePathError` is unreachable on Linux once the leading
+slashes have been stripped. Both are the Python's lines and say out loud
+what the code around them only implies.
+
+35 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **40 endpoints**, which is `maintenance` (16),
+Measured, not recalled: **39 endpoints**, which is `maintenance` (15),
 `site_apps` (10), `malware` (9), `provisioning` (4) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the

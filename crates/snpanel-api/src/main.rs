@@ -54,6 +54,7 @@ mod storage;
 mod storage_quota;
 mod strangler;
 mod system;
+mod tarfilter;
 #[cfg(test)]
 mod testenv;
 mod tls;

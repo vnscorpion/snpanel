@@ -144,6 +144,10 @@ pub fn router() -> Router<AppState> {
             post(upload_site_backup).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/restore",
+            post(restore_backup).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/user-backups/upload",
             post(upload_user_backup).fallback(crate::fallback),
         )
@@ -1212,6 +1216,261 @@ async fn delete_account_backup(
         }
         Err(_) => not_found("Backup not found"),
     }
+}
+
+/// `POST /maintenance/restore`.
+///
+/// Source: `restore_backup` the endpoint and `backup.restore_backup`.
+///
+/// The archive was written by this panel, but it is a file on disk that an
+/// administrator can replace, so **every member goes through the filter**
+/// before it is written — and the filter rewrites as well as refuses, so a
+/// restore cannot land a setuid binary owned by root inside a directory the
+/// customer controls.
+///
+/// The extraction happens in this process rather than through the helper,
+/// which is what the Python does: the site root is writable by the panel
+/// user, and the ownership is corrected afterwards by `fix-permissions`.
+async fn restore_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website_id = match payload.get("website_id").and_then(Value::as_i64) {
+        Some(id) => id,
+        None => match payload.get("website_id") {
+            Some(other) => return crate::errors::int_type("website_id", other),
+            None => return crate::errors::missing_field("website_id", payload.clone()),
+        },
+    };
+    let backup_file = match string_field(&payload, "backup_file") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    // `backup_path` confines the archive to this site's own backup folder,
+    // so one customer cannot restore another's.
+    let archive = match crate::backups::backup_path(
+        &state.settings.backup_root,
+        &website.domain,
+        &backup_file,
+    ) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    let destination = std::fs::canonicalize(&website.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+
+    let archive_for_task = archive.clone();
+    let destination_for_task = destination.clone();
+    // Reading and writing a whole site is blocking and can take minutes, so
+    // it does not run on a tokio worker other requests are waiting on.
+    let extracted = tokio::task::spawn_blocking(move || {
+        extract_site_backup(&archive_for_task, &destination_for_task)
+    })
+    .await;
+    match extracted {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return bad_request(&e),
+        Err(e) => {
+            tracing::error!("the restore task failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
+
+    // Source: `site_users.ensure_site_runtime` — the PHP pool and the home
+    // directory may have been removed while the site was broken.
+    if let Some(user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+        let runtime_php = if matches!(website.app_type.as_str(), "" | "wordpress" | "php") {
+            let v = website.php_version.clone();
+            if v.is_empty() {
+                "none".to_string()
+            } else {
+                v
+            }
+        } else {
+            "none".to_string()
+        };
+        let fallback_dir = document_root_of(&website);
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-ensure",
+            &[user, &website.root_path, &runtime_php],
+            None,
+            Some(&["mkdir", "-p", &fallback_dir]),
+        )
+        .await;
+    }
+    // Source: `wordpress.fix_permissions` — everything just written belongs
+    // to whoever ran the extraction until this puts it back.
+    let user = website.linux_user.clone().unwrap_or_default();
+    if user.is_empty() {
+        let owner = format!("{}:{}", web_user(), web_group());
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "fix-permissions",
+            &[&website.root_path],
+            None,
+            Some(&["chown", "-R", &owner, &website.root_path]),
+        )
+        .await;
+    } else if let Ok(safe_user) = snpanel_core::types::PanelUsername::parse(&user) {
+        let owner = format!("{}:{}", safe_user.as_str(), safe_user.as_str());
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "fix-permissions",
+            &[&website.root_path, safe_user.as_str()],
+            None,
+            Some(&["chown", "-R", &owner, &website.root_path]),
+        )
+        .await;
+    }
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "restore",
+        &website.domain,
+        &backup_file,
+    )
+    .await;
+    axum::Json(json!({ "restored_to": destination.to_string_lossy() })).into_response()
+}
+
+/// A member's name, as **Python's** reader reports it.
+///
+/// Source: the last line of `tarfile.TarInfo.frombuf` —
+/// `if obj.isdir(): obj.name = obj.name.rstrip("/")`. The writer adds the
+/// slash back when it stores a directory, so a member that went in as
+/// `site` comes out of Python as `site` and out of the `tar` crate as
+/// `site/`. Every rule downstream compares this name against a literal —
+/// `== "site"`, `starts_with("site/")`, `starts_with("database/")` — so a
+/// trailing slash the Python does not have changes which branch fires.
+fn member_name<R: std::io::Read>(entry: &tar::Entry<'_, R>) -> std::io::Result<String> {
+    let raw = entry.path()?.to_string_lossy().into_owned();
+    if entry.header().entry_type().is_dir() {
+        Ok(raw.trim_end_matches('/').to_string())
+    } else {
+        Ok(raw)
+    }
+}
+
+/// Unpack one site backup, member by member, through the filter.
+///
+/// Source: `tar.extractall(path=destination, filter=safe_filter)`.
+///
+/// The archive is read **twice**: once to find out whether its members
+/// carry the panel's `site/` prefix, and once to unpack. That is what the
+/// Python does — `getmembers()` then `extractall` — and the alternative,
+/// guessing from the first member, is wrong for an archive whose first
+/// entry is the database dump.
+fn extract_site_backup(
+    archive: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    use std::io::Read;
+
+    let names = {
+        let file = std::fs::File::open(archive).map_err(|_| "Backup not found".to_string())?;
+        let reader = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(reader);
+        let mut names: Vec<String> = Vec::new();
+        for entry in tar.entries().map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            names.push(member_name(&entry).map_err(|e| e.to_string())?);
+        }
+        names
+    };
+    let prefixed = crate::tarfilter::has_site_prefix(names.iter().map(String::as_str));
+
+    let file = std::fs::File::open(archive).map_err(|_| "Backup not found".to_string())?;
+    let reader = flate2::read::GzDecoder::new(file);
+    let mut tar = tar::Archive::new(reader);
+    for entry in tar.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let header = entry.header().clone();
+        let kind = header.entry_type();
+        let member = crate::tarfilter::Member {
+            name: member_name(&entry).map_err(|e| e.to_string())?,
+            kind: if kind.is_dir() {
+                crate::tarfilter::MemberKind::Directory
+            } else if kind.is_symlink() {
+                crate::tarfilter::MemberKind::Symlink
+            } else if kind.is_hard_link() {
+                crate::tarfilter::MemberKind::Hardlink
+            } else if kind.is_file() {
+                crate::tarfilter::MemberKind::Regular
+            } else {
+                crate::tarfilter::MemberKind::Special
+            },
+            mode: header.mode().ok(),
+            linkname: header
+                .link_name()
+                .ok()
+                .flatten()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            uid: None,
+            gid: None,
+            uname: None,
+            gname: None,
+        };
+
+        let filtered = match crate::tarfilter::safe_filter(&member, destination, prefixed) {
+            Ok(Some(m)) => m,
+            // Skipped on purpose: the database dump, the `site` directory
+            // entry itself, and anything outside the prefix.
+            Ok(None) => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Backup archive contains unsafe paths: {}",
+                    e.as_str()
+                ))
+            }
+        };
+
+        let target = destination.join(&filtered.name);
+        match filtered.kind {
+            crate::tarfilter::MemberKind::Directory => {
+                std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            }
+            crate::tarfilter::MemberKind::Symlink => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                // A link already there is replaced, which is what an
+                // extraction over an existing tree has to do.
+                let _ = std::fs::remove_file(&target);
+                std::os::unix::fs::symlink(&filtered.linkname, &target)
+                    .map_err(|e| e.to_string())?;
+            }
+            crate::tarfilter::MemberKind::Regular => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let mut bytes: Vec<u8> = Vec::new();
+                entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+                if let Some(mode) = filtered.mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode));
+                }
+            }
+            // The filter has already refused these.
+            crate::tarfilter::MemberKind::Hardlink | crate::tarfilter::MemberKind::Special => {}
+        }
+    }
+    Ok(())
 }
 
 /// Every file part of a multipart body, by name.
@@ -4961,5 +5220,139 @@ mod tests {
             da_safe_upload_name("../../etc/x.tar.gz").ok(),
             Some("x.tar.gz".to_string())
         );
+    }
+
+    /// A whole site backup, unpacked, with the members that must not land.
+    ///
+    /// The corpus in `tarfilter` proves the *decisions*; this proves that
+    /// the extraction acts on them. Both archives were built by Python,
+    /// because the `tar` crate's writer refuses to put `..` in a member
+    /// name — the right default for a writer, and useless for a test whose
+    /// point is that the reader refuses it.
+    #[test]
+    fn a_site_backup_unpacks_only_what_the_filter_allows() {
+        use base64::Engine;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/data_filter.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the filter corpus"))
+                .expect("the corpus parses");
+        let decode = |key: &str| -> Vec<u8> {
+            base64::engine::general_purpose::STANDARD
+                .decode(corpus["archives"][key].as_str().expect("the archive"))
+                .expect("valid base64")
+        };
+
+        let base = std::env::temp_dir().join(format!(
+            "restore-extract-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let dest = base.join("site");
+        std::fs::create_dir_all(&dest).expect("the destination");
+
+        // The hostile archive carries `site/../escape.txt`, a symlink to
+        // `/etc/passwd` and a FIFO. Any one of them stops the restore.
+        let hostile = base.join("hostile.tar.gz");
+        std::fs::write(&hostile, decode("hostile")).expect("the fixture");
+        let result = extract_site_backup(&hostile, &dest);
+        assert!(
+            result.is_err(),
+            "an unsafe archive was unpacked: {result:?}"
+        );
+        assert!(
+            !base.join("escape.txt").exists(),
+            "a member escaped the destination"
+        );
+        assert!(
+            !dest.join("evil").exists(),
+            "a link to /etc/passwd was written"
+        );
+
+        // The same archive without those three unpacks cleanly.
+        let clean = base.join("clean.tar.gz");
+        std::fs::write(&clean, decode("clean")).expect("the fixture");
+        extract_site_backup(&clean, &dest).expect("the clean archive unpacks");
+
+        // The `site/` prefix is gone.
+        assert!(
+            dest.join("index.php").is_file(),
+            "the prefix was not stripped"
+        );
+        assert!(dest.join("sub").is_dir());
+        assert!(
+            !dest.join("site").exists(),
+            "the prefix was kept as a folder"
+        );
+        // The database dump is not in the document root, where nginx could
+        // serve it to anybody who guessed the name.
+        assert!(
+            !dest.join("dump.sql").exists() && !dest.join("database").exists(),
+            "the database dump landed in the site"
+        );
+        // The setuid bit is gone, and the file is still executable.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dest.join("tool"))
+            .expect("the tool")
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o755, "setuid survived: {mode:o}");
+        // A plain file keeps a sensible mode too.
+        let mode = std::fs::metadata(dest.join("index.php"))
+            .expect("the index")
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o644, "{mode:o}");
+        // The symlink landed as a link, pointing where it said.
+        let link = dest.join("sub/link");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("the link")
+                .file_type()
+                .is_symlink(),
+            "the symlink was written as a file"
+        );
+        assert_eq!(
+            std::fs::read_link(&link).expect("the target"),
+            std::path::Path::new("../index.php")
+        );
+
+        // The names the reader hands the filter are Python's, without the
+        // trailing slash a tar writer puts on a directory — every rule
+        // downstream compares them against a literal, so one extra
+        // character changes which branch fires.
+        assert!(dest.join("sub").is_dir(), "the directory member landed");
+
+        // An archive whose only `site` marker is the bare directory entry
+        // still counts as prefixed: a backup of an empty site has nothing
+        // else in it, and treating it as unprefixed would restore a folder
+        // called `site` into the document root.
+        let bare = base.join("bare.tar.gz");
+        std::fs::write(&bare, decode("bare_prefix")).expect("the fixture");
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).expect("the second destination");
+        extract_site_backup(&bare, &empty).expect("the bare archive unpacks");
+        assert!(
+            !empty.join("site").exists(),
+            "the prefix was restored as a folder"
+        );
+        assert!(
+            !empty.join("database").exists() && !empty.join("dump.sql").exists(),
+            "the dump landed"
+        );
+        assert_eq!(
+            std::fs::read_dir(&empty).expect("the destination").count(),
+            0,
+            "something was restored that should not have been"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
