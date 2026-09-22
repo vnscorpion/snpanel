@@ -9,6 +9,7 @@ members = [
     "crates/snpanel-db",
     "crates/snpanel-helper",
     "crates/snpanel-api",
+    "crates/snpanel-installer",
     "xtask",
 ]
 

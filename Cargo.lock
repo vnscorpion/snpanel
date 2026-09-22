@@ -3428,6 +3428,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snpanel-installer"
+version = "0.1.0"
+dependencies = [
+ "snpanel-osabi",
+]
+
+[[package]]
 name = "snpanel-ipc"
 version = "0.1.0"
 dependencies = [

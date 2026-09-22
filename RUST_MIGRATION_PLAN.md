@@ -1375,6 +1375,45 @@ lines) are data, installed as they are.
 seam: a Rust installer can take them one at a time, the way the API and the
 helper were taken.
 
+**`crates/snpanel-installer` exists, and the rule it is built on.** Each
+phase splits into the part that *decides* what a file should contain and the
+part that *writes* it. The deciding half is a pure function with a golden
+fixture; the writing half is a few lines of `std::fs` with nothing to get
+wrong. An installer runs once, as root, on a machine nobody is watching — the
+parts of it that can be tested should be tested somewhere other than that
+machine.
+
+The fixtures are **recorded by running the bash**, not by transcribing its
+heredocs, inside the deb13 container under `unshare -m` with a tmpfs over
+every directory the phase writes to. Several of these files are assembled
+from shell conditionals — `write_modsec_base_conf` includes the
+distribution's own `modsecurity.conf` only when it is there — so a
+transcription would record the template and not what a box ends up with.
+Both branches of that one are in the fixtures.
+
+Done so far, with byte-for-byte fixtures on Debian 13:
+
+| phase | files |
+|---|---|
+| `configure_fastcgi_cache`, `configure_proxy_upgrade_map` | the two `00-` conf.d files every vhost depends on |
+| `write_http_flood_nginx_conf` | the shared zones and the include that pulls them in |
+| `write_modsec_base_conf`, `write_modsec_main_conf`, `write_waf_default_rules` | the three ModSecurity includes |
+| `setup_systemd` | nine unit and timer files, plus the API's start wrapper |
+| `configure_log_limits` | the journald drop-in and the btmp rotation |
+
+The WAF rule set had **three** authors — the installer, the helper's
+`waf-update`, and the panel's own per-site copy — with a comment in the
+helper recording that the first two are meant to be byte-identical and
+nothing checking it. Both are now pinned to one fixture. The third is
+deliberately one character per line different and stays as it is; that is
+recorded where it lives, not reconciled quietly here.
+
+What the fixtures cannot cover: they are Debian 13's, because that is the
+container available. The RHEL shape is checked by the substitutions it makes
+— `nginx` for the web group, `clamd@scan.service` for ClamAV — both of which
+come from the platform table, which has its own test against the shell's
+copy.
+
 **The bootstrap is solved, and it was the thing blocking everything else.**
 `install.sh` downloads `/archive/refs/tags/<tag>.tar.gz`, which is source. The
 frontend is built on the machine with node and the backend is Python, so

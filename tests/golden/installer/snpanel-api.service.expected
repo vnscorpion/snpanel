@@ -1,0 +1,43 @@
+[Unit]
+Description=SNPanel API
+After=network.target mariadb.service
+
+[Service]
+Type=exec
+User=snpanel
+Group=snpanel
+SupplementaryGroups=www-data snpanel-sites
+WorkingDirectory=/opt/snpanel/backend
+EnvironmentFile=/opt/snpanel/backend/.env
+Environment=HOME=/opt/snpanel
+Environment=SNPANEL_USE_HELPER=true
+ExecStart=/usr/local/sbin/snpanel-api-start
+Restart=always
+RestartSec=3
+
+# Hardening. These settings must not block the sudo helper; privileged work is
+# restricted by /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel.
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+ReadWritePaths=/opt/snpanel /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=false
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=~
+
+[Install]
+WantedBy=multi-user.target

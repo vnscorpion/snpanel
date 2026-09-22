@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# app.serve builds the uvicorn server in Python: the same options the command
+# line used to take, plus one certificate per hostname. The panel is therefore
+# reachable on every domain on this machine that has a certificate, instead of
+# only on the one PANEL_DOMAIN names.
+#
+# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
+# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
+# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
+set -euo pipefail
+cd /opt/snpanel/backend
+exec /opt/snpanel/backend/.venv/bin/python -m app.serve

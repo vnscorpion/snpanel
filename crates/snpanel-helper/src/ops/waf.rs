@@ -566,6 +566,23 @@ pub(crate) fn rewrite_rule_engine(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// This file has three authors — the installer, this, and the panel's
+    /// own per-site copy — and the first two are meant to be byte-identical.
+    ///
+    /// Both are now pinned to one fixture recorded by running the bash on a
+    /// real Debian 13, so a change to either shows up here rather than as a
+    /// box whose WAF rules depend on which code last wrote the file. The
+    /// panel's per-site copy is deliberately one character per line
+    /// different; see `DEFAULT_RULES`'s own doc comment.
+    #[test]
+    fn the_rules_written_here_are_the_ones_the_installer_writes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/installer/snpanel-default.conf.expected");
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the fixture {}: {e}", path.display()));
+        assert_eq!(DEFAULT_RULES, expected);
+    }
+
     #[test]
     fn crs_modes_are_exactly_the_three_the_bash_accepts() {
         assert_eq!(CrsMode::parse("off"), Some(CrsMode::Off));

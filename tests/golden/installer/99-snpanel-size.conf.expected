@@ -1,0 +1,5 @@
+# Managed by SNPanel.
+[Journal]
+SystemMaxUse=500M
+SystemKeepFree=1G
+MaxRetentionSec=2week

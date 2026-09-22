@@ -1,0 +1,10 @@
+# Managed by SNPanel.
+/var/log/btmp {
+    su root root
+    missingok
+    weekly
+    create 0660 root utmp
+    rotate 4
+    compress
+    notifempty
+}

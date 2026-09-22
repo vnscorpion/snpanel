@@ -1,0 +1,2 @@
+fastcgi_cache_path /var/cache/nginx/snpanel-fastcgi levels=1:2 keys_zone=SNPANEL_FASTCGI:32m inactive=30m max_size=256m use_temp_path=off;
+fastcgi_cache_key "$scheme$request_method$host$request_uri";
