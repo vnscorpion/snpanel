@@ -1,0 +1,1144 @@
+{
+ "documents": [
+  {
+   "name": "empty",
+   "ok": true,
+   "shape": "null",
+   "source": ""
+  },
+  {
+   "name": "blank_lines",
+   "ok": true,
+   "shape": "null",
+   "source": "\n\n\n"
+  },
+  {
+   "name": "comment_only",
+   "ok": true,
+   "shape": "null",
+   "source": "# nothing here\n"
+  },
+  {
+   "name": "scalar_document",
+   "ok": true,
+   "shape": "str:\"just a string\"",
+   "source": "just a string\n"
+  },
+  {
+   "name": "simple_map",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1,str:\"b\"=str:\"two\"}",
+   "source": "a: 1\nb: two\n"
+  },
+  {
+   "name": "nested_map",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"b\"={str:\"c\"=int:1}}}",
+   "source": "a:\n  b:\n    c: 1\n"
+  },
+  {
+   "name": "simple_seq",
+   "ok": true,
+   "shape": "[int:1,int:2,str:\"three\"]",
+   "source": "- 1\n- 2\n- three\n"
+  },
+  {
+   "name": "seq_of_maps",
+   "ok": true,
+   "shape": "[{str:\"name\"=str:\"a\",str:\"port\"=int:1},{str:\"name\"=str:\"b\",str:\"port\"=int:2}]",
+   "source": "- name: a\n  port: 1\n- name: b\n  port: 2\n"
+  },
+  {
+   "name": "map_of_seq",
+   "ok": true,
+   "shape": "{str:\"items\"=[int:1,int:2]}",
+   "source": "items:\n  - 1\n  - 2\n"
+  },
+  {
+   "name": "seq_at_parent_indent",
+   "ok": true,
+   "shape": "{str:\"items\"=[int:1,int:2]}",
+   "source": "items:\n- 1\n- 2\n"
+  },
+  {
+   "name": "deep_seq_at_parent",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"b\"=[int:1,int:2]}}",
+   "source": "a:\n  b:\n  - 1\n  - 2\n"
+  },
+  {
+   "name": "empty_value",
+   "ok": true,
+   "shape": "{str:\"a\"=null,str:\"b\"=int:2}",
+   "source": "a:\nb: 2\n"
+  },
+  {
+   "name": "empty_seq_item",
+   "ok": true,
+   "shape": "[null,int:2]",
+   "source": "-\n- 2\n"
+  },
+  {
+   "name": "nested_under_dash",
+   "ok": true,
+   "shape": "[{str:\"a\"=int:1},int:2]",
+   "source": "-\n  a: 1\n- 2\n"
+  },
+  {
+   "name": "flow_seq",
+   "ok": true,
+   "shape": "{str:\"a\"=[int:1,int:2,str:\"three\"]}",
+   "source": "a: [1, 2, three]\n"
+  },
+  {
+   "name": "flow_map",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"x\"=int:1,str:\"y\"=str:\"two\"}}",
+   "source": "a: {x: 1, y: two}\n"
+  },
+  {
+   "name": "flow_nested",
+   "ok": true,
+   "shape": "{str:\"a\"=[{str:\"x\"=int:1},{str:\"y\"=[int:2,int:3]}]}",
+   "source": "a: [{x: 1}, {y: [2, 3]}]\n"
+  },
+  {
+   "name": "flow_empty",
+   "ok": true,
+   "shape": "{str:\"a\"=[],str:\"b\"={}}",
+   "source": "a: []\nb: {}\n"
+  },
+  {
+   "name": "flow_trailing_comma",
+   "ok": true,
+   "shape": "{str:\"a\"=[int:1,int:2]}",
+   "source": "a: [1, 2]\n"
+  },
+  {
+   "name": "flow_multiline",
+   "ok": true,
+   "shape": "{str:\"a\"=[int:1,int:2]}",
+   "source": "a: [\n  1,\n  2,\n]\n"
+  },
+  {
+   "name": "flow_map_multiline",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"x\"=int:1,str:\"y\"=int:2}}",
+   "source": "a: {\n  x: 1,\n  y: 2,\n}\n"
+  },
+  {
+   "name": "flow_seq_of_pairs",
+   "ok": true,
+   "shape": "{str:\"a\"=[{str:\"x\"=int:1},{str:\"y\"=int:2}]}",
+   "source": "a: [x: 1, y: 2]\n"
+  },
+  {
+   "name": "flow_null_value",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"x\"=null,str:\"y\"=int:2}}",
+   "source": "a: {x: , y: 2}\n"
+  },
+  {
+   "name": "quoted_single",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"hello\"}",
+   "source": "a: 'hello'\n"
+  },
+  {
+   "name": "quoted_single_escape",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"it's here\"}",
+   "source": "a: 'it''s here'\n"
+  },
+  {
+   "name": "quoted_double",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"hello\"}",
+   "source": "a: \"hello\"\n"
+  },
+  {
+   "name": "quoted_double_escape",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"line\\nbreak\\ttab \\\"q\\\" \\\\ A é\"}",
+   "source": "a: \"line\\nbreak\\ttab \\\"q\\\" \\\\ \\x41 \\u00e9\"\n"
+  },
+  {
+   "name": "quoted_keeps_type",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"123\",str:\"b\"=str:\"true\"}",
+   "source": "a: '123'\nb: \"true\"\n"
+  },
+  {
+   "name": "quoted_key",
+   "ok": true,
+   "shape": "{str:\"a b\"=int:1,str:\"c:d\"=int:2}",
+   "source": "'a b': 1\n\"c:d\": 2\n"
+  },
+  {
+   "name": "quoted_colon_inside",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"x: y\"}",
+   "source": "a: \"x: y\"\n"
+  },
+  {
+   "name": "comment_after_value",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1,str:\"b\"=int:2}",
+   "source": "a: 1 # trailing\nb: 2\n"
+  },
+  {
+   "name": "hash_inside_value",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"http://x/#frag\"}",
+   "source": "a: http://x/#frag\n"
+  },
+  {
+   "name": "comment_between",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1,str:\"b\"=int:2}",
+   "source": "a: 1\n# note\nb: 2\n"
+  },
+  {
+   "name": "block_literal",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\ntwo\\n\"}",
+   "source": "a: |\n  one\n  two\n"
+  },
+  {
+   "name": "block_literal_strip",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\ntwo\"}",
+   "source": "a: |-\n  one\n  two\n"
+  },
+  {
+   "name": "block_literal_keep",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\n\\n\"}",
+   "source": "a: |+\n  one\n\n"
+  },
+  {
+   "name": "block_folded",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one two\\nthree\\n\"}",
+   "source": "a: >\n  one\n  two\n\n  three\n"
+  },
+  {
+   "name": "block_folded_strip",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one two\"}",
+   "source": "a: >-\n  one\n  two\n"
+  },
+  {
+   "name": "block_indented_more",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\n two\\n\"}",
+   "source": "a: |\n    one\n     two\n"
+  },
+  {
+   "name": "block_explicit_indent",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\" one\\ntwo\\n\"}",
+   "source": "a: |2\n   one\n  two\n"
+  },
+  {
+   "name": "block_then_key",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\n\",str:\"b\"=int:2}",
+   "source": "a: |\n  one\nb: 2\n"
+  },
+  {
+   "name": "block_blank_inside",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\n\\ntwo\\n\",str:\"b\"=int:2}",
+   "source": "a: |\n  one\n\n  two\nb: 2\n"
+  },
+  {
+   "name": "multiline_plain",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one two\",str:\"b\"=int:2}",
+   "source": "a: one\n  two\nb: 2\n"
+  },
+  {
+   "name": "multiline_plain_blank",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"one\\ntwo\",str:\"b\"=int:2}",
+   "source": "a: one\n\n  two\nb: 2\n"
+  },
+  {
+   "name": "anchor_alias",
+   "ok": true,
+   "shape": "{str:\"base\"={str:\"x\"=int:1},str:\"use\"={str:\"x\"=int:1}}",
+   "source": "base: &b\n  x: 1\nuse: *b\n"
+  },
+  {
+   "name": "anchor_scalar",
+   "ok": true,
+   "shape": "{str:\"a\"=int:5,str:\"b\"=int:5}",
+   "source": "a: &n 5\nb: *n\n"
+  },
+  {
+   "name": "merge_key",
+   "ok": true,
+   "shape": "{str:\"base\"={str:\"x\"=int:1,str:\"y\"=int:2},str:\"child\"={str:\"x\"=int:1,str:\"y\"=int:3}}",
+   "source": "base: &b\n  x: 1\n  y: 2\nchild:\n  <<: *b\n  y: 3\n"
+  },
+  {
+   "name": "merge_list",
+   "ok": true,
+   "shape": "{str:\"a\"={str:\"x\"=int:1},str:\"b\"={str:\"y\"=int:2},str:\"c\"={str:\"y\"=int:2,str:\"x\"=int:1,str:\"z\"=int:3}}",
+   "source": "a: &a\n  x: 1\nb: &b\n  y: 2\nc:\n  <<: [*a, *b]\n  z: 3\n"
+  },
+  {
+   "name": "duplicate_key",
+   "ok": true,
+   "shape": "{str:\"a\"=int:3,str:\"b\"=int:2}",
+   "source": "a: 1\nb: 2\na: 3\n"
+  },
+  {
+   "name": "document_start",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1}",
+   "source": "---\na: 1\n"
+  },
+  {
+   "name": "document_start_inline",
+   "ok": false,
+   "shape": "",
+   "source": "--- a: 1\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "document_end",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1}",
+   "source": "a: 1\n...\n"
+  },
+  {
+   "name": "two_documents",
+   "ok": false,
+   "shape": "",
+   "source": "a: 1\n---\nb: 2\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "directive",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1}",
+   "source": "%YAML 1.1\n---\na: 1\n"
+  },
+  {
+   "name": "tag_str",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"123\"}",
+   "source": "a: !!str 123\n"
+  },
+  {
+   "name": "tag_int",
+   "ok": true,
+   "shape": "{str:\"a\"=int:7}",
+   "source": "a: !!int '7'\n"
+  },
+  {
+   "name": "unknown_tag",
+   "ok": false,
+   "shape": "",
+   "source": "a: !mine 1\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "tab_indent",
+   "ok": false,
+   "shape": "",
+   "source": "a:\n\tb: 1\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "bad_indent",
+   "ok": false,
+   "shape": "",
+   "source": "a: 1\n  b: 2\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "unclosed_flow",
+   "ok": false,
+   "shape": "",
+   "source": "a: [1, 2\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "unclosed_quote",
+   "ok": false,
+   "shape": "",
+   "source": "a: 'oops\n",
+   "why": "YAMLError"
+  },
+  {
+   "name": "colon_no_space",
+   "ok": true,
+   "shape": "str:\"a:1\"",
+   "source": "a:1\n"
+  },
+  {
+   "name": "not_a_mapping",
+   "ok": true,
+   "shape": "[int:1,int:2]",
+   "source": "- 1\n- 2\n"
+  },
+  {
+   "name": "top_level_scalar_number",
+   "ok": true,
+   "shape": "int:42",
+   "source": "42\n"
+  },
+  {
+   "name": "bom",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1}",
+   "source": "﻿a: 1\n"
+  },
+  {
+   "name": "unicode_value",
+   "ok": true,
+   "shape": "{str:\"a\"=str:\"chào bạn\"}",
+   "source": "a: chào bạn\n"
+  },
+  {
+   "name": "unicode_key",
+   "ok": true,
+   "shape": "{str:\"tên\"=int:1}",
+   "source": "tên: 1\n"
+  },
+  {
+   "name": "crlf",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1,str:\"b\"=int:2}",
+   "source": "a: 1\r\nb: 2\r\n"
+  },
+  {
+   "name": "trailing_spaces",
+   "ok": true,
+   "shape": "{str:\"a\"=int:1,str:\"b\"=int:2}",
+   "source": "a: 1   \nb: 2\n"
+  },
+  {
+   "name": "compose_minimal",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\",str:\"ports\"=[str:\"8080:80\"]}}}",
+   "source": "services:\n  web:\n    image: nginx\n    ports:\n      - 8080:80\n"
+  },
+  {
+   "name": "compose_ports_forms",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\",str:\"ports\"=[str:\"8080:80\",int:3000,str:\"5000/tcp\",{str:\"target\"=int:7000,str:\"published\"=int:7000}]}}}",
+   "source": "services:\n  web:\n    image: nginx\n    ports:\n      - \"8080:80\"\n      - 3000\n      - 5000/tcp\n      - target: 7000\n        published: 7000\n"
+  },
+  {
+   "name": "compose_env_map_and_list",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\",str:\"environment\"={str:\"DEBUG\"=bool:true,str:\"LEVEL\"=int:10,str:\"NAME\"=str:\"plain\"}},str:\"api\"={str:\"image\"=str:\"nginx\",str:\"environment\"=[str:\"DEBUG=yes\",str:\"EMPTY\"]}}}",
+   "source": "services:\n  web:\n    image: nginx\n    environment:\n      DEBUG: yes\n      LEVEL: 012\n      NAME: plain\n  api:\n    image: nginx\n    environment:\n      - DEBUG=yes\n      - EMPTY\n"
+  },
+  {
+   "name": "compose_volumes",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"db\"={str:\"image\"=str:\"postgres\",str:\"volumes\"=[str:\"data:/var/lib/postgresql/data\",str:\"./src:/app/src:ro\",{str:\"type\"=str:\"volume\",str:\"source\"=str:\"extra\",str:\"target\"=str:\"/extra\"}]}},str:\"volumes\"={str:\"data\"=null,str:\"extra\"=null}}",
+   "source": "services:\n  db:\n    image: postgres\n    volumes:\n      - data:/var/lib/postgresql/data\n      - ./src:/app/src:ro\n      - type: volume\n        source: extra\n        target: /extra\nvolumes:\n  data:\n  extra:\n"
+  },
+  {
+   "name": "compose_healthcheck",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\",str:\"healthcheck\"={str:\"test\"=[str:\"CMD\",str:\"curl\",str:\"-f\",str:\"http://localhost\"],str:\"interval\"=str:\"30s\",str:\"retries\"=int:3}}}}",
+   "source": "services:\n  web:\n    image: nginx\n    healthcheck:\n      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost\"]\n      interval: 30s\n      retries: 3\n"
+  },
+  {
+   "name": "compose_command_forms",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"a\"={str:\"image\"=str:\"x\",str:\"command\"=str:\"npm start\"},str:\"b\"={str:\"image\"=str:\"x\",str:\"command\"=[str:\"npm\",str:\"start\"]},str:\"c\"={str:\"image\"=str:\"x\",str:\"command\"=str:\"npm start --port 3000\\n\"}}}",
+   "source": "services:\n  a:\n    image: x\n    command: npm start\n  b:\n    image: x\n    command: [npm, start]\n  c:\n    image: x\n    command: >\n      npm start\n      --port 3000\n"
+  },
+  {
+   "name": "compose_anchors",
+   "ok": true,
+   "shape": "{str:\"x-common\"={str:\"restart\"=str:\"unless-stopped\",str:\"mem_limit\"=str:\"256m\"},str:\"services\"={str:\"a\"={str:\"restart\"=str:\"unless-stopped\",str:\"mem_limit\"=str:\"256m\",str:\"image\"=str:\"x\"},str:\"b\"={str:\"restart\"=str:\"always\",str:\"mem_limit\"=str:\"256m\",str:\"image\"=str:\"y\"}}}",
+   "source": "x-common: &common\n  restart: unless-stopped\n  mem_limit: 256m\nservices:\n  a:\n    <<: *common\n    image: x\n  b:\n    <<: *common\n    image: y\n    restart: always\n"
+  },
+  {
+   "name": "compose_depends_on_map",
+   "ok": true,
+   "shape": "{str:\"services\"={str:\"web\"={str:\"image\"=str:\"x\",str:\"depends_on\"={str:\"db\"={str:\"condition\"=str:\"service_healthy\"}}},str:\"db\"={str:\"image\"=str:\"y\"}}}",
+   "source": "services:\n  web:\n    image: x\n    depends_on:\n      db:\n        condition: service_healthy\n  db:\n    image: y\n"
+  },
+  {
+   "name": "compose_version_string",
+   "ok": true,
+   "shape": "{str:\"version\"=str:\"3.8\",str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\"}}}",
+   "source": "version: \"3.8\"\nservices:\n  web:\n    image: nginx\n"
+  },
+  {
+   "name": "compose_version_number",
+   "ok": true,
+   "shape": "{str:\"version\"=float:3.8,str:\"services\"={str:\"web\"={str:\"image\"=str:\"nginx\"}}}",
+   "source": "version: 3.8\nservices:\n  web:\n    image: nginx\n"
+  }
+ ],
+ "floats": [
+  {
+   "raw": "0",
+   "repr": "0.0"
+  },
+  {
+   "raw": "1",
+   "repr": "1.0"
+  },
+  {
+   "raw": "-1",
+   "repr": "-1.0"
+  },
+  {
+   "raw": "0.5",
+   "repr": "0.5"
+  },
+  {
+   "raw": "1.5",
+   "repr": "1.5"
+  },
+  {
+   "raw": "0.1",
+   "repr": "0.1"
+  },
+  {
+   "raw": "1e16",
+   "repr": "1e+16"
+  },
+  {
+   "raw": "1e17",
+   "repr": "1e+17"
+  },
+  {
+   "raw": "1e-4",
+   "repr": "0.0001"
+  },
+  {
+   "raw": "1e-5",
+   "repr": "1e-05"
+  },
+  {
+   "raw": "1e-6",
+   "repr": "1e-06"
+  },
+  {
+   "raw": "1e20",
+   "repr": "1e+20"
+  },
+  {
+   "raw": "1.7976931348623157e308",
+   "repr": "1.7976931348623157e+308"
+  },
+  {
+   "raw": "5e-324",
+   "repr": "5e-324"
+  },
+  {
+   "raw": "123456789.123456789",
+   "repr": "123456789.12345679"
+  },
+  {
+   "raw": "2.675",
+   "repr": "2.675"
+  },
+  {
+   "raw": "0.30000000000000004",
+   "repr": "0.30000000000000004"
+  },
+  {
+   "raw": "100",
+   "repr": "100.0"
+  },
+  {
+   "raw": "1000000",
+   "repr": "1000000.0"
+  },
+  {
+   "raw": "1e15",
+   "repr": "1000000000000000.0"
+  }
+ ],
+ "scalars": [
+  {
+   "ok": true,
+   "raw": "true",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "True",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "TRUE",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "tRue",
+   "shape": "str:\"tRue\""
+  },
+  {
+   "ok": true,
+   "raw": "false",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "False",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "FALSE",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "yes",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "Yes",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "YES",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "yEs",
+   "shape": "str:\"yEs\""
+  },
+  {
+   "ok": true,
+   "raw": "no",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "No",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "NO",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "on",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "On",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "ON",
+   "shape": "bool:true"
+  },
+  {
+   "ok": true,
+   "raw": "off",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "Off",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "OFF",
+   "shape": "bool:false"
+  },
+  {
+   "ok": true,
+   "raw": "y",
+   "shape": "str:\"y\""
+  },
+  {
+   "ok": true,
+   "raw": "n",
+   "shape": "str:\"n\""
+  },
+  {
+   "ok": true,
+   "raw": "Y",
+   "shape": "str:\"Y\""
+  },
+  {
+   "ok": true,
+   "raw": "N",
+   "shape": "str:\"N\""
+  },
+  {
+   "ok": true,
+   "raw": "null",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "Null",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "NULL",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "~",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "nULL",
+   "shape": "str:\"nULL\""
+  },
+  {
+   "ok": true,
+   "raw": "none",
+   "shape": "str:\"none\""
+  },
+  {
+   "ok": true,
+   "raw": "None",
+   "shape": "str:\"None\""
+  },
+  {
+   "ok": true,
+   "raw": "0",
+   "shape": "int:0"
+  },
+  {
+   "ok": true,
+   "raw": "1",
+   "shape": "int:1"
+  },
+  {
+   "ok": true,
+   "raw": "-1",
+   "shape": "int:-1"
+  },
+  {
+   "ok": true,
+   "raw": "+1",
+   "shape": "int:1"
+  },
+  {
+   "ok": true,
+   "raw": "007",
+   "shape": "int:7"
+  },
+  {
+   "ok": true,
+   "raw": "012",
+   "shape": "int:10"
+  },
+  {
+   "ok": true,
+   "raw": "0o17",
+   "shape": "str:\"0o17\""
+  },
+  {
+   "ok": true,
+   "raw": "08",
+   "shape": "str:\"08\""
+  },
+  {
+   "ok": true,
+   "raw": "09",
+   "shape": "str:\"09\""
+  },
+  {
+   "ok": true,
+   "raw": "0b1010",
+   "shape": "int:10"
+  },
+  {
+   "ok": true,
+   "raw": "0x1f",
+   "shape": "int:31"
+  },
+  {
+   "ok": true,
+   "raw": "0xFF",
+   "shape": "int:255"
+  },
+  {
+   "ok": true,
+   "raw": "0X1f",
+   "shape": "str:\"0X1f\""
+  },
+  {
+   "ok": true,
+   "raw": "1_000",
+   "shape": "int:1000"
+  },
+  {
+   "ok": true,
+   "raw": "1_0",
+   "shape": "int:10"
+  },
+  {
+   "ok": true,
+   "raw": "1:30",
+   "shape": "int:90"
+  },
+  {
+   "ok": true,
+   "raw": "1:30:00",
+   "shape": "int:5400"
+  },
+  {
+   "ok": true,
+   "raw": "0:30",
+   "shape": "str:\"0:30\""
+  },
+  {
+   "ok": true,
+   "raw": "10:60",
+   "shape": "str:\"10:60\""
+  },
+  {
+   "ok": true,
+   "raw": "10:59",
+   "shape": "int:659"
+  },
+  {
+   "ok": true,
+   "raw": "90:00",
+   "shape": "int:5400"
+  },
+  {
+   "ok": true,
+   "raw": "1.0",
+   "shape": "float:1.0"
+  },
+  {
+   "ok": true,
+   "raw": "1.",
+   "shape": "float:1.0"
+  },
+  {
+   "ok": true,
+   "raw": ".5",
+   "shape": "float:0.5"
+  },
+  {
+   "ok": true,
+   "raw": "-.5",
+   "shape": "str:\"-.5\""
+  },
+  {
+   "ok": true,
+   "raw": "+1.5",
+   "shape": "float:1.5"
+  },
+  {
+   "ok": true,
+   "raw": "1.5e3",
+   "shape": "str:\"1.5e3\""
+  },
+  {
+   "ok": true,
+   "raw": "1.5e+3",
+   "shape": "float:1500.0"
+  },
+  {
+   "ok": true,
+   "raw": "1.5E-3",
+   "shape": "float:0.0015"
+  },
+  {
+   "ok": true,
+   "raw": "1e5",
+   "shape": "str:\"1e5\""
+  },
+  {
+   "ok": true,
+   "raw": "1_0.5",
+   "shape": "float:10.5"
+  },
+  {
+   "ok": true,
+   "raw": ".inf",
+   "shape": "float:inf"
+  },
+  {
+   "ok": true,
+   "raw": "-.inf",
+   "shape": "float:-inf"
+  },
+  {
+   "ok": true,
+   "raw": ".Inf",
+   "shape": "float:inf"
+  },
+  {
+   "ok": true,
+   "raw": ".INF",
+   "shape": "float:inf"
+  },
+  {
+   "ok": true,
+   "raw": ".nan",
+   "shape": "float:nan"
+  },
+  {
+   "ok": true,
+   "raw": ".NaN",
+   "shape": "float:nan"
+  },
+  {
+   "ok": true,
+   "raw": "-.nan",
+   "shape": "str:\"-.nan\""
+  },
+  {
+   "ok": true,
+   "raw": "1:30.5",
+   "shape": "float:90.5"
+  },
+  {
+   "ok": true,
+   "raw": "3.14159265358979",
+   "shape": "float:3.14159265358979"
+  },
+  {
+   "ok": true,
+   "raw": "1e400",
+   "shape": "str:\"1e400\""
+  },
+  {
+   "ok": true,
+   "raw": "1.5e+400",
+   "shape": "float:inf"
+  },
+  {
+   "ok": true,
+   "raw": "12345678901234567890",
+   "shape": "int:12345678901234567890"
+  },
+  {
+   "ok": true,
+   "raw": "-12345678901234567890",
+   "shape": "int:-12345678901234567890"
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05",
+   "shape": "time:2024-01-05"
+  },
+  {
+   "ok": true,
+   "raw": "2024-1-5",
+   "shape": "str:\"2024-1-5\""
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05T10:20:30Z",
+   "shape": "time:2024-01-05 10:20:30+00:00"
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05 10:20:30",
+   "shape": "time:2024-01-05 10:20:30"
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05T10:20:30.123456+02:00",
+   "shape": "time:2024-01-05 10:20:30.123456+02:00"
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05T23:45:00+02:00",
+   "shape": "time:2024-01-05 23:45:00+02:00"
+  },
+  {
+   "ok": true,
+   "raw": "2024-01-05T00:30:00-02:00",
+   "shape": "time:2024-01-05 00:30:00-02:00"
+  },
+  {
+   "ok": false,
+   "raw": "2024-13-45",
+   "shape": "",
+   "why": "ValueError"
+  },
+  {
+   "ok": true,
+   "raw": "not-a-date",
+   "shape": "str:\"not-a-date\""
+  },
+  {
+   "ok": true,
+   "raw": "",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": " ",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "a",
+   "shape": "str:\"a\""
+  },
+  {
+   "ok": true,
+   "raw": "a b",
+   "shape": "str:\"a b\""
+  },
+  {
+   "ok": true,
+   "raw": "a#b",
+   "shape": "str:\"a#b\""
+  },
+  {
+   "ok": true,
+   "raw": "a #b",
+   "shape": "str:\"a\""
+  },
+  {
+   "ok": true,
+   "raw": "#a",
+   "shape": "null"
+  },
+  {
+   "ok": true,
+   "raw": "a:b",
+   "shape": "str:\"a:b\""
+  },
+  {
+   "ok": false,
+   "raw": "a: b",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": true,
+   "raw": "redis:7",
+   "shape": "str:\"redis:7\""
+  },
+  {
+   "ok": true,
+   "raw": "nginx:1.27-alpine",
+   "shape": "str:\"nginx:1.27-alpine\""
+  },
+  {
+   "ok": true,
+   "raw": "8080",
+   "shape": "int:8080"
+  },
+  {
+   "ok": true,
+   "raw": "8080:80",
+   "shape": "str:\"8080:80\""
+  },
+  {
+   "ok": true,
+   "raw": "127.0.0.1:8080:80",
+   "shape": "str:\"127.0.0.1:8080:80\""
+  },
+  {
+   "ok": false,
+   "raw": "-",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": false,
+   "raw": "- ",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": true,
+   "raw": "--",
+   "shape": "str:\"--\""
+  },
+  {
+   "ok": true,
+   "raw": "a-",
+   "shape": "str:\"a-\""
+  },
+  {
+   "ok": false,
+   "raw": "@x",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": false,
+   "raw": "`x`",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": false,
+   "raw": "%x",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": false,
+   "raw": "*x",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": true,
+   "raw": "&x",
+   "shape": "null"
+  },
+  {
+   "ok": false,
+   "raw": "!x",
+   "shape": "",
+   "why": "YAMLError"
+  },
+  {
+   "ok": true,
+   "raw": "0.0.0.0",
+   "shape": "str:\"0.0.0.0\""
+  },
+  {
+   "ok": true,
+   "raw": "v1.2",
+   "shape": "str:\"v1.2\""
+  },
+  {
+   "ok": true,
+   "raw": "1.2.3",
+   "shape": "str:\"1.2.3\""
+  },
+  {
+   "ok": true,
+   "raw": "N/A",
+   "shape": "str:\"N/A\""
+  },
+  {
+   "ok": false,
+   "raw": "=",
+   "shape": "",
+   "why": "YAMLError"
+  }
+ ]
+}

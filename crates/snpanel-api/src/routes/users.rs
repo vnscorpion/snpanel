@@ -766,6 +766,9 @@ pub(super) fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverr
         // by `preserve_existing_ssl` instead. The two are not the same switch
         // and only one of them is thrown on this path.
         include_ssl: None,
+        // Nor `app_port`: a suspended site is rendered static, so it has no
+        // upstream to be told about.
+        app_port: None,
     }
 }
 

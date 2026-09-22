@@ -1,0 +1,799 @@
+{
+ "allowed_registries": [
+  {
+   "allowed": [
+    "docker.io",
+    "ghcr.io",
+    "quay.io",
+    "registry.k8s.io",
+    "public.ecr.aws"
+   ],
+   "raw": ""
+  },
+  {
+   "allowed": [
+    "docker.io",
+    "ghcr.io",
+    "quay.io",
+    "registry.k8s.io",
+    "public.ecr.aws"
+   ],
+   "raw": "   "
+  },
+  {
+   "allowed": [
+    "docker.io"
+   ],
+   "raw": "docker.io"
+  },
+  {
+   "allowed": [
+    "a.io",
+    "b.io"
+   ],
+   "raw": "a.io, b.io"
+  },
+  {
+   "allowed": [
+    "a.io",
+    "b.io"
+   ],
+   "raw": " a.io ,, b.io "
+  },
+  {
+   "allowed": [
+    "a.io"
+   ],
+   "raw": "a.io,"
+  }
+ ],
+ "validate_container_port": [
+  {
+   "raw": null,
+   "value": 3000
+  },
+  {
+   "raw": "",
+   "value": 3000
+  },
+  {
+   "raw": 3000,
+   "value": 3000
+  },
+  {
+   "raw": 1,
+   "value": 1
+  },
+  {
+   "raw": 65535,
+   "value": 65535
+  },
+  {
+   "error": "Container port is out of range",
+   "raw": 0
+  },
+  {
+   "error": "Container port is out of range",
+   "raw": 65536
+  },
+  {
+   "raw": "8080",
+   "value": 8080
+  },
+  {
+   "error": "Container port must be a number",
+   "raw": "abc"
+  },
+  {
+   "error": "Container port is out of range",
+   "raw": -1
+  }
+ ],
+ "validate_cpu_limit": [
+  {
+   "raw": null,
+   "value": "1"
+  },
+  {
+   "raw": "",
+   "value": "1"
+  },
+  {
+   "raw": "1",
+   "value": "1"
+  },
+  {
+   "raw": "0.5",
+   "value": "0.5"
+  },
+  {
+   "raw": "2",
+   "value": "2"
+  },
+  {
+   "raw": "16",
+   "value": "16"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "0"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "0.0"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "-1"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "1.55"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "abc"
+  },
+  {
+   "raw": " 1 ",
+   "value": "1"
+  },
+  {
+   "raw": 1,
+   "value": "1"
+  },
+  {
+   "raw": 0.5,
+   "value": "0.5"
+  },
+  {
+   "raw": "99",
+   "value": "99"
+  },
+  {
+   "error": "CPU limit must be a number such as 0.5, 1 or 2",
+   "raw": "100"
+  }
+ ],
+ "validate_env": [
+  {
+   "raw": "KEY=value",
+   "value": "KEY=value"
+  },
+  {
+   "raw": "KEY=value\nOTHER=2",
+   "value": "KEY=value\nOTHER=2"
+  },
+  {
+   "raw": "  KEY = value  ",
+   "value": "KEY= value"
+  },
+  {
+   "raw": "# comment\nKEY=value",
+   "value": "KEY=value"
+  },
+  {
+   "raw": "\n\nKEY=value\n\n",
+   "value": "KEY=value"
+  },
+  {
+   "error": "Environment line is missing '=': KEY",
+   "raw": "KEY"
+  },
+  {
+   "error": "Environment name must be UPPER_SNAKE_CASE: lower",
+   "raw": "lower=value"
+  },
+  {
+   "error": "Environment name must be UPPER_SNAKE_CASE: MiXeD",
+   "raw": "MiXeD=value"
+  },
+  {
+   "raw": "_KEY=value",
+   "value": "_KEY=value"
+  },
+  {
+   "error": "Environment name must be UPPER_SNAKE_CASE: 1KEY",
+   "raw": "1KEY=value"
+  },
+  {
+   "raw": "KEY=has=equals",
+   "value": "KEY=has=equals"
+  },
+  {
+   "raw": "KEY=",
+   "value": "KEY="
+  },
+  {
+   "raw": "KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "value": "KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "error": "Environment value for KEY is too long",
+   "raw": "KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "raw": "K0=v\nK1=v\nK2=v\nK3=v\nK4=v\nK5=v\nK6=v\nK7=v\nK8=v\nK9=v\nK10=v\nK11=v\nK12=v\nK13=v\nK14=v\nK15=v\nK16=v\nK17=v\nK18=v\nK19=v\nK20=v\nK21=v\nK22=v\nK23=v\nK24=v\nK25=v\nK26=v\nK27=v\nK28=v\nK29=v\nK30=v\nK31=v\nK32=v\nK33=v\nK34=v\nK35=v\nK36=v\nK37=v\nK38=v\nK39=v\nK40=v\nK41=v\nK42=v\nK43=v\nK44=v\nK45=v\nK46=v\nK47=v\nK48=v\nK49=v\nK50=v\nK51=v\nK52=v\nK53=v\nK54=v\nK55=v\nK56=v\nK57=v\nK58=v\nK59=v\nK60=v\nK61=v\nK62=v\nK63=v",
+   "value": "K0=v\nK1=v\nK2=v\nK3=v\nK4=v\nK5=v\nK6=v\nK7=v\nK8=v\nK9=v\nK10=v\nK11=v\nK12=v\nK13=v\nK14=v\nK15=v\nK16=v\nK17=v\nK18=v\nK19=v\nK20=v\nK21=v\nK22=v\nK23=v\nK24=v\nK25=v\nK26=v\nK27=v\nK28=v\nK29=v\nK30=v\nK31=v\nK32=v\nK33=v\nK34=v\nK35=v\nK36=v\nK37=v\nK38=v\nK39=v\nK40=v\nK41=v\nK42=v\nK43=v\nK44=v\nK45=v\nK46=v\nK47=v\nK48=v\nK49=v\nK50=v\nK51=v\nK52=v\nK53=v\nK54=v\nK55=v\nK56=v\nK57=v\nK58=v\nK59=v\nK60=v\nK61=v\nK62=v\nK63=v"
+  },
+  {
+   "error": "At most 64 environment variables are supported",
+   "raw": "K0=v\nK1=v\nK2=v\nK3=v\nK4=v\nK5=v\nK6=v\nK7=v\nK8=v\nK9=v\nK10=v\nK11=v\nK12=v\nK13=v\nK14=v\nK15=v\nK16=v\nK17=v\nK18=v\nK19=v\nK20=v\nK21=v\nK22=v\nK23=v\nK24=v\nK25=v\nK26=v\nK27=v\nK28=v\nK29=v\nK30=v\nK31=v\nK32=v\nK33=v\nK34=v\nK35=v\nK36=v\nK37=v\nK38=v\nK39=v\nK40=v\nK41=v\nK42=v\nK43=v\nK44=v\nK45=v\nK46=v\nK47=v\nK48=v\nK49=v\nK50=v\nK51=v\nK52=v\nK53=v\nK54=v\nK55=v\nK56=v\nK57=v\nK58=v\nK59=v\nK60=v\nK61=v\nK62=v\nK63=v\nK64=v"
+  },
+  {
+   "raw": "",
+   "value": ""
+  },
+  {
+   "raw": null,
+   "value": ""
+  },
+  {
+   "error": "Environment value for KEY contains a line break",
+   "raw": "KEY=a\u0000b"
+  }
+ ],
+ "validate_image": [
+  {
+   "enforce": true,
+   "raw": "nginx",
+   "value": "nginx"
+  },
+  {
+   "enforce": true,
+   "raw": "nginx:1.27",
+   "value": "nginx:1.27"
+  },
+  {
+   "enforce": true,
+   "raw": "library/nginx:latest",
+   "value": "library/nginx:latest"
+  },
+  {
+   "enforce": true,
+   "raw": "docker.io/library/nginx",
+   "value": "docker.io/library/nginx"
+  },
+  {
+   "enforce": true,
+   "raw": "ghcr.io/owner/app:v1",
+   "value": "ghcr.io/owner/app:v1"
+  },
+  {
+   "enforce": true,
+   "raw": "quay.io/owner/app",
+   "value": "quay.io/owner/app"
+  },
+  {
+   "enforce": true,
+   "raw": "registry.k8s.io/pause",
+   "value": "registry.k8s.io/pause"
+  },
+  {
+   "enforce": true,
+   "raw": "public.ecr.aws/x/y",
+   "value": "public.ecr.aws/x/y"
+  },
+  {
+   "enforce": true,
+   "error": "Images from evil.example.com are not allowed. Allowed: docker.io, ghcr.io, quay.io, registry.k8s.io, public.ecr.aws",
+   "raw": "evil.example.com/app"
+  },
+  {
+   "enforce": false,
+   "raw": "evil.example.com/app",
+   "value": "evil.example.com/app"
+  },
+  {
+   "enforce": true,
+   "error": "Images from localhost are not allowed. Allowed: docker.io, ghcr.io, quay.io, registry.k8s.io, public.ecr.aws",
+   "raw": "localhost/app"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "localhost:5000/app"
+  },
+  {
+   "enforce": true,
+   "raw": "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "value": "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "-nginx"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "a/../b"
+  },
+  {
+   "enforce": true,
+   "error": "Container image is required",
+   "raw": ""
+  },
+  {
+   "enforce": true,
+   "error": "Container image is required",
+   "raw": "   "
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "NGINX"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "enforce": true,
+   "error": "Container image reference contains characters that are not allowed",
+   "raw": "nginx:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "enforce": true,
+   "raw": "nginx:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "value": "nginx:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ ],
+ "validate_kind": [
+  {
+   "raw": "node",
+   "value": "node"
+  },
+  {
+   "raw": "docker",
+   "value": "docker"
+  },
+  {
+   "raw": "compose",
+   "value": "compose"
+  },
+  {
+   "raw": "NODE",
+   "value": "node"
+  },
+  {
+   "raw": "  node  ",
+   "value": "node"
+  },
+  {
+   "error": "Unsupported app kind. Allowed: compose, docker, node",
+   "raw": "python"
+  },
+  {
+   "error": "Unsupported app kind. Allowed: compose, docker, node",
+   "raw": ""
+  },
+  {
+   "error": "Unsupported app kind. Allowed: compose, docker, node",
+   "raw": null
+  }
+ ],
+ "validate_memory": [
+  {
+   "ceiling": null,
+   "raw": null,
+   "value": 512
+  },
+  {
+   "ceiling": null,
+   "raw": "",
+   "value": 512
+  },
+  {
+   "ceiling": 256,
+   "raw": null,
+   "value": 256
+  },
+  {
+   "ceiling": 1024,
+   "raw": null,
+   "value": 512
+  },
+  {
+   "ceiling": null,
+   "raw": 512,
+   "value": 512
+  },
+  {
+   "ceiling": null,
+   "raw": 64,
+   "value": 64
+  },
+  {
+   "ceiling": null,
+   "error": "Memory limit must be between 64 and 16384 MB",
+   "raw": 63
+  },
+  {
+   "ceiling": null,
+   "raw": 16384,
+   "value": 16384
+  },
+  {
+   "ceiling": null,
+   "error": "Memory limit must be between 64 and 16384 MB",
+   "raw": 16385
+  },
+  {
+   "ceiling": null,
+   "raw": "512",
+   "value": 512
+  },
+  {
+   "ceiling": null,
+   "error": "Memory limit must be a number of MB",
+   "raw": "abc"
+  },
+  {
+   "ceiling": 512,
+   "error": "This package allows at most 512 MB per app",
+   "raw": 1024
+  },
+  {
+   "ceiling": 512,
+   "raw": 512,
+   "value": 512
+  },
+  {
+   "ceiling": 512,
+   "raw": 256,
+   "value": 256
+  },
+  {
+   "ceiling": null,
+   "error": "Memory limit must be between 64 and 16384 MB",
+   "raw": 0
+  },
+  {
+   "ceiling": null,
+   "error": "Memory limit must be between 64 and 16384 MB",
+   "raw": -1
+  }
+ ],
+ "validate_name": [
+  {
+   "raw": "app",
+   "value": "app"
+  },
+  {
+   "raw": "my-app",
+   "value": "my-app"
+  },
+  {
+   "raw": "my_app",
+   "value": "my_app"
+  },
+  {
+   "raw": "a",
+   "value": "a"
+  },
+  {
+   "raw": "a1",
+   "value": "a1"
+  },
+  {
+   "raw": "1a",
+   "value": "1a"
+  },
+  {
+   "raw": "MyApp",
+   "value": "myapp"
+  },
+  {
+   "raw": "  spaced  ",
+   "value": "spaced"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "-leading"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "trailing-"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "_leading"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "trailing_"
+  },
+  {
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": ""
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "   "
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "has space"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "has.dot"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "has/slash"
+  },
+  {
+   "error": "App name may only use lowercase letters, digits, hyphen and underscore",
+   "raw": "ünïcode"
+  },
+  {
+   "raw": "a--b",
+   "value": "a--b"
+  },
+  {
+   "raw": "a__b",
+   "value": "a__b"
+  }
+ ],
+ "validate_node_major": [
+  {
+   "raw": null,
+   "value": null
+  },
+  {
+   "raw": "",
+   "value": null
+  },
+  {
+   "raw": "20",
+   "value": "20"
+  },
+  {
+   "raw": "22",
+   "value": "22"
+  },
+  {
+   "raw": "10",
+   "value": "10"
+  },
+  {
+   "raw": "99",
+   "value": "99"
+  },
+  {
+   "error": "Node version must be a major version number, for example 20 or 22",
+   "raw": "9"
+  },
+  {
+   "error": "Node version must be a major version number, for example 20 or 22",
+   "raw": "100"
+  },
+  {
+   "error": "Node version must be a major version number, for example 20 or 22",
+   "raw": "20.1"
+  },
+  {
+   "raw": " 20 ",
+   "value": "20"
+  },
+  {
+   "error": "Node version must be a major version number, for example 20 or 22",
+   "raw": "abc"
+  },
+  {
+   "raw": 20,
+   "value": "20"
+  }
+ ],
+ "validate_port": [
+  {
+   "raw": 21000,
+   "value": 21000
+  },
+  {
+   "raw": 21999,
+   "value": 21999
+  },
+  {
+   "error": "Port must be between 21000 and 21999",
+   "raw": 20999
+  },
+  {
+   "error": "Port must be between 21000 and 21999",
+   "raw": 22000
+  },
+  {
+   "raw": "21500",
+   "value": 21500
+  },
+  {
+   "raw": " 21500 ",
+   "value": 21500
+  },
+  {
+   "error": "Port must be a number",
+   "raw": "abc"
+  },
+  {
+   "error": "Port must be a number",
+   "raw": ""
+  },
+  {
+   "error": "Port must be a number",
+   "raw": null
+  },
+  {
+   "error": "Port must be between 21000 and 21999",
+   "raw": 0
+  },
+  {
+   "error": "Port must be between 21000 and 21999",
+   "raw": -1
+  },
+  {
+   "error": "Port must be between 21000 and 21999",
+   "raw": 3.7
+  }
+ ],
+ "validate_start": [
+  {
+   "arg": "server.js",
+   "kind": "node",
+   "value": [
+    "node",
+    "server.js"
+   ]
+  },
+  {
+   "arg": "src/index.mjs",
+   "kind": "node",
+   "value": [
+    "node",
+    "src/index.mjs"
+   ]
+  },
+  {
+   "arg": "app.cjs",
+   "kind": "node",
+   "value": [
+    "node",
+    "app.cjs"
+   ]
+  },
+  {
+   "arg": "server.ts",
+   "error": "node must be given a .js, .mjs or .cjs entry file",
+   "kind": "node"
+  },
+  {
+   "arg": "../escape.js",
+   "error": "Entry file must be inside the app directory",
+   "kind": "node"
+  },
+  {
+   "arg": "/etc/passwd.js",
+   "error": "Entry file must be inside the app directory",
+   "kind": "node"
+  },
+  {
+   "arg": "a b.js",
+   "error": "Start argument may not contain spaces or shell characters",
+   "kind": "node"
+  },
+  {
+   "arg": "a;b.js",
+   "error": "Start argument may not contain spaces or shell characters",
+   "kind": "node"
+  },
+  {
+   "arg": "a$b.js",
+   "error": "Start argument may not contain spaces or shell characters",
+   "kind": "node"
+  },
+  {
+   "arg": "",
+   "error": "Start command needs an argument, for example a script name or entry file",
+   "kind": "node"
+  },
+  {
+   "arg": "start",
+   "kind": "npm",
+   "value": [
+    "npm",
+    "start"
+   ]
+  },
+  {
+   "arg": "run-script",
+   "kind": "npm",
+   "value": [
+    "npm",
+    "run-script"
+   ]
+  },
+  {
+   "arg": "next",
+   "kind": "npx",
+   "value": [
+    "npx",
+    "next"
+   ]
+  },
+  {
+   "arg": "build",
+   "kind": "yarn",
+   "value": [
+    "yarn",
+    "build"
+   ]
+  },
+  {
+   "arg": "a b",
+   "error": "Start argument may not contain spaces or shell characters",
+   "kind": "yarn"
+  },
+  {
+   "arg": "a/b@c-d.e",
+   "kind": "yarn",
+   "value": [
+    "yarn",
+    "a/b@c-d.e"
+   ]
+  },
+  {
+   "arg": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "error": "Script or package name contains characters that are not allowed",
+   "kind": "yarn"
+  },
+  {
+   "arg": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "yarn",
+   "value": [
+    "yarn",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ]
+  },
+  {
+   "arg": "app.py",
+   "error": "Start command must be one of: node, npm, npx, yarn",
+   "kind": "python"
+  },
+  {
+   "arg": "start",
+   "error": "Start command must be one of: node, npm, npx, yarn",
+   "kind": ""
+  },
+  {
+   "arg": "server.js",
+   "kind": "NODE",
+   "value": [
+    "node",
+    "server.js"
+   ]
+  },
+  {
+   "arg": "  start  ",
+   "kind": "npm",
+   "value": [
+    "npm",
+    "start"
+   ]
+  }
+ ]
+}

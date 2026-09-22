@@ -246,11 +246,11 @@ none, which read as progress that had already happened.
 | `databases` | 0 of 7 |
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
-| `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 15 of 67 |
-| `provisioning` | 2 of 13 — create and terminate |
-| `site_apps` | 10 of 10 — needs the `docker` domain |
-| `malware` | 9 of 12 — the rest wait on the scan worker |
+| `websites` | 0 of 24 |
+| `maintenance` | 10 of 67 — the backup family and `app-files` |
+| `provisioning` | 1 of 13 — `DELETE /accounts/{id}` |
+| `site_apps` | 0 of 10 |
+| `malware` | 0 of 12 |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
 
 ### Porting a router in part, by method
@@ -1536,46 +1536,51 @@ And `for_website`, `for_owner` and `all_emails` on the repositories.
 
 ## Not started
 
-Measured, not recalled: **21 endpoints**, in three groups, and **none of
-them is plain code**. Every one waits on the same two decisions:
+Measured, not recalled: **11 endpoints**, in two groups.
 
 | group | left | what it needs |
 |---|---|---|
-| `maintenance` | 10 | the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) need the **`siteapp`/`docker` helper domain** |
-| `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
-| `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` needs the **`siteapp`/`docker` helper domain** |
+| `maintenance` | 10 | the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) are plain router work |
+| `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` reaches `site_apps.export_payload` — a helper verb that exists |
 
-The bold two are dependency and architecture decisions on a hosting panel,
-not code that is merely unwritten - and with DA-import landed they are all
-that is left. Sixteen endpoints wait on the `siteapp`/`docker` helper
-domain and five on an SSH/SFTP client.
+One decision is left rather than three: **an SSH/SFTP client**, for the five
+endpoints that push a backup to a remote host. That is a place where Rust's
+ecosystem is thinner than Go's — `golang.org/x/crypto/ssh` and `pkg/sftp`
+are considerably more mature than anything on this side — and Go is
+available for exactly that kind of case, so the shape of that group is the
+thing to decide rather than the thing to write.
 
-Both are places where Rust's ecosystem is thinner than Go's: the official
-Docker SDK and `golang.org/x/crypto/ssh` + `pkg/sftp` are considerably
-more mature than anything on this side. Go is available for exactly that
-kind of case, so the **shape** of those two groups is the next thing to
-decide rather than the next thing to write.
+### The note that said `site_apps` needed a Docker client
 
-`POST /user-restore` used to be filed with it. Re-measured, it is not:
-`restore_user_backup` calls `_restore_applications`, which collects each
-application through `site_apps.export_payload`.
+It did not. Every operation an application needs — write the unit, pull the
+images, control it, read its journal, export it — already went through the
+privileged helper **by verb**, and all fifteen of those verbs were
+implemented in `snpanel-helper/src/ops/siteapp.rs` before this was written.
+Nothing on the API side ever spoke to Docker's socket.
 
-The third used to be an outbound HTTPS client for `ssl/wildcard`. It was
-not a decision at all: every crate it needed was already in the lock file,
-and re-measuring instead of re-reading the note is what found that. That
-makes four notes in this document that read as measurements and had never
-been re-taken — worth remembering the next time one says "blocked".
+What it actually needed was the compose importer, and that needed a YAML
+reader — not a YAML reader in general, but **PyYAML's**. A compose file is
+resolved against YAML 1.1, where `yes` is a boolean, `012` is the number ten
+and `1:30` is ninety; a 1.2 parser reads all three as text. Swapping one in
+would have quietly changed which files the panel accepts and which it
+refuses, in both directions. `yaml.rs` is that reader, held to 113 scalars
+and 79 documents of recorded `safe_load` verdicts, and `compose.rs` is the
+importer on top of it — whose generated file matches `safe_dump`'s **byte
+for byte** across the corpus.
 
-Two notes that used to sit in this paragraph are gone because they were
-wrong, and `websites` has since joined them. `provisioning` never needed
-the `docker` domain — it imports
-`mariadb`, `nginx`, `site_users`, `storage_quota` and `wordpress`, all
-ported long ago. And the `malware` job endpoints are blocked, but not by
-"an in-process dict": their store is merged with `MALWARE_JOBS_DIR/*.json`
-and the files are shared. What blocks them is that **reading one of those
-jobs is a write** — every read passes each job through
-`_finalize_stale_malware_job`, which asks whether a thread *in this
-process* still owns it and, finding none, marks it interrupted.
+That makes five notes in this document that read as measurements and had
+never been re-taken. Two more that used to sit here are gone for the same
+reason: `provisioning` never needed the `docker` domain, and the `malware`
+job endpoints were never blocked by "an in-process dict" — what blocked them
+was that **reading one of those jobs is a write**, because every read passes
+each job through `_finalize_stale_malware_job`. Both have since landed.
+
+The one divergence the compose importer carries is written down rather than
+hidden: a file that fails to parse is refused with `YAML không hợp lệ:`
+followed by this reader's own account of what went wrong, where the Python
+prints libyaml's. The prefix, the place and the refusal are the same; the
+sentence after the colon is not reproducible without PyYAML, and the test
+holds both sides to everything except that sentence.
 
 Then Phases 5-6: DA import and removing Python. Phase 4, the multi-OS
 installer, has landed for AlmaLinux 10 — see below — and has Debian 12 and
@@ -1595,7 +1600,9 @@ than done:
 - **Site-app storage.** `storage_quota` adds an application's own directory
   and its container volumes to a user's usage. The Rust side counts websites
   only. It agrees on every account with no site apps, which is every account
-  here, and would understate usage for one that had them.
+  here, and would understate usage for one that had them. Now that the
+  Application router is ported this is reachable rather than blocked, and it
+  is a gap in `storage_quota` rather than in `site_apps`.
 - **The frontend is still served by Python**, through the proxy. `rust-embed`
   is Phase 6 work.
 

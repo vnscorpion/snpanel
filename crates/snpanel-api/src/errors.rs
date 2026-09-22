@@ -77,6 +77,35 @@ pub fn missing_field(field: &str, input: Value) -> Response {
     validation_error(vec![missing_entry(field, input)])
 }
 
+/// `HTTPException` whose detail is not a sentence.
+///
+/// FastAPI passes the detail through as it was given, so a handler that
+/// raises with a dict answers with that dict under `detail` — which is how
+/// the compose importer returns a message and a list of issues together.
+pub fn detail(status: StatusCode, detail: Value) -> Response {
+    (status, axum::Json(json!({ "detail": detail }))).into_response()
+}
+
+/// `literal_error`: a field declared `Literal[...]` given something else.
+///
+/// Pydantic prints the options back in the order they were declared, joined
+/// with commas and a final "or" — and puts the same text in `ctx.expected`.
+pub fn literal_entry(field: &str, input: &Value, allowed: &[&str]) -> Value {
+    let quoted: Vec<String> = allowed.iter().map(|option| format!("'{option}'")).collect();
+    let expected = match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    json!({
+        "type": "literal_error",
+        "loc": ["body", field],
+        "msg": format!("Input should be {expected}"),
+        "input": input,
+        "ctx": { "expected": expected },
+    })
+}
+
 /// Source: `Field(min_length=..., max_length=...)`.
 pub fn length_entry(field: &str, value: &str, min: usize, max: usize) -> Option<Value> {
     // Characters, not bytes: Pydantic counts characters, so a name of accented

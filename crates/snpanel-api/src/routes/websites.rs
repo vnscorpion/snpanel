@@ -966,6 +966,13 @@ pub(super) struct RewriteOverrides {
     /// plain HTTP server block and cannot work from one that already claims to
     /// serve TLS from a file that is about to be deleted.
     pub(super) include_ssl: Option<bool>,
+    /// The loopback port a proxied site is sent to.
+    ///
+    /// Defaulted from the app the site points at, which is what
+    /// `app_port_for_website` does. An override is for the caller that knows
+    /// something the row does not yet — an application whose port has just
+    /// moved.
+    pub(super) app_port: Option<i64>,
 }
 
 /// `log_action(db, user.id, action, target)` - a detail of `""` and no
@@ -1056,9 +1063,28 @@ pub(super) async fn rewrite_website_vhost(
         &website.document_root
     };
 
+    // Source: `app_port=overrides.pop("app_port", site_apps.app_port_for_website(website))`.
+    // Without it a proxied vhost has no upstream and `_check_app_port`
+    // refuses to render one at all.
+    let app_port = match overrides.app_port {
+        Some(port) => Some(port),
+        None => match website.app_id {
+            Some(app_id) => state
+                .db
+                .site_apps()
+                .by_id(app_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|app| app.port),
+            None => None,
+        },
+    };
+
     let root_path = std::path::PathBuf::from(&website.root_path);
     let mut input = snpanel_nginx::VhostInput::new(&website.domain, &root_path, &custom);
     input.app_type = app_type;
+    input.app_port = app_port;
     input.php_version = declared_php;
     input.php_fpm_socket_override = socket.as_deref();
     input.waf_enabled = website.waf_enabled;

@@ -15,6 +15,7 @@ pub mod packages;
 pub mod panel_settings;
 pub mod provisioning;
 pub mod services;
+pub mod site_apps;
 pub mod terminal;
 pub mod updates;
 pub mod users;
@@ -47,6 +48,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(maintenance::router())
         .merge(malware::router())
         .merge(panel_settings::router())
+        .merge(site_apps::router())
 }
 
 /// The path prefixes handled natively, for the readiness report and for
@@ -59,6 +61,8 @@ pub const PORTED_PREFIXES: &[&str] = &[
     "/api/packages",
     "/api/panel-settings",
     "/api/services",
+    "/api/site-apps",
+    "/api/site-runtimes",
     "/api/terminal",
     "/api/updates",
     "/api/waf",

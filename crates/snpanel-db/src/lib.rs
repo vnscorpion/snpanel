@@ -39,7 +39,7 @@ pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
-pub use site_apps::{SiteAppRepo, SiteAppRow, SiteAppTarget};
+pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
 pub use websites::{NewWebsite, Website, WebsiteAlias, WebsiteRepo};
 

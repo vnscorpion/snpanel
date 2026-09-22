@@ -19,10 +19,10 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **190 of 211** | 90% |
-| Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
-| Routers served in part | 8 | the strangler proxies the rest of each |
-| Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
+| API endpoints answered by Rust | **200 of 211** | 95% |
+| Routers served whole | 14 of 17 | `addons`, `auth`, `databases`, `firewall`, `malware`, `packages`, `panel_settings`, `services`, `site_apps`, `terminal`, `updates`, `users`, `waf`, `websites` |
+| Routers served in part | 2 | `maintenance` and `provisioning`; the strangler proxies the rest of each |
+| Routers untouched | 1 | `deps`, which is dependencies rather than routes |
 | Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket, and a fresh install deploys the Rust one |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
@@ -1223,8 +1223,8 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (10), `site_apps` (10) and `provisioning` (1).
-**21 endpoints**,
+`maintenance` (10) and `provisioning` (1).
+**11 endpoints**,
 counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
 build if that disagrees with `endpoint-coverage.py`.
 
@@ -1235,6 +1235,25 @@ build if that disagrees with `endpoint-coverage.py`.
 the panel's own TLS. Declaring it was the same zero-resolution move `zip`
 was. The roots come from the system CA bundle, so a machine that trusts a
 corporate CA is a machine this call trusts it on too.
+
+**`site_apps` is finished.** All 10 of its endpoints answer from Rust,
+plus the four under `/site-runtimes`. It did not need a Docker client:
+every operation goes through the privileged helper by verb, and all fifteen
+of those verbs were already implemented in `snpanel-helper/src/ops/
+siteapp.rs`. What it needed was the compose importer, and that needed
+**PyYAML's** reader rather than a YAML reader — `yes` is a boolean and `012`
+is ten under YAML 1.1, and a 1.2 parser would have changed which compose
+files the panel accepts. `crates/snpanel-api/src/yaml.rs` is that reader
+(113 scalars and 79 documents of recorded `safe_load` verdicts) and
+`compose.rs` the importer, whose generated file matches `safe_dump` byte
+for byte across the corpus.
+
+Porting it also uncovered a bug in shipped code: `rewrite_website_vhost`
+never set `input.app_port`, so **every** rewrite of an application-mode
+website — a rename, an alias, a WAF toggle, a certificate — answered "Pick
+an installed application for this website first". The Python defaults that
+argument to `site_apps.app_port_for_website(website)`; the Rust left it at
+`None` and `_check_app_port` refuses a proxied vhost without one.
 
 **`provisioning` does not need the `docker` domain.** That was written
 down early and never re-checked: the router imports `mariadb`, `nginx`,
