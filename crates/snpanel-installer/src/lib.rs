@@ -24,5 +24,7 @@ pub mod panel_url;
 pub mod panel_user;
 pub mod php;
 pub mod phpmyadmin;
+pub mod sources;
 pub mod systemd_units;
 pub mod tools_vhost;
+pub mod waf_engine;

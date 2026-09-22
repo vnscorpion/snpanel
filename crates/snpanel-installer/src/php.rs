@@ -84,6 +84,83 @@ pub fn default_is_installed(versions: &[&str], default: &str) -> Result<(), Stri
 /// `upload_max_filesize` first, and the message PHP gives for it is one the
 /// panel cannot improve on — so the limits go up here rather than being
 /// explained later.
+/// `packages.sury.org`, which is where Debian's PHP comes from.
+///
+/// Source: `add_sury_repo`. Ubuntu uses Ondrej's PPA and EL uses Remi; this
+/// is the third, and the only one the installer configures by hand, because
+/// there is no `add-apt-repository` on Debian and the package that provides
+/// it is not in the archive.
+pub mod sury {
+    /// The signing key, kept out of the trusted-keys directory so it signs
+    /// this one repository and nothing else. A key in `trusted.gpg.d` would
+    /// be accepted for every suite on the machine.
+    pub const KEYRING: &str = "/usr/share/keyrings/sury-php.gpg";
+    pub const KEYRING_MODE: u32 = 0o644;
+    pub const KEY_URL: &str = "https://packages.sury.org/php/apt.gpg";
+
+    pub const LIST: &str = "/etc/apt/sources.list.d/sury-php.list";
+    pub const LIST_MODE: u32 = 0o644;
+
+    /// The one line written into the sources list.
+    ///
+    /// `signed-by=` is what ties the key to this repository. Without it the
+    /// key would have to go somewhere apt trusts globally, and a
+    /// compromised mirror of any other suite could then be signed with it.
+    pub fn sources_line(codename: &str) -> String {
+        format!("deb [signed-by={KEYRING}] https://packages.sury.org/php/ {codename} main\n")
+    }
+
+    /// What to do about a repository that turned out to have no suite for
+    /// this release.
+    ///
+    /// The rule, learnt the hard way: **leave nothing behind**. A sources
+    /// list pointing at a suite that does not exist makes every later
+    /// `apt-get update` on that machine fail — including the ones the panel
+    /// runs to install a customer's PHP extension months afterwards. So the
+    /// list is removed, the index is refreshed again so apt's own cache
+    /// stops carrying the error, and only then does the installer stop.
+    ///
+    /// The second refresh is best-effort: if it fails too, the machine is no
+    /// worse off than before the repository was added, and the message that
+    /// matters is the one about the missing suite.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Rollback {
+        pub remove: &'static str,
+        pub refresh_again: bool,
+        pub message: String,
+    }
+
+    pub fn rollback(codename: &str) -> Rollback {
+        Rollback {
+            remove: LIST,
+            refresh_again: true,
+            message: format!(
+                "packages.sury.org has no suite for {codename}; \
+                 the panel will use the PHP the distribution carries"
+            ),
+        }
+    }
+
+    /// `VERSION_CODENAME` out of `/etc/os-release`.
+    ///
+    /// An empty one is fatal rather than guessed at: a sources list with an
+    /// empty suite is the exact state [`rollback`] exists to clean up, and
+    /// writing one deliberately would be perverse.
+    pub const NO_CODENAME: &str = "cannot determine the Debian codename for the PHP repository";
+
+    pub fn codename_or_fail(os_release: &str) -> Result<&str, &'static str> {
+        for line in os_release.lines() {
+            if let Some(value) = line.trim().strip_prefix("VERSION_CODENAME=") {
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    return Ok(value);
+                }
+            }
+        }
+        Err(NO_CODENAME)
+    }
+}
+
 pub const INI_SETTINGS: &[(&str, &str)] = &[
     ("upload_max_filesize", "1024M"),
     ("post_max_size", "1024M"),
@@ -272,5 +349,87 @@ mod tests {
         // be confused for one another.
         assert!(!ini_setting_is("max_input_vars = 1000", "max_input_time"));
         assert!(ini_setting_is("max_input_vars = 1000", "max_input_vars"));
+    }
+
+    /// The key signs this one repository and nothing else. In
+    /// `trusted.gpg.d` it would be accepted for every suite on the machine.
+    #[test]
+    fn the_sury_key_is_tied_to_the_repository_that_uses_it() {
+        assert!(sury::KEYRING.starts_with("/usr/share/keyrings/"));
+        let line = sury::sources_line("trixie");
+        assert!(line.contains(&format!("[signed-by={}]", sury::KEYRING)));
+        assert_eq!(
+            line,
+            "deb [signed-by=/usr/share/keyrings/sury-php.gpg] \
+             https://packages.sury.org/php/ trixie main\n"
+        );
+    }
+
+    #[test]
+    fn the_sources_line_carries_the_codename_it_was_given() {
+        assert!(sury::sources_line("bookworm").contains(" bookworm main"));
+        assert!(sury::sources_line("trixie").contains(" trixie main"));
+    }
+
+    /// A sources list pointing at a suite that does not exist makes every
+    /// later `apt-get update` fail — including the ones the panel runs to
+    /// install a customer's PHP extension months afterwards. Adding the
+    /// repository is only safe because failing to use it cleans up.
+    #[test]
+    fn a_repository_with_no_suite_leaves_nothing_behind() {
+        let rollback = sury::rollback("resolute");
+        assert_eq!(rollback.remove, sury::LIST);
+        assert!(
+            rollback.refresh_again,
+            "apt's cache still carries the error"
+        );
+        // Character for character the shell's, extracted from `install.sh`:
+        // an operator who has seen this once should be able to search for
+        // it.
+        assert_eq!(
+            rollback.message,
+            "packages.sury.org has no suite for resolute; \
+             the panel will use the PHP the distribution carries"
+        );
+    }
+
+    /// Guessing a codename would write the exact sources list the rollback
+    /// exists to clean up.
+    #[test]
+    fn a_missing_codename_stops_rather_than_being_guessed() {
+        let real = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\n\
+                    ID=debian\n\
+                    VERSION_CODENAME=trixie\n";
+        assert_eq!(sury::codename_or_fail(real), Ok("trixie"));
+        // Quoted, which some releases do.
+        assert_eq!(
+            sury::codename_or_fail("VERSION_CODENAME=\"bookworm\"\n"),
+            Ok("bookworm")
+        );
+        // Absent, empty, and empty-quoted all stop.
+        assert_eq!(
+            sury::codename_or_fail("ID=debian\n"),
+            Err(sury::NO_CODENAME)
+        );
+        assert_eq!(
+            sury::codename_or_fail("VERSION_CODENAME=\n"),
+            Err(sury::NO_CODENAME)
+        );
+        assert_eq!(
+            sury::codename_or_fail("VERSION_CODENAME=\"\"\n"),
+            Err(sury::NO_CODENAME)
+        );
+        // And a line that merely ends with the name is not the assignment.
+        assert_eq!(
+            sury::codename_or_fail("UBUNTU_CODENAME=noble\n"),
+            Err(sury::NO_CODENAME)
+        );
+    }
+
+    #[test]
+    fn neither_the_key_nor_the_list_is_writable_by_anyone_else() {
+        for mode in [sury::KEYRING_MODE, sury::LIST_MODE] {
+            assert_eq!(mode & 0o022, 0, "{mode:o}");
+        }
     }
 }
