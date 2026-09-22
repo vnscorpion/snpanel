@@ -197,6 +197,32 @@ impl<'a> DatabaseRepo<'a> {
             .await?)
     }
 
+    /// Point an existing row at what a restore just recreated.
+    ///
+    /// Source: the `else` arm in `restore_user_backup` — the same four
+    /// columns the create path writes, on a row that is already there.
+    pub async fn restore_write(
+        &self,
+        id: i64,
+        owner_id: i64,
+        db_name: &str,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE database_accounts SET owner_id = ?, db_name = ?, db_user = ?, \
+                db_password = ? WHERE id = ?",
+        )
+        .bind(owner_id)
+        .bind(db_name)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn by_name(&self, db_name: &str) -> Result<Option<DatabaseAccount>, DbError> {
         Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
             "SELECT {COLUMNS} FROM database_accounts WHERE db_name = ? ORDER BY id LIMIT 1"

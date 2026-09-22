@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **200 of 211** | 95% |
+| API endpoints answered by Rust | **205 of 211** | 97% |
 | Routers served whole | 14 of 17 | `addons`, `auth`, `databases`, `firewall`, `malware`, `packages`, `panel_settings`, `services`, `site_apps`, `terminal`, `updates`, `users`, `waf`, `websites` |
 | Routers served in part | 2 | `maintenance` and `provisioning`; the strangler proxies the rest of each |
 | Routers untouched | 1 | `deps`, which is dependencies rather than routes |
@@ -1223,8 +1223,8 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (10) and `provisioning` (1).
-**11 endpoints**,
+`maintenance` (5) and `provisioning` (1).
+**6 endpoints**,
 counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
 build if that disagrees with `endpoint-coverage.py`.
 

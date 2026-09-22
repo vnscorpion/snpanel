@@ -202,7 +202,7 @@ fn raw_panel_settings() -> Value {
 }
 
 /// Source: `panel_settings.crs_mode()`.
-fn server_crs_mode() -> String {
+pub(super) fn server_crs_mode() -> String {
     raw_panel_settings()
         .get("crs_mode")
         .and_then(Value::as_str)

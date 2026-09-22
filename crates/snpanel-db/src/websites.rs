@@ -1073,3 +1073,117 @@ mod tests {
         );
     }
 }
+
+/// Every field a user-backup restore writes onto a site.
+///
+/// The restore is the one caller that sets all of these at once: the row is
+/// being rebuilt from an archive rather than edited, so a partial write would
+/// leave a site half from the backup and half from whatever was there before.
+#[derive(Debug, Clone)]
+pub struct RestoredWebsite<'a> {
+    pub domain: &'a str,
+    pub owner_id: i64,
+    pub root_path: &'a str,
+    pub document_root: &'a str,
+    pub linux_user: &'a str,
+    pub php_version: &'a str,
+    pub app_type: &'a str,
+    pub status: &'a str,
+    pub nginx_custom: &'a str,
+    pub nginx_rewrite_mode: &'a str,
+    pub waf_enabled: bool,
+    pub waf_default_rules: &'a str,
+    pub waf_custom_rules: &'a str,
+    pub http_flood_enabled: bool,
+    pub http_flood_config: &'a str,
+    pub created_at: &'a str,
+}
+
+impl<'a> WebsiteRepo<'a> {
+    /// Source: the `if website is None: ... else: ...` pair in
+    /// `restore_user_backup`.
+    ///
+    /// Returns the row's id and whether it had to be created, which is what
+    /// the endpoint reports back per site.
+    pub async fn restore_write(&self, site: &RestoredWebsite<'_>) -> Result<(i64, bool), DbError> {
+        if let Some(existing) = self.by_domain(site.domain).await? {
+            sqlx::query(
+                "UPDATE websites SET owner_id = ?, root_path = ?, document_root = ?, \
+                    linux_user = ?, php_version = ?, app_type = ?, status = ?, \
+                    nginx_custom = ?, nginx_config_mode = 'managed', \
+                    nginx_rewrite_mode = ?, waf_enabled = ?, waf_default_rules = ?, \
+                    waf_custom_rules = ?, http_flood_enabled = ?, http_flood_config = ? \
+                 WHERE id = ?",
+            )
+            .bind(site.owner_id)
+            .bind(site.root_path)
+            .bind(site.document_root)
+            .bind(site.linux_user)
+            .bind(site.php_version)
+            .bind(site.app_type)
+            .bind(site.status)
+            .bind(site.nginx_custom)
+            .bind(site.nginx_rewrite_mode)
+            .bind(site.waf_enabled)
+            .bind(site.waf_default_rules)
+            .bind(site.waf_custom_rules)
+            .bind(site.http_flood_enabled)
+            .bind(site.http_flood_config)
+            .bind(existing.id)
+            .execute(self.pool)
+            .await?;
+            return Ok((existing.id, false));
+        }
+        // `ssl_enabled=False` on a new row: the certificate is not in the
+        // archive, and a site claiming TLS it has no key for does not start.
+        let id = sqlx::query(
+            "INSERT INTO websites (domain, owner_id, root_path, document_root, linux_user, \
+                php_version, app_type, ssl_enabled, status, nginx_custom, nginx_config_mode, \
+                nginx_rewrite_mode, waf_enabled, waf_default_rules, waf_custom_rules, \
+                http_flood_enabled, http_flood_config, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'managed', ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(site.domain)
+        .bind(site.owner_id)
+        .bind(site.root_path)
+        .bind(site.document_root)
+        .bind(site.linux_user)
+        .bind(site.php_version)
+        .bind(site.app_type)
+        .bind(site.status)
+        .bind(site.nginx_custom)
+        .bind(site.nginx_rewrite_mode)
+        .bind(site.waf_enabled)
+        .bind(site.waf_default_rules)
+        .bind(site.waf_custom_rules)
+        .bind(site.http_flood_enabled)
+        .bind(site.http_flood_config)
+        .bind(site.created_at)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid();
+        Ok((id, true))
+    }
+
+    /// Every alias in the table, with the site it belongs to.
+    ///
+    /// Source: `db.query(WebsiteAlias).all()` inside `_hostname_conflicts`,
+    /// which excludes by **website** id rather than by alias id — so the
+    /// existing `hostname_taken` cannot answer this question.
+    pub async fn all_aliases(&self) -> Result<Vec<(i64, String)>, DbError> {
+        Ok(
+            sqlx::query_as::<_, (i64, String)>("SELECT website_id, domain FROM website_aliases")
+                .fetch_all(self.pool)
+                .await?,
+        )
+    }
+
+    /// Every site's id and domain, for the same question.
+    pub async fn all_domains(&self) -> Result<Vec<(i64, String)>, DbError> {
+        Ok(
+            sqlx::query_as::<_, (i64, String)>("SELECT id, domain FROM websites")
+                .fetch_all(self.pool)
+                .await?,
+        )
+    }
+}

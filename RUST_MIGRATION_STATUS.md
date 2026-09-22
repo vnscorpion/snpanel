@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 0 of 24 |
-| `maintenance` | 10 of 67 — the backup family and `app-files` |
+| `maintenance` | 5 of 67 — the backup family |
 | `provisioning` | 1 of 13 — `DELETE /accounts/{id}` |
 | `site_apps` | 0 of 10 |
 | `malware` | 0 of 12 |
@@ -1536,11 +1536,11 @@ And `for_website`, `for_owner` and `all_emails` on the repositories.
 
 ## Not started
 
-Measured, not recalled: **11 endpoints**, in two groups.
+Measured, not recalled: **6 endpoints**, in two groups.
 
 | group | left | what it needs |
 |---|---|---|
-| `maintenance` | 10 | the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) are plain router work |
+| `maintenance` | 5 | the backup family, which moves as a unit: its job registry is an **in-process dict**, so a job queued on one side is invisible to the other. One of the five, `POST /backup-sftp`, needs an **SSH/SFTP client** |
 | `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` reaches `site_apps.export_payload` — a helper verb that exists |
 
 One decision is left rather than three: **an SSH/SFTP client**, for the five

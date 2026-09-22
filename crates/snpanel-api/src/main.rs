@@ -51,6 +51,7 @@ mod php;
 mod php_tune;
 mod qr;
 mod ratelimit;
+mod restore;
 mod routes;
 mod shell;
 mod shlex;

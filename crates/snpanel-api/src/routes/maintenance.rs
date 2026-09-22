@@ -52,6 +52,29 @@ pub fn router() -> Router<AppState> {
             "/maintenance/files/{website_id}/download",
             get(download_file).fallback(crate::fallback),
         )
+        // A separate prefix on purpose: under `/files` these would be
+        // shadowed by `/files/{website_id}` and answer 422 instead of
+        // dispatching here.
+        .route(
+            "/maintenance/app-files/{app_id}",
+            get(list_app_files).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/app-files/{app_id}/read",
+            get(read_app_file).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/app-files/{app_id}/download",
+            get(download_app_file).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/app-files/{app_id}/upload",
+            post(upload_app_file).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-restore",
+            post(restore_user_backup).fallback(crate::fallback),
+        )
         .route(
             "/maintenance/files/mkdir",
             post(make_directory).fallback(crate::fallback),
@@ -275,6 +298,82 @@ async fn owned(
     Ok(website)
 }
 
+/// The tree a file operation runs in: a website root or an application root.
+///
+/// Source: `get_file_target` and the `AppFileTarget` adapter beside it.
+/// `file_manager` reads `root_path` and `linux_user` and nothing else, so an
+/// application can be handed to it directly rather than duplicating the whole
+/// module.
+pub(crate) struct FileTarget {
+    pub root_path: String,
+    pub linux_user: Option<String>,
+    /// What the audit log names. An application has no domain of its own, so
+    /// it is labelled `app:<name>`.
+    pub label: String,
+    /// The storage quota is charged to whoever owns the tree.
+    pub owner_id: i64,
+    /// An application's own files are code: a `.js` entry point or a build
+    /// script has to be allowed to arrive executable, which for a website is
+    /// an administrator-only thing to do.
+    pub allow_executable: Option<bool>,
+}
+
+impl FileTarget {
+    fn website(site: &snpanel_db::Website) -> FileTarget {
+        FileTarget {
+            root_path: site.root_path.clone(),
+            linux_user: site.linux_user.clone(),
+            label: site.domain.clone(),
+            owner_id: site.owner_id,
+            // `is_admin_role(current_user.role)` decides for a website, so
+            // this is left for the caller to fill in.
+            allow_executable: None,
+        }
+    }
+}
+
+/// Source: `get_file_target(db, user, app_id=...)`.
+///
+/// The addon guard first, then the app, then the self-heal: an app created
+/// before the directory was made at creation time, or by a release that left
+/// it unreadable by the panel user, gets it made now.
+async fn app_target(
+    state: &AppState,
+    current: &CurrentUser,
+    app_id: i64,
+) -> Result<FileTarget, Response> {
+    super::addons::require_application()?;
+    let app = match state.db.site_apps().full_by_id(app_id).await {
+        Ok(Some(app)) => app,
+        Ok(None) => return Err(not_found("Application not found")),
+        Err(e) => {
+            tracing::error!("reading application {app_id} failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    if app.owner_id != current.user.id
+        && !permissions::has_role(&current.user.role, permissions::Role::Admin)
+    {
+        return Err(crate::errors::not_enough_permissions());
+    }
+    let root_path = match crate::site_apps::directory_for(&app) {
+        Ok(path) => path,
+        Err(why) => return Err(bad_request(&why)),
+    };
+    // `os.access(root, os.R_OK)` — readable by *this* process, not merely
+    // present.
+    if std::fs::read_dir(&root_path).is_err() {
+        let _ = crate::site_apps::ensure_directory(state.settings.command_dry_run, &app).await;
+    }
+    Ok(FileTarget {
+        root_path,
+        linux_user: crate::site_apps::owner_linux_user(&app).ok(),
+        label: format!("app:{}", app.name),
+        owner_id: app.owner_id,
+        allow_executable: Some(true),
+    })
+}
+
 /// Source: `list_files`.
 async fn list_files(
     State(state): State<AppState>,
@@ -286,8 +385,28 @@ async fn list_files(
         Ok(w) => w,
         Err(r) => return r,
     };
+    list_in(&FileTarget::website(&website), &params)
+}
+
+/// Source: `list_app_files`. A separate prefix on purpose: under `/files`
+/// this would be shadowed by `/files/{website_id}` and answer 422 instead of
+/// dispatching here.
+async fn list_app_files(
+    State(state): State<AppState>,
+    AxumPath(app_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let target = match app_target(&state, &current, app_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    list_in(&target, &params)
+}
+
+fn list_in(target: &FileTarget, params: &HashMap<String, String>) -> Response {
     let path = params.get("path").cloned().unwrap_or_default();
-    match files::list_files(&website.root_path, &path) {
+    match files::list_files(&target.root_path, &path) {
         Ok(items) => axum::Json(json!({ "items": items })).into_response(),
         // The Python lets the ValueError out of `list_files` unhandled, and
         // FastAPI turns that into a 500. Matching it rather than improving
@@ -310,6 +429,29 @@ async fn read_file(
         Ok(w) => w,
         Err(r) => return r,
     };
+    read_in(&state, &current, &FileTarget::website(&website), &params).await
+}
+
+/// Source: `read_app_file`.
+async fn read_app_file(
+    State(state): State<AppState>,
+    AxumPath(app_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let target = match app_target(&state, &current, app_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    read_in(&state, &current, &target, &params).await
+}
+
+async fn read_in(
+    state: &AppState,
+    current: &CurrentUser,
+    site: &FileTarget,
+    params: &HashMap<String, String>,
+) -> Response {
     let Some(path) = params.get("path") else {
         return crate::errors::validation_error(vec![json!({
             "type": "missing",
@@ -319,19 +461,19 @@ async fn read_file(
         })]);
     };
     let allow_sensitive = permissions::is_admin_role(&current.user.role);
-    let target = match files::readable_text_file(&website.root_path, path, allow_sensitive) {
+    let target = match files::readable_text_file(&site.root_path, path, allow_sensitive) {
         Ok(t) => t,
         Err(e) => return bad_request(&e.to_string()),
     };
 
     // A site with a Linux user owns its files, and the panel account cannot
     // read into them - so the read happens as that user, through the helper.
-    match website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+    match site.linux_user.as_deref().filter(|u| !u.is_empty()) {
         Some(user) => {
-            let root = std::fs::canonicalize(&website.root_path)
-                .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+            let root = std::fs::canonicalize(&site.root_path)
+                .unwrap_or_else(|_| std::path::PathBuf::from(&site.root_path));
             let root_str = root.to_string_lossy().into_owned();
-            let relative = files::helper_relative_path(&website.root_path, &target);
+            let relative = files::helper_relative_path(&site.root_path, &target);
             let full = target.to_string_lossy().into_owned();
             let result = shell::privileged(
                 state.settings.command_dry_run,
@@ -367,6 +509,28 @@ async fn download_file(
         Ok(w) => w,
         Err(r) => return r,
     };
+    download_in(&current, &FileTarget::website(&website), &params).await
+}
+
+/// Source: `download_app_file`.
+async fn download_app_file(
+    State(state): State<AppState>,
+    AxumPath(app_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let target = match app_target(&state, &current, app_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    download_in(&current, &target, &params).await
+}
+
+async fn download_in(
+    current: &CurrentUser,
+    site: &FileTarget,
+    params: &HashMap<String, String>,
+) -> Response {
     let Some(path) = params.get("path") else {
         return crate::errors::validation_error(vec![json!({
             "type": "missing",
@@ -376,7 +540,7 @@ async fn download_file(
         })]);
     };
     let allow_sensitive = permissions::is_admin_role(&current.user.role);
-    let target = match files::download_file_path(&website.root_path, path, allow_sensitive) {
+    let target = match files::download_file_path(&site.root_path, path, allow_sensitive) {
         Ok(t) => t,
         Err(e) => return bad_request(&e.to_string()),
     };
@@ -2845,7 +3009,7 @@ async fn archive_entries(State(state): State<AppState>, req: axum::extract::Requ
             return bad_request("Archive output cannot be inside a selected folder");
         }
     }
-    if let Err(r) = quota_check(&state, &website, total_size(&selected), 0).await {
+    if let Err(r) = quota_check(&state, website.owner_id, total_size(&selected), 0).await {
         return r;
     }
 
@@ -2946,7 +3110,7 @@ fn assert_tree_read_allowed(
 /// The quota is charged for what arrives *minus* what it replaces: an
 /// upload overwriting a 10 MB file with a 12 MB one costs 2 MB, not 12.
 async fn upload_file(State(state): State<AppState>, req: axum::extract::Request) -> Response {
-    use axum::extract::{FromRequest, FromRequestParts};
+    use axum::extract::FromRequestParts;
 
     let (mut parts, body) = req.into_parts();
     let current = match CurrentUser::from_parts(&mut parts, &state).await {
@@ -2969,6 +3133,57 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
         Ok(w) => w,
         Err(r) => return r,
     };
+    upload_into(
+        state,
+        current,
+        FileTarget::website(&website),
+        directory,
+        parts,
+        body,
+    )
+    .await
+}
+
+/// `POST /maintenance/app-files/{app_id}/upload`.
+///
+/// Source: `upload_app_file`. Two things differ from a website's: the
+/// directory defaults to the application root rather than to `public_html`,
+/// and an executable is always allowed — an application's own files are
+/// code.
+async fn upload_app_file(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    use axum::extract::FromRequestParts;
+
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let app_id = match AxumPath::<i64>::from_request_parts(&mut parts, &state).await {
+        Ok(AxumPath(id)) => id,
+        Err(e) => return bad_request(&e.body_text()),
+    };
+    // `path: str = Query(default="")` — the application's own root.
+    let directory = Query::<HashMap<String, String>>::try_from_uri(&parts.uri)
+        .ok()
+        .and_then(|Query(q)| q.get("path").cloned())
+        .unwrap_or_default();
+
+    let target = match app_target(&state, &current, app_id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    upload_into(state, current, target, directory, parts, body).await
+}
+
+async fn upload_into(
+    state: AppState,
+    current: CurrentUser,
+    site: FileTarget,
+    directory: String,
+    parts: axum::http::request::Parts,
+    body: Body,
+) -> Response {
+    use axum::extract::FromRequest;
 
     let request = axum::extract::Request::from_parts(parts.clone(), body);
     let mut multipart = match axum::extract::Multipart::from_request(request, &state).await {
@@ -3002,7 +3217,7 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
         filename = "upload.bin".to_string();
     }
 
-    let target_dir = match files::safe_path(&website.root_path, &directory, false) {
+    let target_dir = match files::safe_path(&site.root_path, &directory, false) {
         Ok(p) => p,
         Err(e) => return bad_request(&e.to_string()),
     };
@@ -3020,8 +3235,12 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
     if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
         return bad_request("Refusing to overwrite a symlink");
     }
-    let admin = permissions::is_admin_role(&current.user.role);
-    if let Err(e) = files::assert_write_allowed(&target, "Uploading", admin) {
+    // `allow_executable` is `is_admin_role(...)` for a website and a plain
+    // `True` for an application.
+    let allow_executable = site
+        .allow_executable
+        .unwrap_or_else(|| permissions::is_admin_role(&current.user.role));
+    if let Err(e) = files::assert_write_allowed(&target, "Uploading", allow_executable) {
         return bad_request(&e.to_string());
     }
 
@@ -3032,7 +3251,7 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
         .filter(std::fs::Metadata::is_file)
         .map(|m| m.len())
         .unwrap_or(0);
-    if let Err(r) = quota_check(&state, &website, content.len() as u64, replaced).await {
+    if let Err(r) = quota_check(&state, site.owner_id, content.len() as u64, replaced).await {
         return r;
     }
 
@@ -3045,7 +3264,7 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
         return bad_request(&e);
     }
 
-    let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+    let Some(linux_user) = site.linux_user.as_deref().filter(|u| !u.is_empty()) else {
         return bad_request("Website has no runtime user configured");
     };
     let staged = std::env::temp_dir().join(format!(
@@ -3058,10 +3277,10 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
     }
     let staged_str = staged.to_string_lossy().into_owned();
     let target_str = target.to_string_lossy().into_owned();
-    let root = std::fs::canonicalize(&website.root_path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+    let root = std::fs::canonicalize(&site.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&site.root_path));
     let root_str = root.to_string_lossy().into_owned();
-    let target_rel = files::helper_relative_path(&website.root_path, &target);
+    let target_rel = files::helper_relative_path(&site.root_path, &target);
     let result = shell::privileged(
         state.settings.command_dry_run,
         "site-file-install",
@@ -3078,17 +3297,29 @@ async fn upload_file(State(state): State<AppState>, req: axum::extract::Request)
         return bad_request(result.failure_detail("Cannot install the upload").trim());
     }
 
-    fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+    fix_site_path(&state, &target_str, site.linux_user.as_deref()).await;
     clear_fastcgi_cache(&state).await;
+    // The two answers differ, and so do the two actions: an application's
+    // upload is logged as `upload_app_file` against `app:<name>` and reports
+    // what it `stored`, which is what the Applications page reads.
+    let app = site.allow_executable.is_some();
     audit_detail(
         &state,
         current.user.id,
-        "upload_file",
-        &website.domain,
+        if app {
+            "upload_app_file"
+        } else {
+            "upload_file"
+        },
+        &site.label,
         &target_str,
     )
     .await;
-    axum::Json(json!({ "target": target_str })).into_response()
+    if app {
+        axum::Json(json!({ "stored": target_str })).into_response()
+    } else {
+        axum::Json(json!({ "target": target_str })).into_response()
+    }
 }
 
 /// `DELETE /maintenance/files/{website_id}`.
@@ -3536,17 +3767,17 @@ async fn install_php_version(
 /// land under the customer's home.
 async fn quota_check(
     state: &AppState,
-    website: &snpanel_db::Website,
+    owner_id: i64,
     incoming_bytes: u64,
     replaced_bytes: u64,
 ) -> Result<(), Response> {
-    let owner = match state.db.users().by_id(website.owner_id).await {
+    let owner = match state.db.users().by_id(owner_id).await {
         Ok(Some(u)) => u,
         // Source: `website.owner` being `None`. The Python would raise
         // `AttributeError` reading `.role` off it, which is a 500 - not a
         // silently unlimited write.
         Ok(None) => {
-            tracing::error!("website {} has no owner row", website.id);
+            tracing::error!("no owner row for user {owner_id}");
             return Err(internal_error());
         }
         Err(e) => {
@@ -3914,7 +4145,7 @@ async fn copy_entries(State(state): State<AppState>, req: axum::extract::Request
     // zero: a copy cannot overwrite, because `_assert_transfer_target` has
     // already refused every target that exists.
     let sources: Vec<std::path::PathBuf> = pairs.iter().map(|(s, _)| s.clone()).collect();
-    if let Err(r) = quota_check(&state, &website, total_size(&sources), 0).await {
+    if let Err(r) = quota_check(&state, website.owner_id, total_size(&sources), 0).await {
         return r;
     }
 
@@ -4042,7 +4273,7 @@ async fn create_file(State(state): State<AppState>, req: axum::extract::Request)
     // customer who is *already* over their limit. That is deliberate in the
     // Python - an account over quota should not be able to keep adding files,
     // even empty ones.
-    if let Err(r) = quota_check(&state, &website, 0, 0).await {
+    if let Err(r) = quota_check(&state, website.owner_id, 0, 0).await {
         return r;
     }
 
@@ -4115,7 +4346,14 @@ async fn write_file(State(state): State<AppState>, req: axum::extract::Request) 
         // `/etc/nginx`.
         return bad_request("Refusing to write through a symlink");
     }
-    if let Err(r) = quota_check(&state, &website, content_size, existing_file_size(&target)).await {
+    if let Err(r) = quota_check(
+        &state,
+        website.owner_id,
+        content_size,
+        existing_file_size(&target),
+    )
+    .await
+    {
         return r;
     }
 
@@ -6222,6 +6460,85 @@ mod da_import_tests {
 }
 
 #[cfg(test)]
+mod app_file_tests {
+    use super::*;
+
+    /// The two file targets are not interchangeable, and the differences are
+    /// the ones the Python spells out rather than any I chose.
+    #[test]
+    fn an_application_target_differs_from_a_websites_in_three_ways() {
+        let site = snpanel_db::Website {
+            id: 1,
+            domain: "example.test".into(),
+            owner_id: 7,
+            root_path: "/home/alice/example.test".into(),
+            document_root: "public_html".into(),
+            linux_user: Some("alice".into()),
+            php_version: "8.3".into(),
+            app_type: "wordpress".into(),
+            ssl_enabled: false,
+            ssl_mode: "none".into(),
+            ssl_cert_path: None,
+            ssl_key_path: None,
+            ssl_ca_path: None,
+            ssl_updated_at: None,
+            ssl_source_domain: None,
+            status: "active".into(),
+            nginx_custom: String::new(),
+            nginx_config_mode: "managed".into(),
+            nginx_rewrite_mode: "none".into(),
+            waf_enabled: true,
+            waf_default_rules: String::new(),
+            waf_custom_rules: String::new(),
+            crs_enabled: false,
+            http_flood_enabled: false,
+            http_flood_config: String::new(),
+            blocked_bots: String::new(),
+            app_id: None,
+        };
+        let target = FileTarget::website(&site);
+        assert_eq!(target.label, "example.test");
+        assert_eq!(target.owner_id, 7);
+        assert_eq!(target.root_path, "/home/alice/example.test");
+        // A website leaves the executable question to the caller's role.
+        assert_eq!(target.allow_executable, None);
+
+        // An application's is `app:<name>`, and an executable always lands:
+        // a `.js` entry point or a build script is what the tree is *for*.
+        let app = FileTarget {
+            root_path: "/home/alice/apps/api".into(),
+            linux_user: Some("alice".into()),
+            label: "app:api".into(),
+            owner_id: 7,
+            allow_executable: Some(true),
+        };
+        assert_eq!(app.label, "app:api");
+        assert_eq!(app.allow_executable, Some(true));
+    }
+
+    /// Which of the two answers an upload gives is decided by the same field,
+    /// so a target cannot end up logged as one and answered as the other.
+    #[test]
+    fn an_upload_answers_stored_for_an_application_and_target_for_a_site() {
+        for (allow_executable, action, key) in [
+            (None, "upload_file", "target"),
+            (Some(true), "upload_app_file", "stored"),
+        ] {
+            let app = allow_executable.is_some();
+            assert_eq!(
+                if app {
+                    "upload_app_file"
+                } else {
+                    "upload_file"
+                },
+                action
+            );
+            assert_eq!(if app { "stored" } else { "target" }, key);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -6708,4 +7025,928 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+}
+
+// ---------------------------------------------------------------------------
+// reading a user backup back in
+// ---------------------------------------------------------------------------
+
+/// `POST /maintenance/user-restore`.
+///
+/// Source: `restore_user_backup`. Administrator only: it writes into another
+/// account's home, recreates their databases and can overwrite a site that is
+/// serving right now.
+async fn restore_user_backup(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `UserRestoreBackup.backup_file: str` — required, and a string.
+    let backup_file = match payload.get("backup_file") {
+        Some(Value::String(text)) => text.clone(),
+        None => return crate::errors::missing_field("backup_file", payload.clone()),
+        Some(other) => return crate::errors::string_type("backup_file", other),
+    };
+    if !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+
+    let result = match run_user_restore(&state, &backup_file).await {
+        Ok(result) => result,
+        // `except (FileNotFoundError, ValueError, RuntimeError)` — every way
+        // this can fail is the caller's to see, because every one of them
+        // names something in the archive or on the machine.
+        Err(why) => return bad_request(&why),
+    };
+    let username = result
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or("user")
+        .to_string();
+    let detail = snpanel_db::AuditRepo::detail_with_request(
+        &backup_file,
+        &crate::client::audit_ip(&parts),
+        parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+    );
+    if let Err(e) = state
+        .db
+        .audits()
+        .log(Some(current.user.id), "restore_user", &username, &detail)
+        .await
+    {
+        tracing::error!("Failed to write audit log: action=restore_user target={username}: {e}");
+    }
+    axum::Json(result).into_response()
+}
+
+/// `^[A-Za-z0-9._-]{3,64}$` — `PANEL_USERNAME_RE`, which is **looser** than
+/// the Linux account pattern: a backup may name an account this installation
+/// would not create, and the name is still what its files are filed under.
+fn backup_username_ok(name: &str) -> bool {
+    let count = name.chars().count();
+    (3..=64).contains(&count)
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+async fn run_user_restore(state: &AppState, backup_file: &str) -> Result<Value, String> {
+    let root = &state.settings.backup_root;
+    let archive = crate::backups::user_backup_path(root, backup_file).map_err(|e| e.to_string())?;
+    let manifest =
+        crate::backups::read_backup_manifest(root, backup_file).map_err(|e| e.to_string())?;
+
+    let kind = manifest
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !crate::restore::RESTORABLE_KINDS.contains(&kind) {
+        return Err("This is not a snpanel or opanel user backup".to_string());
+    }
+    let user_info = manifest.get("user").cloned().unwrap_or(Value::Null);
+    let username = user_info
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !backup_username_ok(&username) {
+        return Err("Invalid user in backup".to_string());
+    }
+
+    let (user_id, created_user) = ensure_restored_user(state, &username, &user_info).await?;
+
+    // `site_users.ensure_panel_user(user.username)`.
+    let panel_user = snpanel_core::types::PanelUsername::parse(&username.to_lowercase())
+        .map_err(|_| format!("Invalid panel Linux user: {username}"))?;
+    let dry = state.settings.command_dry_run;
+    let home = format!("/home/{}", panel_user.as_str());
+    let ensured = shell::privileged(
+        dry,
+        "panel-user-ensure",
+        &[panel_user.as_str()],
+        None,
+        Some(&["mkdir", "-p", &home]),
+    )
+    .await;
+    if !ensured.ok() {
+        return Err(ensured
+            .failure_detail("Could not create the system account")
+            .trim()
+            .to_string());
+    }
+
+    // Stage under the panel-owned import area: the helper only copies site
+    // files into place from there, because the site directory belongs to its
+    // Linux user and not to the panel.
+    let stage = crate::da_import::make_import_stage()
+        .ok_or_else(|| "Could not make the staging directory".to_string())?;
+    let outcome = restore_everything(
+        state,
+        &archive,
+        &manifest,
+        &username,
+        user_id,
+        &panel_user,
+        &stage,
+    )
+    .await;
+    // The staging tree is a full copy of a customer's files; it goes whether
+    // or not the restore worked.
+    let _ = std::fs::remove_dir_all(&stage);
+    let (websites, applications) = outcome?;
+
+    Ok(json!({
+        "created_user": created_user,
+        "username": username,
+        "websites": websites,
+        "applications": applications,
+    }))
+}
+
+/// The account the archive belongs to, made if this installation has none.
+async fn ensure_restored_user(
+    state: &AppState,
+    username: &str,
+    info: &Value,
+) -> Result<(i64, bool), String> {
+    if let Ok(Some(existing)) = state.db.users().by_username(username).await {
+        return Ok((existing.id, false));
+    }
+    let mut email = info
+        .get("email")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{username}@users.snpanel.invalid"));
+    if crate::restore::is_placeholder_email(&email) {
+        email = format!("{username}@users.snpanel.invalid");
+    }
+    let taken = state.db.users().all_emails().await.unwrap_or_default();
+    if taken.iter().any(|known| known == &email) {
+        email = format!(
+            "{username}-{}@users.snpanel.invalid",
+            crate::ratelimit::random_hex(4)
+        );
+    }
+    // `normalize_role(...)` with everything else falling back — a backup from
+    // a release with a role this one does not have restores as a customer
+    // rather than refusing the whole archive.
+    let role = info
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(snpanel_core::permissions::normalize_role)
+        .map(|role| role.as_str().to_string())
+        .unwrap_or_else(|| "end_user".to_string());
+    let hashed = match info
+        .get("hashed_password")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        Some(hash) => hash.to_string(),
+        // No password in the archive: one nobody knows, so the account has to
+        // be given a new one rather than being open.
+        None => snpanel_core::crypto::password::hash_password(&crate::mariadb::random_password(24))
+            .map_err(|e| format!("hashing failed: {e}"))?,
+    };
+    let website_limit = info
+        .get("website_limit")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(5);
+    let storage_limit_mb = info
+        .get("storage_limit_mb")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(1024);
+
+    let id = state
+        .db
+        .users()
+        .create(&snpanel_db::NewUser {
+            username,
+            email: &email,
+            hashed_password: &hashed,
+            role: &role,
+            package_id: None,
+            website_limit,
+            storage_limit_mb,
+            // `User.terminal_enabled` is not in the manifest — a backup
+            // written before the column existed has nothing to say about it,
+            // and the model's default is off.
+            terminal_enabled: false,
+        })
+        .await
+        .map_err(|e| format!("Could not create the account: {e}"))?;
+    Ok((id, true))
+}
+
+/// Every site, then every application.
+async fn restore_everything(
+    state: &AppState,
+    archive: &std::path::Path,
+    manifest: &Value,
+    username: &str,
+    user_id: i64,
+    panel_user: &snpanel_core::types::PanelUsername,
+    stage: &std::path::Path,
+) -> Result<(Vec<Value>, Vec<Value>), String> {
+    let mut restored = Vec::new();
+    let empty: Vec<Value> = Vec::new();
+    let sites = manifest
+        .get("websites")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .clone();
+    for site in &sites {
+        restored.push(restore_one_site(state, archive, site, user_id, panel_user, stage).await?);
+    }
+    let applications =
+        restore_applications(state, archive, manifest, username, user_id, stage).await;
+    Ok((restored, applications))
+}
+
+async fn restore_one_site(
+    state: &AppState,
+    archive: &std::path::Path,
+    site: &Value,
+    user_id: i64,
+    panel_user: &snpanel_core::types::PanelUsername,
+    stage: &std::path::Path,
+) -> Result<Value, String> {
+    let dry = state.settings.command_dry_run;
+    let domain = site
+        .get("domain")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    // `site_users.DOMAIN_RE`, which is the **whole** name and not one label:
+    // two labels at least, so `localhost` out of a hand-edited archive is
+    // refused rather than turned into a site root.
+    if snpanel_core::types::Domain::parse(&domain).is_err() {
+        return Err(format!("Invalid domain in backup: {domain}"));
+    }
+    let php_version = site
+        .get("php_version")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.settings.default_php_version.clone());
+    let app_type = crate::restore::app_type_for(site.get("app_type").and_then(Value::as_str));
+    let rewrite_mode = crate::restore::rewrite_mode_for(
+        site.get("nginx_rewrite_mode").and_then(Value::as_str),
+        &app_type,
+    );
+    let document_root = match site
+        .get("document_root")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => snpanel_core::types::DocumentRoot::parse(text)
+            .map_err(|_| {
+                "document_root must be a safe relative path such as public_html/public".to_string()
+            })?
+            .as_str()
+            .to_string(),
+        None => "public_html".to_string(),
+    };
+    let raw_aliases: Vec<String> = site
+        .get("aliases")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(json_text).collect())
+        .unwrap_or_default();
+    let aliases = crate::restore::alias_domains(&raw_aliases, &domain);
+
+    let root_path = format!("/home/{}/{domain}", panel_user.as_str());
+    let runtime_php = matches!(app_type.as_str(), "wordpress" | "php").then(|| php_version.clone());
+
+    // The runtime first: the directory and the PHP pool have to exist before
+    // anything is copied into them.
+    ensure_site_runtime(state, panel_user, &root_path, runtime_php.as_deref()).await?;
+    let site_stage = stage.join("site").join(&domain);
+    crate::restore::extract_prefix(archive, &format!("sites/{domain}/site"), &site_stage)?;
+    let populate = shell::privileged(
+        dry,
+        "site-populate",
+        &[
+            panel_user.as_str(),
+            &root_path,
+            &site_stage.to_string_lossy(),
+        ],
+        None,
+        Some(&["true"]),
+    )
+    .await;
+    if !populate.ok() {
+        return Err(populate
+            .failure_detail("Could not copy the site files into place")
+            .trim()
+            .to_string());
+    }
+    // Backups from older releases may contain `public/`. Normalise the
+    // document root after extraction, before the vhost is rewritten.
+    ensure_site_runtime(state, panel_user, &root_path, runtime_php.as_deref()).await?;
+    let document = shell::privileged(
+        dry,
+        "site-document-root-ensure",
+        &[panel_user.as_str(), &root_path, &document_root],
+        None,
+        Some(&["true"]),
+    )
+    .await;
+    if !document.ok() {
+        return Err(document
+            .failure_detail("Could not create the document root")
+            .trim()
+            .to_string());
+    }
+
+    let waf_enabled = site
+        .get("waf_enabled")
+        .map(crate::compose::json_truthy)
+        .unwrap_or(true);
+    let http_flood_enabled = site
+        .get("http_flood_enabled")
+        .map(crate::compose::json_truthy)
+        .unwrap_or(false);
+    let row = snpanel_db::RestoredWebsite {
+        domain: &domain,
+        owner_id: user_id,
+        root_path: &root_path,
+        document_root: &document_root,
+        linux_user: panel_user.as_str(),
+        php_version: &php_version,
+        app_type: &app_type,
+        status: &text_or(site.get("status"), "active"),
+        nginx_custom: &text_or(site.get("nginx_custom"), ""),
+        nginx_rewrite_mode: &rewrite_mode,
+        waf_enabled,
+        waf_default_rules: &text_or(site.get("waf_default_rules"), ""),
+        waf_custom_rules: &text_or(site.get("waf_custom_rules"), ""),
+        http_flood_enabled,
+        http_flood_config: &text_or(site.get("http_flood_config"), ""),
+        created_at: &snpanel_db::sqlalchemy_now(),
+    };
+    let (website_id, created) = state
+        .db
+        .websites()
+        .restore_write(&row)
+        .await
+        .map_err(|e| format!("Could not write the row for {domain}: {e}"))?;
+
+    restore_aliases(state, website_id, &aliases).await?;
+
+    if let Some(info) = site.get("database").filter(|value| !value.is_null()) {
+        restore_database(state, archive, stage, &domain, website_id, user_id, info).await?;
+    }
+
+    let website = state
+        .db
+        .websites()
+        .by_id(website_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| format!("The row for {domain} vanished mid-restore"))?;
+    let waf = crate::waf::sync_website_rules(dry, &website, &super::waf::server_crs_mode())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(waf
+            .failure_detail("Could not write WAF rules")
+            .trim()
+            .to_string());
+    }
+    // The zones are synced before the vhost when the site wants them and
+    // after when it does not, which is the Python's order and not an
+    // accident: a vhost naming a zone that has not been written yet fails
+    // `nginx -t`, and one that has stopped using a zone has to be rewritten
+    // before the zone goes.
+    if http_flood_enabled {
+        sync_flood_zones(state).await?;
+    }
+    write_import_vhost(
+        state,
+        &domain,
+        &root_path,
+        panel_user,
+        &app_type,
+        runtime_php.as_deref(),
+        waf_enabled,
+        &aliases,
+        &[],
+    )
+    .await?;
+    if !http_flood_enabled {
+        sync_flood_zones(state).await?;
+    }
+    // `wordpress.fix_permissions` — two arguments, so the helper files the
+    // tree under the site's own account.
+    let owner = format!("{0}:{0}", panel_user.as_str());
+    let _ = shell::privileged(
+        dry,
+        "fix-permissions",
+        &[&root_path, panel_user.as_str()],
+        None,
+        Some(&["chown", "-R", &owner, &root_path]),
+    )
+    .await;
+
+    Ok(json!({ "domain": domain, "created": created }))
+}
+
+/// `str(value)` for a name read out of a manifest. A list of aliases is
+/// written by the panel and holds strings, but a hand-edited archive can
+/// hold anything, and the Python stringifies before it looks.
+fn json_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "None".to_string(),
+        Value::Bool(true) => "True".to_string(),
+        Value::Bool(false) => "False".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// `text[-n:]` — **characters**, not bytes.
+fn last_chars(text: &str, n: usize) -> String {
+    let count = text.chars().count();
+    text.chars().skip(count.saturating_sub(n)).collect()
+}
+
+fn text_or(value: Option<&Value>, fallback: &str) -> String {
+    match value.and_then(Value::as_str) {
+        Some(text) if !text.is_empty() => text.to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
+async fn ensure_site_runtime(
+    state: &AppState,
+    panel_user: &snpanel_core::types::PanelUsername,
+    root_path: &str,
+    runtime_php: Option<&str>,
+) -> Result<(), String> {
+    let php = runtime_php.unwrap_or("");
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-runtime-ensure",
+        &[panel_user.as_str(), root_path, php],
+        None,
+        Some(&["mkdir", "-p", root_path]),
+    )
+    .await;
+    if result.ok() {
+        return Ok(());
+    }
+    Err(result
+        .failure_detail("Could not prepare the site directory")
+        .trim()
+        .to_string())
+}
+
+/// Source: `nginx.sync_http_flood_zones(db.query(Website).all())`.
+///
+/// The same zones the websites router writes, under the same helper verb.
+/// The message differs because the Python's does: this call site names
+/// writing them and the other names saving them, and an operator reading a
+/// failed restore should find the sentence the restore printed.
+async fn sync_flood_zones(state: &AppState) -> Result<(), String> {
+    let websites = state
+        .db
+        .websites()
+        .list(None, "")
+        .await
+        .map_err(|e| format!("Could not read the websites: {e}"))?;
+    let configs: Vec<(String, bool, snpanel_nginx::HttpFloodConfig)> = websites
+        .iter()
+        .map(|site| {
+            (
+                site.domain.clone(),
+                site.http_flood_enabled,
+                crate::waf::http_flood_config(site),
+            )
+        })
+        .collect();
+    let sites: Vec<snpanel_nginx::FloodSite<'_>> = configs
+        .iter()
+        .map(|(domain, enabled, config)| snpanel_nginx::FloodSite {
+            domain,
+            enabled: *enabled,
+            config: *config,
+        })
+        .collect();
+    let content = snpanel_nginx::render_http_flood_zones(&sites).map_err(|e| e.to_string())?;
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "http-flood-zones-save",
+        &[],
+        Some(&content),
+        Some(&[
+            "bash",
+            "-lc",
+            "cat >/tmp/snpanel-http-flood-zones.conf && echo HTTP flood zones saved",
+        ]),
+    )
+    .await;
+    if result.ok() {
+        return Ok(());
+    }
+    Err(result
+        .failure_detail("Could not write HTTP flood zones")
+        .trim()
+        .to_string())
+}
+
+/// The aliases the archive names, and only those.
+///
+/// Source: the two loops — an alias in the backup that is not in the table is
+/// added, and one in the table that is not in the backup is removed.
+async fn restore_aliases(
+    state: &AppState,
+    website_id: i64,
+    wanted: &[String],
+) -> Result<(), String> {
+    let websites = state.db.websites().all_domains().await.unwrap_or_default();
+    let all_aliases = state.db.websites().all_aliases().await.unwrap_or_default();
+    let existing = state
+        .db
+        .websites()
+        .aliases(website_id)
+        .await
+        .unwrap_or_default();
+
+    for alias in wanted {
+        if crate::restore::hostname_conflicts(alias, &websites, &all_aliases, Some(website_id)) {
+            return Err(format!(
+                "Alias domain already belongs to another website: {alias}"
+            ));
+        }
+        if !existing.iter().any(|known| &known.domain == alias) {
+            state
+                .db
+                .websites()
+                .alias_create(website_id, alias, "alias")
+                .await
+                .map_err(|e| format!("Could not add the alias {alias}: {e}"))?;
+        }
+    }
+    for alias in &existing {
+        if !wanted.contains(&alias.domain) {
+            let _ = state.db.websites().alias_delete(website_id, alias.id).await;
+        }
+    }
+    Ok(())
+}
+
+/// Recreate the account this archive already owned, and load its dump.
+async fn restore_database(
+    state: &AppState,
+    archive: &std::path::Path,
+    stage: &std::path::Path,
+    domain: &str,
+    website_id: i64,
+    owner_id: i64,
+    info: &Value,
+) -> Result<(), String> {
+    let db_name = text_or(info.get("db_name"), "");
+    let db_user = text_or(info.get("db_user"), "");
+    let db_password = match info
+        .get("db_password")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => text.to_string(),
+        None => crate::mariadb::random_password(16),
+    };
+    if let Ok(Some(conflict)) = state.db.databases().by_name(&db_name).await {
+        if conflict.website_id != Some(website_id) {
+            return Err(format!(
+                "Database name already belongs to another website: {db_name}"
+            ));
+        }
+    }
+    let dry = state.settings.command_dry_run;
+    // `allow_existing_user=True`: a restore recreates the account this
+    // archive already owned, and the MariaDB user may still be there from
+    // before the row was deleted.
+    let _ = dry;
+    crate::mariadb::create_database_credentials(&db_name, &db_user, &db_password, None, true)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let member = match info
+        .get("sql_member")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => text.to_string(),
+        None => format!("databases/{domain}.sql"),
+    };
+    if let Some(dump) = crate::restore::extract_member_to_file(archive, &member, stage)? {
+        crate::mariadb::import_database(dry, &db_name, &dump.to_string_lossy())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let encrypted = snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &db_password);
+    // `.first()` — the Python takes the first row for this site and leaves
+    // any others alone, which is what a site with two database accounts on
+    // it already means.
+    let existing = state
+        .db
+        .databases()
+        .for_website(website_id)
+        .await
+        .unwrap_or_default();
+    match existing.first() {
+        Some(row) => state
+            .db
+            .databases()
+            .restore_write(row.id, owner_id, &db_name, &db_user, &encrypted)
+            .await
+            .map_err(|e| format!("Could not update the database row: {e}"))?,
+        None => {
+            state
+                .db
+                .databases()
+                .create(owner_id, Some(website_id), &db_name, &db_user, &encrypted)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("Could not write the database row: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Bring back a user's applications, **stopped**.
+///
+/// Deliberately not started: the images may not be pulled yet, and a customer
+/// should look at what came back before it starts answering on their domain.
+/// The panel's Deploy button does the rest.
+async fn restore_applications(
+    state: &AppState,
+    archive: &std::path::Path,
+    manifest: &Value,
+    username: &str,
+    user_id: i64,
+    stage: &std::path::Path,
+) -> Vec<Value> {
+    let empty: Vec<Value> = Vec::new();
+    let entries = manifest
+        .get("applications")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    if !super::addons::application_installed() {
+        // Recorded rather than dropped, so the operator knows what this
+        // backup holds and can install the addon and restore again.
+        return entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "name": entry.get("name").cloned().unwrap_or(Value::Null),
+                    "skipped": "Addon Application chưa được cài",
+                })
+            })
+            .collect();
+    }
+
+    let dry = state.settings.command_dry_run;
+    let mut results = Vec::new();
+    for entry in entries {
+        let raw_name = text_or(entry.get("name"), "");
+        let name = match crate::site_apps::validate_name(&raw_name) {
+            Ok(name) => name,
+            Err(why) => {
+                results.push(json!({ "name": raw_name, "error": why }));
+                continue;
+            }
+        };
+        let kind = match entry.get("kind").and_then(Value::as_str) {
+            Some(kind) if crate::site_apps::APP_KINDS.contains(&kind) => kind.to_string(),
+            _ => "node".to_string(),
+        };
+        let mut record = json!({ "name": name, "created": false, "data_restored": false });
+        match write_restored_app(state, user_id, &name, &kind, entry).await {
+            Ok((app_id, created)) => {
+                record["created"] = json!(created);
+                if let Some(member) = entry
+                    .get("payload_member")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    match restore_app_payload(state, archive, stage, username, app_id, member).await
+                    {
+                        Ok(true) => record["data_restored"] = json!(true),
+                        Ok(false) => {}
+                        Err(why) => {
+                            tracing::warn!("Could not restore application {name}: {why}");
+                            record["error"] = json!(last_chars(&why, 500));
+                        }
+                    }
+                } else if let Some(problem) = entry
+                    .get("payload_error")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    record["error"] = json!(format!("Backup này không có dữ liệu: {problem}"));
+                }
+            }
+            Err(why) => {
+                record["error"] = json!(last_chars(&why, 500));
+            }
+        }
+        let _ = dry;
+        results.push(record);
+    }
+    results
+}
+
+async fn write_restored_app(
+    state: &AppState,
+    user_id: i64,
+    name: &str,
+    kind: &str,
+    entry: &Value,
+) -> Result<(i64, bool), String> {
+    let dry = state.settings.command_dry_run;
+    let existing = state
+        .db
+        .site_apps()
+        .full_list(Some(user_id))
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|app| app.name == name);
+
+    let container_port = entry
+        .get("container_port")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(3000);
+    let memory_limit_mb = entry
+        .get("memory_limit_mb")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(512);
+    let autostart = entry
+        .get("autostart")
+        .map(crate::compose::json_truthy)
+        .unwrap_or(true);
+
+    let created = existing.is_none();
+    let mut app = match existing {
+        Some(app) => app,
+        None => {
+            // The port it had, or any free one: a backup restored onto a
+            // machine that already uses that port still has to come back.
+            let asked = crate::site_apps::PortInput::from_json(entry.get("port"));
+            let port = match crate::site_apps::allocate_port(dry, &state.db, &asked, None).await {
+                Ok(port) => port,
+                Err(_) => {
+                    crate::site_apps::allocate_port(
+                        dry,
+                        &state.db,
+                        &crate::site_apps::PortInput::Missing,
+                        None,
+                    )
+                    .await?
+                }
+            };
+            let row = snpanel_db::NewSiteApp {
+                owner_id: user_id,
+                name: name.to_string(),
+                kind: kind.to_string(),
+                container_port: 3000,
+                cpu_limit: "1".to_string(),
+                port,
+                memory_limit_mb: 512,
+                autostart: true,
+                created_at: snpanel_db::sqlalchemy_now(),
+                ..snpanel_db::NewSiteApp::default()
+            };
+            let id = match state.db.site_apps().create(&row).await {
+                Ok(Ok(id)) => id,
+                Ok(Err(snpanel_db::Duplicate)) => {
+                    return Err(format!("An application named {name} already exists"))
+                }
+                Err(e) => return Err(format!("Could not write the application row: {e}")),
+            };
+            let mut made = state
+                .db
+                .site_apps()
+                .full_by_id(id)
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| "The application row vanished mid-restore".to_string())?;
+            made.status = "stopped".to_string();
+            made
+        }
+    };
+    app.kind = kind.to_string();
+    app.start_kind = entry
+        .get("start_kind")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    app.start_arg = entry
+        .get("start_arg")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    app.node_major = entry
+        .get("node_major")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    app.image = entry
+        .get("image")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    app.container_port = container_port;
+    app.cpu_limit = text_or(entry.get("cpu_limit"), "1");
+    app.env = text_or(entry.get("env"), "");
+    app.compose_source = text_or(entry.get("compose_source"), "");
+    app.web_service = entry
+        .get("web_service")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    app.memory_limit_mb = memory_limit_mb;
+    app.autostart = autostart;
+    app.status = "stopped".to_string();
+    state
+        .db
+        .site_apps()
+        .save(&app)
+        .await
+        .map_err(|e| format!("Could not write the application row: {e}"))?
+        .map_err(|_| format!("An application named {name} already exists"))?;
+    Ok((app.id, created))
+}
+
+/// Put a backed-up application's directory and volumes back.
+async fn restore_app_payload(
+    state: &AppState,
+    archive: &std::path::Path,
+    stage: &std::path::Path,
+    username: &str,
+    app_id: i64,
+    member: &str,
+) -> Result<bool, String> {
+    let Some(payload) = crate::restore::extract_member_to_file(archive, member, stage)? else {
+        return Ok(false);
+    };
+    let app = state
+        .db
+        .site_apps()
+        .full_by_id(app_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| "The application row vanished mid-restore".to_string())?;
+    // The helper only reads from the backup tree, so the extracted payload
+    // has to live there rather than in /tmp — and inside the user's own
+    // directory, the one level of it the panel may write.
+    let staging = crate::backups::user_backup_dir(&state.settings.backup_root, username)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let staged = staging.join(format!(".restore-{}.tar", app.name));
+    let outcome = async {
+        std::fs::copy(&payload, &staged).map_err(|e| e.to_string())?;
+        let result = shell::privileged(
+            state.settings.command_dry_run,
+            "site-app-import",
+            &[
+                &crate::site_apps::owner_linux_user(&app)?,
+                &crate::site_apps::validate_name(&app.name)?,
+                &staged.to_string_lossy(),
+            ],
+            None,
+            Some(&["bash", "-lc", "echo dry-run-app-import"]),
+        )
+        .await;
+        if !result.ok() {
+            return Err(result
+                .failure_detail("Could not restore the application")
+                .trim()
+                .to_string());
+        }
+        Ok(true)
+    }
+    .await;
+    let _ = std::fs::remove_file(&staged);
+    outcome
 }

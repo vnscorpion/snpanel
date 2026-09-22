@@ -41,7 +41,7 @@ pub use packages::{Package, PackageFields, PackageRepo};
 pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
 pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
-pub use websites::{NewWebsite, Website, WebsiteAlias, WebsiteRepo};
+pub use websites::{NewWebsite, RestoredWebsite, Website, WebsiteAlias, WebsiteRepo};
 
 /// A timestamp in the form SQLAlchemy stores `DateTime` columns as on SQLite.
 ///
