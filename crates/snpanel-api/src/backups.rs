@@ -441,6 +441,220 @@ pub fn describe_user_backup(backup_root: &str, backup_file: &str) -> serde_json:
     item
 }
 
+// --- writing an archive ----------------------------------------------------
+
+/// `datetime.utcnow().strftime("%Y%m%d%H%M%S")`.
+pub fn stamp() -> String {
+    chrono::Utc::now().format("%Y%m%d%H%M%S").to_string()
+}
+
+/// Add a whole directory to a tar under `arcname`, the way `tar.add` does.
+///
+/// Links are skipped, as they are everywhere else this codebase writes an
+/// archive: a link in a customer's tree points at something the archive does
+/// not necessarily hold, and one that points out of it is a way to make a
+/// restore write where it should not.
+fn add_tree<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    root: &Path,
+    arcname: &str,
+) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    if root.is_file() {
+        return builder.append_path_with_name(root, arcname);
+    }
+    builder.append_dir(arcname, root)?;
+    let mut stack = vec![(root.to_path_buf(), arcname.to_string())];
+    while let Some((dir, prefix)) = stack.pop() {
+        let mut entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries.flatten().collect(),
+            // A directory the panel cannot read is skipped rather than
+            // failing the whole archive: the rest of the site is still worth
+            // backing up.
+            Err(_) => continue,
+        };
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let inner = format!("{prefix}/{name}");
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                builder.append_dir(&inner, &path)?;
+                stack.push((path, inner));
+            } else if meta.is_file() {
+                builder.append_path_with_name(&path, &inner)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Everything a site backup writes, so the caller cannot swap two paths.
+pub struct SiteBackup<'a> {
+    pub backup_root: &'a str,
+    pub domain: &'a str,
+    pub root_path: &'a str,
+    /// The database to dump beside the files, when the site has one.
+    pub db_name: Option<&'a str>,
+    pub dry_run: bool,
+}
+
+/// Source: `create_backup`.
+///
+/// The SQL dump is written **next to** the archive rather than inside a
+/// temporary directory, and left there: that is the Python's behaviour and
+/// what the restore's `database/` member is read back out of.
+pub async fn create_backup(site: &SiteBackup<'_>) -> Result<String, BackupError> {
+    let stamp = stamp();
+    let backup_dir = Path::new(site.backup_root).join(site.domain);
+    let archive = backup_dir.join(format!("{}-{stamp}.tar.gz", site.domain));
+    let sql_file = backup_dir.join(format!("{}-{stamp}.sql", site.domain));
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|e| BackupError::Invalid(format!("Cannot make the backup directory: {e}")))?;
+
+    if let Some(db_name) = site.db_name.filter(|name| !name.is_empty()) {
+        crate::mariadb::export_database(db_name, &sql_file.to_string_lossy())
+            .await
+            .map_err(|e| BackupError::Invalid(e.to_string()))?;
+        if site.dry_run && !sql_file.exists() {
+            let _ = std::fs::write(
+                &sql_file,
+                format!("-- DRY RUN database dump for {db_name}\n"),
+            );
+        }
+    }
+
+    let file = std::fs::File::create(&archive)
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the archive: {e}")))?;
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    add_tree(&mut builder, Path::new(site.root_path), "site")
+        .map_err(|e| BackupError::Invalid(format!("Cannot add the site files: {e}")))?;
+    if sql_file.exists() {
+        let name = sql_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        builder
+            .append_path_with_name(&sql_file, format!("database/{name}"))
+            .map_err(|e| BackupError::Invalid(format!("Cannot add the database dump: {e}")))?;
+    }
+    builder
+        .into_inner()
+        .and_then(flate2::write::GzEncoder::finish)
+        .map_err(|e| BackupError::Invalid(format!("Cannot finish the archive: {e}")))?;
+    Ok(archive.to_string_lossy().into_owned())
+}
+
+/// One site, as the manifest of a user backup records it.
+///
+/// Not the manifest entry itself: that is assembled from the same values
+/// beside this, and a second copy here would be one that could drift.
+pub struct ManifestSite {
+    pub domain: String,
+    pub root_path: String,
+    /// The dump this site's database was written to, when it has one.
+    pub sql_file: Option<PathBuf>,
+}
+
+/// One application, the same way.
+pub struct ManifestApp {
+    pub name: String,
+    /// The tar the helper exported, when it could.
+    pub payload: Option<PathBuf>,
+}
+
+/// Source: `create_user_backup`, from the point where everything has been
+/// collected.
+///
+/// The caller does the collecting because it needs the database, and this
+/// does the writing because it needs none of it.
+pub fn write_user_backup(
+    backup_root: &str,
+    username: &str,
+    manifest: &serde_json::Value,
+    sites: &[ManifestSite],
+    apps: &[ManifestApp],
+    staging: &Path,
+) -> Result<String, BackupError> {
+    let backup_dir = user_backup_dir(backup_root, username)?;
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|e| BackupError::Invalid(format!("Cannot make the backup directory: {e}")))?;
+    let archive = backup_dir.join(format!("user-{username}-{}.tar.gz", stamp()));
+
+    // `json.dumps(manifest, ensure_ascii=True, indent=2)`.
+    let text = serde_json::to_string_pretty(manifest)
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the manifest: {e}")))?;
+    let manifest_path = staging.join(BACKUP_MANIFEST);
+    if let Some(parent) = manifest_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&manifest_path, ascii_escape(&text))
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the manifest: {e}")))?;
+
+    let file = std::fs::File::create(&archive)
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the archive: {e}")))?;
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    builder
+        .append_path_with_name(&manifest_path, BACKUP_MANIFEST)
+        .map_err(|e| BackupError::Invalid(format!("Cannot add the manifest: {e}")))?;
+    for site in sites {
+        add_tree(
+            &mut builder,
+            Path::new(&site.root_path),
+            &format!("sites/{}/site", site.domain),
+        )
+        .map_err(|e| BackupError::Invalid(format!("Cannot add {}: {e}", site.domain)))?;
+        if let Some(sql) = site.sql_file.as_ref().filter(|path| path.exists()) {
+            builder
+                .append_path_with_name(sql, format!("databases/{}.sql", site.domain))
+                .map_err(|e| BackupError::Invalid(format!("Cannot add the dump: {e}")))?;
+        }
+    }
+    for app in apps {
+        if let Some(payload) = app.payload.as_ref().filter(|path| path.exists()) {
+            builder
+                .append_path_with_name(payload, format!("applications/{}.tar", app.name))
+                .map_err(|e| BackupError::Invalid(format!("Cannot add {}: {e}", app.name)))?;
+        }
+    }
+    builder
+        .into_inner()
+        .and_then(flate2::write::GzEncoder::finish)
+        .map_err(|e| BackupError::Invalid(format!("Cannot finish the archive: {e}")))?;
+    Ok(archive.to_string_lossy().into_owned())
+}
+
+/// `json.dumps(..., ensure_ascii=True)` — every character above ASCII as a
+/// `\uXXXX` escape.
+///
+/// `serde_json` always writes UTF-8, so this is applied afterwards. It matters
+/// because the manifest is read by the Python side too, and a byte sequence
+/// that is valid UTF-8 here but not there would be a file neither can open.
+fn ascii_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_ascii() {
+            out.push(ch);
+            continue;
+        }
+        let mut buffer = [0u16; 2];
+        for unit in ch.encode_utf16(&mut buffer) {
+            out.push_str(&format!("\\u{unit:04x}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod upload_tests {
     use super::*;

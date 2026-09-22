@@ -65,6 +65,21 @@ flate2 = "1"
 bzip2-rs = "0.1"
 lzma-rs = "0.3"
 ruzstd = "0.9"
+# The one remaining operation that leaves this machine: a backup pushed to a
+# customer's own SFTP host. Go was on the table for it — `x/crypto/ssh` and
+# `pkg/sftp` are the more travelled road — and was measured rather than
+# assumed. It would have cost a second toolchain in CI, in the release
+# cross-compile and in the installer, plus a second binary to ship and to
+# version. `russh` costs 76 crates, all pure Rust, and keeps these tests in
+# the same `cargo test` as everything else.
+#
+# The `ring` backend rather than the default `aws-lc-rs`: `ring` is already
+# in the lock file for the panel's own TLS, and `aws-lc-rs` would pull a C
+# toolchain into a build that has none. `dsa` is on because paramiko accepts
+# a DSS key, and a customer who pinned one is not someone to break on an
+# upgrade.
+russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "dsa"] }
+russh-sftp = "3"
 rand = "0.8"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

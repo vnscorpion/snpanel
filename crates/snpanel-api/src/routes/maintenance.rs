@@ -72,6 +72,26 @@ pub fn router() -> Router<AppState> {
             post(upload_app_file).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/backup",
+            post(queue_site_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backup-jobs",
+            get(list_backup_jobs).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backup-jobs/{job_id}",
+            get(get_backup_job).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-backup",
+            post(queue_user_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/backup-sftp",
+            post(queue_sftp_backup).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/user-restore",
             post(restore_user_backup).fallback(crate::fallback),
         )
@@ -7949,4 +7969,779 @@ async fn restore_app_payload(
     .await;
     let _ = std::fs::remove_file(&staged);
     outcome
+}
+
+// ---------------------------------------------------------------------------
+// the backup family
+// ---------------------------------------------------------------------------
+//
+// All five move together because the registry behind them is an in-process
+// dict: a job queued on one side of the proxy would be invisible to the
+// other, and a customer would press Backup, get a job id, and watch a list
+// that never mentions it.
+
+/// `POST /maintenance/backup`.
+///
+/// Source: `create_backup` — queue it and answer immediately. The work
+/// itself can take minutes on a large site, and a request that waited for it
+/// would be a request that times out in front of the customer.
+async fn queue_site_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website_id = match crate::errors::read_int("website_id", payload.get("website_id")) {
+        Ok(Some(id)) => id,
+        Ok(None) => return crate::errors::missing_field("website_id", payload.clone()),
+        Err(response) => return response,
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let mut job =
+        crate::backup_jobs::new_job(current.user.id, "site_backup", "Website backup queued");
+    job.website_id = Some(website.id);
+    let job_id = job.job_id.clone();
+    let public = crate::backup_jobs::remember(job);
+
+    let worker_state = state.clone();
+    let user_id = current.user.id;
+    tokio::spawn(async move {
+        let _permit = crate::backup_jobs::worker_permit().await;
+        run_site_backup(worker_state, job_id, user_id, website_id).await;
+    });
+    axum::Json(public).into_response()
+}
+
+/// Source: `_run_site_backup_job`.
+///
+/// The ownership check runs **again** here rather than trusting what the
+/// request thread resolved: the job only carries an id, and between queueing
+/// and running the site could have moved or the account could have been
+/// suspended.
+async fn run_site_backup(state: AppState, job_id: String, user_id: i64, website_id: i64) {
+    crate::backup_jobs::start(&job_id, "Creating website backup");
+    let outcome = site_backup_work(&state, user_id, website_id).await;
+    if let Ok(done) = &outcome {
+        audit_detail(&state, user_id, "backup", &done.target, &done.backup_file).await;
+    }
+    let outcome = outcome.map(|done| crate::backup_jobs::Finished {
+        backup_file: done.backup_file,
+        message: "Website backup completed".to_string(),
+        ..crate::backup_jobs::Finished::default()
+    });
+    crate::backup_jobs::finish(&job_id, outcome, "Website backup failed");
+}
+
+struct SiteArchive {
+    backup_file: String,
+    /// The domain, which is what the audit log names.
+    target: String,
+}
+
+async fn site_backup_work(
+    state: &AppState,
+    user_id: i64,
+    website_id: i64,
+) -> Result<SiteArchive, String> {
+    let user = active_user(state, user_id).await?;
+    let website = owned_for_worker(state, &user, website_id).await?;
+    let db_name = state
+        .db
+        .databases()
+        .for_website(website.id)
+        .await
+        .unwrap_or_default()
+        .first()
+        .map(|row| row.db_name.clone());
+    let archive = crate::backups::create_backup(&crate::backups::SiteBackup {
+        backup_root: &state.settings.backup_root,
+        domain: &website.domain,
+        root_path: &website.root_path,
+        db_name: db_name.as_deref(),
+        dry_run: state.settings.command_dry_run,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(SiteArchive {
+        backup_file: archive,
+        target: website.domain,
+    })
+}
+
+/// `db.query(User).filter(User.id == request_user_id).first()` and the
+/// `is_active` check beside it.
+async fn active_user(state: &AppState, user_id: i64) -> Result<snpanel_db::User, String> {
+    match state.db.users().by_id(user_id).await {
+        Ok(Some(user)) if user.is_active => Ok(user),
+        Ok(_) => Err("User not found".to_string()),
+        Err(e) => Err(format!("Could not read the account: {e}")),
+    }
+}
+
+/// `get_owned_website` inside a worker, where there is no request to answer.
+async fn owned_for_worker(
+    state: &AppState,
+    user: &snpanel_db::User,
+    website_id: i64,
+) -> Result<snpanel_db::Website, String> {
+    let website = state
+        .db
+        .websites()
+        .by_id(website_id)
+        .await
+        .map_err(|e| format!("Could not read the website: {e}"))?
+        .ok_or_else(|| "Website not found".to_string())?;
+    if website.owner_id != user.id && !permissions::has_role(&user.role, permissions::Role::Admin) {
+        return Err("Not enough permissions".to_string());
+    }
+    Ok(website)
+}
+
+/// `GET /maintenance/backup-jobs`.
+async fn list_backup_jobs(State(state): State<AppState>, current: CurrentUser) -> Response {
+    let _ = &state;
+    let is_admin = permissions::is_admin_role(&current.user.role);
+    axum::Json(json!({
+        "jobs": crate::backup_jobs::list(current.user.id, is_admin),
+    }))
+    .into_response()
+}
+
+/// `GET /maintenance/backup-jobs/{job_id}`.
+async fn get_backup_job(
+    State(state): State<AppState>,
+    AxumPath(job_id): AxumPath<String>,
+    current: CurrentUser,
+) -> Response {
+    let _ = &state;
+    let Some(job) = crate::backup_jobs::get(&job_id) else {
+        return not_found("Backup job not found");
+    };
+    // A 403, not a 404: the Python distinguishes them, and so does anyone
+    // reading the log.
+    if job.request_user_id != current.user.id && !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Access denied");
+    }
+    axum::Json(job.public()).into_response()
+}
+
+/// `POST /maintenance/user-backup`.
+async fn queue_user_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let user_id = match crate::errors::read_int("user_id", payload.get("user_id")) {
+        Ok(Some(id)) => id,
+        Ok(None) => return crate::errors::missing_field("user_id", payload.clone()),
+        Err(response) => return response,
+    };
+    let target_id = match crate::errors::read_int("target_id", payload.get("target_id")) {
+        Ok(value) => value.filter(|id| *id != 0),
+        Err(response) => return response,
+    };
+
+    // `get_backup_user`: your own account, or anyone's if you are an admin.
+    let target_user = match state.db.users().by_id(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return not_found("User not found"),
+        Err(e) => {
+            tracing::error!("reading user {user_id} failed: {e}");
+            return internal_error();
+        }
+    };
+    if target_user.id != current.user.id && !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    if let Some(target_id) = target_id {
+        if !permissions::is_admin_role(&current.user.role) {
+            return crate::errors::not_enough_permissions();
+        }
+        match state.db.sftp_targets().active_exists(target_id).await {
+            Ok(true) => {}
+            Ok(false) => return not_found("SFTP target not found"),
+            Err(e) => {
+                tracing::error!("reading SFTP target {target_id} failed: {e}");
+                return internal_error();
+            }
+        }
+    }
+    audit_request(
+        &state,
+        &parts,
+        current.user.id,
+        "queue_backup_user",
+        &target_user.username,
+        "",
+    )
+    .await;
+
+    let mut job =
+        crate::backup_jobs::new_job(current.user.id, "user_backup", "Full user backup queued");
+    job.target_user_id = Some(target_user.id);
+    job.target_id = target_id;
+    let job_id = job.job_id.clone();
+    let public = crate::backup_jobs::remember(job);
+
+    let worker_state = state.clone();
+    let requester = current.user.id;
+    let is_admin = permissions::is_admin_role(&current.user.role);
+    tokio::spawn(async move {
+        let _permit = crate::backup_jobs::worker_permit().await;
+        run_user_backup(
+            worker_state,
+            job_id,
+            requester,
+            is_admin,
+            target_user.id,
+            target_id,
+        )
+        .await;
+    });
+    axum::Json(public).into_response()
+}
+
+async fn run_user_backup(
+    state: AppState,
+    job_id: String,
+    requester_id: i64,
+    is_admin: bool,
+    target_user_id: i64,
+    target_id: Option<i64>,
+) {
+    crate::backup_jobs::start(&job_id, "Creating full user backup");
+    let outcome = user_backup_work(&state, requester_id, is_admin, target_user_id, target_id).await;
+    if let Ok(done) = &outcome {
+        let detail = if done.remote_file.is_empty() {
+            done.backup_file.clone()
+        } else {
+            format!(
+                "{} -> {}:{}",
+                done.backup_file, done.target, done.remote_file
+            )
+        };
+        audit_detail(&state, requester_id, "backup_user", &done.username, &detail).await;
+    }
+    let outcome = outcome.map(|done| crate::backup_jobs::Finished {
+        backup_file: done.backup_file,
+        remote_file: done.remote_file,
+        target: done.target,
+        message: "Full user backup completed".to_string(),
+    });
+    crate::backup_jobs::finish(&job_id, outcome, "Full user backup failed");
+}
+
+struct UserArchive {
+    backup_file: String,
+    remote_file: String,
+    target: String,
+    username: String,
+}
+
+async fn user_backup_work(
+    state: &AppState,
+    requester_id: i64,
+    is_admin: bool,
+    target_user_id: i64,
+    target_id: Option<i64>,
+) -> Result<UserArchive, String> {
+    let requester = active_user(state, requester_id).await?;
+    let _ = &requester;
+    let user = match state.db.users().by_id(target_user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return Err("User not found".to_string()),
+        Err(e) => return Err(format!("Could not read the account: {e}")),
+    };
+    let archive = build_user_backup(state, &user).await?;
+    let mut remote_file = String::new();
+    let mut target_name = String::new();
+    if let Some(target_id) = target_id {
+        if !is_admin {
+            return Err("Not enough permissions".to_string());
+        }
+        let uploaded = upload_archive_to_target(state, target_id, &archive).await?;
+        target_name = uploaded.0;
+        remote_file = uploaded.1;
+    }
+    Ok(UserArchive {
+        backup_file: archive,
+        remote_file,
+        target: target_name,
+        username: user.username,
+    })
+}
+
+/// `POST /maintenance/backup-sftp`.
+async fn queue_sftp_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website_id = match crate::errors::read_int("website_id", payload.get("website_id")) {
+        Ok(Some(id)) => id,
+        Ok(None) => return crate::errors::missing_field("website_id", payload.clone()),
+        Err(response) => return response,
+    };
+    let target_id = match crate::errors::read_int("target_id", payload.get("target_id")) {
+        Ok(Some(id)) => id,
+        Ok(None) => return crate::errors::missing_field("target_id", payload.clone()),
+        Err(response) => return response,
+    };
+    if !permissions::is_admin_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let target = match state.db.sftp_targets().by_id(target_id).await {
+        Ok(Some(target)) if target.is_active => target,
+        Ok(_) => return not_found("SFTP target not found"),
+        Err(e) => {
+            tracing::error!("reading SFTP target {target_id} failed: {e}");
+            return internal_error();
+        }
+    };
+    audit_request(
+        &state,
+        &parts,
+        current.user.id,
+        "queue_backup_sftp",
+        &website.domain,
+        &target.name,
+    )
+    .await;
+
+    let mut job = crate::backup_jobs::new_job(current.user.id, "sftp_backup", "SFTP backup queued");
+    job.website_id = Some(website.id);
+    job.target_id = Some(target.id);
+    let job_id = job.job_id.clone();
+    let public = crate::backup_jobs::remember(job);
+
+    let worker_state = state.clone();
+    let requester = current.user.id;
+    tokio::spawn(async move {
+        let _permit = crate::backup_jobs::worker_permit().await;
+        run_sftp_backup(worker_state, job_id, requester, website_id, target_id).await;
+    });
+    axum::Json(public).into_response()
+}
+
+async fn run_sftp_backup(
+    state: AppState,
+    job_id: String,
+    requester_id: i64,
+    website_id: i64,
+    target_id: i64,
+) {
+    crate::backup_jobs::start(&job_id, "Creating and uploading SFTP backup");
+    let outcome = sftp_backup_work(&state, requester_id, website_id, target_id).await;
+    if let Ok(done) = &outcome {
+        audit_detail(
+            &state,
+            requester_id,
+            "backup_sftp",
+            &done.username,
+            &format!("{}:{}", done.target, done.remote_file),
+        )
+        .await;
+    }
+    let outcome = outcome.map(|done| crate::backup_jobs::Finished {
+        backup_file: done.backup_file,
+        remote_file: done.remote_file,
+        target: done.target,
+        message: "SFTP backup completed".to_string(),
+    });
+    crate::backup_jobs::finish(&job_id, outcome, "SFTP backup failed");
+}
+
+async fn sftp_backup_work(
+    state: &AppState,
+    requester_id: i64,
+    website_id: i64,
+    target_id: i64,
+) -> Result<UserArchive, String> {
+    let user = active_user(state, requester_id).await?;
+    if !permissions::is_admin_role(&user.role) {
+        return Err("Not enough permissions".to_string());
+    }
+    let website = owned_for_worker(state, &user, website_id).await?;
+    let archive = site_backup_work(state, requester_id, website_id).await?;
+    let (target_name, remote_file) =
+        upload_archive_to_target(state, target_id, &archive.backup_file).await?;
+    Ok(UserArchive {
+        backup_file: archive.backup_file,
+        remote_file,
+        target: target_name,
+        // The audit log names the **domain** on this path, not an account.
+        username: website.domain,
+    })
+}
+
+/// Source: `upload_archive_to_target`.
+///
+/// Returns the target's name and where the file landed. A host key that was
+/// not pinned yet is pinned here, which is the bootstrap half of the TOFU
+/// model: everything after this upload is checked against it.
+async fn upload_archive_to_target(
+    state: &AppState,
+    target_id: i64,
+    archive: &str,
+) -> Result<(String, String), String> {
+    let target = match state.db.sftp_targets().by_id(target_id).await {
+        Ok(Some(target)) if target.is_active => target,
+        Ok(_) => return Err("SFTP target not found".to_string()),
+        Err(e) => return Err(format!("Could not read the SFTP target: {e}")),
+    };
+    let secrets = state
+        .db
+        .sftp_targets()
+        .secrets(target_id)
+        .await
+        .map_err(|e| format!("Could not read the SFTP target: {e}"))?
+        .ok_or_else(|| "SFTP target not found".to_string())?;
+    let decrypt = |value: Option<String>| -> Option<String> {
+        value.filter(|text| !text.is_empty()).and_then(|text| {
+            snpanel_core::crypto::fernet::decrypt(
+                &state.settings.secret_key,
+                Some(&text),
+                state.settings.strict_decrypt,
+            )
+            .ok()
+        })
+    };
+    let password = decrypt(secrets.password);
+    let private_key = decrypt(secrets.private_key);
+
+    let uploaded = crate::sftp::upload(
+        archive,
+        &crate::sftp::Target {
+            host: &target.host,
+            port: u16::try_from(target.port).unwrap_or(22),
+            username: &target.username,
+            remote_path: &target.remote_path,
+            password: password.as_deref(),
+            private_key: private_key.as_deref(),
+            expected_host_key_type: target.host_key_type.as_deref(),
+            expected_host_key_fingerprint: target.host_key_fingerprint.as_deref(),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // `if not target.host_key_fingerprint and result[...]` — written once,
+    // when there was nothing to compare against.
+    let unpinned = target
+        .host_key_fingerprint
+        .as_deref()
+        .is_none_or(str::is_empty);
+    if unpinned && !uploaded.host_key_fingerprint.is_empty() {
+        if let Err(e) = state
+            .db
+            .sftp_targets()
+            .pin_host_key(
+                target_id,
+                &uploaded.host_key_type,
+                &uploaded.host_key_fingerprint,
+            )
+            .await
+        {
+            tracing::error!("could not pin the host key for target {target_id}: {e}");
+        }
+    }
+    Ok((target.name, uploaded.remote_file))
+}
+
+/// `log_action(..., request=request)` — the shape with `ip=` and `ua=` on it.
+async fn audit_request(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    user_id: i64,
+    action: &str,
+    target: &str,
+    detail: &str,
+) {
+    let detail = snpanel_db::AuditRepo::detail_with_request(
+        detail,
+        &crate::client::audit_ip(parts),
+        parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+    );
+    if let Err(e) = state
+        .db
+        .audits()
+        .log(Some(user_id), action, target, &detail)
+        .await
+    {
+        tracing::error!("Failed to write audit log: action={action} target={target}: {e}");
+    }
+}
+
+/// Source: `create_user_backup`, the collecting half.
+///
+/// Everything a customer owns, in one archive: the account row, each site's
+/// files and database dump, and each application's directory and volumes.
+/// The applications are the part that is easy to leave out — their data is
+/// not under any website root — and leaving them out is how a restore brings
+/// back the sites and quietly drops every container's workflows.
+pub(super) async fn build_user_backup(
+    state: &AppState,
+    user: &snpanel_db::User,
+) -> Result<String, String> {
+    let backup_dir = crate::backups::user_backup_dir(&state.settings.backup_root, &user.username)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|e| format!("Cannot make the backup directory: {e}"))?;
+    // The staging directory sits **inside** the backup directory, as the
+    // Python's `TemporaryDirectory(dir=backup_dir)` does: the dumps can be
+    // the size of the databases and /tmp is often a small filesystem.
+    let staging = backup_dir.join(format!(
+        ".snpanel-user-backup-{}-{}",
+        std::process::id(),
+        crate::file_jobs::new_job_id()
+    ));
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("Cannot make the staging directory: {e}"))?;
+
+    let outcome = collect_user_backup(state, user, &staging).await;
+    // A full copy of a customer's databases; it goes either way.
+    let _ = std::fs::remove_dir_all(&staging);
+    outcome
+}
+
+async fn collect_user_backup(
+    state: &AppState,
+    user: &snpanel_db::User,
+    staging: &std::path::Path,
+) -> Result<String, String> {
+    let websites = state
+        .db
+        .websites()
+        .list(Some(user.id), "")
+        .await
+        .map_err(|e| format!("Could not read the websites: {e}"))?;
+
+    let mut apps = Vec::new();
+    let mut app_entries = Vec::new();
+    for (entry, payload, name) in collect_applications(state, user, staging).await {
+        app_entries.push(entry);
+        apps.push(crate::backups::ManifestApp { name, payload });
+    }
+
+    let mut sites = Vec::new();
+    let mut site_entries = Vec::new();
+    for website in &websites {
+        let aliases = state
+            .db
+            .websites()
+            .aliases(website.id)
+            .await
+            .unwrap_or_default();
+        let alias_domains: Vec<String> = aliases
+            .iter()
+            .filter(|alias| alias.mode == "alias")
+            .map(|alias| alias.domain.clone())
+            .collect();
+        let mut entry = json!({
+            "domain": website.domain,
+            "php_version": website.php_version,
+            "app_type": if website.app_type.is_empty() { "wordpress" } else { &website.app_type },
+            "status": if website.status.is_empty() { "active" } else { &website.status },
+            "document_root": if website.document_root.is_empty() { "public_html" } else { &website.document_root },
+            "nginx_custom": website.nginx_custom,
+            "nginx_config_mode": "managed",
+            "nginx_rewrite_mode": if website.nginx_rewrite_mode.is_empty() { "none" } else { &website.nginx_rewrite_mode },
+            "waf_enabled": website.waf_enabled,
+            "waf_default_rules": website.waf_default_rules,
+            "waf_custom_rules": website.waf_custom_rules,
+            "http_flood_enabled": website.http_flood_enabled,
+            "http_flood_config": website.http_flood_config,
+            "aliases": alias_domains,
+            "database": Value::Null,
+        });
+
+        let mut sql_file = None;
+        let accounts = state
+            .db
+            .databases()
+            .for_website(website.id)
+            .await
+            .unwrap_or_default();
+        if let Some(account) = accounts.first() {
+            let name = format!("{}.sql", website.domain);
+            let path = staging.join(&name);
+            crate::mariadb::export_database(&account.db_name, &path.to_string_lossy())
+                .await
+                .map_err(|e| e.to_string())?;
+            if state.settings.command_dry_run && !path.exists() {
+                let _ = std::fs::write(
+                    &path,
+                    format!("-- DRY RUN database dump for {}\n", account.db_name),
+                );
+            }
+            // `except RuntimeError: db_password = ""` — a password the panel
+            // can no longer decrypt is recorded as empty, and the restore
+            // makes a new one. Losing the old password beats losing the site.
+            let db_password = snpanel_core::crypto::fernet::decrypt(
+                &state.settings.secret_key,
+                Some(&account.db_password),
+                state.settings.strict_decrypt,
+            )
+            .unwrap_or_default();
+            entry["database"] = json!({
+                "db_name": account.db_name,
+                "db_user": account.db_user,
+                "db_password": db_password,
+                "sql_member": format!("databases/{name}"),
+            });
+            sql_file = Some(path);
+        }
+
+        site_entries.push(entry);
+        sites.push(crate::backups::ManifestSite {
+            domain: website.domain.clone(),
+            root_path: website.root_path.clone(),
+            sql_file,
+        });
+    }
+
+    let manifest = json!({
+        "kind": "snpanel_user",
+        "version": 1,
+        "generated_at": format!("{}Z", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f")),
+        "user": {
+            "username": user.username,
+            "email": user.email,
+            "hashed_password": user.hashed_password,
+            "role": user.role,
+            "is_active": user.is_active,
+            "website_limit": user.website_limit,
+            "storage_limit_mb": user.storage_limit_mb,
+        },
+        "websites": site_entries,
+        "applications": app_entries,
+    });
+
+    crate::backups::write_user_backup(
+        &state.settings.backup_root,
+        &user.username,
+        &manifest,
+        &sites,
+        &apps,
+        staging,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Source: `_collect_applications`.
+///
+/// An application whose data cannot be read is still recorded — coming back
+/// with the settings and an empty directory beats not coming back at all —
+/// and the manifest says so, so a restore can tell the customer which ones
+/// need their data putting back by hand.
+async fn collect_applications(
+    state: &AppState,
+    user: &snpanel_db::User,
+    staging: &std::path::Path,
+) -> Vec<(Value, Option<std::path::PathBuf>, String)> {
+    if !super::addons::application_installed() {
+        return Vec::new();
+    }
+    let apps = state
+        .db
+        .site_apps()
+        .full_list(Some(user.id))
+        .await
+        .unwrap_or_default();
+    let mut collected = Vec::new();
+    for app in apps {
+        let mut entry = json!({
+            "name": app.name,
+            "kind": app.kind,
+            "port": app.port,
+            "memory_limit_mb": app.memory_limit_mb,
+            "cpu_limit": if app.cpu_limit.is_empty() { "1" } else { &app.cpu_limit },
+            "autostart": app.autostart,
+            "env": app.env,
+            "start_kind": app.start_kind,
+            "start_arg": app.start_arg,
+            "node_major": app.node_major,
+            "image": app.image,
+            "container_port": app.container_port,
+            "compose_source": app.compose_source,
+            "web_service": app.web_service,
+            "websites": app.websites,
+            "payload_member": Value::Null,
+            "payload_error": "",
+        });
+        let target = staging.join(format!("app-{}.tar", app.name));
+        let payload = match export_app_payload(state, &app, &target).await {
+            Ok(()) if target.exists() => {
+                entry["payload_member"] = json!(format!("applications/{}.tar", app.name));
+                Some(target)
+            }
+            Ok(()) => None,
+            Err(why) => {
+                tracing::warn!("Could not export application {}: {why}", app.name);
+                entry["payload_error"] = json!(last_chars(&why, 500));
+                None
+            }
+        };
+        collected.push((entry, payload, app.name));
+    }
+    collected
+}
+
+/// Source: `site_apps.export_payload`.
+///
+/// An application's directory and its container volumes are both out of the
+/// panel's reach — parts of the directory belong to container users, the
+/// volumes live under `/var/lib/docker` — so the helper is the only way a
+/// backup can hold them.
+async fn export_app_payload(
+    state: &AppState,
+    app: &snpanel_db::SiteApp,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    let owner = crate::site_apps::owner_linux_user(app)?;
+    let name = crate::site_apps::validate_name(&app.name)?;
+    let quoted = shell::shlex_quote(&destination.to_string_lossy());
+    let fallback = format!("printf '' > {quoted}; echo 0");
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "site-app-export",
+        &[&owner, &name, &destination.to_string_lossy()],
+        None,
+        Some(&["bash", "-lc", &fallback]),
+        Some(3600),
+    )
+    .await;
+    if !result.ok() {
+        return Err(result
+            .failure_detail("Could not export the application")
+            .trim()
+            .to_string());
+    }
+    Ok(())
 }

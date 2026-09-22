@@ -18,6 +18,9 @@ snpanel-nginx = { path = "../snpanel-nginx" }
 # Reading a backup's manifest out of its archive.
 tar.workspace = true
 flate2.workspace = true
+russh.workspace = true
+subtle.workspace = true
+russh-sftp.workspace = true
 # Reading a DirectAdmin backup, which may arrive in any of four
 # compressions. Decompress-only and pure Rust; see the workspace file.
 bzip2-rs.workspace = true

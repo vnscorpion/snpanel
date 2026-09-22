@@ -161,6 +161,30 @@ impl<'a> ProvisioningRepo<'a> {
         Ok(())
     }
 
+    /// Source: the tail of `terminate_account`.
+    ///
+    /// The two links are cleared as well as the status: the user row and the
+    /// primary website are both about to be deleted, and a row pointing at a
+    /// deleted id is a row every later lookup has to guess about.
+    pub async fn terminate(
+        &self,
+        id: i64,
+        last_message: &str,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts \
+             SET status = 'terminated', last_action = 'terminate', last_message = ?, \
+                 user_id = NULL, primary_website_id = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(last_message)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// How many websites and databases an account's user owns.
     ///
     /// Source: the two `.count()` calls in `get_usage`. They count what the

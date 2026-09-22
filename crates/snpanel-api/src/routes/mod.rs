@@ -53,28 +53,34 @@ pub fn api_router() -> Router<AppState> {
 
 /// The path prefixes handled natively, for the readiness report and for
 /// anyone trying to work out which side answered.
+///
+/// **Every router is on this list now**, and none of them is partial: all
+/// 211 endpoints answer here. The list is kept rather than replaced with
+/// `/api` because it is what the readiness report prints, and naming the
+/// routers is more use to whoever is reading it than one prefix would be.
+///
+/// The strangler stays in place regardless. Two things still reach Python:
+/// the frontend, which `rust-embed` has yet to take over, and anything on a
+/// path neither side knows — which has to keep answering the way it did.
 pub const PORTED_PREFIXES: &[&str] = &[
     "/api/health",
     "/api/ready",
     "/api/addons",
     "/api/auth",
+    "/api/databases",
+    "/api/firewall",
+    "/api/maintenance",
+    "/api/malware",
     "/api/packages",
     "/api/panel-settings",
+    "/api/provisioning",
     "/api/services",
     "/api/site-apps",
     "/api/site-runtimes",
     "/api/terminal",
     "/api/updates",
-    "/api/waf",
-    "/api/firewall",
-    "/api/malware",
-    // Partially ported: some methods on these paths still reach Python.
-    "/api/databases",
-    // Partially ported: the file manager's reads. Everything else under
-    // /api/maintenance - backups, restore, PHP, cron - still reaches Python.
-    "/api/maintenance",
-    // Partially ported: some methods on these paths still reach Python.
     "/api/users",
+    "/api/waf",
     "/api/websites",
 ];
 

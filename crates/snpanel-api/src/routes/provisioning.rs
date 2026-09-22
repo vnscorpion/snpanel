@@ -39,7 +39,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/provisioning/v1/accounts/{external_id}",
-            get(get_account).fallback(crate::fallback),
+            get(get_account).delete(terminate).fallback(crate::fallback),
         )
         .route(
             "/provisioning/v1/accounts/{external_id}/usage",
@@ -1954,6 +1954,189 @@ async fn revoke_token(
     )
     .await;
     axum::Json(json!({ "ok": true })).into_response()
+}
+
+/// `DELETE /api/provisioning/v1/accounts/{external_id}`.
+///
+/// Source: `terminate` and `provisioning.terminate_account`.
+///
+/// `?backup=true` is **off by default**, and that is not tidiness: the backup
+/// runs inside this request, and a billing module that gives the call a short
+/// HTTP timeout would report a failure while the server carried on
+/// terminating. Pass it when the caller can wait for a full account archive.
+async fn terminate(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    // `backup: bool = Query(default=False)` — FastAPI's boolean query
+    // parsing, which is the same set of words a body field takes.
+    let backup = query_flag(&parts, "backup");
+
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if account.status == "terminated" {
+        return axum::Json(json!({ "ok": true, "status": "terminated" })).into_response();
+    }
+
+    let mut last_message = account.last_message.clone();
+    let mut deleted_domains: Vec<String> = Vec::new();
+
+    if let Some(user_id) = account.user_id {
+        let user = match state.db.users().by_id(user_id).await {
+            Ok(Some(user)) => Some(user),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!("reading the account's user failed: {e}");
+                return crate::errors::internal_error();
+            }
+        };
+        if let Some(user) = user {
+            if backup {
+                // Termination deletes the Linux user and its home directory,
+                // so the archive is taken first. **A failure here must not
+                // block the termination the billing system asked for** — it
+                // is recorded on the row and the deletion goes ahead.
+                last_message = match super::maintenance::build_user_backup(&state, &user).await {
+                    Ok(archive) => format!("backup={archive}"),
+                    Err(why) => format!("backup failed: {why}"),
+                };
+            }
+            match terminate_user(&state, &user).await {
+                Ok(domains) => deleted_domains = domains,
+                Err(r) => return r,
+            }
+        }
+    }
+
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .terminate(account.id, &last_message, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("marking the account terminated failed: {e}");
+        return crate::errors::internal_error();
+    }
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_terminate",
+        &external_id,
+        &deleted_domains.join(","),
+    )
+    .await;
+    axum::Json(json!({
+        "ok": true,
+        "status": "terminated",
+        "deleted_websites": deleted_domains,
+    }))
+    .into_response()
+}
+
+/// `bool` on a query parameter, the way FastAPI reads one.
+///
+/// Absent is false; `1`, `true`, `on`, `yes` and their cases are true. A
+/// value FastAPI could not read would be a 422, but nothing in the billing
+/// integration sends one and the Python's own default swallows it, so an
+/// unreadable value is false here as it is there.
+fn query_flag(parts: &axum::http::request::Parts, name: &str) -> bool {
+    let Some(query) = parts.uri.query() else {
+        return false;
+    };
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key != name {
+            continue;
+        }
+        return matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "on" | "yes" | "y" | "t"
+        );
+    }
+    false
+}
+
+/// Everything an account's user owns, removed.
+///
+/// Source: the body of `terminate_account`. It is **not** the same sequence
+/// as deleting a user through the panel: that one also removes the aliases
+/// and the site runtime, and this one removes the site's files instead. Both
+/// are the Python's, and the difference is reproduced rather than tidied —
+/// a terminated account and a deleted user are not the same event, and a
+/// billing system replaying one is not asking for the other.
+async fn terminate_user(
+    state: &AppState,
+    user: &snpanel_db::User,
+) -> Result<Vec<String>, Response> {
+    let dry = state.settings.command_dry_run;
+    let websites = state
+        .db
+        .websites()
+        .list(Some(user.id), "")
+        .await
+        .unwrap_or_default();
+
+    let mut deleted = Vec::new();
+    for website in &websites {
+        let accounts = state
+            .db
+            .databases()
+            .for_website(website.id)
+            .await
+            .unwrap_or_default();
+        if let Some(item) = accounts.first() {
+            if let Err(e) = crate::mariadb::drop_database(&item.db_name, &item.db_user).await {
+                return Err(bad_request(&e.to_string()));
+            }
+            if let Err(e) = state.db.databases().delete(item.id).await {
+                tracing::error!("deleting the database row failed: {e}");
+                return Err(crate::errors::internal_error());
+            }
+        }
+        super::websites::delete_website_vhost(state, &website.domain).await;
+        // Terminating an account is a real deletion, not a suspension: the
+        // certificate has nothing left to protect and should not outlive it.
+        let _ =
+            super::websites::release_site_certificates(state, &website.domain, website.id).await;
+        let _ = shell::privileged(dry, "waf-site-delete", &[&website.domain], None, None).await;
+        // `wordpress.delete_wordpress` — the site's files, as the site's own
+        // user, which is the only account that owns them.
+        if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+            let _ = shell::privileged(
+                dry,
+                "rm-site",
+                &[linux_user, &website.root_path, &website.root_path],
+                None,
+                None,
+            )
+            .await;
+        }
+        if let Err(e) = state.db.websites().delete(website.id).await {
+            tracing::error!("deleting the row for {} failed: {e}", website.domain);
+            return Err(crate::errors::internal_error());
+        }
+        deleted.push(website.domain.clone());
+    }
+
+    // `site_users.delete_panel_user(user.username)`.
+    if let Ok(panel_user) =
+        snpanel_core::types::PanelUsername::parse(&user.username.trim().to_lowercase())
+    {
+        let _ =
+            shell::privileged(dry, "panel-user-delete", &[panel_user.as_str()], None, None).await;
+    }
+    if let Err(e) = state.db.users().delete(user.id).await {
+        tracing::error!("deleting {} failed: {e}", user.username);
+        return Err(crate::errors::internal_error());
+    }
+    Ok(deleted)
 }
 
 #[cfg(test)]

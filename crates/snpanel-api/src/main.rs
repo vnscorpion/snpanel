@@ -27,6 +27,7 @@
 mod access_log;
 mod archive;
 mod auth;
+mod backup_jobs;
 mod backups;
 mod clamav;
 mod client;
@@ -53,6 +54,7 @@ mod qr;
 mod ratelimit;
 mod restore;
 mod routes;
+mod sftp;
 mod shell;
 mod shlex;
 mod site_apps;

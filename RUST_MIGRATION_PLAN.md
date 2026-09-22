@@ -19,10 +19,10 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **205 of 211** | 97% |
-| Routers served whole | 14 of 17 | `addons`, `auth`, `databases`, `firewall`, `malware`, `packages`, `panel_settings`, `services`, `site_apps`, `terminal`, `updates`, `users`, `waf`, `websites` |
-| Routers served in part | 2 | `maintenance` and `provisioning`; the strangler proxies the rest of each |
-| Routers untouched | 1 | `deps`, which is dependencies rather than routes |
+| API endpoints answered by Rust | **211 of 211** | 100% |
+| Routers served whole | 16 of 17 | every one of them; `deps` is dependencies rather than routes |
+| Routers served in part | 0 | nothing reaches Python through the strangler any more |
+| Routers untouched | 0 | |
 | Privileged helper | **complete** | all 106 verbs Python calls are answered over the socket, and a fresh install deploys the Rust one |
 | Installer | 0% | 9,944 lines of bash across four files |
 | Rust CLI | **in production** | `snpanel 0.1.0`, and Rust holds :2222 |
@@ -1221,12 +1221,39 @@ an update" (`ufw-*`, `nginx-blocklist-*`), and installer-time operations the
 panel never invokes. Removing the file is a Stage G question — either those
 aliases go with it, or they need arms here first.
 
-### Stage E — the remaining routers
+### Stage E — the remaining routers — **complete**
 
-`maintenance` (5) and `provisioning` (1).
-**6 endpoints**,
-counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
-build if that disagrees with `endpoint-coverage.py`.
+**Nothing under `/api` reaches Python any more.** All 211 endpoints answer
+from Rust, counted by `list-missing-endpoints.py`; `check-counters-agree.py`
+fails the build if that disagrees with `endpoint-coverage.py`.
+
+The strangler stays in place: the frontend is still served by Python through
+it, and a path neither side knows still has to answer the way it did. It
+comes out in Stage G, not here.
+
+**The backup family moved as a unit, and the reason is worth keeping.** Its
+job registry is an in-process dict with no file behind it, so a job queued on
+one side of the proxy would be invisible to the other — a customer would
+press Backup, get a job id, and watch a list that never mentions it. That is
+the same shape of constraint the malware job endpoints had, and the same
+answer: the endpoints that write the registry and the ones that read it move
+together or not at all.
+
+**The SSH client was the one open dependency question, and Go lost it on
+measurement.** `golang.org/x/crypto/ssh` and `pkg/sftp` are the more
+travelled road, and Go was available for exactly this kind of case. It would
+have cost a second toolchain in CI, in the release cross-compile and in the
+installer, plus a second binary to ship and to version. `russh` costs 76
+crates, all pure Rust, uses the `ring` backend that was already in the lock
+file for the panel's own TLS, and keeps these tests in the same `cargo test`
+as everything else. Seventy-six crates is a dependency, not a difficulty.
+
+What that code can be held to, and what it cannot: the remote path handling
+and the fingerprint format are corpus-tested against `posixpath` and against
+real keys paramiko generated, because those are what decide where a file
+lands and whether a pinned host is the host it was pinned to. The transfer
+itself is not — there is no SSH server in this test environment — so the
+first upload against a real target is the first time that path runs.
 
 **`websites` is finished.** All 24 of its endpoints answer from Rust,
 `ssl/wildcard` last. It needed no new dependency: `hyper`, `hyper-util`,

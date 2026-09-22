@@ -46,6 +46,13 @@ pub struct SftpTarget {
     pub host_key_fingerprint: Option<String>,
 }
 
+/// The two encrypted columns, kept apart from the row on purpose.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SftpSecrets {
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+}
+
 const SFTP_COLUMNS: &str =
     "id, name, host, port, username, remote_path, is_active, host_key_type, host_key_fingerprint";
 const SCHEDULE_COLUMNS: &str = "id, user_id, user_ids, all_users, target_id, schedule, retention, \
@@ -199,6 +206,46 @@ impl<'a> SftpTargetRepo<'a> {
         .fetch_one(self.pool)
         .await?;
         Ok(count > 0)
+    }
+
+    /// The two secrets, still encrypted, for the one caller that opens a
+    /// connection with them.
+    ///
+    /// Asked for by name rather than carried on [`SftpTarget`]: a row type
+    /// that held them would put a customer's private key one `Debug` away
+    /// from a log line. Both are `None` when the column is empty, which is
+    /// what `decrypt(target.password) if target.password else None` means.
+    pub async fn secrets(&self, id: i64) -> Result<Option<SftpSecrets>, DbError> {
+        Ok(sqlx::query_as::<_, SftpSecrets>(
+            "SELECT password, private_key FROM sftp_backup_targets WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Remember the host key this target answered with.
+    ///
+    /// Source: the `if not target.host_key_fingerprint` guard — only ever
+    /// written when there is nothing pinned yet. A target that already has a
+    /// pin keeps it, because overwriting it on every upload would turn the
+    /// pin into a record of whoever answered last.
+    pub async fn pin_host_key(
+        &self,
+        id: i64,
+        key_type: &str,
+        fingerprint: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE sftp_backup_targets SET host_key_type = ?, host_key_fingerprint = ? \
+             WHERE id = ? AND (host_key_fingerprint IS NULL OR host_key_fingerprint = '')",
+        )
+        .bind(key_type)
+        .bind(fingerprint)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn name_taken(&self, name: &str) -> Result<bool, DbError> {

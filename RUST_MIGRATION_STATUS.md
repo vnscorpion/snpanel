@@ -247,8 +247,8 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 0 of 24 |
-| `maintenance` | 5 of 67 — the backup family |
-| `provisioning` | 1 of 13 — `DELETE /accounts/{id}` |
+| `maintenance` | 0 of 67 |
+| `provisioning` | 0 of 13 |
 | `site_apps` | 0 of 10 |
 | `malware` | 0 of 12 |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
@@ -1536,19 +1536,19 @@ And `for_website`, `for_owner` and `all_emails` on the repositories.
 
 ## Not started
 
-Measured, not recalled: **6 endpoints**, in two groups.
+**Nothing.** All 211 endpoints answer from Rust.
 
-| group | left | what it needs |
-|---|---|---|
-| `maintenance` | 5 | the backup family, which moves as a unit: its job registry is an **in-process dict**, so a job queued on one side is invisible to the other. One of the five, `POST /backup-sftp`, needs an **SSH/SFTP client** |
-| `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` reaches `site_apps.export_payload` — a helper verb that exists |
+The last six were the backup family and `DELETE /accounts/{id}`. The family
+had to move together because its job registry is an in-process dict with no
+file behind it — a job queued on one side of the proxy would be invisible to
+the other. Only one of the five, `POST /backup-sftp`, needed an SSH client,
+and `russh` was chosen over Go after measuring what each would cost; the
+reasoning is in the plan under Stage E.
 
-One decision is left rather than three: **an SSH/SFTP client**, for the five
-endpoints that push a backup to a remote host. That is a place where Rust's
-ecosystem is thinner than Go's — `golang.org/x/crypto/ssh` and `pkg/sftp`
-are considerably more mature than anything on this side — and Go is
-available for exactly that kind of case, so the shape of that group is the
-thing to decide rather than the thing to write.
+What remains is not endpoints. The frontend is still served by Python through
+the strangler, `storage_quota` still counts websites only, and the listening
+socket is still IPv4-only — the three known gaps below. Then Stage F, the
+installer, and Stage G, removing Python.
 
 ### The note that said `site_apps` needed a Docker client
 

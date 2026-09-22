@@ -34,7 +34,9 @@ mod users;
 pub mod websites;
 
 pub use api_tokens::{ApiToken, ApiTokenRepo};
-pub use backups::{BackupSchedule, BackupScheduleRepo, ScheduleUsers, SftpTarget, SftpTargetRepo};
+pub use backups::{
+    BackupSchedule, BackupScheduleRepo, ScheduleUsers, SftpSecrets, SftpTarget, SftpTargetRepo,
+};
 pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
