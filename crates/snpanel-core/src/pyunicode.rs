@@ -31,6 +31,69 @@ pub fn is_word(c: char) -> bool {
     c == '_' || is_alnum(c)
 }
 
+/// Source: `str.strip()` with no argument.
+///
+/// Not `str::trim`, which trims the Unicode `White_Space` property: Python
+/// uses the same predicate as `str.isspace`, which also covers `\x1c`-`\x1f`.
+pub fn trim(text: &str) -> &str {
+    text.trim_matches(is_space)
+}
+
+/// Source: `text[-max:]` — the last `max` **characters**, not bytes.
+///
+/// The panel puts these tails in error messages, so a byte slice would
+/// panic on a multibyte boundary the first time a helper answered in
+/// Vietnamese.
+pub fn tail(text: &str, max: usize) -> &str {
+    let count = text.chars().count();
+    if count <= max {
+        return text;
+    }
+    let start = text
+        .char_indices()
+        .nth(count - max)
+        .map_or(text.len(), |(i, _)| i);
+    &text[start..]
+}
+
+/// Every boundary `str.splitlines()` breaks on, `\r\n` handled as a pair.
+const LINE_BOUNDARIES: &[char] = &[
+    '\n', '\r', '\u{0b}', '\u{0c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}', '\u{2029}',
+];
+
+/// Source: `str.splitlines()`.
+///
+/// **Eleven boundaries, not three.** Besides `\n`, `\r` and `\r\n`, Python
+/// breaks on the vertical tab, the form feed, the three separator controls
+/// `\x1c`-`\x1e`, `\x85`, and `U+2028`/`U+2029`. `str::lines` knows the
+/// first three. A configuration file carrying any of the others is read as
+/// several lines there and as one line here — and a parser that splits a
+/// `key = value` line at the wrong place does not fail, it reports a
+/// different setting.
+///
+/// A trailing boundary does **not** produce a final empty piece, and neither
+/// does an empty string.
+pub fn split_lines(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if !LINE_BOUNDARIES.contains(&c) {
+            continue;
+        }
+        out.push(&text[start..at]);
+        // `\r\n` is one boundary, not two.
+        if c == '\r' && matches!(chars.peek(), Some((_, '\n'))) {
+            chars.next();
+        }
+        start = chars.peek().map_or(text.len(), |(next, _)| *next);
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
 fn in_table(c: char, table: &[(u32, u32)]) -> bool {
     let cp = c as u32;
     table
@@ -948,5 +1011,90 @@ mod tests {
         assert!(!is_word('·'));
         // An emoji is `So`, which is neither.
         assert!(!is_word('🎉'));
+    }
+
+    fn pysplit_corpus() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/pysplit.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the pysplit corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// Every line boundary CPython breaks on, replayed.
+    ///
+    /// `str::lines` knows three of the eleven. The other eight are what a
+    /// configuration reader meets in a file somebody pasted through a tool
+    /// that used a form feed as a separator — and a reader that misses one
+    /// does not fail, it reports a different setting.
+    #[test]
+    fn the_line_boundaries_are_the_ones_python_breaks_on() {
+        let corpus = pysplit_corpus();
+        let cases = corpus["splitlines"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 89, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut beyond_std = 0usize;
+        for case in cases {
+            let text = case["text"].as_str().unwrap_or("");
+            let want: Vec<&str> = case["lines"]
+                .as_array()
+                .expect("the lines")
+                .iter()
+                .map(|v| v.as_str().unwrap_or(""))
+                .collect();
+            let got = split_lines(text);
+            if got != want {
+                failures.push(format!("{text:?}\n  python {want:?}\n  rust   {got:?}"));
+            }
+            // How many cases `str::lines` would have got wrong: the measure
+            // of whether this function is earning its place.
+            let std_lines: Vec<&str> = text.lines().collect();
+            if std_lines != want {
+                beyond_std += 1;
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+        assert!(
+            beyond_std >= 20,
+            "only {beyond_std} cases go beyond `str::lines`; the corpus is \
+             not exercising the boundaries this exists for"
+        );
+    }
+
+    /// `str.strip()` with no argument, replayed.
+    #[test]
+    fn the_strip_is_pythons_and_not_rusts() {
+        let corpus = pysplit_corpus();
+        let cases = corpus["strip"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 27, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut beyond_std = 0usize;
+        for case in cases {
+            let text = case["text"].as_str().unwrap_or("");
+            let want = case["stripped"].as_str().unwrap_or("");
+            let got = trim(text);
+            if got != want {
+                failures.push(format!("{text:?}\n  python {want:?}\n  rust   {got:?}"));
+            }
+            if text.trim() != want {
+                beyond_std += 1;
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+        // `\x1c`-`\x1f` are the ones `str::trim` leaves behind.
+        assert!(beyond_std >= 4, "only {beyond_std} go beyond `str::trim`");
     }
 }

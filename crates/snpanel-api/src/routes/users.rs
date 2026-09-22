@@ -233,8 +233,9 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     }
 
     if let Some(raw) = payload.get("is_active").filter(|v| !v.is_null()) {
-        let Some(active) = raw.as_bool() else {
-            return crate::errors::bool_parsing("is_active", raw);
+        let active = match crate::errors::read_bool("is_active", Some(raw), false) {
+            Ok(value) => value,
+            Err(response) => return response,
         };
         if user_id == current.user.id && !active {
             return bad_request("Cannot deactivate yourself");

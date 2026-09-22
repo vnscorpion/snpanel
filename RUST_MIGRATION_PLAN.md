@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **145 of 211** | 69% |
+| API endpoints answered by Rust | **149 of 211** | 71% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -1223,8 +1223,8 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `websites` (1), then `provisioning`
-(13) and `site_apps` (10), which need the `docker` domain. **66 endpoints**,
+`maintenance` (27), `malware` (11), `websites` (1), then `provisioning`
+(13) and `site_apps` (10), which need the `docker` domain. **62 endpoints**,
 counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
 build if that disagrees with `endpoint-coverage.py`.
 
@@ -1235,10 +1235,27 @@ only process-local state it touches is a four-second response cache, which
 is a cache and not a fact. A portable endpoint sat on the blocked list for
 two stages because a note nobody re-checked said it was not.
 
-What is genuinely blocked is smaller than it looked: the `malware` job
-endpoints read `_file_jobs`, an in-memory dict that Python background
-threads write. Moving them needs the job state somewhere both processes can
-see, which is a Stage G question and not a routing one.
+**Nothing is blocked by the job registries.** That note has now been
+wrong twice, so here is the reasoning rather than the conclusion. There are
+three of them: `_file_jobs` (written only by `POST /files/extract`, read by
+`GET /files/jobs` and `GET /files/jobs/{job_id}`), `_backup_jobs` (written
+by `POST /backup`, `POST /user-backup` and `POST /backup-sftp`, read by the
+two `backup-jobs` endpoints), and the malware one, which is an in-memory
+dict **merged with `MALWARE_JOBS_DIR/*.json`** — and the files are shared
+between processes already.
+
+A process-local registry only splits if one process writes it and another
+reads it. The proxy routes by path and method, so moving a family together
+— every writer and every reader — puts the whole registry on one side of
+the line. Jobs in flight at the moment of the cutover are lost, which is
+what a restart already does to them, and both implementations cap the
+registry at fifty entries and drop finished work from the listing anyway.
+
+So each family is one chunk, not a Stage G question. What they do need is
+somewhere for the work itself to run: the Python uses a two-worker
+`ThreadPoolExecutor` per registry, and the port needs the same bound rather
+than an unbounded spawn — two extractions at once is a deliberate limit on
+a shared box, not an accident.
 
 Three differences in the access-log port are deliberate and recorded here
 rather than in a comment nobody reads:

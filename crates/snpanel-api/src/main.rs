@@ -38,6 +38,7 @@ mod mariadb;
 mod middleware;
 mod panel_urls;
 mod php;
+mod php_tune;
 mod qr;
 mod ratelimit;
 mod routes;

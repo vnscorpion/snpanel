@@ -1465,8 +1465,9 @@ async fn set_waf(
     let Some(raw) = payload.get("waf_enabled") else {
         return crate::errors::missing_field("waf_enabled", payload.clone());
     };
-    let Some(waf_enabled) = raw.as_bool() else {
-        return crate::errors::bool_parsing("waf_enabled", raw);
+    let waf_enabled = match crate::errors::read_bool("waf_enabled", Some(raw), false) {
+        Ok(value) => value,
+        Err(response) => return response,
     };
 
     // `sync_website_rules` renders from the site's **stored** flags, not from
@@ -1828,8 +1829,9 @@ async fn set_http_flood(
     let Some(raw) = payload.get("http_flood_enabled") else {
         return crate::errors::missing_field("http_flood_enabled", payload.clone());
     };
-    let Some(next_enabled) = raw.as_bool() else {
-        return crate::errors::bool_parsing("http_flood_enabled", raw);
+    let next_enabled = match crate::errors::read_bool("http_flood_enabled", Some(raw), false) {
+        Ok(value) => value,
+        Err(response) => return response,
     };
     let config = match flood_payload_config(&payload) {
         Ok(c) => c,

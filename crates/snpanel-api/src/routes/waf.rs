@@ -1011,8 +1011,9 @@ async fn set_website_crs(
     let Some(raw) = payload.get("enabled") else {
         return crate::errors::missing_field("enabled", payload.clone());
     };
-    let Some(enabled) = raw.as_bool() else {
-        return crate::errors::bool_parsing("enabled", raw);
+    let enabled = match crate::errors::read_bool("enabled", Some(raw), false) {
+        Ok(value) => value,
+        Err(response) => return response,
     };
 
     if let Err(e) = state

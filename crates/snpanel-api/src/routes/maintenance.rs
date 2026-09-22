@@ -157,6 +157,20 @@ pub fn router() -> Router<AppState> {
             post(restore_php_defaults).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/php-tune",
+            get(get_php_tune)
+                .post(apply_php_tune)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-tune/pools",
+            post(retune_php_pools).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/php-opcache",
+            post(toggle_php_opcache).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/php-versions",
             get(get_php_versions).fallback(crate::fallback),
         )
@@ -1791,6 +1805,265 @@ async fn restore_php_defaults(
         Ok(target) => axum::Json(json!({ "target": target, "values": values })).into_response(),
         Err(r) => r,
     }
+}
+
+/// Everything `plan` needs from this machine, gathered once.
+///
+/// The two PHP subprocesses are the slow part and neither depends on the
+/// other, so they run together: a cold `php -i` is most of a second and the
+/// JIT probe starts an opcache.
+async fn php_tune_plan(state: &AppState, requested: Option<&str>) -> Result<Value, Response> {
+    let version = match php::resolve_version(requested, &state.settings.default_php_version) {
+        Ok(v) => v,
+        Err(e) => return Err(bad_request(&e)),
+    };
+    let (live, jit) = tokio::join!(
+        crate::php_tune::current_values(&version),
+        crate::php_tune::jit_status(&version),
+    );
+    let pools = crate::php_tune::pool_settings(
+        std::path::Path::new("/etc/php")
+            .join(&version)
+            .join("fpm")
+            .join("pool.d")
+            .as_path(),
+    );
+    Ok(crate::php_tune::plan_payload(
+        &version,
+        &crate::php_tune::server_facts(),
+        &live,
+        &crate::php_tune::pinned_by_php_config(&version),
+        &jit,
+        pools,
+    ))
+}
+
+/// `GET /maintenance/php-tune`.
+///
+/// Source: `get_php_tune`. Read-only: the numbers and the reasoning, so an
+/// administrator can see what would change before anything does.
+async fn get_php_tune(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    // `php_version: str | None = Query(default=None)` — no pattern, so an
+    // unsupported value reaches `resolve_version` and is refused there with
+    // the list of what is allowed.
+    match php_tune_plan(&state, params.get("php_version").map(String::as_str)).await {
+        Ok(payload) => axum::Json(payload).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// `POST /maintenance/php-tune`.
+///
+/// Source: `apply_php_tune`. **One button, both halves**: the settings PHP
+/// reads and the pool sizes FPM runs with, which are otherwise only
+/// recalculated when a site is touched.
+async fn apply_php_tune(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let requested = body_php_version(&payload);
+    let version = match php::resolve_version(Some(&requested), &state.settings.default_php_version)
+    {
+        Ok(v) => v,
+        Err(e) => return bad_request(&e),
+    };
+
+    let jit = crate::php_tune::jit_status(&version).await;
+    let content = crate::php_tune::render_ini(&crate::php_tune::server_facts(), &jit);
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "php-tune-write",
+        &[&version],
+        Some(&content),
+        Some(&["bash", "-lc", "echo dry-run-php-tune"]),
+        Some(120),
+    )
+    .await;
+    if !result.ok() {
+        // `RuntimeError` from the service, which this endpoint answers as a
+        // 500 rather than a 400: the request was well formed and the machine
+        // failed to carry it out.
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            snpanel_core::pyunicode::tail(
+                result
+                    .failure_detail("Could not write the PHP tuning file")
+                    .trim(),
+                2000,
+            ),
+        );
+    }
+
+    let message = {
+        let stdout = result.stdout.trim();
+        if stdout.is_empty() {
+            format!("PHP {version} đã tune.")
+        } else {
+            stdout.to_string()
+        }
+    };
+    let plan = match php_tune_plan(&state, Some(&version)).await {
+        Ok(plan) => plan,
+        Err(r) => return r,
+    };
+    let mut body = json!({ "message": message, "plan": plan });
+
+    // The pool retune is reported, not enforced: a tuning file that landed
+    // is worth keeping even if the pools could not be recalculated, and the
+    // page shows the error beside the success rather than instead of it.
+    let pools = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "php-pools-retune",
+        &[],
+        None,
+        Some(&["bash", "-lc", "echo dry-run-retune"]),
+        Some(600),
+    )
+    .await;
+    if pools.ok() {
+        body["pools"] = json!(pools.stdout.trim());
+    } else {
+        body["pools"] = json!("");
+        body["pools_error"] = json!(snpanel_core::pyunicode::tail(
+            pools.failure_detail("Could not retune the pools").trim(),
+            500
+        ));
+    }
+
+    super::packages::audit_action(&state, &parts, current.user.id, "php_tune", &requested).await;
+    axum::Json(body).into_response()
+}
+
+/// `POST /maintenance/php-opcache`.
+///
+/// Source: `toggle_php_opcache`. Kept out of the tuning file so that running
+/// Auto tune afterwards does not switch it back on behind the
+/// administrator's back.
+async fn toggle_php_opcache(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `PhpOpcacheToggle` has **no** validator on `php_version`, unlike
+    // `PhpConfigRestore`: an unsupported value is not quietly replaced with
+    // 8.4 here, it reaches `set_opcache` and is refused.
+    let version = match payload.get("php_version") {
+        Some(Value::String(s)) => s.clone(),
+        None => "8.4".to_string(),
+        Some(other) => return crate::errors::string_type("php_version", other),
+    };
+    let enabled = match crate::errors::read_bool("enabled", payload.get("enabled"), true) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if !php::SUPPORTED_PHP_VERSIONS.contains(&version.as_str()) {
+        return bad_request(&format!("Unsupported PHP version: {version}"));
+    }
+
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "php-opcache-set",
+        &[&version, if enabled { "1" } else { "0" }],
+        None,
+        Some(&["bash", "-lc", "echo dry-run-opcache"]),
+        Some(120),
+    )
+    .await;
+    if !result.ok() {
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            snpanel_core::pyunicode::tail(
+                result.failure_detail("Could not change opcache").trim(),
+                2000,
+            ),
+        );
+    }
+
+    let target = format!("{version}={}", i32::from(enabled));
+    super::packages::audit_action(&state, &parts, current.user.id, "php_opcache", &target).await;
+    axum::Json(json!({
+        "php_version": version,
+        "enabled": enabled,
+        "message": format!(
+            "OPcache PHP {version}: {}.",
+            if enabled { "bật" } else { "tắt" }
+        ),
+    }))
+    .into_response()
+}
+
+/// `POST /maintenance/php-tune/pools`.
+///
+/// Source: `retune_php_pools`. Pool sizing is decided when a pool is
+/// written, so a server that gained RAM keeps the old numbers until each
+/// site is touched; this asks for all of them at once.
+async fn retune_php_pools(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let result = shell::privileged_timed(
+        state.settings.command_dry_run,
+        "php-pools-retune",
+        &[],
+        None,
+        Some(&["bash", "-lc", "echo dry-run-retune"]),
+        Some(600),
+    )
+    .await;
+    if !result.ok() {
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            snpanel_core::pyunicode::tail(
+                result.failure_detail("Could not retune the pools").trim(),
+                2000,
+            ),
+        );
+    }
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "php_retune_pools",
+        "php-fpm",
+    )
+    .await;
+    axum::Json(json!({
+        "message": "Đã tính lại các pool PHP-FPM.",
+        "output": snpanel_core::pyunicode::tail(result.stdout.trim(), 4000),
+    }))
+    .into_response()
 }
 
 /// Source: `get_php_versions`.

@@ -705,6 +705,65 @@ own status, so no search can tell the formatted number from the raw text.
 The arm stays because the Python joins the same thirteen fields. A test that
 cannot fail is not evidence, and pretending otherwise inflates the count.
 
+### A body `bool` is not only `true` and `false`
+
+Found while porting the PHP tuner, and it was not the tuner's bug. FastAPI
+validates a request body in pydantic's **lax** mode, so `"true"`, `"on"`,
+`"yes"`, `"y"`, `"t"`, `1` and `1.0` are all booleans. Seven call sites here
+read `Value::Bool` and refused everything else with a 422 — so a client
+sending `{"enabled": "true"}` got a refusal from Rust and a 200 from Python.
+
+And it was wrong in the other direction too. For a plain `bool` field with a
+default, pydantic **refuses** an explicit `null`; two of those call sites
+treated `null` as "take the default". Only `Optional[bool] = None` accepts
+it, which is what `packages` and `users` have and why those two keep
+skipping it.
+
+The refusals are not one error either: a value of the right kind that
+cannot be read is `bool_parsing` (`2`, `"01"`, `" true"` — there is no
+trimming), and a value of the wrong kind is `bool_type` (`null`, a list, a
+float that is not 0 or 1). The panel shows the message.
+
+All of it is now `errors::read_bool`, measured against the installed
+pydantic over 43 values. One existing test had to be **inverted**: it
+asserted that `{"terminal_enabled": "yes"}` was refused, which is what made
+the port confident. A test written from the same misreading as the code
+does not catch the code.
+
+### The PHP tuner
+
+`maintenance`'s four `php-tune` endpoints. Most of the module is arithmetic
+over one number — how much RAM the box has — and string comparison deciding
+whether a row is offered as a change, so all of it is corpus-measured: 39
+memory sizes at every tier boundary and floor crossing, 56 spellings of a
+setting, 34 recommendation lists, 24 ini files, 21 version strings and six
+whole plans.
+
+The reason strings are compared byte for byte. They are what an
+administrator reads before pressing the button, so a port that reworded
+them would change the product, and a corpus is the only way to be sure a
+transcription of fourteen Vietnamese sentences is exact.
+
+Three behaviours that a reading of the code would get wrong, and the corpus
+pins each:
+
+- **A bare number keeps its digits as written.** `_normalise` returns the
+  matched *text* for a unitless value, not the parsed integer, so `007`
+  normalises to `007` and compares unequal to `7`.
+- **A pool file's name and its numbers can come from different sections.**
+  The first `[name]` header names the pool; the last assignment of a key
+  sets its value.
+- **`supports_jit("8")` is false.** The comparison is between tuples, and
+  `(8,)` is less than `(8, 0)`.
+
+Two more of Python's string rules went into `pyunicode` for it.
+`str.splitlines()` breaks on eleven things where `str::lines` breaks on
+three — an ini file with a form feed in it is two settings there and one
+line here, and a reader that splits `key = value` at the wrong place does
+not fail, it reports a different setting. And `str.strip()` is the same
+whitespace predicate as `\S`, not Rust's `White_Space`. Both are replayed
+against CPython over 89 and 27 cases.
+
 ---
 
 ## Not started

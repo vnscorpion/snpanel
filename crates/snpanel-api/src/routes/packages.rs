@@ -332,9 +332,7 @@ fn read_common_fields(payload: &Value, fields: &mut PackageFields) -> Result<(),
         if raw.is_null() {
             continue;
         }
-        let Some(value) = raw.as_bool() else {
-            return Err(crate::errors::bool_parsing(name, raw));
-        };
+        let value = crate::errors::read_bool(name, Some(raw), false)?;
         match name {
             "terminal_enabled" => fields.terminal_enabled = Some(value),
             "waf_enabled" => fields.waf_enabled = Some(value),
@@ -449,9 +447,16 @@ mod tests {
     fn a_wrong_type_is_a_validation_error_not_a_silent_zero() {
         let mut f = PackageFields::default();
         assert!(read_common_fields(&json!({"website_limit": "abc"}), &mut f).is_err());
-        assert!(read_common_fields(&json!({"terminal_enabled": "yes"}), &mut f).is_err());
         // A float is not an integer either.
         assert!(read_common_fields(&json!({"website_limit": 1.5}), &mut f).is_err());
+        // But `"yes"` **is** a boolean: FastAPI validates a body in
+        // pydantic's lax mode. This line asserted the opposite until the
+        // real pydantic was asked — see the corpus test in `errors.rs`.
+        assert!(read_common_fields(&json!({"terminal_enabled": "yes"}), &mut f).is_ok());
+        assert_eq!(f.terminal_enabled, Some(true));
+        assert!(read_common_fields(&json!({"terminal_enabled": "maybe"}), &mut f).is_err());
+        assert!(read_common_fields(&json!({"terminal_enabled": 2}), &mut f).is_err());
+        assert!(read_common_fields(&json!({"terminal_enabled": []}), &mut f).is_err());
     }
 
     #[test]
