@@ -1235,27 +1235,42 @@ only process-local state it touches is a four-second response cache, which
 is a cache and not a fact. A portable endpoint sat on the blocked list for
 two stages because a note nobody re-checked said it was not.
 
-**Nothing is blocked by the job registries.** That note has now been
-wrong twice, so here is the reasoning rather than the conclusion. There are
-three of them: `_file_jobs` (written only by `POST /files/extract`, read by
-`GET /files/jobs` and `GET /files/jobs/{job_id}`), `_backup_jobs` (written
-by `POST /backup`, `POST /user-backup` and `POST /backup-sftp`, read by the
-two `backup-jobs` endpoints), and the malware one, which is an in-memory
-dict **merged with `MALWARE_JOBS_DIR/*.json`** — and the files are shared
-between processes already.
+**The job registries are a chunking rule, not a blocker — with one
+exception.** That note has now been wrong twice in each direction, so here
+is the reasoning rather than the conclusion.
 
 A process-local registry only splits if one process writes it and another
 reads it. The proxy routes by path and method, so moving a family together
 — every writer and every reader — puts the whole registry on one side of
 the line. Jobs in flight at the moment of the cutover are lost, which is
 what a restart already does to them, and both implementations cap the
-registry at fifty entries and drop finished work from the listing anyway.
+registry and drop finished work from the listing anyway. That is how
+`_file_jobs` moved: `POST /files/extract` writes it, `GET /files/jobs` and
+`GET /files/jobs/{job_id}` read it, and all three went together.
+`_backup_jobs` is the same shape — written by `POST /backup`, `POST
+/user-backup` and `POST /backup-sftp`, read by the two `backup-jobs`
+endpoints — so it is one chunk of five.
 
-So each family is one chunk, not a Stage G question. What they do need is
-somewhere for the work itself to run: the Python uses a two-worker
-`ThreadPoolExecutor` per registry, and the port needs the same bound rather
-than an unbounded spawn — two extractions at once is a deliberate limit on
-a shared box, not an accident.
+**The malware store is different, and the difference is easy to miss.** It
+is an in-memory dict merged with `MALWARE_JOBS_DIR/*.json`, and the files
+*are* shared between processes — which is what the previous note said, and
+it led to the wrong conclusion. Reading one of those jobs is also a
+**write**: all three read endpoints pass every job through
+`_finalize_stale_malware_job`, which asks whether a thread **in this
+process** still owns it and, finding none, marks the job `interrupted` and
+writes that to disk.
+
+A Rust process has no such thread for a scan the Python is running. The
+first poll of `GET /malware/jobs` would declare the live scan dead and
+overwrite its record — the operator would watch a running scan turn into
+"Scan interrupted. Start a new scan to continue." So the malware readers
+cannot move before `POST /run` does, and the malware family is eleven
+endpoints in one chunk rather than three easy ones and a hard one.
+
+What every family needs besides the registry is somewhere for the work to
+run: the Python uses a two-worker `ThreadPoolExecutor` per registry, and
+the port needs the same bound rather than an unbounded spawn — two
+extractions at once is a deliberate limit on a shared box, not an accident.
 
 Three differences in the access-log port are deliberate and recorded here
 rather than in a comment nobody reads:
