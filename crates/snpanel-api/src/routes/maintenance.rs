@@ -136,6 +136,14 @@ pub fn router() -> Router<AppState> {
             get(download_site_backup).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/backups/{website_id}/upload",
+            post(upload_site_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-backups/upload",
+            post(upload_user_backup).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/user-backups/{user_id}",
             get(list_account_backups).fallback(crate::fallback),
         )
@@ -149,7 +157,13 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/maintenance/user-restore-backups",
-            get(list_restore_backups).fallback(crate::fallback),
+            get(list_restore_backups)
+                .delete(delete_restore_backup)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/user-restore-backups/upload",
+            post(upload_restore_backups).fallback(crate::fallback),
         )
         .route(
             "/maintenance/backup-schedules",
@@ -1194,6 +1208,315 @@ async fn delete_account_backup(
         }
         Err(_) => not_found("Backup not found"),
     }
+}
+
+/// Every file part of a multipart body, by name.
+///
+/// `file: UploadFile = File(...)` and `files: list[UploadFile] = File(...)`
+/// differ only in how many parts they take, and FastAPI matches on the part
+/// name — so a form carrying other parts is not an error, and a form
+/// carrying several parts named `files` is one list.
+async fn upload_parts(
+    state: &AppState,
+    parts: axum::http::request::Parts,
+    body: Body,
+    field: &str,
+) -> Result<Vec<(String, Vec<u8>)>, Response> {
+    use axum::extract::FromRequest;
+
+    let request = axum::extract::Request::from_parts(parts, body);
+    let mut multipart = match axum::extract::Multipart::from_request(request, state).await {
+        Ok(m) => m,
+        Err(e) => return Err(bad_request(&e.body_text())),
+    };
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(part)) => {
+                if part.name() != Some(field) {
+                    continue;
+                }
+                let filename = part.file_name().unwrap_or_default().to_string();
+                match part.bytes().await {
+                    Ok(bytes) => out.push((filename, bytes.to_vec())),
+                    Err(e) => return Err(bad_request(&e.body_text())),
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(bad_request(&e.body_text())),
+        }
+    }
+    Ok(out)
+}
+
+/// A timestamp and a nonce for a restore upload whose name is taken.
+///
+/// Source: `datetime.utcnow().strftime("%Y%m%d%H%M%S")` and
+/// `secrets.token_hex(3)` — six hex characters, not eight: the timestamp
+/// already separates uploads a second apart, and this only has to separate
+/// two in the same second.
+fn restore_upload_suffix() -> (String, String) {
+    use rand::RngCore;
+
+    let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+    let mut buf = [0u8; 3];
+    rand::rngs::OsRng.fill_bytes(&mut buf);
+    let nonce: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+    (stamp, nonce)
+}
+
+/// `POST /maintenance/backups/{website_id}/upload`.
+///
+/// Source: `upload_backup`.
+async fn upload_site_backup(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    use axum::extract::FromRequestParts;
+
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let website_id = match AxumPath::<i64>::from_request_parts(&mut parts, &state).await {
+        Ok(AxumPath(id)) => id,
+        Err(e) => return bad_request(&e.body_text()),
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let files = match upload_parts(&state, parts.clone(), body, "file").await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some((filename, data)) = files.into_iter().next() else {
+        return crate::errors::missing_field("file", Value::Null);
+    };
+    // `file.filename or "backup.tar.gz"` — a part with no filename still
+    // lands, under a name the operator can find.
+    let filename = if filename.is_empty() {
+        "backup.tar.gz".to_string()
+    } else {
+        filename
+    };
+    let target = match crate::backups::save_uploaded_backup(
+        &state.settings.backup_root,
+        &website.domain,
+        &filename,
+        &data,
+    ) {
+        Ok(t) => t,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    audit_detail(
+        &state,
+        current.user.id,
+        "upload_backup",
+        &website.domain,
+        &target,
+    )
+    .await;
+    axum::Json(json!({ "backup_file": target })).into_response()
+}
+
+/// One uploaded user backup, saved and then **read back**.
+///
+/// Source: `_save_user_restore_upload`. The manifest check is the point:
+/// an archive that is not a full user backup is deleted again rather than
+/// left in the restore folder, where the next administrator would find it
+/// and try to restore a customer from a website backup.
+async fn save_restore_upload(
+    state: &AppState,
+    filename: &str,
+    data: &[u8],
+) -> Result<Value, Response> {
+    let filename = if filename.is_empty() {
+        "user-backup.tar.gz"
+    } else {
+        filename
+    };
+    let (stamp, nonce) = restore_upload_suffix();
+    let target = crate::backups::save_uploaded_user_backup(
+        &state.settings.backup_root,
+        filename,
+        data,
+        &stamp,
+        &nonce,
+    )
+    .map_err(|e| bad_request(&e.to_string()))?;
+
+    let manifest = match crate::backups::read_backup_manifest(&state.settings.backup_root, &target)
+    {
+        Ok(m) if m.get("kind").and_then(Value::as_str) == Some("snpanel_user") => m,
+        other => {
+            // Both the unreadable and the wrong-kind archive go, and the
+            // message is the Python's for each.
+            let _ = crate::backups::delete_user_backup(&state.settings.backup_root, &target);
+            return Err(bad_request(&match other {
+                Ok(_) => "This is not a full user backup".to_string(),
+                Err(e) => e.to_string(),
+            }));
+        }
+    };
+    let path = std::path::Path::new(&target);
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    Ok(json!({
+        "backup_file": target,
+        "filename": path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "username": manifest["user"]["username"],
+        "generated_at": manifest["generated_at"],
+        "websites": manifest["websites"].as_array().map(Vec::len).unwrap_or(0),
+        "size": size,
+        "valid": true,
+    }))
+}
+
+/// `POST /maintenance/user-restore-backups/upload`.
+///
+/// Source: `upload_user_restore_backups` — several archives at once, and
+/// the audit line names the customers rather than the filenames, because
+/// that is what an administrator is looking for afterwards.
+async fn upload_restore_backups(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let files = match upload_parts(&state, parts.clone(), body, "files").await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    if files.is_empty() {
+        return bad_request("No backup files uploaded");
+    }
+    let mut items: Vec<Value> = Vec::with_capacity(files.len());
+    for (filename, data) in files {
+        match save_restore_upload(&state, &filename, &data).await {
+            Ok(item) => items.push(item),
+            Err(r) => return r,
+        }
+    }
+    // `item.get("username") or item.get("filename") or "user"`.
+    let users: Vec<String> = items
+        .iter()
+        .map(|item| {
+            item["username"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .or_else(|| item["filename"].as_str().filter(|s| !s.is_empty()))
+                .unwrap_or("user")
+                .to_string()
+        })
+        .collect();
+    audit_detail(
+        &state,
+        current.user.id,
+        "upload_user_restore_backups",
+        "restore_folder",
+        &users.join(", "),
+    )
+    .await;
+    axum::Json(json!({
+        "directory": crate::backups::user_restore_dir(&state.settings.backup_root)
+            .to_string_lossy(),
+        "items": items,
+    }))
+    .into_response()
+}
+
+/// `POST /maintenance/user-backups/upload`.
+///
+/// Source: `upload_user_backup` — the same saver, one archive, and a
+/// narrower answer.
+async fn upload_user_backup(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let files = match upload_parts(&state, parts.clone(), body, "file").await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some((filename, data)) = files.into_iter().next() else {
+        return crate::errors::missing_field("file", Value::Null);
+    };
+    let item = match save_restore_upload(&state, &filename, &data).await {
+        Ok(item) => item,
+        Err(r) => return r,
+    };
+    let username = item["username"].as_str().unwrap_or("user").to_string();
+    let backup_file = item["backup_file"].as_str().unwrap_or("").to_string();
+    audit_detail(
+        &state,
+        current.user.id,
+        "upload_user_backup",
+        &username,
+        &backup_file,
+    )
+    .await;
+    axum::Json(json!({
+        "backup_file": item["backup_file"],
+        "username": item["username"],
+    }))
+    .into_response()
+}
+
+/// `DELETE /maintenance/user-restore-backups`.
+///
+/// Source: `delete_user_restore_backup`.
+async fn delete_restore_backup(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+    req: axum::extract::Request,
+) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let Some(backup_file) = params.get("backup_file") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "backup_file"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    let deleted = match crate::backups::delete_user_restore_backup(
+        &state.settings.backup_root,
+        backup_file,
+    ) {
+        Ok(d) => d,
+        // Every failure here is "Backup not found": a path outside the
+        // restore folder is not a refusal to explain, it is simply not
+        // one of the files this endpoint knows about.
+        Err(_) => return not_found("Backup not found"),
+    };
+    let (parts, _) = req.into_parts();
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "delete_user_restore_backup",
+        "restore_folder",
+        &deleted,
+    )
+    .await;
+    axum::Json(json!({ "deleted": deleted })).into_response()
 }
 
 /// Source: `list_user_restore_backups` - the uploads waiting to be restored,

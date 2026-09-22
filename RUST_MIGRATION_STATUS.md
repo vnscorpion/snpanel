@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 21 of 67 |
+| `maintenance` | 17 of 67 |
 | `provisioning` | 7 of 13 — the ones that create and destroy accounts |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
@@ -961,7 +961,7 @@ character, so the test now samples the last one too.
 
 ## Not started
 
-Measured, not recalled: **50 endpoints**, which is `maintenance` (21),
+Measured, not recalled: **46 endpoints**, which is `maintenance` (17),
 `malware` (11), `site_apps` (10), `provisioning` (7) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the

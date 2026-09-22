@@ -166,6 +166,130 @@ pub fn delete_user_backup(backup_root: &str, backup_file: &str) -> Result<String
 }
 
 /// Source: `read_backup_manifest` - `manifest.json` out of the archive.
+/// Source: `MAX_UPLOAD_BYTES` — one gigabyte.
+pub const MAX_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Whether an upload is over the limit.
+///
+/// Source: `if written > MAX_UPLOAD_BYTES` — **strictly** greater, so an
+/// archive of exactly a gigabyte is allowed. Its own function because the
+/// call sites take a gigabyte of bytes to exercise and this does not.
+pub fn over_upload_limit(len: u64) -> bool {
+    len > MAX_UPLOAD_BYTES
+}
+
+/// The name an uploaded archive is allowed to land under.
+///
+/// Source: the three lines `save_uploaded_backup` and
+/// `save_uploaded_user_backup` share. `Path(filename).name` throws away
+/// every directory component, so `../../etc/x.tar.gz` becomes `x.tar.gz`
+/// before anything else looks at it — and the resolve-and-compare below is
+/// what catches what is left, a name that is `.` or `..` or empty and so
+/// resolves to the directory itself.
+fn uploaded_archive_name(filename: &str) -> Result<String, BackupError> {
+    let name = std::path::Path::new(filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !name.ends_with(".tar.gz") {
+        return Err(BackupError::Invalid(
+            "Only .tar.gz backup files are supported".to_string(),
+        ));
+    }
+    Ok(name)
+}
+
+/// `backup_dir not in target.parents` — the target must be *inside* the
+/// directory, not the directory itself.
+fn inside(dir: &std::path::Path, target: &std::path::Path) -> bool {
+    target.parent().is_some_and(|parent| parent == dir)
+}
+
+/// Source: `save_uploaded_backup` — one website's own backup folder.
+///
+/// A name that is already there is **overwritten**, unlike the user-backup
+/// saver below. That is the Python's choice and it is defensible here: a
+/// site's backups are named by timestamp, so a collision means the same
+/// archive being re-uploaded.
+pub fn save_uploaded_backup(
+    backup_root: &str,
+    domain: &str,
+    filename: &str,
+    data: &[u8],
+) -> Result<String, BackupError> {
+    if over_upload_limit(data.len() as u64) {
+        return Err(BackupError::Invalid("Backup file is too large".to_string()));
+    }
+    let name = uploaded_archive_name(filename)?;
+    let dir = std::path::Path::new(backup_root).join(domain);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| BackupError::Invalid(format!("Cannot create the backup folder: {e}")))?;
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let target = dir.join(&name);
+    if !inside(&dir, &target) {
+        return Err(BackupError::Invalid("Invalid backup filename".to_string()));
+    }
+    std::fs::write(&target, data)
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the backup: {e}")))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// Source: `save_uploaded_user_backup` — the shared restore folder.
+///
+/// **A name that is already there is not overwritten here.** These are
+/// archives an administrator is uploading to restore *other people's*
+/// accounts, and two of them can easily share a name; silently replacing
+/// one with the other would restore the wrong customer. The second gets a
+/// timestamp and six random hex characters.
+pub fn save_uploaded_user_backup(
+    backup_root: &str,
+    filename: &str,
+    data: &[u8],
+    stamp: &str,
+    nonce: &str,
+) -> Result<String, BackupError> {
+    if over_upload_limit(data.len() as u64) {
+        return Err(BackupError::Invalid("Backup file is too large".to_string()));
+    }
+    let name = uploaded_archive_name(filename)?;
+    let dir = user_restore_dir(backup_root);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| BackupError::Invalid(format!("Cannot create the restore folder: {e}")))?;
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let mut target = dir.join(&name);
+    if !inside(&dir, &target) {
+        return Err(BackupError::Invalid("Invalid backup filename".to_string()));
+    }
+    if target.exists() {
+        let stem = name.trim_end_matches(".tar.gz");
+        target = dir.join(format!("{stem}-{stamp}-{nonce}.tar.gz"));
+    }
+    std::fs::write(&target, data)
+        .map_err(|e| BackupError::Invalid(format!("Cannot write the backup: {e}")))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// Source: `delete_user_restore_backup`.
+///
+/// The path has to resolve **inside the restore folder**, which is what
+/// keeps this from being a way to unlink anything on the machine that ends
+/// in `.tar.gz`. A path outside it is reported as not found rather than as
+/// refused: it is not there, as far as this endpoint is concerned.
+pub fn delete_user_restore_backup(
+    backup_root: &str,
+    backup_file: &str,
+) -> Result<String, BackupError> {
+    let path = user_backup_path(backup_root, backup_file)?;
+    let dir = user_restore_dir(backup_root);
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+    if !inside(&dir, &resolved) {
+        return Err(BackupError::NotFound);
+    }
+    std::fs::remove_file(&resolved).map_err(|_| BackupError::NotFound)?;
+    Ok(resolved.to_string_lossy().into_owned())
+}
+
 pub fn read_backup_manifest(
     backup_root: &str,
     backup_file: &str,
@@ -315,4 +439,254 @@ pub fn describe_user_backup(backup_root: &str, backup_file: &str) -> serde_json:
         }
     }
     item
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn corpus() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/backup_uploads.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the upload corpus"))
+            .expect("the corpus parses")
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "backup-upload-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch directory");
+        dir
+    }
+
+    /// Where a website's uploaded backup lands, for every filename.
+    ///
+    /// `Path(filename).name` throws away every directory component first,
+    /// so `../../etc/x.tar.gz` becomes `x.tar.gz` and lands in the site's
+    /// own folder — the escape never reaches the filesystem. And the
+    /// extension test is **exact**: `.TAR.GZ` is refused, and so is
+    /// `.tar.gz ` with a trailing space, because the name is not trimmed.
+    #[test]
+    fn a_site_backup_lands_where_python_puts_it() {
+        let corpus = corpus();
+        let cases = corpus["save_uploaded_backup"]
+            .as_array()
+            .expect("the cases");
+        assert_eq!(cases.len(), 20, "the corpus changed size");
+        let root = scratch("site");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut saved = 0usize;
+        let mut refused = 0usize;
+        for case in cases {
+            let filename = case["filename"].as_str().unwrap_or("");
+            let got = save_uploaded_backup(
+                &root.to_string_lossy(),
+                "site.example.com",
+                filename,
+                b"hello",
+            );
+            match (
+                case.get("target").and_then(Value::as_str),
+                case.get("error"),
+            ) {
+                (Some(want), _) => {
+                    saved += 1;
+                    let want_path = std::fs::canonicalize(&root)
+                        .unwrap_or_else(|_| root.clone())
+                        .join(want);
+                    match got {
+                        Ok(ref path) if std::path::Path::new(path) == want_path => {}
+                        other => {
+                            failures.push(format!("{filename:?}: python {want:?}, rust {other:?}"))
+                        }
+                    }
+                }
+                (None, Some(error)) => {
+                    refused += 1;
+                    let want = error.as_str().unwrap_or("");
+                    match got {
+                        Err(ref e) if e.to_string() == want => {}
+                        other => {
+                            failures.push(format!("{filename:?}: python {want:?}, rust {other:?}"))
+                        }
+                    }
+                }
+                _ => failures.push(format!("{filename:?}: the corpus says neither")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(saved >= 10, "only {saved} names saved");
+        assert!(refused >= 7, "only {refused} names refused");
+
+        // The site saver **overwrites**, which the restore saver does not.
+        let first = save_uploaded_backup(&root.to_string_lossy(), "s.example", "x.tar.gz", b"aaa")
+            .expect("the first");
+        let second = save_uploaded_backup(&root.to_string_lossy(), "s.example", "x.tar.gz", b"bb")
+            .expect("the second");
+        assert_eq!(first, second, "a site backup is replaced in place");
+        assert_eq!(
+            std::fs::metadata(&second).map(|m| m.len()).unwrap_or(0),
+            2,
+            "the newer bytes won"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The restore folder, where a name that is taken is **not** replaced.
+    ///
+    /// These are archives an administrator uploads to restore other
+    /// people's accounts, and two of them can easily share a filename.
+    /// Replacing one with the other would restore the wrong customer, so
+    /// the second gets a timestamp and six hex characters instead.
+    #[test]
+    fn a_restore_upload_never_replaces_one_that_is_there() {
+        let corpus = corpus();
+        let root = scratch("restore");
+        let rootstr = root.to_string_lossy().into_owned();
+
+        let first =
+            save_uploaded_user_backup(&rootstr, "dup.tar.gz", b"a", "20260101000000", "abc123")
+                .expect("the first");
+        let second =
+            save_uploaded_user_backup(&rootstr, "dup.tar.gz", b"b", "20260101000000", "abc123")
+                .expect("the second");
+        assert_ne!(first, second, "the second overwrote the first");
+        assert!(std::path::Path::new(&first).exists(), "the first was lost");
+        let name = std::path::Path::new(&second)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert!(name.ends_with(".tar.gz"), "{name}");
+        assert!(name.starts_with("dup-"), "{name}");
+        // Both land in the restore folder, not in the backup root: the root
+        // holds one directory per site, and an archive loose in it would be
+        // invisible to the listing that offers restores.
+        let restore =
+            std::fs::canonicalize(user_restore_dir(&rootstr)).expect("the restore folder exists");
+        for path in [&first, &second] {
+            assert_eq!(
+                std::path::Path::new(path).parent(),
+                Some(restore.as_path()),
+                "{path} is not in the restore folder"
+            );
+        }
+        // Which is the shape the Python produced.
+        let want = corpus["collision"]["second_name"].as_str().unwrap_or("");
+        assert!(
+            want.starts_with("dup-") && want.ends_with(".tar.gz"),
+            "{want}"
+        );
+        assert!(
+            corpus["collision"]["first_survives"]
+                .as_bool()
+                .unwrap_or(false),
+            "the Python kept the first too"
+        );
+
+        // And the name rules are the site saver's, refusal for refusal.
+        for case in corpus["save_uploaded_user_backup"]
+            .as_array()
+            .expect("the cases")
+        {
+            let filename = case["filename"].as_str().unwrap_or("");
+            let Some(error) = case.get("error").and_then(Value::as_str) else {
+                continue;
+            };
+            let got = save_uploaded_user_backup(&rootstr, filename, b"x", "s", "n");
+            match got {
+                Err(ref e) if e.to_string() == error => {}
+                other => panic!("{filename:?}: python {error:?}, rust {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Deleting from the restore folder, and the surprise in it.
+    ///
+    /// **A relative name is not resolved against the backup root.**
+    /// `Path(backup_file).resolve()` resolves against the *process working
+    /// directory*, so `gone.tar.gz` is not found even when a file of that
+    /// name is sitting in the restore folder. The panel always sends the
+    /// absolute path it was given in the listing, so this is not a bug the
+    /// page can hit — but a port that helpfully joined the root would
+    /// accept names the Python refuses, which is a wider door than the one
+    /// being replaced.
+    #[test]
+    fn deleting_a_restore_backup_needs_the_path_the_listing_gave() {
+        let corpus = corpus();
+        let root = scratch("delete");
+        let rootstr = root.to_string_lossy().into_owned();
+        let restore = user_restore_dir(&rootstr);
+        std::fs::create_dir_all(&restore).expect("the restore folder");
+        let inside = restore.join("gone.tar.gz");
+        std::fs::write(&inside, b"x").expect("the fixture");
+        let outside = root.join("elsewhere.tar.gz");
+        std::fs::write(&outside, b"x").expect("the fixture");
+        let nested = restore.join("deep");
+        std::fs::create_dir_all(&nested).expect("the nested folder");
+        std::fs::write(nested.join("deep.tar.gz"), b"x").expect("the fixture");
+
+        // A bare name: refused, exactly as the Python refuses it.
+        assert!(
+            delete_user_restore_backup(&rootstr, "gone.tar.gz").is_err(),
+            "a relative name was accepted"
+        );
+        assert!(inside.exists(), "the file was deleted by a relative name");
+        // The absolute path the listing hands out: accepted, once.
+        let deleted = delete_user_restore_backup(&rootstr, &inside.to_string_lossy())
+            .expect("the absolute path");
+        assert!(deleted.ends_with("gone.tar.gz"));
+        assert!(!inside.exists());
+        assert!(delete_user_restore_backup(&rootstr, &inside.to_string_lossy()).is_err());
+        // Inside the backup root but outside the restore folder: refused,
+        // and the file is still there.
+        assert!(delete_user_restore_backup(&rootstr, &outside.to_string_lossy()).is_err());
+        assert!(
+            outside.exists(),
+            "a file outside the restore folder was deleted"
+        );
+        // One directory deeper is also outside, because the check is on the
+        // immediate parent.
+        let deeper = nested.join("deep.tar.gz");
+        assert!(delete_user_restore_backup(&rootstr, &deeper.to_string_lossy()).is_err());
+        assert!(deeper.exists());
+
+        // Every one of the Python's answers, for the record.
+        let cases = corpus["delete_user_restore_backup"]
+            .as_array()
+            .expect("the cases");
+        assert_eq!(cases.len(), 7, "the corpus changed size");
+        let accepted = cases.iter().filter(|c| c.get("deleted").is_some()).count();
+        assert_eq!(accepted, 1, "only the absolute path inside was accepted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One gigabyte, and the refusal is the customer's message.
+    #[test]
+    fn an_upload_over_the_limit_is_refused() {
+        let corpus = corpus();
+        assert_eq!(
+            corpus["max_upload_bytes"].as_u64(),
+            Some(MAX_UPLOAD_BYTES),
+            "the limit changed"
+        );
+        assert_eq!(MAX_UPLOAD_BYTES, 1024 * 1024 * 1024);
+        // Strictly greater: exactly a gigabyte is allowed, and one byte
+        // more is not. The call sites cannot be exercised without holding a
+        // gigabyte of bytes, which is why the comparison lives here.
+        assert!(!over_upload_limit(0));
+        assert!(!over_upload_limit(MAX_UPLOAD_BYTES - 1));
+        assert!(!over_upload_limit(MAX_UPLOAD_BYTES));
+        assert!(over_upload_limit(MAX_UPLOAD_BYTES + 1));
+        assert!(over_upload_limit(u64::MAX));
+    }
 }
