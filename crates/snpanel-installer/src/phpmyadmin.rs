@@ -157,6 +157,69 @@ exit;
     )
 }
 
+/// EPEL's phpMyAdmin, and the three differences from Debian's package that
+/// are load-bearing rather than cosmetic.
+///
+/// Source: `prepare_phpmyadmin_platform`, whose whole body is EL-only.
+pub mod el {
+    /// nginx cannot read EPEL's `/etc/phpMyAdmin` — it is `root:apache`,
+    /// mode `0750` — and the panel would answer a blank 500 with nothing in
+    /// phpMyAdmin's own log to say why. The directory is regrouped to the
+    /// web group and the mode kept.
+    pub const CONF_DIR_MODE: u32 = 0o750;
+
+    /// An Apache drop-in that nginx also reads.
+    ///
+    /// It contains `fastcgi_pass php-fpm;`, naming an upstream nothing
+    /// defines, so `nginx -t` fails outright — and if it did parse it would
+    /// publish phpMyAdmin on every vhost, outside the panel's control.
+    /// Removed, not edited.
+    pub const APACHE_DROPIN: &str = "/etc/nginx/default.d/phpMyAdmin.conf";
+
+    /// The marker the phase greps for before appending.
+    pub const INCLUDE_MARKER: &str = "SNPanel conf.d include";
+
+    /// Appended to `config.inc.php` so EPEL's package reads a `conf.d`.
+    ///
+    /// Debian's phpMyAdmin reads one, and the panel delivers its sign-on
+    /// configuration as a file there; EPEL's has no such directory. It goes
+    /// **last** in the file, so the panel's settings override the defaults
+    /// above it.
+    ///
+    /// The `${PHPMYADMIN_CONF_DIR}` in the first comment line is literal:
+    /// the shell writes this out of a quoted heredoc, so the name is never
+    /// expanded. Reproduced as-is rather than tidied — the point of this
+    /// side is to write the same bytes, and a comment that differs is a
+    /// diff an operator has to stop and think about.
+    pub const CONF_D_INCLUDE: &str = r"
+// SNPanel conf.d include. Debian's phpMyAdmin reads ${PHPMYADMIN_CONF_DIR}/conf.d and
+// the panel delivers its single-sign-on configuration as a file there; EPEL's
+// package has no such directory, so this reproduces it. Last in the file, so
+// the panel's settings override the defaults above.
+foreach (glob(__DIR__ . '/conf.d/*.php') ?: [] as $snpanel_conf) {
+    include $snpanel_conf;
+}
+";
+
+    /// Whether `config.inc.php` already carries the include.
+    ///
+    /// Re-running the installer after a failure is a normal thing to do, and
+    /// a second copy of the block would include every `conf.d` file twice —
+    /// which for the sign-on configuration means the `$i` counter advances
+    /// and phpMyAdmin offers a second, identical server.
+    pub fn already_included(config: &str) -> bool {
+        config.contains(INCLUDE_MARKER)
+    }
+
+    /// `config.inc.php` after the phase has run against `current`.
+    pub fn with_include(current: &str) -> String {
+        if already_included(current) {
+            return current.to_string();
+        }
+        format!("{current}{CONF_D_INCLUDE}")
+    }
+}
+
 /// Where the endpoint asks the panel what a token is worth.
 ///
 /// Always `127.0.0.1`: the token is redeemed from the machine itself, so a
@@ -288,6 +351,58 @@ mod tests {
         // The endpoint is served, so the web server reads it — and it holds
         // no secret of its own.
         assert_eq!(SIGNON_MODE, 0o644);
+    }
+
+    #[test]
+    fn the_el_include_is_what_the_shell_appends() {
+        let stock = concat!(
+            "<?php\n",
+            "/* A stock EPEL config.inc.php, cut to the shape that matters here. */\n",
+            "$cfg['blowfish_secret'] = '';\n",
+            "$i = 0;\n",
+            "$i++;\n",
+            "$cfg['Servers'][$i]['auth_type'] = 'cookie';\n",
+        );
+        let first = el::with_include(stock);
+        assert_eq!(first, fixture("pma-config.inc.el.first-run.php"));
+        // The whole point of it: the sign-on file the panel writes lives in
+        // that directory, and without this line EPEL's package never reads
+        // it.
+        assert!(first.contains("glob(__DIR__ . '/conf.d/*.php')"));
+        // Last in the file, so the panel's settings win over the defaults.
+        assert!(first.starts_with(stock));
+    }
+
+    /// Re-running the installer after a failure is a normal thing to do. A
+    /// second copy of the block would include every `conf.d` file twice,
+    /// which for the sign-on configuration advances `$i` and leaves
+    /// phpMyAdmin offering a second, identical server.
+    #[test]
+    fn appending_the_el_include_twice_changes_nothing() {
+        let first = fixture("pma-config.inc.el.first-run.php");
+        assert!(el::already_included(&first));
+        assert_eq!(el::with_include(&first), first);
+        assert_eq!(first, fixture("pma-config.inc.el.second-run.php"));
+    }
+
+    /// `fastcgi_pass php-fpm;` names an upstream nothing defines, so
+    /// `nginx -t` fails outright — and a version of it that did parse would
+    /// publish phpMyAdmin on every vhost, outside the panel's control.
+    #[test]
+    fn the_apache_drop_in_is_removed_rather_than_edited() {
+        assert_eq!(
+            fixture("pma-default-d.state").trim(),
+            "removed",
+            "the shell left the Apache drop-in in place"
+        );
+        assert!(el::APACHE_DROPIN.starts_with("/etc/nginx/default.d/"));
+    }
+
+    /// nginx has to be able to read the directory, and nothing else should.
+    #[test]
+    fn the_el_conf_dir_is_readable_by_the_web_group_and_no_one_else() {
+        assert_eq!(el::CONF_DIR_MODE & 0o007, 0);
+        assert_eq!(el::CONF_DIR_MODE & 0o050, 0o050);
     }
 
     #[test]

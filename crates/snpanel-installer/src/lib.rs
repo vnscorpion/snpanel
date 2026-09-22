@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod ioncube;
 pub mod nginx_conf;
 pub mod node;
+pub mod packages;
 pub mod panel_ssl;
 pub mod panel_url;
 pub mod panel_user;
