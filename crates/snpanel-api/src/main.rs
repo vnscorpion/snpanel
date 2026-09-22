@@ -28,6 +28,7 @@ mod access_log;
 mod archive;
 mod auth;
 mod backups;
+mod clamav;
 mod client;
 mod cron;
 mod errors;

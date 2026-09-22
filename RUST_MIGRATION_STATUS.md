@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 22 of 67 |
+| `maintenance` | 21 of 67 |
 | `provisioning` | 13 of 13 — needs the `docker` domain |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
@@ -864,11 +864,61 @@ twice — and each would have been reported an hour later, beside results
 that were fine. Every runner now checks all its anchors before the first
 build, which turns that hour into a second.
 
+### The malware scanner, and the upload that waits for it
+
+`POST /files/{website_id}/upload`, and the ClamAV client it needs — which
+the eleven `malware` endpoints will need too, so this is the foundation for
+them as much as for the upload.
+
+The scanner is **optional on purpose**: when it is switched off, or the
+packages are absent, every call answers `disabled` and the upload proceeds.
+A port that turned a missing scanner into an error would break every file
+upload on a machine that never asked for scanning. Only `infected` stops an
+upload — `error` is logged and passed, which is the Python's choice and the
+right one, because a broken scanner must not become a broken file manager.
+
+Two parsers decide whether a customer's file is installed or thrown away,
+and the corpus is 24 clamd lines and 14 `clamscan` runs from the real
+module. Three things a reading of the Python would get wrong:
+
+- **The response is stripped before the suffix tests**, which changes the
+  answer: `" FOUND"` becomes `"FOUND"`, which no longer ends with
+  `" FOUND"` and is an error rather than a detection with no name.
+- **`clamscan`'s exit code is the verdict; its output is only the name.**
+  Exit 1 with nothing parsable is still infected, signature "unknown".
+  Trusting the output over the exit code would turn a detection into a
+  clean file.
+- **The signature is everything after the *last* `": "`**, so a signature
+  containing a colon keeps only its tail.
+
+`pyclamd` is an optional dependency and is **not** in the panel's
+virtualenv, so the branch in the Python that uses it is unreachable on a
+real installation — the hand-written `INSTREAM` path is the one that runs,
+and the one that was ported.
+
+26 mutations, all caught. Four survived a run and three of them turned out
+to be dead code *in the Python*:
+
+- `_parse_scan_response`'s whole `ERROR` branch returns `(error, response)`
+  — exactly what the fallback below it returns. Its one distinct arm, the
+  "clamd scan failed" message for an empty response, is unreachable,
+  because an empty string does not end with `"ERROR"` and the empty check
+  comes after it.
+- The filter that drops an empty stdout or stderr before joining them is
+  undone by the `.strip()` on the join: `"\nerr"` and `"err"` are the same
+  string by then.
+
+They stay, because they are the Python's lines and the next person to edit
+either function needs them there. But a mutation that always survives is
+not evidence, so they are deleted from the count with the reasoning. The
+fourth was a real gap: a `FOUND` line with no colon in it, which is the
+only thing that separates the two halves of that test.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **57 endpoints**, which is `maintenance` (22),
+Measured, not recalled: **56 endpoints**, which is `maintenance` (21),
 `provisioning` (13), `malware` (11), `site_apps` (10) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the

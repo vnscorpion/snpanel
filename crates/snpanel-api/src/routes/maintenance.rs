@@ -41,6 +41,10 @@ pub fn router() -> Router<AppState> {
                 .fallback(crate::fallback),
         )
         .route(
+            "/maintenance/files/{website_id}/upload",
+            post(upload_file).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/files/{website_id}/read",
             get(read_file).fallback(crate::fallback),
         )
@@ -2322,6 +2326,163 @@ fn assert_tree_read_allowed(
         }
     }
     Ok(())
+}
+
+/// `POST /maintenance/files/{website_id}/upload`.
+///
+/// Source: `upload_file`.
+///
+/// The bytes are **staged outside the site** and scanned before they are
+/// installed. A file written into the customer's tree and scanned there is
+/// a file that was briefly servable by nginx; the staging directory is not
+/// under any vhost, so a detection means nothing was ever reachable.
+///
+/// The quota is charged for what arrives *minus* what it replaces: an
+/// upload overwriting a 10 MB file with a 12 MB one costs 2 MB, not 12.
+async fn upload_file(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    use axum::extract::{FromRequest, FromRequestParts};
+
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    // The body is needed whole for the multipart reader, so the path and
+    // query are taken from the parts rather than through the extractors.
+    let website_id = match AxumPath::<i64>::from_request_parts(&mut parts, &state).await {
+        Ok(AxumPath(id)) => id,
+        Err(e) => return bad_request(&e.body_text()),
+    };
+    // `path: str = Query(default=site_users.PUBLIC_DIR)`.
+    let directory = Query::<HashMap<String, String>>::try_from_uri(&parts.uri)
+        .ok()
+        .and_then(|Query(q)| q.get("path").cloned())
+        .unwrap_or_else(|| "public_html".to_string());
+
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let request = axum::extract::Request::from_parts(parts.clone(), body);
+    let mut multipart = match axum::extract::Multipart::from_request(request, &state).await {
+        Ok(m) => m,
+        Err(e) => return bad_request(&e.body_text()),
+    };
+    let mut content: Option<Vec<u8>> = None;
+    let mut filename = String::new();
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                if field.name() != Some("file") {
+                    continue;
+                }
+                filename = field.file_name().unwrap_or_default().to_string();
+                match field.bytes().await {
+                    Ok(bytes) => content = Some(bytes.to_vec()),
+                    Err(e) => return bad_request(&e.body_text()),
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return bad_request(&e.body_text()),
+        }
+    }
+    let Some(content) = content else {
+        return crate::errors::missing_field("file", Value::Null);
+    };
+    // `file.filename or "upload.bin"` — a part with no filename still lands,
+    // under a name the customer can find.
+    if filename.is_empty() {
+        filename = "upload.bin".to_string();
+    }
+
+    let target_dir = match files::safe_path(&website.root_path, &directory, false) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if target_dir.exists() && !target_dir.is_dir() {
+        return bad_request("Upload target is not a directory");
+    }
+    if std::fs::symlink_metadata(&target_dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return bad_request("Symlinks are not allowed");
+    }
+    let safe_name = match files::safe_upload_name(&filename) {
+        Ok(n) => n,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    let target = target_dir.join(&safe_name);
+    if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+        return bad_request("Refusing to overwrite a symlink");
+    }
+    let admin = permissions::is_admin_role(&current.user.role);
+    if let Err(e) = files::assert_write_allowed(&target, "Uploading", admin) {
+        return bad_request(&e.to_string());
+    }
+
+    // `_existing_file_size` — zero for a path that is not a plain file, so
+    // uploading over a directory does not earn a refund.
+    let replaced = std::fs::metadata(&target)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if let Err(r) = quota_check(&state, &website, content.len() as u64, replaced).await {
+        return r;
+    }
+
+    if let Err(e) = crate::clamav::scan_before_install(
+        state.settings.malware_scan_enabled,
+        &state.settings.clamav_socket_path,
+        &content,
+        &filename,
+    ) {
+        return bad_request(&e);
+    }
+
+    let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+        return bad_request("Website has no runtime user configured");
+    };
+    let staged = std::env::temp_dir().join(format!(
+        "snpanel-upload-{}-{}",
+        std::process::id(),
+        crate::file_jobs::new_job_id()
+    ));
+    if let Err(e) = std::fs::write(&staged, &content) {
+        return bad_request(&format!("Cannot stage the upload: {e}"));
+    }
+    let staged_str = staged.to_string_lossy().into_owned();
+    let target_str = target.to_string_lossy().into_owned();
+    let root = std::fs::canonicalize(&website.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+    let root_str = root.to_string_lossy().into_owned();
+    let target_rel = files::helper_relative_path(&website.root_path, &target);
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "site-file-install",
+        &[linux_user, &root_str, &target_rel, &staged_str],
+        None,
+        Some(&["cp", "--", &staged_str, &target_str]),
+    )
+    .await;
+    // `finally: staged_path.unlink(missing_ok=True)` — the staged copy goes
+    // whether or not the install worked, because it is a full copy of a
+    // customer's file sitting in a world-readable directory.
+    let _ = std::fs::remove_file(&staged);
+    if !result.ok() {
+        return bad_request(result.failure_detail("Cannot install the upload").trim());
+    }
+
+    fix_site_path(&state, &target_str, website.linux_user.as_deref()).await;
+    clear_fastcgi_cache(&state).await;
+    audit_detail(
+        &state,
+        current.user.id,
+        "upload_file",
+        &website.domain,
+        &target_str,
+    )
+    .await;
+    axum::Json(json!({ "target": target_str })).into_response()
 }
 
 /// `DELETE /maintenance/files/{website_id}`.
