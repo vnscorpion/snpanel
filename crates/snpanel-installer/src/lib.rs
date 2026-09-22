@@ -13,5 +13,7 @@
 //! once, as root, on a machine nobody is watching — the parts of it that can
 //! be tested should be tested somewhere other than that machine.
 
+pub mod backend_env;
 pub mod nginx_conf;
 pub mod systemd_units;
+pub mod tools_vhost;

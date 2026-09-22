@@ -1,0 +1,43 @@
+server {
+    listen 80 default_server;
+    listen 443 ssl http2 default_server;
+    ssl_certificate /root/toolsfix/tls/panel.crt;
+    ssl_certificate_key /root/toolsfix/tls/panel.key;
+    server_name _;
+    client_max_body_size 1100M;
+
+    # Panel certificates are issued through this, so the panel no longer has to
+    # stop nginx to prove it owns its own hostname.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/snpanel-acme;
+        default_type text/plain;
+        try_files $uri =404;
+        access_log off;
+        auth_basic off;
+    }
+
+    location = /phpmyadmin {
+        return 301 /phpmyadmin/;
+    }
+
+    location /phpmyadmin/ {
+        alias /usr/share/phpmyadmin/;
+        index index.php;
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ ^/phpmyadmin/(.+\.php)$ {
+        alias /usr/share/phpmyadmin/$1;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1;
+        fastcgi_param SCRIPT_NAME /phpmyadmin/$1;
+        # Twig raises its deprecations as E_USER_DEPRECATED, which php.ini's
+        # E_ALL & ~E_DEPRECATED does not exclude, so Debian's pairing of
+        # phpMyAdmin 5.2 with Twig 3.21 shows the administrator a wall of
+        # notices about a library they cannot change. Silenced here and only
+        # here: a customer's own site may well want its deprecations.
+        fastcgi_param PHP_VALUE "error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED";
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+        fastcgi_read_timeout 300;
+    }
+}

@@ -1,0 +1,16 @@
+# A stock sshd_config, cut down to the lines that matter here.
+Port 22
+PermitRootLogin prohibit-password
+Subsystem sftp /usr/lib/openssh/sftp-server
+# BEGIN SNPANEL SFTP USERS
+# Allow SNPanel Linux users to log in with SFTP using their panel password.
+# SSH shells are intentionally disabled; /home/%u is a root-owned chroot.
+Match Group snpanel-sftp
+    PasswordAuthentication yes
+    ChrootDirectory /home/%u
+    ForceCommand internal-sftp -d /
+    PermitTTY no
+    X11Forwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
+# END SNPANEL SFTP USERS
