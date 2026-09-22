@@ -59,6 +59,12 @@ macro_rules! debian_family {
             fn php_fpm_pool_dir(&self, v: PhpVersion) -> PathBuf {
                 PathBuf::from(format!("/etc/php/{}/fpm/pool.d", v.dotted()))
             }
+            fn php_conf_dirs(&self, v: PhpVersion) -> Vec<PathBuf> {
+                vec![
+                    PathBuf::from(format!("/etc/php/{}/cli/conf.d", v.dotted())),
+                    PathBuf::from(format!("/etc/php/{}/fpm/conf.d", v.dotted())),
+                ]
+            }
             fn php_ini_path(&self, v: PhpVersion) -> PathBuf {
                 PathBuf::from(format!("/etc/php/{}/fpm/php.ini", v.dotted()))
             }

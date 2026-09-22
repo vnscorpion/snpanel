@@ -75,6 +75,15 @@ impl Platform for AlmaLinux10 {
     fn php_fpm_pool_dir(&self, v: PhpVersion) -> PathBuf {
         PathBuf::from(format!("/etc/opt/remi/php{}/php-fpm.d", v.compact()))
     }
+    /// One directory, shared by the CLI and FPM SAPIs — which is the
+    /// difference the compatibility shim cannot paper over, and the reason
+    /// this returns a list rather than a path.
+    fn php_conf_dirs(&self, v: PhpVersion) -> Vec<PathBuf> {
+        vec![PathBuf::from(format!(
+            "/etc/opt/remi/php{}/php.d",
+            v.compact()
+        ))]
+    }
     fn php_ini_path(&self, v: PhpVersion) -> PathBuf {
         PathBuf::from(format!("/etc/opt/remi/php{}/php.ini", v.compact()))
     }

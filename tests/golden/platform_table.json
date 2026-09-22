@@ -32,6 +32,34 @@
   "8": "php84-php-opcache",
   "9": "php84-php-intl"
  },
+ "php_paths_debian": {
+  "binary 8.2": "/usr/bin/php8.2",
+  "binary 8.3": "/usr/bin/php8.3",
+  "binary 8.4": "/usr/bin/php8.4",
+  "conf 8.2": "/etc/php/8.2/cli/conf.d /etc/php/8.2/fpm/conf.d",
+  "conf 8.3": "/etc/php/8.3/cli/conf.d /etc/php/8.3/fpm/conf.d",
+  "conf 8.4": "/etc/php/8.4/cli/conf.d /etc/php/8.4/fpm/conf.d",
+  "ini 8.2": "/etc/php/8.2/fpm/php.ini",
+  "ini 8.3": "/etc/php/8.3/fpm/php.ini",
+  "ini 8.4": "/etc/php/8.4/fpm/php.ini",
+  "pool 8.2": "/etc/php/8.2/fpm/pool.d",
+  "pool 8.3": "/etc/php/8.3/fpm/pool.d",
+  "pool 8.4": "/etc/php/8.4/fpm/pool.d"
+ },
+ "php_paths_rhel": {
+  "binary 8.2": "/opt/remi/php82/root/usr/bin/php",
+  "binary 8.3": "/opt/remi/php83/root/usr/bin/php",
+  "binary 8.4": "/opt/remi/php84/root/usr/bin/php",
+  "conf 8.2": "/etc/opt/remi/php82/php.d",
+  "conf 8.3": "/etc/opt/remi/php83/php.d",
+  "conf 8.4": "/etc/opt/remi/php84/php.d",
+  "ini 8.2": "/etc/opt/remi/php82/php.ini",
+  "ini 8.3": "/etc/opt/remi/php83/php.ini",
+  "ini 8.4": "/etc/opt/remi/php84/php.ini",
+  "pool 8.2": "/etc/opt/remi/php82/php-fpm.d",
+  "pool 8.3": "/etc/opt/remi/php83/php-fpm.d",
+  "pool 8.4": "/etc/opt/remi/php84/php-fpm.d"
+ },
  "platform_debian": {
   "BASE_PACKAGES": "ca-certificates",
   "CLAMAV_SERVICE": "clamav-daemon.service",

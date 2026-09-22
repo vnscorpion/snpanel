@@ -105,6 +105,31 @@ pub trait Platform: Send + Sync {
     fn epel_required(&self) -> bool {
         self.family() == Family::Rhel
     }
+
+    /// Whether Node.js comes from NodeSource's vendor script rather than
+    /// from the distribution.
+    ///
+    /// Source: `NODE_FROM_NODESOURCE`. Only Ubuntu, and stated as the one
+    /// distro rather than as a family: Debian 13 is in the same family and
+    /// is `no`, because NodeSource publishes no trixie suite and trixie's
+    /// own nodejs is new enough. EL is `no` because AppStream carries 22.
+    ///
+    /// The difference matters more than a package source usually would —
+    /// `yes` pipes a script off the internet into `bash`, and it is worth
+    /// that being true in exactly one place.
+    fn node_from_nodesource(&self) -> bool {
+        self.distro() == Distro::Ubuntu2404
+    }
+
+    /// Whether the ModSecurity nginx module can be installed from packages.
+    ///
+    /// Source: `WAF_AVAILABLE`. Debian and Ubuntu package
+    /// `libnginx-mod-http-modsecurity`; EL10 packages none of the three
+    /// pieces, so the installer says so rather than leaving a panel that
+    /// claims a WAF it has not got.
+    fn waf_available(&self) -> bool {
+        self.family() == Family::Debian
+    }
     /// The command that installs packages, as argv. Never a shell string.
     fn install_argv(&self) -> Vec<&'static str>;
     fn remove_argv(&self) -> Vec<&'static str>;
@@ -114,6 +139,15 @@ pub trait Platform: Send + Sync {
     fn php_service(&self, v: PhpVersion) -> String;
     fn php_binary(&self, v: PhpVersion) -> PathBuf;
     fn php_fpm_pool_dir(&self, v: PhpVersion) -> PathBuf;
+    /// The directories a drop-in `.ini` goes into, one per SAPI that has
+    /// its own.
+    ///
+    /// Source: `php_conf_dirs`. Debian keeps a `conf.d` per SAPI and Remi a
+    /// single `php.d` shared by both, so what differs between the families
+    /// is the *number* of directories rather than what gets written into
+    /// them. A caller that writes one file and stops has configured the CLI
+    /// and not FPM on Debian.
+    fn php_conf_dirs(&self, v: PhpVersion) -> Vec<PathBuf>;
     fn php_ini_path(&self, v: PhpVersion) -> PathBuf;
     /// Package name for one PHP extension, e.g. `gd`.
     fn php_package(&self, v: PhpVersion, ext: &str) -> String;
@@ -204,6 +238,8 @@ mod shell_table_tests {
             platform_debian: Table,
             platform_debian12: Table,
             platform_rhel10: Table,
+            php_paths_debian: Table,
+            php_paths_rhel: Table,
         }
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/golden/platform_table.json");
@@ -301,6 +337,31 @@ mod shell_table_tests {
                 "{name} PHP repository"
             );
 
+            // Two flags the shell sets per table and this side derives.
+            // `node_from_nodesource` is the one that decides whether a
+            // vendor script gets piped into `bash`; a `yes` on a platform
+            // whose suite NodeSource does not publish is an install that
+            // adds a repository with nothing in it and then cannot find
+            // nodejs.
+            assert_eq!(
+                if platform.node_from_nodesource() {
+                    "yes"
+                } else {
+                    "no"
+                },
+                shell("NODE_FROM_NODESOURCE"),
+                "{name} NODE_FROM_NODESOURCE"
+            );
+            assert_eq!(
+                if platform.waf_available() {
+                    "yes"
+                } else {
+                    "no"
+                },
+                shell("WAF_AVAILABLE"),
+                "{name} WAF_AVAILABLE"
+            );
+
             // The family name the shell picks has to be the one this side
             // would pick, or every branch downstream of it differs.
             let family = match platform.family() {
@@ -324,6 +385,56 @@ mod shell_table_tests {
         // `php_ext_packages`, so a list that drifts here is a PHP with an
         // extension missing — which surfaces as a WordPress that cannot
         // reach its database rather than as an install that failed.
+        // The PHP paths, recorded by running the shell's functions. The one
+        // worth the fixture is `php_conf_dirs`: it yields a *different
+        // number of lines* per family — Debian a `conf.d` per SAPI, Remi a
+        // single `php.d` shared by both — so a caller that writes one file
+        // and stops has configured the CLI and left FPM alone.
+        for (name, table, platform) in [
+            ("debian", &tables.php_paths_debian, debian),
+            ("rhel", &tables.php_paths_rhel, rhel),
+        ] {
+            for dotted in ["8.2", "8.3", "8.4"] {
+                let v = PhpVersion::parse(dotted).expect("a version");
+                let shell = |kind: &str| -> &str {
+                    table
+                        .get(&format!("{kind} {dotted}"))
+                        .unwrap_or_else(|| panic!("{name}: no {kind} {dotted} in the fixture"))
+                        .as_str()
+                };
+                assert_eq!(
+                    platform.php_binary(v).to_string_lossy(),
+                    shell("binary"),
+                    "{name} php_binary {dotted}"
+                );
+                assert_eq!(
+                    platform.php_fpm_pool_dir(v).to_string_lossy(),
+                    shell("pool"),
+                    "{name} php_fpm_pool_dir {dotted}"
+                );
+                assert_eq!(
+                    platform.php_ini_path(v).to_string_lossy(),
+                    shell("ini"),
+                    "{name} php_ini_path {dotted}"
+                );
+                let dirs: Vec<String> = platform
+                    .php_conf_dirs(v)
+                    .iter()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(
+                    dirs.join(" "),
+                    shell("conf"),
+                    "{name} php_conf_dirs {dotted}"
+                );
+            }
+        }
+        // And the families really do disagree about how many there are, so
+        // the check above is not comparing one list against itself.
+        let v = PhpVersion::parse("8.4").expect("a version");
+        assert_eq!(debian.php_conf_dirs(v).len(), 2);
+        assert_eq!(rhel.php_conf_dirs(v).len(), 1);
+
         for (name, table, platform) in [
             ("debian", &tables.php_ext_debian, debian),
             ("rhel", &tables.php_ext_rhel, rhel),
