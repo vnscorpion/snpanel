@@ -1101,13 +1101,80 @@ what actually blocks the customer and the account lock is the second one.
 
 39 mutations, all caught.
 
+### The wildcard certificate, and the panel's only outbound call
+
+`POST /websites/{id}/ssl/wildcard` asks Cloudflare which zone a domain
+sits in, then has certbot prove ownership over DNS-01 and issue a
+certificate for the zone **and** `*.zone`. It is the last of the 24
+`websites` endpoints, and the only place in the panel that talks to a host
+on the public internet.
+
+It needed no new crate. `hyper` (client, http1), `hyper-util`, `rustls`,
+`rustls-pemfile` and `http-body-util` were already declared for
+`snpanel-api`, and `tokio-rustls` was already in the lock file — pulled in
+by `axum-server` for the panel's own TLS — so declaring it changed no
+resolution, exactly as `zip` did earlier. The trust roots are read from
+the system bundle rather than compiled in, because an operator who adds a
+corporate CA or removes a withdrawn one expects the panel to follow the
+machine, which is what OpenSSL does for the Python.
+
+**The token is the whole of the security story here.** It is a key to the
+customer's entire DNS zone, so:
+
+- it reaches the privileged helper **on stdin**, never in argv, because
+  `/proc/<pid>/cmdline` is world-readable for as long as certbot runs;
+- it is in no error message, no log line and no response body. Every
+  refusal this module can produce is built from an HTTP status, a zone
+  name or a string Cloudflare itself sent, and a test asserts that — so a
+  failed renewal cannot put a live token in the journal of every machine
+  it happens on;
+- it is verified **before** it is saved. Storing first would leave a bad
+  credential for the next unattended renewal to fail on, at three in the
+  morning with nobody watching.
+
+Four Python-versus-Rust differences drove most of the work, and each is a
+function of its own so it can be broken and noticed:
+
+- **`success` is checked with Python truthiness**, not `== true`. The
+  Python writes `if not payload.get("success")`, so a body carrying `1` or
+  `"yes"` is a success and one carrying `0`, `""` or `[]` is not. A port
+  that reached for `== true` would turn a working call into a refusal.
+- **A missing field interpolates as `None`, not as nothing.** An error
+  entry with no `message` produces `Cloudflare API error: None`, and a
+  token with no status produces `status is 'None'`. Writing `""` there
+  would quietly merge "Cloudflare sent an error with no message" with
+  "Cloudflare sent nothing", and an operator needs those apart.
+- **`str.strip()` is not `str::trim`.** Python's is `str.isspace`, which
+  covers `\x1c`-`\x1f`; Rust's is the Unicode `White_Space` property,
+  which does not. A token of nothing but those is empty to the Python and
+  would have been a live `Bearer` header here. The corpus now contains a
+  domain and a token made of them, so the wrong predicate fails.
+- **The zone search goes most specific first and stops one label short.**
+  `blog.shop.example.com` asks about itself, then `shop.example.com`, then
+  `example.com`, and never about `com`. The narrower zone is the one whose
+  DNS the customer actually controls.
+
+Two guards were written and then removed rather than kept and excused:
+filters mirroring the Python's `or` in `payload.get("errors") or [...]`
+and `(payload.get("result") or {})`. `Value::get` on a non-object already
+answers `None` and an empty array's `first()` already answers `None`, so
+neither filter could change an answer. Unlike the dead code elsewhere in
+this port, these were not lines the Python has — they were mine, and code
+that cannot be wrong cannot be tested either.
+
+One real bug came out of the same reading. `audit_provisioning`, written
+in an earlier batch, hand-rolled the ` | ` join that `log_action` does and
+got three things wrong: the separator, the 200-**character** cut on the
+user agent, and writing a bare `ip=` when there was no address. It now
+calls `AuditRepo::detail_with_request`, the one that is tested.
+
+45 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **37 endpoints**. Three of the five groups need
-a decision rather than more work, and they are named here so nobody has to
-rediscover it:
+Measured, not recalled: **36 endpoints**, in four groups:
 
 | group | left | what it needs |
 |---|---|---|
@@ -1115,13 +1182,19 @@ rediscover it:
 | `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
 | `malware` | 9 | the scan worker and on-demand package installation |
 | `provisioning` | 2 | `POST /accounts` and `DELETE /accounts/{id}` |
-| `websites` | 1 | an **outbound HTTPS client** for `ssl/wildcard` |
 
-The bold three are dependency and architecture decisions on a hosting
-panel, not code that is merely unwritten. Everything else is code.
+The bold two are dependency and architecture decisions on a hosting panel,
+not code that is merely unwritten. Everything else is code.
+
+The third used to be an outbound HTTPS client for `ssl/wildcard`. It was
+not a decision at all: every crate it needed was already in the lock file,
+and re-measuring instead of re-reading the note is what found that. That
+makes four notes in this document that read as measurements and had never
+been re-taken — worth remembering the next time one says "blocked".
 
 Two notes that used to sit in this paragraph are gone because they were
-wrong. `provisioning` never needed the `docker` domain — it imports
+wrong, and `websites` has since joined them. `provisioning` never needed
+the `docker` domain — it imports
 `mariadb`, `nginx`, `site_users`, `storage_quota` and `wordpress`, all
 ported long ago. And the `malware` job endpoints are blocked, but not by
 "an in-process dict": their store is merged with `MALWARE_JOBS_DIR/*.json`

@@ -31,7 +31,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "process", "io-util", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
@@ -42,6 +42,8 @@ qrcode.workspace = true
 image.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
+# The Cloudflare API, which is the only host this panel calls out to.
+tokio-rustls.workspace = true
 x509-parser.workspace = true
 axum-server.workspace = true
 thiserror.workspace = true

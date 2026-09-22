@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **174 of 211** | 82% |
+| API endpoints answered by Rust | **175 of 211** | 83% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -1223,10 +1223,18 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (15), `malware` (9), `site_apps` (10), `provisioning` (2)
-and `websites` (1). **37 endpoints**,
+`maintenance` (15), `site_apps` (10), `malware` (9) and `provisioning` (2).
+**36 endpoints**,
 counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
 build if that disagrees with `endpoint-coverage.py`.
+
+**`websites` is finished.** All 24 of its endpoints answer from Rust,
+`ssl/wildcard` last. It needed no new dependency: `hyper`, `hyper-util`,
+`rustls` and `rustls-pemfile` were already declared for this crate and
+`tokio-rustls` was already in the lock file, pulled in by `axum-server` for
+the panel's own TLS. Declaring it was the same zero-resolution move `zip`
+was. The roots come from the system CA bundle, so a machine that trusts a
+corporate CA is a machine this call trusts it on too.
 
 **`provisioning` does not need the `docker` domain.** That was written
 down early and never re-checked: the router imports `mariadb`, `nginx`,

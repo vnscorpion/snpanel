@@ -1,0 +1,584 @@
+{
+ "check_success": [
+  {
+   "payload": {
+    "result": [],
+    "success": true
+   },
+   "value": {
+    "result": [],
+    "success": true
+   }
+  },
+  {
+   "payload": {
+    "result": [],
+    "success": 1
+   },
+   "value": {
+    "result": [],
+    "success": 1
+   }
+  },
+  {
+   "payload": {
+    "result": [],
+    "success": "yes"
+   },
+   "value": {
+    "result": [],
+    "success": "yes"
+   }
+  },
+  {
+   "error": "Cloudflare API error: Invalid API Token",
+   "payload": {
+    "errors": [
+     {
+      "message": "Invalid API Token"
+     }
+    ],
+    "success": false
+   }
+  },
+  {
+   "error": "Cloudflare API error: unknown error",
+   "payload": {
+    "errors": [],
+    "success": false
+   }
+  },
+  {
+   "error": "Cloudflare API error: unknown error",
+   "payload": {
+    "success": false
+   }
+  },
+  {
+   "error": "Cloudflare API error: None",
+   "payload": {
+    "errors": [
+     {
+      "code": 1000
+     }
+    ],
+    "success": false
+   }
+  },
+  {
+   "error": "Cloudflare API error: nope",
+   "payload": {
+    "errors": [
+     {
+      "message": "nope"
+     }
+    ],
+    "success": 0
+   }
+  },
+  {
+   "error": "Cloudflare API error: a",
+   "payload": {
+    "errors": [
+     {
+      "message": "a"
+     },
+     {
+      "message": "b"
+     }
+    ],
+    "success": null
+   }
+  },
+  {
+   "error": "Cloudflare API error: unknown error",
+   "payload": {
+    "result": []
+   }
+  },
+  {
+   "error": "Cloudflare API error: unknown error",
+   "payload": {}
+  },
+  {
+   "error": "Cloudflare API error: blank",
+   "payload": {
+    "errors": [
+     {
+      "message": "blank"
+     }
+    ],
+    "success": ""
+   }
+  },
+  {
+   "error": "Cloudflare API error: empty list",
+   "payload": {
+    "errors": [
+     {
+      "message": "empty list"
+     }
+    ],
+    "success": []
+   }
+  },
+  {
+   "payload": {
+    "result": [],
+    "success": [
+     0
+    ]
+   },
+   "value": {
+    "result": [],
+    "success": [
+     0
+    ]
+   }
+  }
+ ],
+ "get": [
+  {
+   "case": "ok",
+   "value": {
+    "result": {
+     "a": 1
+    },
+    "success": true
+   }
+  },
+  {
+   "case": "http_403",
+   "error": "Cloudflare API returned HTTP 403"
+  },
+  {
+   "case": "http_500",
+   "error": "Cloudflare API returned HTTP 500"
+  },
+  {
+   "case": "unreadable",
+   "error": "Cloudflare API returned an unreadable response"
+  },
+  {
+   "case": "empty_body",
+   "error": "Cloudflare API returned an unreadable response"
+  },
+  {
+   "case": "url_error",
+   "error": "Could not reach the Cloudflare API: <urlopen error no route to host>"
+  },
+  {
+   "case": "timeout",
+   "error": "Could not reach the Cloudflare API: timed out"
+  },
+  {
+   "case": "os_error",
+   "error": "Could not reach the Cloudflare API: broken pipe"
+  }
+ ],
+ "urlencode": [
+  {
+   "encoded": "example.com",
+   "raw": "example.com"
+  },
+  {
+   "encoded": "a%20b",
+   "raw": "a b"
+  },
+  {
+   "encoded": "a/b",
+   "raw": "a/b"
+  },
+  {
+   "encoded": "a%26b%3Dc",
+   "raw": "a&b=c"
+  },
+  {
+   "encoded": "a%3Fb",
+   "raw": "a?b"
+  },
+  {
+   "encoded": "a%23b",
+   "raw": "a#b"
+  },
+  {
+   "encoded": "a%25b",
+   "raw": "a%b"
+  },
+  {
+   "encoded": "under_score.com",
+   "raw": "under_score.com"
+  },
+  {
+   "encoded": "dash-dash.com",
+   "raw": "dash-dash.com"
+  },
+  {
+   "encoded": "tilde~.com",
+   "raw": "tilde~.com"
+  },
+  {
+   "encoded": "xn--e1afmkfd.xn--p1ai",
+   "raw": "xn--e1afmkfd.xn--p1ai"
+  },
+  {
+   "encoded": "%C3%9Cn%C3%AFcode.com",
+   "raw": "Ünïcode.com"
+  },
+  {
+   "encoded": "a%2Bb",
+   "raw": "a+b"
+  },
+  {
+   "encoded": "a%09b",
+   "raw": "a\tb"
+  },
+  {
+   "encoded": "a%0Cb",
+   "raw": "a\fb"
+  },
+  {
+   "encoded": "%01%0F%10",
+   "raw": "\u0001\u000f\u0010"
+  },
+  {
+   "encoded": "",
+   "raw": ""
+  }
+ ],
+ "verify_token": [
+  {
+   "case": "empty",
+   "error": "Cloudflare API token is empty",
+   "payload": null,
+   "token": ""
+  },
+  {
+   "case": "blank",
+   "error": "Cloudflare API token is empty",
+   "payload": null,
+   "token": "   "
+  },
+  {
+   "case": "file_separators",
+   "error": "Cloudflare API token is empty",
+   "payload": null,
+   "token": "\u001c\u001d\u001e\u001f"
+  },
+  {
+   "case": "none",
+   "error": "Cloudflare API token is empty",
+   "payload": null,
+   "token": null
+  },
+  {
+   "case": "active",
+   "payload": {
+    "result": {
+     "id": "x",
+     "status": "active"
+    },
+    "success": true
+   },
+   "token": "tok",
+   "value": {
+    "id": "x",
+    "status": "active"
+   }
+  },
+  {
+   "case": "disabled",
+   "error": "Cloudflare token status is 'disabled', expected 'active'",
+   "payload": {
+    "result": {
+     "status": "disabled"
+    },
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "expired",
+   "error": "Cloudflare token status is 'expired', expected 'active'",
+   "payload": {
+    "result": {
+     "status": "expired"
+    },
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "no_status",
+   "error": "Cloudflare token status is 'None', expected 'active'",
+   "payload": {
+    "result": {},
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "no_result",
+   "error": "Cloudflare token status is 'None', expected 'active'",
+   "payload": {
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "null_result",
+   "error": "Cloudflare token status is 'None', expected 'active'",
+   "payload": {
+    "result": null,
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "numeric_status",
+   "error": "Cloudflare token status is '5', expected 'active'",
+   "payload": {
+    "result": {
+     "status": 5
+    },
+    "success": true
+   },
+   "token": "tok"
+  },
+  {
+   "case": "null_status",
+   "error": "Cloudflare token status is 'None', expected 'active'",
+   "payload": {
+    "result": {
+     "status": null
+    },
+    "success": true
+   },
+   "token": "tok"
+  }
+ ],
+ "zone_for_domain": [
+  {
+   "domain": "example.com",
+   "encoded": [
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "blog.shop.example.com",
+   "encoded": [
+    "blog.shop.example.com",
+    "shop.example.com",
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers blog.shop.example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=blog.shop.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=shop.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "WWW.Example.COM.",
+   "encoded": [
+    "www.example.com",
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers www.example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=www.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "  spaced.example.com  ",
+   "encoded": [
+    "spaced.example.com",
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers spaced.example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=spaced.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "com",
+   "encoded": [],
+   "error": "No Cloudflare zone this token manages covers com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": []
+  },
+  {
+   "domain": "",
+   "encoded": [],
+   "error": "No Cloudflare zone this token manages covers . Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": []
+  },
+  {
+   "domain": ".",
+   "encoded": [],
+   "error": "No Cloudflare zone this token manages covers . Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": []
+  },
+  {
+   "domain": "a.b.c.d.e.f",
+   "encoded": [
+    "a.b.c.d.e.f",
+    "b.c.d.e.f",
+    "c.d.e.f",
+    "d.e.f",
+    "e.f"
+   ],
+   "error": "No Cloudflare zone this token manages covers a.b.c.d.e.f. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=a.b.c.d.e.f",
+    "https://api.cloudflare.com/client/v4/zones?name=b.c.d.e.f",
+    "https://api.cloudflare.com/client/v4/zones?name=c.d.e.f",
+    "https://api.cloudflare.com/client/v4/zones?name=d.e.f",
+    "https://api.cloudflare.com/client/v4/zones?name=e.f"
+   ]
+  },
+  {
+   "domain": "xn--e1afmkfd.xn--p1ai",
+   "encoded": [
+    "xn--e1afmkfd.xn--p1ai"
+   ],
+   "error": "No Cloudflare zone this token manages covers xn--e1afmkfd.xn--p1ai. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=xn--e1afmkfd.xn--p1ai"
+   ]
+  },
+  {
+   "domain": "under_score.example.com",
+   "encoded": [
+    "under_score.example.com",
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers under_score.example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=under_score.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "a..b.com",
+   "encoded": [
+    "a..b.com",
+    ".b.com",
+    "b.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers a..b.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=a..b.com",
+    "https://api.cloudflare.com/client/v4/zones?name=.b.com",
+    "https://api.cloudflare.com/client/v4/zones?name=b.com"
+   ]
+  },
+  {
+   "domain": "trailing...",
+   "encoded": [],
+   "error": "No Cloudflare zone this token manages covers trailing. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": []
+  },
+  {
+   "domain": "Ünïcode.example.com",
+   "encoded": [
+    "%C3%BCn%C3%AFcode.example.com",
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers ünïcode.example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=%C3%BCn%C3%AFcode.example.com",
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  },
+  {
+   "domain": "sub.example.co.uk",
+   "encoded": [
+    "sub.example.co.uk",
+    "example.co.uk",
+    "co.uk"
+   ],
+   "error": "No Cloudflare zone this token manages covers sub.example.co.uk. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=sub.example.co.uk",
+    "https://api.cloudflare.com/client/v4/zones?name=example.co.uk",
+    "https://api.cloudflare.com/client/v4/zones?name=co.uk"
+   ]
+  },
+  {
+   "domain": "\u001cexample.com\u001d",
+   "encoded": [
+    "example.com"
+   ],
+   "error": "No Cloudflare zone this token manages covers example.com. Check the token's zone scope, or that the domain's DNS is on Cloudflare.",
+   "urls": [
+    "https://api.cloudflare.com/client/v4/zones?name=example.com"
+   ]
+  }
+ ],
+ "zone_pick": [
+  {
+   "case": "named",
+   "result": [
+    {
+     "id": "1",
+     "name": "example.com"
+    }
+   ],
+   "value": "example.com"
+  },
+  {
+   "case": "renamed",
+   "result": [
+    {
+     "name": "other.com"
+    }
+   ],
+   "value": "other.com"
+  },
+  {
+   "case": "no_name",
+   "result": [
+    {
+     "id": "1"
+    }
+   ],
+   "value": "a.example.com"
+  },
+  {
+   "case": "empty_name",
+   "result": [
+    {
+     "name": ""
+    }
+   ],
+   "value": "a.example.com"
+  },
+  {
+   "case": "null_name",
+   "result": [
+    {
+     "name": null
+    }
+   ],
+   "value": "a.example.com"
+  },
+  {
+   "case": "two",
+   "result": [
+    {
+     "name": "first.com"
+    },
+    {
+     "name": "second.com"
+    }
+   ],
+   "value": "first.com"
+  }
+ ]
+}

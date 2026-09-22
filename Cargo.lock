@@ -2226,6 +2226,7 @@ dependencies = [
  "tar",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tower-http",
  "tracing",

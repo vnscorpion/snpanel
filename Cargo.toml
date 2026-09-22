@@ -67,6 +67,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # in front of it has to as well.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
+# Already in the lock file, pulled in by `axum-server` for the panel's own
+# TLS. Declaring it here is what lets the one outbound HTTPS call - the
+# Cloudflare API - reuse that stack instead of adding a second one.
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
 x509-parser = "0.16"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 

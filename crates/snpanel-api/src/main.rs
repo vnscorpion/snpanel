@@ -30,6 +30,7 @@ mod auth;
 mod backups;
 mod clamav;
 mod client;
+mod cloudflare;
 mod cron;
 mod errors;
 mod file_jobs;

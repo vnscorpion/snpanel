@@ -957,11 +957,12 @@ async fn audit_provisioning(
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let detail = if detail.is_empty() {
-        format!("ip={ip} ua={ua}")
-    } else {
-        format!("{detail} ip={ip} ua={ua}")
-    };
+    // `log_action`'s own join, not a second copy of it. The separator is
+    // ` | `, the user agent is cut at 200 **characters**, and an empty ip or
+    // ua is left out rather than written as a bare `ip=`. An earlier version
+    // of this function re-derived all three and got all three wrong, which
+    // is the argument for calling the one that is tested.
+    let detail = snpanel_db::AuditRepo::detail_with_request(detail, &ip, ua);
     if let Err(e) = state.db.audits().log(None, action, target, &detail).await {
         tracing::error!("could not write the {action} audit entry: {e}");
     }

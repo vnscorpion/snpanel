@@ -106,6 +106,10 @@ pub fn router() -> Router<AppState> {
             post(install_shared_ssl).fallback(crate::fallback),
         )
         .route(
+            "/websites/{website_id}/ssl/wildcard",
+            post(install_wildcard_ssl).fallback(crate::fallback),
+        )
+        .route(
             "/websites/{website_id}/ssl/sources",
             get(ssl_sources).fallback(crate::fallback),
         )
@@ -1945,6 +1949,351 @@ async fn cloudflare_zone(
         "has_token": zone.is_some(),
     }))
     .into_response()
+}
+
+/// Which Cloudflare token to use, and where it came from.
+///
+/// Source: the `if token: ... else: ...` fork at the top of
+/// `install_wildcard_ssl`. Split out because the two halves fail
+/// differently and the difference is the whole of what a caller sees: a
+/// token that was *sent* and is bad is a **400** naming Cloudflare's
+/// reason, while no saved token at all is a **409** asking for one.
+enum TokenSource {
+    /// The caller sent one. It has been verified and its zone looked up,
+    /// and it is about to be saved for the next renewal.
+    Supplied { zone: String, token: String },
+    /// A credential saved earlier covers this domain.
+    Stored { zone: String, token: String },
+}
+
+impl TokenSource {
+    fn parts(&self) -> (&str, &str) {
+        match self {
+            Self::Supplied { zone, token } | Self::Stored { zone, token } => (zone, token),
+        }
+    }
+}
+
+/// Source: the token fork, including `cloudflare.save_credential`.
+///
+/// The supplied token is verified **before** it is stored. Saving first
+/// would leave a bad credential behind for the next unattended renewal to
+/// fail on, at which point nobody is watching.
+async fn wildcard_token(
+    state: &AppState,
+    domain: &str,
+    supplied: Option<&str>,
+) -> Result<TokenSource, Response> {
+    if let Some(token) = supplied {
+        // `except cloudflare.CloudflareError as exc: raise HTTPException(400,
+        // str(exc))` - every refusal from the two calls lands as the same
+        // 400, carrying Cloudflare's own words.
+        if let Err(exc) = crate::cloudflare::verify_token(token).await {
+            return Err(bad_request(&exc.0));
+        }
+        let zone = match crate::cloudflare::zone_for_domain(token, domain).await {
+            Ok(zone) => zone,
+            Err(exc) => return Err(bad_request(&exc.0)),
+        };
+        let ciphertext = snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, token);
+        if let Err(e) = state
+            .db
+            .cloudflare()
+            .save(&zone, &ciphertext, &snpanel_db::sqlalchemy_now())
+            .await
+        {
+            tracing::error!("saving the Cloudflare credential failed: {e}");
+            return Err(internal_error());
+        }
+        return Ok(TokenSource::Supplied {
+            zone,
+            token: token.to_string(),
+        });
+    }
+
+    // `zone, token = _cloudflare_zone_for(db, website.domain)`. A zone with
+    // no readable token is the same answer as no zone: the Python's `if not
+    // token` sees an empty string either way.
+    let stored = match cloudflare_zone_for(state, domain).await {
+        Some(zone) => {
+            let ciphertext = match state.db.cloudflare().ciphertext(&zone).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("reading the Cloudflare credential failed: {e}");
+                    return Err(internal_error());
+                }
+            };
+            match snpanel_core::crypto::fernet::decrypt(
+                &state.settings.secret_key,
+                ciphertext.as_deref(),
+                state.settings.strict_decrypt,
+            ) {
+                Ok(token) => Some((zone, token)),
+                // The Python's `decrypt` raises here and nothing catches it,
+                // so the caller gets a 500. Reproduced: a credential the
+                // panel cannot read is a broken installation, and answering
+                // 409 would send an administrator to re-enter a token that
+                // is already there.
+                Err(e) => {
+                    tracing::error!("could not decrypt the stored Cloudflare token: {e}");
+                    return Err(internal_error());
+                }
+            }
+        }
+        None => None,
+    };
+    match stored {
+        Some((zone, token)) if !token.is_empty() => Ok(TokenSource::Stored { zone, token }),
+        _ => Err(crate::errors::error(
+            axum::http::StatusCode::CONFLICT,
+            "No Cloudflare API token saved for this domain's zone. Provide one.",
+        )),
+    }
+}
+
+/// Source: `platform.install_command("python3-certbot-dns-cloudflare")`, the
+/// fallback `ssl.ensure_cloudflare_plugin` uses when the helper is absent.
+fn certbot_dns_plugin_install_command() -> String {
+    // `os_family() == "rhel"`. An undetectable platform takes the Debian
+    // branch, as the Python's `else` does.
+    let rhel = snpanel_osabi::detect()
+        .map(|p| p.family() == snpanel_osabi::Family::Rhel)
+        .unwrap_or(false);
+    install_command_for(rhel)
+}
+
+/// [`certbot_dns_plugin_install_command`] with the platform already
+/// decided, so both answers can be read on one machine.
+fn install_command_for(rhel: bool) -> String {
+    let package = "python3-certbot-dns-cloudflare";
+    if rhel {
+        format!("dnf -y install {package}")
+    } else {
+        format!(
+            "export DEBIAN_FRONTEND=noninteractive; apt-get update \
+             && apt-get install -y {package}"
+        )
+    }
+}
+
+/// `POST /websites/{website_id}/ssl/wildcard`.
+///
+/// Source: `install_wildcard_ssl`. A certificate for `zone` **and**
+/// `*.zone`, proved over DNS-01 instead of HTTP-01.
+///
+/// This is the only endpoint in the panel that calls out to the public
+/// internet, and the only one that hands a third-party credential to the
+/// privileged helper. Two things follow from that and neither is
+/// negotiable:
+///
+/// - **The token goes to the helper on stdin.** `/proc/<pid>/cmdline` is
+///   world-readable, so a token in argv is a token every account on the
+///   machine can read for as long as certbot runs.
+/// - **The token is never in an error, a log line or the response.** The
+///   400s below carry Cloudflare's words about the token, never the token.
+///
+/// The wildcard covers the **zone**, not the site: asking Cloudflare which
+/// zone the domain sits in is what makes `shop.example.com` issue a
+/// certificate for `example.com` and `*.example.com`, which is the one that
+/// can actually be renewed from a DNS record the panel controls.
+async fn install_wildcard_ssl(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    // Pydantic runs before the handler, so a malformed body is a 422 whether
+    // or not the website exists - and that ordering is what stops this
+    // endpoint from being a way to probe which website ids are real.
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let supplied = match wildcard_token_field(&payload) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let source = match wildcard_token(&state, &website.domain, supplied.as_deref()).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let (zone, token) = source.parts();
+
+    // `ssl.ensure_cloudflare_plugin()` - certbot cannot answer a DNS-01
+    // challenge without the Cloudflare plugin, and the check is first so a
+    // machine missing it fails before a token is sent anywhere.
+    let install = certbot_dns_plugin_install_command();
+    let plugin = shell::privileged(
+        state.settings.command_dry_run,
+        "certbot-dns-cloudflare-install",
+        &[],
+        None,
+        Some(&["bash", "-lc", &install]),
+    )
+    .await;
+    if !plugin.ok() {
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &command_error(&plugin),
+        );
+    }
+
+    // `_safe_domain(zone)`. The zone came from Cloudflare rather than from
+    // the caller, but it is about to be an argument to certbot and a path
+    // under `/etc/letsencrypt/live`, so it is checked like any other.
+    let safe_zone = match crate::manual_ssl::safe_domain(zone) {
+        Ok(z) => z,
+        // `ValueError("Invalid domain")` out of a service call is a 500 in
+        // the Python, not a 400: the caller did not choose this name.
+        Err(message) => {
+            return crate::errors::error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &message)
+        }
+    };
+    let email = state.settings.ssl_email.clone();
+    let mut args: Vec<&str> = vec![&safe_zone];
+    if !email.is_empty() {
+        args.push(&email);
+    }
+    let issued = shell::privileged(
+        state.settings.command_dry_run,
+        "cloudflare-ssl-issue",
+        &args,
+        // The token, on stdin. Never in `args`.
+        Some(token),
+        Some(&[
+            "bash",
+            "-lc",
+            "echo 'cloudflare-ssl-issue needs the snpanel helper'; exit 1",
+        ]),
+    )
+    .await;
+    if !issued.ok() {
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &command_error(&issued),
+        );
+    }
+
+    let previous = (
+        website.ssl_mode.clone(),
+        website.ssl_source_domain.clone(),
+        website.ssl_cert_path.clone(),
+        website.ssl_key_path.clone(),
+        website.ssl_ca_path.clone(),
+    );
+    let now = snpanel_db::sqlalchemy_now();
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_ssl_state(
+            website.id,
+            true,
+            "cloudflare",
+            Some(zone),
+            None,
+            None,
+            None,
+            &now,
+        )
+        .await
+    {
+        tracing::error!("updating the SSL state failed: {e}");
+        return internal_error();
+    }
+
+    // The row the wiring reads has to be the row that was just written.
+    let mut updated = website.clone();
+    updated.ssl_enabled = true;
+    updated.ssl_mode = "cloudflare".to_string();
+    updated.ssl_source_domain = Some(zone.to_string());
+    updated.ssl_cert_path = None;
+    updated.ssl_key_path = None;
+    updated.ssl_ca_path = None;
+
+    if let Err(message) = resync_and_rewrite(&state, &updated, RewriteOverrides::default()).await {
+        // `except Exception: roll the row back on any wiring failure`. The
+        // **certificate stays** - it was issued, and throwing it away because
+        // the vhost would not render would burn a Let's Encrypt rate limit
+        // for nothing. Only the row goes back.
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_ssl_state(
+                website.id,
+                website.ssl_enabled,
+                &previous.0,
+                previous.1.as_deref(),
+                previous.2.as_deref(),
+                previous.3.as_deref(),
+                previous.4.as_deref(),
+                &now,
+            )
+            .await
+        {
+            tracing::error!("rolling the SSL state back failed: {e}");
+        }
+        return bad_request(&message);
+    }
+
+    resync_shared_dependents(&state, &website.domain).await;
+
+    // `log_action(..., detail=zone, request=request)` - the zone is the
+    // detail, because the certificate is not for the domain in `target` and
+    // an administrator reading this back needs to know which zone was
+    // touched.
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "install_wildcard_ssl",
+        &website.domain,
+        zone,
+    )
+    .await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, false, ssl_enabled)).into_response()
+}
+
+/// Source: `WildcardSslRequest` - `Optional[str] = None` with a validator
+/// that strips it and turns what is left of an empty string back into
+/// `None`.
+///
+/// The strip is Python's, so a token pasted with a trailing newline - which
+/// is how most of them arrive - is the same token as one without.
+fn wildcard_token_field(payload: &Value) -> Result<Option<String>, Response> {
+    let raw = match payload.get("cloudflare_api_token") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(other) => other,
+    };
+    let Some(text) = raw.as_str() else {
+        return Err(crate::errors::string_type("cloudflare_api_token", raw));
+    };
+    let trimmed = snpanel_core::pyunicode::trim(text);
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Source: `ssl.cert_info` - expiry and covered names for a certificate on
@@ -6217,5 +6566,71 @@ mod tests {
         assert!(!cert_covers(&sans, "b.example.com"));
         // No certificate at all is not "covers everything".
         assert!(!cert_covers(&[], "a.example.com"));
+    }
+
+    /// Source: `WildcardSslRequest._clean_token`.
+    ///
+    /// The difference between `None` and `Some("")` decides which of two
+    /// answers the caller gets - a 409 asking for a token, or a 400 from
+    /// Cloudflare about a token of nothing - so the stripping is not
+    /// cosmetic.
+    #[test]
+    fn the_wildcard_token_field_is_stripped_like_pydantics() {
+        let field = |v: Value| wildcard_token_field(&v).map_err(|_| "refused");
+
+        // Absent, null and blank are all the same `None`.
+        assert_eq!(field(json!({})), Ok(None));
+        assert_eq!(field(json!({"cloudflare_api_token": null})), Ok(None));
+        assert_eq!(field(json!({"cloudflare_api_token": ""})), Ok(None));
+        assert_eq!(field(json!({"cloudflare_api_token": "   "})), Ok(None));
+        // `str.strip()` is Python's `isspace`, which covers `\x1c`-`\x1f`;
+        // Rust's own `trim` does not, and a token of those would otherwise
+        // become a live `Bearer` header.
+        assert_eq!(
+            field(json!({"cloudflare_api_token": "\u{1c}\u{1f}"})),
+            Ok(None)
+        );
+
+        // A real token keeps its value and loses its edges - a token pasted
+        // from a web page almost always arrives with a newline.
+        assert_eq!(
+            field(json!({"cloudflare_api_token": "  abc123\n"})),
+            Ok(Some("abc123".to_string()))
+        );
+        assert_eq!(
+            field(json!({"cloudflare_api_token": "abc123"})),
+            Ok(Some("abc123".to_string()))
+        );
+
+        // Pydantic will not coerce a number into a string, so neither does
+        // this: it is a 422 before the handler runs.
+        assert_eq!(field(json!({"cloudflare_api_token": 5})), Err("refused"));
+        assert_eq!(field(json!({"cloudflare_api_token": true})), Err("refused"));
+        assert_eq!(field(json!({"cloudflare_api_token": []})), Err("refused"));
+    }
+
+    /// Source: `platform.install_command`.
+    ///
+    /// This is the command that runs when the privileged helper is absent,
+    /// which is a panel somebody is installing by hand. Getting the package
+    /// name wrong there produces "no match for argument", which reads like
+    /// a broken mirror rather than a typo in the panel.
+    #[test]
+    fn the_dns_plugin_install_command_matches_the_platforms() {
+        assert_eq!(
+            install_command_for(true),
+            "dnf -y install python3-certbot-dns-cloudflare"
+        );
+        assert_eq!(
+            install_command_for(false),
+            "export DEBIAN_FRONTEND=noninteractive; apt-get update \
+             && apt-get install -y python3-certbot-dns-cloudflare"
+        );
+        // apt without `DEBIAN_FRONTEND=noninteractive` can stop on a
+        // configuration prompt, and there is nobody at the keyboard.
+        assert!(install_command_for(false).contains("noninteractive"));
+        // Whichever platform this machine is, the real call answers with
+        // one of the two and never with an empty string.
+        assert!(!certbot_dns_plugin_install_command().is_empty());
     }
 }
