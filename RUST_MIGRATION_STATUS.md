@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 17 of 67 |
+| `maintenance` | 16 of 67 |
 | `provisioning` | 4 of 13 — create, suspend, unsuspend, terminate |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 9 of 12 — the rest wait on the scan worker |
@@ -1030,7 +1030,7 @@ fallback is a quiet way to prove nothing.
 
 ## Not started
 
-Measured, not recalled: **41 endpoints**, which is `maintenance` (17),
+Measured, not recalled: **40 endpoints**, which is `maintenance` (16),
 `site_apps` (10), `malware` (9), `provisioning` (4) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the

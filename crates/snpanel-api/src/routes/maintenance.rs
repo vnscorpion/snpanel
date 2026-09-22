@@ -104,6 +104,10 @@ pub fn router() -> Router<AppState> {
             get(get_file_job).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/da-import/upload",
+            post(upload_da_backup).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/da-import/backups",
             get(list_da_backups)
                 .delete(delete_da_backup)
@@ -4405,6 +4409,94 @@ fn is_archive(path: &std::path::Path) -> bool {
     ARCHIVE_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
+/// Source: `da_import.safe_upload_name`.
+///
+/// The uploaded name comes straight from the browser, so every directory
+/// component goes before it is joined onto the backup directory. A **dot
+/// leader is refused** as well as `.` and `..`: a file called
+/// `.bashrc.tar.gz` in a directory somebody later globs is a surprise
+/// nobody needs, and no DirectAdmin backup is named that way.
+fn da_safe_upload_name(filename: &str) -> Result<String, String> {
+    let normalized = filename.replace('\\', "/");
+    let name = std::path::Path::new(&normalized)
+        .file_name()
+        .map(|n| n.to_string_lossy().trim().to_string())
+        .unwrap_or_default();
+    if name.is_empty() || name == "." || name == ".." || name.starts_with('.') {
+        return Err("Invalid backup filename".to_string());
+    }
+    let lower = name.to_lowercase();
+    if !ARCHIVE_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return Err(format!(
+            "Unsupported archive type. Expected one of: {}",
+            ARCHIVE_SUFFIXES.join(", ")
+        ));
+    }
+    Ok(name)
+}
+
+/// `POST /maintenance/da-import/upload`.
+///
+/// Source: `upload_da_backup`.
+///
+/// A name that is already taken is a **409**, not an overwrite. These are
+/// other people's account backups waiting to be imported, and replacing one
+/// with another of the same name would import the wrong customer — the same
+/// reasoning as the restore folder, and the opposite of a site's own backup
+/// folder where a collision means a re-upload.
+async fn upload_da_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let files = match upload_parts(&state, parts.clone(), body, "file").await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some((filename, data)) = files.into_iter().next() else {
+        return crate::errors::missing_field("file", Value::Null);
+    };
+    // `file.filename or ""` — and an empty name is refused rather than
+    // given a default, because a DirectAdmin backup's name is what says
+    // whose account it is.
+    let name = match da_safe_upload_name(&filename) {
+        Ok(n) => n,
+        Err(e) => return bad_request(&e),
+    };
+
+    let dir = da_backup_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::error!("creating the DA backup directory failed: {e}");
+        return crate::errors::internal_error();
+    }
+    let destination = dir.join(&name);
+    if destination.exists() {
+        return conflict("A backup with this name already exists");
+    }
+    if let Err(e) = std::fs::write(&destination, &data) {
+        // `except Exception: destination.unlink(missing_ok=True); raise` —
+        // a half-written archive left behind would be listed as importable.
+        let _ = std::fs::remove_file(&destination);
+        tracing::error!("writing the DA backup failed: {e}");
+        return crate::errors::internal_error();
+    }
+    let size = std::fs::metadata(&destination)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    audit_detail(&state, current.user.id, "da_backup_upload", &name, "").await;
+    axum::Json(json!({
+        "filename": name,
+        "path": destination.to_string_lossy(),
+        "size": size,
+    }))
+    .into_response()
+}
+
 /// Source: `da_import.resolve_backup_path` - "confining it to the upload
 /// directory keeps the endpoints from reading or deleting arbitrary files on
 /// the host".
@@ -4780,6 +4872,94 @@ mod tests {
             failures.len(),
             cases.len(),
             failures.join("\n")
+        );
+    }
+
+    /// What a DirectAdmin backup upload may be called.
+    ///
+    /// Stricter than the panel's other uploads in one way and looser in
+    /// another. Stricter: a **dot leader is refused** outright, so
+    /// `.hidden.tar.gz` never lands in a directory the import endpoints
+    /// later read and delete from. Looser: the suffix is matched
+    /// case-insensitively, so `user.TAR.GZ` is accepted and keeps its own
+    /// spelling — where the backup savers demand an exact `.tar.gz`.
+    ///
+    /// The name is trimmed *after* the directory components go, which is
+    /// why `" .tar.gz"` is refused (it becomes `.tar.gz`) and
+    /// `"user.tar.gz "` is not.
+    #[test]
+    fn a_da_backup_upload_is_named_the_way_python_names_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/da_upload.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the da corpus"))
+                .expect("the corpus parses");
+
+        let suffixes: Vec<&str> = corpus["archive_suffixes"]
+            .as_array()
+            .expect("the suffixes")
+            .iter()
+            .map(|v| v.as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(suffixes, ARCHIVE_SUFFIXES.to_vec());
+
+        let cases = corpus["safe_upload_name"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 31, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut accepted = 0usize;
+        let mut invalid = 0usize;
+        let mut unsupported = 0usize;
+        for case in cases {
+            let filename = case["filename"].as_str().unwrap_or("");
+            let got = da_safe_upload_name(filename);
+            match (case.get("name").and_then(Value::as_str), case.get("error")) {
+                (Some(want), _) => {
+                    accepted += 1;
+                    match got {
+                        Ok(ref name) if name == want => {}
+                        other => {
+                            failures.push(format!("{filename:?}: python {want:?}, rust {other:?}"))
+                        }
+                    }
+                }
+                (None, Some(error)) => {
+                    let want = error.as_str().unwrap_or("");
+                    if want == "Invalid backup filename" {
+                        invalid += 1;
+                    } else {
+                        unsupported += 1;
+                    }
+                    match got {
+                        Err(ref e) if e == want => {}
+                        other => {
+                            failures.push(format!("{filename:?}: python {want:?}, rust {other:?}"))
+                        }
+                    }
+                }
+                _ => failures.push(format!("{filename:?}: the corpus says neither")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(accepted >= 15, "only {accepted} names accepted");
+        assert!(invalid >= 7, "only {invalid} were invalid names");
+        assert!(
+            unsupported >= 3,
+            "only {unsupported} were unsupported types"
+        );
+
+        // The three that separate this from the other upload paths.
+        assert_eq!(
+            da_safe_upload_name("user.TAR.GZ").ok(),
+            Some("user.TAR.GZ".to_string()),
+            "the suffix match folds case and the name keeps its own"
+        );
+        assert!(da_safe_upload_name(".hidden.tar.gz").is_err());
+        assert!(da_safe_upload_name("a/.hidden.tar.gz").is_err());
+        // Every directory component goes, including one that escapes.
+        assert_eq!(
+            da_safe_upload_name("../../etc/x.tar.gz").ok(),
+            Some("x.tar.gz".to_string())
         );
     }
 }
