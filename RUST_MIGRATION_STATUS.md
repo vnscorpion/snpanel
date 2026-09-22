@@ -1429,23 +1429,132 @@ another panel's conventions into this one's, all of them pure enough to
 measure. The corpus already covers the naming half — the account name, the
 domain, the database identifier, the `.conf` reader and the pointer file.
 
+### Reading and importing a DirectAdmin backup
+
+All five DA-import endpoints are done: `scan`, `import`, `jobs/{id}`,
+`bulk-import` and `bulk-jobs/{id}`. A scan unpacks an uploaded archive and
+reports what is in it; an import turns it into a panel user, its websites,
+their files, their vhosts and their databases.
+
+**Three decompressors, all pure Rust and all decompress-only.**
+`tarfile.open(path, "r:*")` handles gzip, bzip2 and xz in-process and pipes
+`.tar.zst` through the `zstd` binary; this side uses `flate2`, `bzip2-rs`,
+`lzma-rs` and `ruzstd`. None links a C library and none can *write* an
+archive, which is the whole of what the importer needs. The alternative —
+piping through the system binaries — would have cost no dependency and
+failed on a host without `xz`.
+
+**The archive is untrusted and it arrived through a browser.** Three
+things are refused on the way out of it: a member whose path escapes the
+destination, every link, and anything that is not a file or a directory.
+The link rule has a reason of its own — an extracted tree holding
+something that points outside the staging directory is a tree the passes
+that copy files afterwards can be walked out of.
+
+#### Five decisions that are the Python's
+
+- **Delete before create, and only with `force`.** The conflict check runs
+  before anything is touched, because a re-run of a finished import would
+  otherwise wipe a site that has been live for a month.
+- **One import at a time, across both kinds.** A `429` on either endpoint
+  if *either* kind is running: the work deletes and recreates users, sites
+  and databases, and two at once would race over the same rows.
+- **A failure inside one domain is a warning, not an abort.** An account
+  with eight sites and one broken config imports seven, not none. Likewise
+  a bulk import: twenty accounts stopping on the third would leave
+  seventeen customers waiting on a retry.
+- **Reuse the secret the site already has.** The panel rewrites the
+  configs it knows about, but a custom include or a second copy outside
+  the document root would still point at the old one. The application's
+  own config first, then the `mysql_native_password` hash from
+  DirectAdmin's `<db>.conf`, then a clear password from there — *unless*
+  normalisation renamed the database or the user, in which case the config
+  is being rewritten anyway and a stale hash would cost the customer their
+  database.
+- **Subdomains are moved out of their parent first.** DirectAdmin nests
+  `sub.example.com` inside `example.com`'s `public_html`; this panel has no
+  parent/child website, so each becomes its own site — and moving the
+  directory out is what stops the parent import copying the subdomain's
+  files a second time into a tree that no longer serves them.
+
+#### `%2A` is a star
+
+DirectAdmin writes the `<db>.conf` password as a URL-encoded query string,
+and `%2A` opens a `mysql_native_password` hash. A reader that did not
+percent-decode would see the hash as an ordinary password and set it as
+one — locking the customer out of their own database with a password that
+is the text of their hash. The corpus has twenty-three shapes of that file.
+
+#### Two asymmetries, reproduced rather than fixed
+
+`configuration.php` is *read* with an optional `public` keyword and
+*rewritten* with a required one, so a Joomla site written `$db = 'x';` is
+understood and then left pointing at the old database. And `$db` does not
+match `$dbuser` — not because of a word boundary, which neither side has,
+but because the pattern fails at the `=`. A boundary check was written,
+found to be a guard that could not change an answer, and removed.
+
+#### One deliberate difference
+
+`_discover_domains` walks with `iterdir()`, which is filesystem order; two
+extractions of one archive into two staging directories can list the same
+domains differently. This port **sorts**, so an operator comparing two
+scans sees a diff only where something changed, and the test compares by
+domain name because position was never a promise the Python could keep.
+
+#### What the corpus is
+
+A real archive, built by the Python, scanned by the Python, carried into
+the test base64-encoded so this side reads the same bytes, in **five
+compressions**. Nine domains, each there to make one branch's answer
+differ from its neighbour: both document roots on one domain with
+different contents, a domain found only through `domains.list`, another
+only through a `.conf`, a static site with a hard link to a PHP file that
+must not land, a WordPress install never run, a nested per-domain archive
+whose wrapper hides a different database name, a subdomain inside its
+parent's document root, and one declared with no directory at all.
+
+Three rounds of survivors, and almost every one was the corpus rather than
+the code: the archive used a branch without making its two answers differ.
+A domain that exists as both a `.conf` and a directory does not prove the
+`.conf` branch matters; one that exists only as a `.conf` does. Two
+mutations were also aimed at a test that could not see them — the
+cross-compression check compares the five archives against *each other*,
+so a change that moves all five together is invisible to it.
+
+#### What was added underneath
+
+`mariadb::create_database_credentials` with a password hash and
+`allow_existing_user`, `import_database`, `user_exists` and `auth_clause`
+— the last **validates the hash before it reaches any SQL**, because it is
+interpolated rather than quoted and comes out of a customer's backup. A
+decompressor for the four dump formats writing to a file created `O_EXCL`
+at mode `0600`, since it holds the customer's whole database in plaintext.
+And `for_website`, `for_owner` and `all_emails` on the repositories.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **26 endpoints**, in three groups:
+Measured, not recalled: **21 endpoints**, in three groups, and **none of
+them is plain code**. Every one waits on the same two decisions:
 
 | group | left | what it needs |
 |---|---|---|
-| `maintenance` | 15 | the DA-import worker (5) is plain code; the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) need the **`siteapp`/`docker` helper domain** |
+| `maintenance` | 10 | the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) need the **`siteapp`/`docker` helper domain** |
 | `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
 | `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` needs the **`siteapp`/`docker` helper domain** |
 
 The bold two are dependency and architecture decisions on a hosting panel,
-not code that is merely unwritten. **The DA-import worker is the only
-group left that is mostly plain code**: five endpoints and about 1,500
-lines of Python. Its one dependency question is the archive decompressors,
-measured and written up in the section above.
+not code that is merely unwritten - and with DA-import landed they are all
+that is left. Sixteen endpoints wait on the `siteapp`/`docker` helper
+domain and five on an SSH/SFTP client.
+
+Both are places where Rust's ecosystem is thinner than Go's: the official
+Docker SDK and `golang.org/x/crypto/ssh` + `pkg/sftp` are considerably
+more mature than anything on this side. Go is available for exactly that
+kind of case, so the **shape** of those two groups is the next thing to
+decide rather than the next thing to write.
 
 `POST /user-restore` used to be filed with it. Re-measured, it is not:
 `restore_user_backup` calls `_restore_applications`, which collects each

@@ -170,6 +170,33 @@ impl<'a> DatabaseRepo<'a> {
 
     /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.db_name ==
     /// db_info["db_name"]).first()`.
+    /// Every database account attached to one website.
+    ///
+    /// Source: `db.query(DatabaseAccount).filter(website_id == ...).all()`.
+    /// A website usually has one, but an import that ran twice can leave
+    /// two, and deleting the site has to take both.
+    pub async fn for_website(&self, website_id: i64) -> Result<Vec<DatabaseAccount>, DbError> {
+        let sql =
+            format!("SELECT {COLUMNS} FROM database_accounts WHERE website_id = ? ORDER BY id ASC");
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&sql)
+            .bind(website_id)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
+    /// Every database account one panel user owns.
+    ///
+    /// Source: `db.query(DatabaseAccount).filter(owner_id == ...).all()`,
+    /// which is how an import clears the account it is replacing.
+    pub async fn for_owner(&self, owner_id: i64) -> Result<Vec<DatabaseAccount>, DbError> {
+        let sql =
+            format!("SELECT {COLUMNS} FROM database_accounts WHERE owner_id = ? ORDER BY id ASC");
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&sql)
+            .bind(owner_id)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
     pub async fn by_name(&self, db_name: &str) -> Result<Option<DatabaseAccount>, DbError> {
         Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
             "SELECT {COLUMNS} FROM database_accounts WHERE db_name = ? ORDER BY id LIMIT 1"

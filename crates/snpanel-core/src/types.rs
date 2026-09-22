@@ -235,6 +235,24 @@ impl TryFrom<String> for AppName {
 /// The provisioning tokens are stored as this and never as themselves, so
 /// the digest has to be byte-identical or every existing token stops
 /// authenticating the moment the Rust front door answers.
+/// `hashlib.sha1(text.encode("utf-8")).hexdigest()`.
+///
+/// **Not a security primitive, and not used as one.** The DA importer
+/// needs a short stable tag so two archives whose account or database
+/// names rewrite to the same string do not collide; nothing compares it
+/// against anything an attacker supplies. Use [`sha256_hex`] for anything
+/// that matters.
+pub fn sha1_hex(text: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
 

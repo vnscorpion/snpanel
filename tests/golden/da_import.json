@@ -49,12 +49,69 @@
    "username": "backup"
   },
   {
+   "name": "user.backup.tar.gz",
+   "username": "user.backup"
+  },
+  {
+   "name": "reseller.backup.tar.gz",
+   "username": "reseller.backup"
+  },
+  {
    "name": "___.tar.gz",
    "username": "___"
   },
   {
    "name": "a.tar.gz",
    "username": "a"
+  }
+ ],
+ "dotenv": [
+  {
+   "text": "DB_DATABASE=laravel\nDB_USERNAME=lu\nDB_PASSWORD=lp\nDB_HOST=127.0.0.1\n",
+   "values": {
+    "DB_HOST": "127.0.0.1",
+    "DB_NAME": "laravel",
+    "DB_PASSWORD": "lp",
+    "DB_USER": "lu"
+   }
+  },
+  {
+   "text": "DB_DATABASE=laravel\n",
+   "values": {
+    "DB_NAME": "laravel"
+   }
+  },
+  {
+   "text": "DB_DATABASE=\nDB_USERNAME=u\n",
+   "values": {
+    "DB_USER": "u"
+   }
+  },
+  {
+   "text": "db_database=lower\n",
+   "values": {
+    "DB_NAME": "lower"
+   }
+  },
+  {
+   "text": "DB_DATABASE=\"quoted\"\n",
+   "values": {
+    "DB_NAME": "quoted"
+   }
+  },
+  {
+   "text": "# comment\nDB_DATABASE=x\n",
+   "values": {
+    "DB_NAME": "x"
+   }
+  },
+  {
+   "text": "OTHER=1\n",
+   "values": {}
+  },
+  {
+   "text": "",
+   "values": {}
   }
  ],
  "key_values": [
@@ -74,6 +131,18 @@
   },
   {
    "text": "# a comment\nusername=bob\n\n  \n",
+   "values": {
+    "username": "bob"
+   }
+  },
+  {
+   "text": "# key=value\nusername=bob\n",
+   "values": {
+    "username": "bob"
+   }
+  },
+  {
+   "text": "#key: value\nusername=bob\n",
    "values": {
     "username": "bob"
    }
@@ -348,6 +417,16 @@
   },
   {
    "archive": "",
+   "raw": "bob  smith",
+   "username": "bob_smith"
+  },
+  {
+   "archive": "",
+   "raw": "bob!!!smith",
+   "username": "bob_smith"
+  },
+  {
+   "archive": "",
    "raw": "bob@example.com",
    "username": "bob_example_com"
   },
@@ -405,6 +484,16 @@
    "archive": "",
    "raw": "root",
    "username": "da_root_dc76e9f0"
+  },
+  {
+   "archive": "x.tar.gz",
+   "raw": "root",
+   "username": "da_root_1da03c3b"
+  },
+  {
+   "archive": "y.tar.gz",
+   "raw": "root",
+   "username": "da_root_68446280"
   },
   {
    "archive": "",
@@ -475,6 +564,70 @@
    "archive": "",
    "raw": "bob--smith",
    "username": "bob--smith"
+  }
+ ],
+ "php_config": [
+  {
+   "text": "<?php\nclass X { public $db = 'joomla'; public $user = 'ju'; }\n",
+   "values": {
+    "DB_NAME": "joomla",
+    "DB_USER": "ju"
+   }
+  },
+  {
+   "text": "<?php\n$db = 'plain';\n",
+   "values": {
+    "DB_NAME": "plain"
+   }
+  },
+  {
+   "text": "<?php\n$database = 'alt';\n",
+   "values": {
+    "DB_NAME": "alt"
+   }
+  },
+  {
+   "text": "<?php\npublic $dbuser = 'u';\npublic $db = 'd';\n",
+   "values": {
+    "DB_NAME": "d",
+    "DB_USER": "u"
+   }
+  },
+  {
+   "text": "<?php\n$db='tight';\n",
+   "values": {
+    "DB_NAME": "tight"
+   }
+  },
+  {
+   "text": "<?php\n$db = \"double\";\n",
+   "values": {
+    "DB_NAME": "double"
+   }
+  },
+  {
+   "text": "<?php\n$host = 'h';\n$db_host = 'ignored';\n",
+   "values": {
+    "DB_HOST": "h"
+   }
+  },
+  {
+   "text": "<?php\n$password = 'p';\n$dbpass = 'ignored';\n",
+   "values": {
+    "DB_PASSWORD": "p"
+   }
+  },
+  {
+   "text": "<?php\n$nothing = 1;\n",
+   "values": {}
+  },
+  {
+   "text": "",
+   "values": {}
+  },
+  {
+   "text": "<?php\n$db = 'no semicolon'\n",
+   "values": {}
   }
  ],
  "pointers": [
@@ -738,6 +891,143 @@
   {
    "name": "",
    "stripped": ""
+  }
+ ],
+ "subdomains": [
+  {
+   "labels": [
+    "blog",
+    "shop"
+   ],
+   "text": "blog\nshop\n"
+  },
+  {
+   "labels": [
+    "blog",
+    "shop"
+   ],
+   "text": "blog:on\nshop=1\n"
+  },
+  {
+   "labels": [
+    "blog"
+   ],
+   "text": "# comment\n\nblog\n"
+  },
+  {
+   "labels": [
+    "blog"
+   ],
+   "text": "BLOG\n"
+  },
+  {
+   "labels": [
+    "blog"
+   ],
+   "text": "  blog  \n"
+  },
+  {
+   "labels": [
+    "blog"
+   ],
+   "text": "blog\nblog\n"
+  },
+  {
+   "labels": [
+    "good"
+   ],
+   "text": "-bad\nbad-\ngood\n"
+  },
+  {
+   "labels": [
+    "a"
+   ],
+   "text": "a\n"
+  },
+  {
+   "labels": [],
+   "text": ""
+  },
+  {
+   "labels": [],
+   "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+  },
+  {
+   "labels": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+  },
+  {
+   "labels": [],
+   "text": "with.dot\n"
+  }
+ ],
+ "wp_config": [
+  {
+   "text": "<?php\ndefine('DB_NAME', 'wp_main');\ndefine('DB_USER', 'wp_u');\n",
+   "values": {
+    "DB_NAME": "wp_main",
+    "DB_USER": "wp_u"
+   }
+  },
+  {
+   "text": "<?php\ndefine( \"DB_NAME\" , \"wp_main\" );\n",
+   "values": {
+    "DB_NAME": "wp_main"
+   }
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME','wp_main');define('DB_PASSWORD','s3cret');\n",
+   "values": {
+    "DB_NAME": "wp_main",
+    "DB_PASSWORD": "s3cret"
+   }
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME', '');\n",
+   "values": {
+    "DB_NAME": ""
+   }
+  },
+  {
+   "text": "<?php\n// define('DB_NAME', 'commented');\ndefine('DB_NAME', 'real');\n",
+   "values": {
+    "DB_NAME": "commented"
+   }
+  },
+  {
+   "text": "<?php\ndefine('DB_HOST', 'localhost:3306');\ndefine('DB_NAME', 'n');\n",
+   "values": {
+    "DB_HOST": "localhost:3306",
+    "DB_NAME": "n"
+   }
+  },
+  {
+   "text": "<?php\ndefine('OTHER', 'x');\n",
+   "values": {}
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME', 'a\"b');\n",
+   "values": {}
+  },
+  {
+   "text": "",
+   "values": {}
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME', 'first');\ndefine('DB_NAME', 'second');\n",
+   "values": {
+    "DB_NAME": "first"
+   }
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME', 'unclosed'\n",
+   "values": {}
+  },
+  {
+   "text": "<?php\ndefine('DB_NAME', 'unclosed' ;\n",
+   "values": {}
   }
  ]
 }

@@ -124,6 +124,17 @@ impl<'a> UserRepo<'a> {
         Ok(found.is_some())
     }
 
+    /// Every address already in use.
+    ///
+    /// Source: the `while db.query(User).filter(User.email == candidate)`
+    /// loop in `_unique_email`. Read once rather than queried per
+    /// candidate: the loop can run several times and the table is small.
+    pub async fn all_emails(&self) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar::<_, String>("SELECT email FROM users")
+            .fetch_all(self.pool)
+            .await?)
+    }
+
     pub async fn count(&self) -> Result<i64, DbError> {
         Ok(sqlx::query_scalar("SELECT COUNT(*) FROM users")
             .fetch_one(self.pool)

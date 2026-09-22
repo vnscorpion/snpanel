@@ -114,6 +114,26 @@ pub fn router() -> Router<AppState> {
                 .fallback(crate::fallback),
         )
         .route(
+            "/maintenance/da-import/scan",
+            post(scan_da_backup).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/da-import/import",
+            post(start_da_import).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/da-import/jobs/{job_id}",
+            get(get_da_import_job).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/da-import/bulk-import",
+            post(start_da_bulk_import).fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/da-import/bulk-jobs/{job_id}",
+            get(get_da_bulk_import_job).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/wordpress",
             post(wordpress_action).fallback(crate::fallback),
         )
@@ -4643,7 +4663,7 @@ fn web_group() -> String {
 // ---------------------------------------------------------------------------
 
 /// Source: `da_import.ARCHIVE_SUFFIXES`.
-const ARCHIVE_SUFFIXES: &[&str] = &[
+pub(crate) const ARCHIVE_SUFFIXES: &[&str] = &[
     ".tar.zst", ".tzst", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar",
 ];
 
@@ -4822,6 +4842,1212 @@ async fn list_da_backups(State(state): State<AppState>, current: CurrentUser) ->
 }
 
 /// Source: `delete_da_backup`.
+/// `POST /maintenance/da-import/scan`.
+///
+/// Source: `scan_da_backup` - "extract a DA backup into a staging dir,
+/// discover users/domains/databases".
+///
+/// **Nothing is created and nothing is changed.** This is what an operator
+/// looks at before deciding to import, so an archive that cannot be read
+/// answers with the reason in `errors` rather than a status code: a scan
+/// that found half an account is more use than one that refused to say
+/// anything.
+///
+/// The work is entirely filesystem - unpacking tens of gigabytes and
+/// walking it - so it runs on the blocking pool rather than holding a
+/// worker thread for minutes.
+async fn scan_da_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `body.get("archive_path", "")` - the endpoint takes a bare dict, so
+    // a field of the wrong type is `""` rather than a 422.
+    let archive_path = payload
+        .get("archive_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if archive_path.is_empty() {
+        return bad_request("archive_path is required");
+    }
+    let path = match resolve_backup_path(archive_path) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e),
+    };
+    if !path.exists() {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return not_found(&format!("Backup not found: {name}"));
+    }
+    if !is_archive(&path) {
+        return bad_request("Not a supported archive format");
+    }
+
+    match tokio::task::spawn_blocking(move || scan_backup_archive(&path)).await {
+        Ok(result) => axum::Json(result).into_response(),
+        Err(e) => {
+            tracing::error!("the DA scan task failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// The body of the scan, off the async runtime.
+///
+/// Source: everything inside `scan_da_backup`'s
+/// `with tempfile.TemporaryDirectory(...)`.
+fn scan_backup_archive(path: &std::path::Path) -> Value {
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let mut result = serde_json::json!({
+        "filename": filename,
+        "size": size,
+        "archive_path": path.to_string_lossy(),
+        "users": [],
+        "errors": [],
+    });
+
+    // `STAGE_BASE.mkdir(...)` then a temporary directory **inside** it,
+    // removed however this returns.
+    let stage = crate::da_import::stage_base();
+    if let Err(e) = std::fs::create_dir_all(&stage) {
+        result["errors"] = serde_json::json!([format!("Extraction failed: {e}")]);
+        return result;
+    }
+    let Some(temp) = crate::da_import::make_stage_dir(&stage, "snpanel-da-scan-") else {
+        result["errors"] = serde_json::json!(["Extraction failed: could not stage the archive"]);
+        return result;
+    };
+    let extracted = temp.join("extracted");
+
+    if let Err(message) = crate::da_import::safe_extract_tar(path, &extracted) {
+        // `result["errors"].append(...)` then `return result` - a scan
+        // that cannot open the archive says so and answers 200, because
+        // the page shows the reason beside the file.
+        result["errors"] = serde_json::json!([format!("Extraction failed: {message}")]);
+        let _ = std::fs::remove_dir_all(&temp);
+        return result;
+    }
+
+    let root = crate::da_import::find_backup_root(&extracted);
+    crate::da_import::extract_nested_domain_archives(&root);
+    result["users"] = serde_json::json!([crate::da_import::scan_extracted(&root, &filename)]);
+
+    let _ = std::fs::remove_dir_all(&temp);
+    result
+}
+
+/// Source: `import_da_backup` (the service).
+///
+/// One archive becomes a panel user, its websites, their files, their
+/// vhosts and their databases. The shape is the Python's throughout, and
+/// three of its decisions are the ones that matter:
+///
+/// - **Delete before create, and only with `force`.** The conflict check
+///   runs first and refuses without it, because a re-run of a finished
+///   import would otherwise wipe a site that has been live for a month.
+/// - **A failure inside one domain is a warning, not an abort.** An
+///   account with eight sites and one broken config should import seven
+///   sites, not none.
+/// - **The staging tree is removed however this returns.** It holds a
+///   full copy of the customer's files.
+async fn run_da_import(
+    state: &AppState,
+    archive: &std::path::Path,
+    force: bool,
+) -> Result<Value, String> {
+    let name = archive
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !is_archive(archive) {
+        return Err("Not a supported archive format".to_string());
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let Some(stage_dir) = crate::da_import::make_import_stage() else {
+        return Err("Could not create the import staging directory".to_string());
+    };
+
+    let outcome = import_into(state, archive, &name, &stamp, &stage_dir, force).await;
+    // `finally: shutil.rmtree(stage_dir, ignore_errors=True)` - the tree
+    // holds a full copy of the customer's files and must not outlive the
+    // import, however it ended.
+    let _ = std::fs::remove_dir_all(&stage_dir);
+    outcome
+}
+
+/// The body of [`run_da_import`], so the staging cleanup is written once.
+async fn import_into(
+    state: &AppState,
+    archive: &std::path::Path,
+    archive_name: &str,
+    stamp: &str,
+    stage_dir: &std::path::Path,
+    force: bool,
+) -> Result<Value, String> {
+    let mut credentials = crate::da_import::credentials_header(stamp, archive_name);
+    let extracted = stage_dir.join("extracted");
+
+    let extract_archive = archive.to_path_buf();
+    let extract_target = extracted.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::da_import::safe_extract_tar(&extract_archive, &extract_target)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let root = crate::da_import::find_backup_root(&extracted);
+    crate::da_import::extract_nested_domain_archives(&root);
+    let domains = crate::da_import::discover_domains(&root);
+    let (username, email) = crate::da_import::discover_username(&root, archive_name);
+    let subdomains = crate::da_import::relocate_subdomain_sources(&root, &domains);
+    let all = crate::da_import::all_domains(&domains, &subdomains);
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut imported: Vec<String> = Vec::new();
+    let mut databases: Vec<Value> = Vec::new();
+    let mut aliases: Vec<String> = Vec::new();
+
+    if all.is_empty() {
+        warnings.push("No domains found".to_string());
+        return Ok(import_summary(
+            archive_name,
+            &username,
+            &all,
+            &imported,
+            &databases,
+            &aliases,
+            &warnings,
+            &credentials,
+        ));
+    }
+
+    // `if not force:` - the conflict check, before anything is touched.
+    if !force {
+        let user_exists = matches!(state.db.users().by_username(&username).await, Ok(Some(_)));
+        let mut taken: Vec<String> = Vec::new();
+        for domain in &all {
+            if matches!(state.db.websites().by_domain(domain).await, Ok(Some(_))) {
+                taken.push(domain.clone());
+            }
+        }
+        if let Some(message) = crate::da_import::conflict_message(user_exists, &username, &taken) {
+            warnings.push(message);
+            return Ok(import_summary(
+                archive_name,
+                &username,
+                &all,
+                &imported,
+                &databases,
+                &aliases,
+                &warnings,
+                &credentials,
+            ));
+        }
+    }
+
+    for domain in &all {
+        delete_existing_domain(state, domain).await;
+    }
+    delete_existing_user(state, &username).await;
+
+    let password = crate::mariadb::random_password(24);
+    let panel_user = match snpanel_core::types::PanelUsername::parse(&username) {
+        Ok(user) => user,
+        Err(_) => return Err(format!("Invalid panel Linux user: {username}")),
+    };
+    let dry = state.settings.command_dry_run;
+    let ensured =
+        shell::privileged(dry, "panel-user-ensure", &[panel_user.as_str()], None, None).await;
+    if !ensured.ok() {
+        return Err(ensured
+            .failure_detail("Could not create the system account")
+            .trim()
+            .to_string());
+    }
+    let set = shell::privileged(
+        dry,
+        "panel-user-password",
+        &[panel_user.as_str()],
+        // On stdin, never in argv.
+        Some(&format!("{password}\n")),
+        None,
+    )
+    .await;
+    if !set.ok() {
+        return Err(set
+            .failure_detail("Could not set the system password")
+            .trim()
+            .to_string());
+    }
+
+    let taken_emails = state.db.users().all_emails().await.unwrap_or_default();
+    let account_email = crate::da_import::unique_email(&username, &email, &all, &taken_emails);
+    let hashed = snpanel_core::crypto::password::hash_password(&password)
+        .map_err(|e| format!("hashing failed: {e}"))?;
+    let user_id = state
+        .db
+        .users()
+        .create(&snpanel_db::NewUser {
+            username: &username,
+            email: &account_email,
+            hashed_password: &hashed,
+            role: "end_user",
+            package_id: None,
+            // `max(5, len(domains) + 5)` - room for what came in plus a
+            // few, so the first site a customer adds does not refuse.
+            website_limit: std::cmp::max(5, all.len() as i64 + 5),
+            storage_limit_mb: crate::da_import::default_storage_mb(),
+            terminal_enabled: false,
+        })
+        .await
+        .map_err(|e| format!("creating the panel user failed: {e}"))?;
+    credentials.push(format!(
+        "panel_user username={username} password={password}"
+    ));
+
+    let sql_files = crate::da_import::discover_sql_files(&root);
+    let mut imported_sql: Vec<String> = Vec::new();
+    let targets = crate::da_import::import_targets(&root, &domains, &subdomains);
+    let single_site = targets.len() == 1;
+
+    for target in &targets {
+        match import_one_domain(
+            state,
+            &root,
+            stage_dir,
+            &panel_user,
+            user_id,
+            target,
+            &sql_files,
+            single_site,
+            &mut credentials,
+            &mut databases,
+            &mut aliases,
+            &mut imported_sql,
+        )
+        .await
+        {
+            Ok(extra) => {
+                imported.push(target.domain.clone());
+                warnings.extend(extra);
+            }
+            // One domain's failure is a warning: an account with eight
+            // sites and one broken config should import seven.
+            Err(message) => warnings.push(format!("{}: import failed: {message}", target.domain)),
+        }
+    }
+
+    Ok(import_summary(
+        archive_name,
+        &username,
+        &all,
+        &imported,
+        &databases,
+        &aliases,
+        &warnings,
+        &credentials,
+    ))
+}
+
+/// Source: the `item_summary` dict plus the `{"summary", "credentials",
+/// "errors"}` the endpoint answers with.
+#[allow(clippy::too_many_arguments)]
+fn import_summary(
+    archive: &str,
+    username: &str,
+    domains: &[String],
+    imported: &[String],
+    databases: &[Value],
+    aliases: &[String],
+    warnings: &[String],
+    credentials: &[String],
+) -> Value {
+    json!({
+        "summary": [{
+            "archive": archive,
+            "username": username,
+            "domains": domains,
+            "imported_domains": imported,
+            "databases": databases,
+            "aliases": aliases,
+            "ssl_enabled_domains": [],
+            "warnings": warnings,
+        }],
+        "credentials": credentials,
+        "errors": crate::da_import::errors_from_warnings(warnings),
+    })
+}
+
+/// Source: the body of `import_da_backup`'s per-domain loop.
+///
+/// Returns the warnings this domain produced; anything that stops the
+/// domain being importable at all is an error, which the caller records
+/// as a warning against the account rather than letting it end the run.
+#[allow(clippy::too_many_arguments)]
+async fn import_one_domain(
+    state: &AppState,
+    root: &std::path::Path,
+    stage_dir: &std::path::Path,
+    panel_user: &snpanel_core::types::PanelUsername,
+    user_id: i64,
+    target: &crate::da_import::ImportTarget,
+    sql_files: &std::collections::BTreeMap<String, std::path::PathBuf>,
+    single_site: bool,
+    credentials: &mut Vec<String>,
+    databases: &mut Vec<Value>,
+    aliases: &mut Vec<String>,
+    imported_sql: &mut Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let dry = state.settings.command_dry_run;
+    let domain = &target.domain;
+    let php = crate::da_import::default_php_version();
+
+    let app_type = crate::da_import::detect_app_type(target.source.as_deref());
+    let app_config = match &target.source {
+        Some(source) => crate::da_import::parse_app_db_config(source),
+        None => std::collections::BTreeMap::new(),
+    };
+    // A static site gets no PHP pool at all, which is the point of
+    // calling it static: no interpreter is started and none can be
+    // reached.
+    let runtime_php = matches!(app_type, "wordpress" | "php").then(|| php.clone());
+
+    let root_path = format!("/home/{}/{}", panel_user.as_str(), domain);
+    let ensured = shell::privileged(
+        dry,
+        "site-runtime-ensure",
+        &[
+            panel_user.as_str(),
+            &root_path,
+            runtime_php.as_deref().unwrap_or("none"),
+        ],
+        None,
+        None,
+    )
+    .await;
+    if !ensured.ok() {
+        return Err(ensured
+            .failure_detail("Could not prepare the website directory")
+            .trim()
+            .to_string());
+    }
+
+    // The site directory belongs to its Linux user, so this process
+    // cannot write into it. The files are copied into a panel-owned
+    // staging tree laid out like the site root, and the helper moves them
+    // in as root.
+    if let Some(source) = &target.source {
+        let staged = stage_dir.join("payload").join(domain);
+        let public = staged.join("public_html");
+        let copy_source = source.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::da_import::copy_site_files(Some(&copy_source), &public)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("could not stage the site files: {e}"))?;
+
+        let populated = shell::privileged(
+            dry,
+            "site-populate",
+            &[panel_user.as_str(), &root_path, &staged.to_string_lossy()],
+            None,
+            None,
+        )
+        .await;
+        if !populated.ok() {
+            return Err(populated
+                .failure_detail("Could not import the site files")
+                .trim()
+                .to_string());
+        }
+    }
+
+    // Imported sites arrive with the default rules and CRS **off**, like
+    // any new site: a rule set the customer never chose, turned on during
+    // an import they did not watch, is how a site comes back broken.
+    let rule_ids: Vec<String> = crate::waf::DEFAULT_RULES
+        .iter()
+        .map(|rule| rule.id.to_string())
+        .collect();
+    let mut waf_enabled = true;
+    match crate::waf::sync_site_rules(dry, domain, &rule_ids, "", "off").await {
+        Ok(result) if result.ok() => {}
+        _ => {
+            waf_enabled = false;
+            warnings.push(format!("WAF rules failed for {domain}"));
+        }
+    }
+
+    // Write the vhost, and retry without the WAF if nginx refuses it: a
+    // site that serves with no rule file beats a site that does not serve.
+    let mut wrote = write_import_vhost(
+        state,
+        domain,
+        &root_path,
+        panel_user,
+        app_type,
+        runtime_php.as_deref(),
+        waf_enabled,
+        &[],
+        &[],
+    )
+    .await;
+    if wrote.is_err() && waf_enabled {
+        waf_enabled = false;
+        warnings.push(format!(
+            "nginx rejected WAF for {domain}; retrying with WAF disabled"
+        ));
+        wrote = write_import_vhost(
+            state,
+            domain,
+            &root_path,
+            panel_user,
+            app_type,
+            runtime_php.as_deref(),
+            false,
+            &[],
+            &[],
+        )
+        .await;
+    }
+    wrote?;
+
+    let rewrite_mode = if app_type == "wordpress" {
+        "front_controller"
+    } else {
+        "none"
+    };
+    let created_at = snpanel_db::sqlalchemy_now();
+    let website_id = state
+        .db
+        .websites()
+        .create(&snpanel_db::NewWebsite {
+            domain,
+            owner_id: user_id,
+            root_path: &root_path,
+            document_root: "public_html",
+            linux_user: Some(panel_user.as_str()),
+            php_version: &php,
+            app_type,
+            nginx_rewrite_mode: rewrite_mode,
+            app_id: None,
+            status: "active",
+            waf_enabled,
+            created_at: &created_at,
+        })
+        .await
+        .map_err(|e| format!("creating the website row failed: {e}"))?;
+
+    // DirectAdmin domain pointers become this panel's website aliases.
+    // An alias domain is globally unique, so one already owned elsewhere
+    // is recorded as a warning rather than stolen.
+    let pointers = crate::da_import::discover_domain_pointers(root, domain);
+    let mut applied: Vec<(String, String)> = Vec::new();
+    for (pointer, mode) in pointers {
+        match state.db.websites().by_domain(&pointer).await {
+            Ok(Some(_)) => {
+                warnings.push(format!("Pointer {pointer} is already a website; skipped"));
+                continue;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warnings.push(format!("Could not check pointer {pointer}: {e}"));
+                continue;
+            }
+        }
+        match state
+            .db
+            .websites()
+            .alias_create(website_id, &pointer, &mode)
+            .await
+        {
+            Ok(_) => {
+                aliases.push(format!("{pointer} ({mode})"));
+                applied.push((pointer, mode));
+            }
+            Err(e) => warnings.push(format!("Pointer {pointer} not added: {e}")),
+        }
+    }
+    if !applied.is_empty() {
+        let alias_domains: Vec<String> = applied
+            .iter()
+            .filter(|(_, mode)| mode == "alias")
+            .map(|(name, _)| name.clone())
+            .collect();
+        let redirect_domains: Vec<String> = applied
+            .iter()
+            .filter(|(_, mode)| mode == "redirect")
+            .map(|(name, _)| name.clone())
+            .collect();
+        if let Err(message) = write_import_vhost(
+            state,
+            domain,
+            &root_path,
+            panel_user,
+            app_type,
+            runtime_php.as_deref(),
+            waf_enabled,
+            &alias_domains,
+            &redirect_domains,
+        )
+        .await
+        {
+            warnings.push(format!(
+                "Pointers for {domain} not applied to Nginx: {message}"
+            ));
+        }
+    }
+
+    let _ = shell::privileged(
+        dry,
+        "fix-permissions",
+        &[&root_path, panel_user.as_str()],
+        None,
+        None,
+    )
+    .await;
+
+    // --- the database -----------------------------------------------------
+    let (matched_key, matched_sql) =
+        crate::da_import::matched_sql_for_config(&app_config, sql_files, single_site);
+    if let Some(sql_path) = matched_sql {
+        let da_credentials = crate::da_import::da_db_credentials(sql_path, root);
+        let old_db = app_config
+            .get("DB_NAME")
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .unwrap_or(matched_key.clone());
+        let old_user = app_config.get("DB_USER").filter(|v| !v.is_empty()).cloned();
+
+        match create_imported_database(
+            state,
+            user_id,
+            Some(website_id),
+            domain,
+            &old_db,
+            old_user.as_deref(),
+            Some(sql_path),
+            &app_config,
+            &da_credentials,
+            credentials,
+        )
+        .await
+        {
+            Ok((db_name, db_user, db_password, reused)) => {
+                imported_sql.push(matched_key.clone());
+                // When the site's own config already carries the working
+                // secret, leave it alone; only rewrite when the panel
+                // changed the password.
+                if !reused {
+                    let public = std::path::PathBuf::from(&root_path).join("public_html");
+                    let staged = stage_dir.join("payload").join(domain).join("public_html");
+                    // The live tree belongs to the site's user, so the
+                    // rewrite happens in the staging copy and is moved
+                    // back in through the helper.
+                    if staged.is_dir() {
+                        let name = db_name.clone();
+                        let user = db_user.clone();
+                        let pass = db_password.clone();
+                        let target_dir = staged.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::da_import::update_config_dir(&target_dir, &name, &user, &pass)
+                        })
+                        .await;
+                        let repopulated = shell::privileged(
+                            dry,
+                            "site-populate",
+                            &[
+                                panel_user.as_str(),
+                                &root_path,
+                                &stage_dir.join("payload").join(domain).to_string_lossy(),
+                            ],
+                            None,
+                            None,
+                        )
+                        .await;
+                        if !repopulated.ok() {
+                            warnings.push(format!(
+                                "Could not rewrite the database config for {domain}"
+                            ));
+                        }
+                    }
+                    let _ = public;
+                }
+                let _ = shell::privileged(
+                    dry,
+                    "fix-permissions",
+                    &[&root_path, panel_user.as_str()],
+                    None,
+                    None,
+                )
+                .await;
+                databases.push(json!({
+                    "domain": domain,
+                    "source": sql_path.to_string_lossy(),
+                    "db_name": db_name,
+                }));
+            }
+            Err(message) => warnings.push(format!("Database for {domain} not imported: {message}")),
+        }
+    }
+
+    Ok(warnings)
+}
+
+/// Source: `_create_panel_database`.
+#[allow(clippy::too_many_arguments)]
+async fn create_imported_database(
+    state: &AppState,
+    owner_id: i64,
+    website_id: Option<i64>,
+    target: &str,
+    old_db: &str,
+    old_user: Option<&str>,
+    sql_file: Option<&std::path::Path>,
+    app_config: &std::collections::BTreeMap<String, String>,
+    da_credentials: &crate::da_import::DaPassword,
+    credentials: &mut Vec<String>,
+) -> Result<(String, String, String, bool), String> {
+    let existing = state
+        .db
+        .databases()
+        .list(None, "")
+        .await
+        .unwrap_or_default();
+    let used_names: Vec<String> = existing.iter().map(|d| d.db_name.clone()).collect();
+    let used_users: Vec<String> = existing.iter().map(|d| d.db_user.clone()).collect();
+
+    let fallback = crate::mariadb::safe_db_identifier(target, "da");
+    let db_name = crate::da_import::normalize_db_identifier(old_db, &fallback, &used_names);
+    let user_fallback: String = format!("u_{db_name}").chars().take(64).collect();
+    let db_user = crate::da_import::normalize_db_identifier(
+        old_user.unwrap_or(&db_name),
+        &user_fallback,
+        &used_users,
+    );
+
+    let generated = crate::mariadb::random_password(24);
+    let mut chosen = crate::da_import::import_db_password(app_config, da_credentials, &generated);
+    // A reused secret only helps if the config still points at this
+    // database and this user.
+    if chosen.reused
+        && crate::da_import::rename_invalidates_reuse(old_db, &db_name, old_user, &db_user)
+    {
+        chosen = crate::da_import::ImportPassword {
+            password: crate::mariadb::random_password(24),
+            password_hash: String::new(),
+            reused: false,
+        };
+    }
+
+    crate::mariadb::create_database_credentials(
+        &db_name,
+        &db_user,
+        &chosen.password,
+        Some(&chosen.password_hash)
+            .filter(|h| !h.is_empty())
+            .map(String::as_str),
+        true,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(sql_file) = sql_file {
+        match import_sql_dump(state, &db_name, sql_file).await {
+            Ok(()) => {}
+            Err(message) => {
+                // The half-made database goes with the failure: one left
+                // behind is invisible to the panel and nothing would ever
+                // clean it up.
+                let _ = crate::mariadb::drop_database(&db_name, &db_user).await;
+                return Err(message);
+            }
+        }
+    }
+
+    // The panel cannot recover the plaintext behind a reused hash, so it
+    // stores what it can: an empty secret the operator resets if needed.
+    let encrypted = if chosen.password.is_empty() {
+        String::new()
+    } else {
+        snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &chosen.password)
+    };
+    state
+        .db
+        .databases()
+        .create(owner_id, website_id, &db_name, &db_user, &encrypted)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    credentials.push(crate::da_import::database_credential_line(
+        target,
+        &db_name,
+        &db_user,
+        &chosen.password,
+    ));
+    Ok((db_name, db_user, chosen.password, chosen.reused))
+}
+
+/// Source: `_temporary_sql_file` then `mariadb.import_database`.
+///
+/// The dump may be compressed four ways; it is decompressed into the
+/// staging area first, because `mysql` reads a plain stream.
+async fn import_sql_dump(
+    state: &AppState,
+    db_name: &str,
+    sql_file: &std::path::Path,
+) -> Result<(), String> {
+    let source = sql_file.to_path_buf();
+    let plain = tokio::task::spawn_blocking(move || crate::da_import::decompress_sql(&source))
+        .await
+        .map_err(|e| e.to_string())??;
+    let result = crate::mariadb::import_database(
+        state.settings.command_dry_run,
+        db_name,
+        &plain.to_string_lossy(),
+    )
+    .await;
+    let _ = std::fs::remove_file(&plain);
+    result.map_err(|e| e.to_string())
+}
+
+/// Write an imported site's vhost.
+#[allow(clippy::too_many_arguments)]
+async fn write_import_vhost(
+    state: &AppState,
+    domain: &str,
+    root_path: &str,
+    panel_user: &snpanel_core::types::PanelUsername,
+    app_type: &str,
+    runtime_php: Option<&str>,
+    waf_enabled: bool,
+    aliases: &[String],
+    redirects: &[String],
+) -> Result<(), String> {
+    let custom = snpanel_nginx::CustomDirectives::validate("").map_err(|e| e.to_string())?;
+    let root = std::path::PathBuf::from(root_path);
+    let socket = runtime_php.map(|version| {
+        let resolved = std::fs::canonicalize(root_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| root_path.to_string());
+        let hash = snpanel_core::types::site_hash(&resolved);
+        format!(
+            "/run/php/snpanel-{}-{hash}-{}.sock",
+            panel_user.as_str(),
+            version.replace('.', "_")
+        )
+    });
+    let mut input = snpanel_nginx::VhostInput::new(domain, &root, &custom);
+    input.app_type = app_type;
+    input.php_version = runtime_php;
+    input.php_fpm_socket_override = socket.as_deref();
+    input.document_root = "public_html";
+    input.rewrite_mode = Some(if app_type == "wordpress" {
+        "front_controller"
+    } else {
+        "none"
+    });
+    input.waf_enabled = waf_enabled;
+    input.aliases = aliases;
+    input.redirects = redirects;
+
+    let env = snpanel_nginx::VhostEnv {
+        ipv6: crate::system::ipv6_enabled(),
+        waf_engine: crate::system::waf_engine_available(),
+        default_php_version: state.settings.default_php_version.clone(),
+        home_root: std::path::PathBuf::from("/home"),
+    };
+    let sites = std::path::PathBuf::from(&state.settings.nginx_sites_available);
+    let plan =
+        snpanel_nginx::plan_rewrite(&input, &env, &sites, None, true).map_err(|e| e.to_string())?;
+
+    if !state.settings.command_dry_run {
+        let write = shell::privileged(
+            false,
+            "nginx-custom-write",
+            &[domain],
+            Some(plan.custom_include.as_str()),
+            None,
+        )
+        .await;
+        if !write.ok() {
+            return Err(write
+                .failure_detail("Cannot write Nginx config")
+                .trim()
+                .to_string());
+        }
+    }
+    super::websites::apply_vhost_plan(state, plan).await
+}
+
+/// Source: `_delete_existing_domain`.
+async fn delete_existing_domain(state: &AppState, domain: &str) {
+    let Ok(Some(website)) = state.db.websites().by_domain(domain).await else {
+        return;
+    };
+    for item in state
+        .db
+        .databases()
+        .for_website(website.id)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = crate::mariadb::drop_database(&item.db_name, &item.db_user).await;
+        let _ = state.db.databases().delete(item.id).await;
+    }
+    let _ = shell::privileged(
+        state.settings.command_dry_run,
+        "nginx-vhost-delete",
+        &[domain],
+        None,
+        None,
+    )
+    .await;
+    let _ = state.db.websites().delete(website.id).await;
+}
+
+/// Source: `_delete_existing_user`.
+async fn delete_existing_user(state: &AppState, username: &str) {
+    let Ok(Some(user)) = state.db.users().by_username(username).await else {
+        return;
+    };
+    for website in state
+        .db
+        .websites()
+        .list(Some(user.id), "")
+        .await
+        .unwrap_or_default()
+    {
+        delete_existing_domain(state, &website.domain).await;
+    }
+    for item in state
+        .db
+        .databases()
+        .for_owner(user.id)
+        .await
+        .unwrap_or_default()
+    {
+        let _ = crate::mariadb::drop_database(&item.db_name, &item.db_user).await;
+        let _ = state.db.databases().delete(item.id).await;
+    }
+    if let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(username) {
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "panel-user-delete",
+            &[panel_user.as_str()],
+            None,
+            None,
+        )
+        .await;
+    }
+    let _ = state.db.users().delete(user.id).await;
+}
+
+/// `POST /maintenance/da-import/import`.
+///
+/// Source: `import_da_backup` (the endpoint). Starts a background job and
+/// answers immediately: a real account backup takes minutes to hours, and
+/// a request held open for that would time out in the browser while the
+/// import carried on invisibly.
+///
+/// **A 429 when an import is already running**, of either kind. The work
+/// deletes and recreates panel users, sites, files and databases; two of
+/// them at once would race over the same rows and the same directories.
+async fn start_da_import(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `body.get("archive_path", "")` - a bare dict, so a field of the
+    // wrong type reads as empty rather than as a 422.
+    let archive_path = payload
+        .get("archive_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    // `bool(body.get("force", False))` - Python truthiness, not pydantic:
+    // this endpoint takes a `dict`, so `"yes"` and `1` are both true and
+    // `""` and `0` are both false.
+    let force = python_truthy(payload.get("force"));
+
+    let path = match resolve_backup_path(archive_path) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e),
+    };
+    if !path.exists() {
+        return not_found("Backup file not found");
+    }
+    if crate::da_jobs::any_running() {
+        return crate::errors::error(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "An import is already running. Please wait.",
+        );
+    }
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let job = crate::da_jobs::new_single_job(&name, &path.to_string_lossy());
+    let job_id = job["id"].as_str().unwrap_or("").to_string();
+    crate::da_jobs::remember(crate::da_jobs::Kind::Single, &job);
+
+    let worker_state = state.clone();
+    let worker_id = job_id.clone();
+    let worker_path = path.clone();
+    tokio::spawn(async move {
+        crate::da_jobs::update(
+            crate::da_jobs::Kind::Single,
+            &worker_id,
+            vec![("status", json!("running"))],
+        );
+        match run_da_import(&worker_state, &worker_path, force).await {
+            Ok(result) => crate::da_jobs::update(
+                crate::da_jobs::Kind::Single,
+                &worker_id,
+                vec![("status", json!("completed")), ("result", result)],
+            ),
+            // `logger.exception(...)` then the job carries the reason: the
+            // request that started this returned long ago, so the job is
+            // the only place left to report it.
+            Err(message) => {
+                tracing::error!("DA import failed for {}: {message}", worker_path.display());
+                crate::da_jobs::update(
+                    crate::da_jobs::Kind::Single,
+                    &worker_id,
+                    vec![("status", json!("failed")), ("error", json!(message))],
+                )
+            }
+        }
+    });
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "da_backup_import_start",
+        &format!("{job_id} archive={name}"),
+        "",
+    )
+    .await;
+    axum::Json(json!({ "job_id": job_id, "status": "pending" })).into_response()
+}
+
+/// `GET /maintenance/da-import/jobs/{job_id}`.
+///
+/// Source: `get_da_import_job`. The registry is **only in memory**, so a
+/// restart loses every record - which is why these four endpoints could
+/// not be split across two processes for even one release.
+async fn get_da_import_job(
+    State(state): State<AppState>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+    current: CurrentUser,
+) -> Response {
+    let _ = &state;
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match crate::da_jobs::get(crate::da_jobs::Kind::Single, &job_id) {
+        Some(job) => axum::Json(job).into_response(),
+        None => not_found("Job not found"),
+    }
+}
+
+/// `POST /maintenance/da-import/bulk-import`.
+///
+/// Source: `bulk_import_da_backups`. **Sequential, not parallel**: the
+/// archives are imported one after another by a single worker, because
+/// each one takes the same locks as a single import would.
+///
+/// Every path is resolved and checked **before** anything starts, so a
+/// typo in the tenth archive is a 400 rather than nine finished imports
+/// and a surprise.
+async fn start_da_bulk_import(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `DaBulkImportRequest` is a pydantic model here, unlike the single
+    // import's bare dict.
+    let raw_paths = match payload.get("archive_paths") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::new();
+            for item in items {
+                match item.as_str() {
+                    Some(text) => out.push(text.to_string()),
+                    None => return crate::errors::string_type("archive_paths", item),
+                }
+            }
+            out
+        }
+        Some(other) => return crate::errors::list_type("archive_paths", other),
+    };
+    let force = crate::errors::read_bool("force", payload.get("force"), false);
+    let force = match force {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if raw_paths.is_empty() {
+        return bad_request("archive_paths is required");
+    }
+
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for raw in &raw_paths {
+        let path = match resolve_backup_path(raw) {
+            Ok(p) => p,
+            Err(e) => return bad_request(&e),
+        };
+        if !path.exists() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            return not_found(&format!("Backup file not found: {name}"));
+        }
+        paths.push(path);
+    }
+
+    if crate::da_jobs::any_running() {
+        return crate::errors::error(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "A bulk import is already running. Please wait.",
+        );
+    }
+
+    let path_strings: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let job = crate::da_jobs::new_bulk_job(&path_strings);
+    let job_id = job["id"].as_str().unwrap_or("").to_string();
+    let total = paths.len();
+    crate::da_jobs::remember(crate::da_jobs::Kind::Bulk, &job);
+
+    let worker_state = state.clone();
+    let worker_id = job_id.clone();
+    tokio::spawn(async move {
+        crate::da_jobs::update(
+            crate::da_jobs::Kind::Bulk,
+            &worker_id,
+            vec![("status", json!("running"))],
+        );
+        let mut results: Vec<Value> = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            crate::da_jobs::update(
+                crate::da_jobs::Kind::Bulk,
+                &worker_id,
+                vec![
+                    ("current", json!(index)),
+                    ("current_archive", json!(name.clone())),
+                ],
+            );
+            // **One archive's failure does not stop the rest.** A bulk
+            // import of twenty accounts that stopped on the third would
+            // leave seventeen customers waiting on a retry.
+            match run_da_import(&worker_state, path, force).await {
+                Ok(result) => results.push(json!({
+                    "archive": name,
+                    "status": "completed",
+                    "result": result,
+                })),
+                Err(message) => {
+                    tracing::error!("DA bulk import failed for {}: {message}", path.display());
+                    results.push(json!({
+                        "archive": name,
+                        "status": "failed",
+                        "error": message,
+                    }))
+                }
+            }
+        }
+        crate::da_jobs::update(
+            crate::da_jobs::Kind::Bulk,
+            &worker_id,
+            vec![
+                ("status", json!("completed")),
+                ("results", json!(results)),
+                ("current", json!(total)),
+            ],
+        );
+    });
+
+    audit_detail(
+        &state,
+        current.user.id,
+        "da_bulk_import_start",
+        &format!("{job_id} archives={total}"),
+        "",
+    )
+    .await;
+    axum::Json(json!({ "job_id": job_id, "status": "pending", "total": total })).into_response()
+}
+
+/// `GET /maintenance/da-import/bulk-jobs/{job_id}`.
+async fn get_da_bulk_import_job(
+    State(state): State<AppState>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+    current: CurrentUser,
+) -> Response {
+    let _ = &state;
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    match crate::da_jobs::get(crate::da_jobs::Kind::Bulk, &job_id) {
+        Some(job) => axum::Json(job).into_response(),
+        None => not_found("Job not found"),
+    }
+}
+
+/// Python's `bool(value)` for a field read out of a bare `dict`.
+fn python_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+    }
+}
+
 async fn delete_da_backup(State(state): State<AppState>, req: axum::extract::Request) -> Response {
     let (mut parts, body) = req.into_parts();
     let current = match CurrentUser::from_parts(&mut parts, &state).await {

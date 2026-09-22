@@ -32,6 +32,8 @@ mod clamav;
 mod client;
 mod cloudflare;
 mod cron;
+mod da_import;
+mod da_jobs;
 mod errors;
 mod file_jobs;
 mod files;

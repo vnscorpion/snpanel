@@ -246,6 +246,126 @@ pub struct NewDatabase {
 }
 
 /// Source: `drop_database`.
+/// Source: `_auth_clause`.
+///
+/// When a `mysql_native_password` hash is given - DirectAdmin keeps the
+/// original in its `<db>.conf` - the user is recreated with that exact
+/// hash, so the imported site's existing config keeps working untouched.
+/// The hash is a fixed shape and is **validated before it reaches any
+/// SQL**, because it is interpolated rather than quoted: it comes out of
+/// a customer's backup, and a value that was not a hash would be a value
+/// that was something else.
+pub fn auth_clause(db_password: &str, password_hash: Option<&str>) -> Result<String, SqlError> {
+    match password_hash.filter(|h| !h.is_empty()) {
+        Some(hash) => {
+            if !crate::da_import::is_native_password_hash(hash) {
+                return Err(SqlError::Invalid(
+                    "Invalid mysql_native_password hash".to_string(),
+                ));
+            }
+            Ok(format!(
+                "IDENTIFIED VIA mysql_native_password USING '{hash}'"
+            ))
+        }
+        None => Ok(format!("IDENTIFIED BY {}", quote_sql_string(db_password))),
+    }
+}
+
+/// Source: `user_exists`.
+///
+/// Asked of MariaDB rather than of this panel's own table: the whole
+/// point is to notice accounts the panel does not know about, which is
+/// exactly what the table cannot tell us.
+pub async fn user_exists(db_user: &str) -> Result<bool, SqlError> {
+    let safe = validate_identifier(db_user)?.to_string();
+    let sql = format!(
+        "SELECT 1 FROM mysql.user WHERE User = {} AND Host = 'localhost';",
+        quote_sql_string(&safe)
+    );
+    let out = run_sql(&sql).await?;
+    Ok(out.lines().any(|line| line.trim() == "1"))
+}
+
+/// Source: `create_database_credentials`.
+///
+/// **Creating refuses an account that already exists.** `CREATE USER IF
+/// NOT EXISTS` followed by an unconditional `ALTER USER` used to mean
+/// "create it, or take it over" - and since the panel authenticates to
+/// MariaDB with `ALL PRIVILEGES ON *.*`, anyone who asked for
+/// `db_user=root` got root's password reset to a value of their choosing.
+///
+/// `allow_existing_user` is for the restore paths, where a backup or a
+/// DirectAdmin import legitimately recreates the account that archive
+/// already owned. Even those cannot touch a reserved account.
+pub async fn create_database_credentials(
+    db_name: &str,
+    db_user: &str,
+    db_password: &str,
+    password_hash: Option<&str>,
+    allow_existing_user: bool,
+) -> Result<(), SqlError> {
+    let db_name = validate_identifier(db_name)?.to_string();
+    let db_user = validate_identifier(db_user)?.to_string();
+    reject_reserved_user(&db_user)?;
+
+    if !allow_existing_user && user_exists(&db_user).await? {
+        return Err(SqlError::Invalid(format!(
+            "MariaDB account '{db_user}' already exists. Choose another database user name."
+        )));
+    }
+
+    let auth = auth_clause(db_password, password_hash)?;
+    let quoted_user = quote_sql_string(&db_user);
+    let quoted_name = quote_identifier(&db_name)?;
+    let mut statements = vec![
+        format!(
+            "CREATE DATABASE IF NOT EXISTS {quoted_name} CHARACTER SET utf8mb4 \
+             COLLATE utf8mb4_unicode_ci;"
+        ),
+        format!("CREATE USER IF NOT EXISTS {quoted_user}@'localhost' {auth};"),
+    ];
+    if allow_existing_user {
+        // Only a restore sets the password of an account that was there.
+        statements.push(format!("ALTER USER {quoted_user}@'localhost' {auth};"));
+    }
+    statements.push(format!(
+        "GRANT ALL PRIVILEGES ON {quoted_name}.* TO {quoted_user}@'localhost';"
+    ));
+    statements.push("FLUSH PRIVILEGES;".to_string());
+    run_sql(&format!("{}\n", statements.join("\n")))
+        .await
+        .map(|_| ())
+}
+
+/// Source: `import_database`.
+///
+/// The dump is fed to `mysql` on **stdin** rather than named on the
+/// command line: a path in argv is a path every account on the machine
+/// can read out of `/proc`, and the dump is the customer's data.
+pub async fn import_database(
+    dry_run: bool,
+    db_name: &str,
+    input_file: &str,
+) -> Result<(), SqlError> {
+    let safe = validate_identifier(db_name)?.to_string();
+    let path = std::path::Path::new(input_file);
+    if !path.is_file() {
+        return Err(SqlError::Invalid("SQL file not found".to_string()));
+    }
+    if dry_run {
+        return Ok(());
+    }
+    // `USE` first, then the dump, which is how `mysql <db> < file` reads
+    // a dump that does not name its own database - and most do not.
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| SqlError::Invalid(format!("Database import failed: {e}")))?;
+    let sql = format!("USE {};\n{body}", quote_identifier(&safe)?);
+    run_sql(&sql)
+        .await
+        .map_err(|e| SqlError::Failed(format!("Database import failed: {e}")))
+        .map(|_| ())
+}
+
 pub async fn drop_database(db_name: &str, db_user: &str) -> Result<(), SqlError> {
     let safe_user = validate_identifier(db_user)?;
     reject_reserved_user(safe_user)?;

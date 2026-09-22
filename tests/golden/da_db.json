@@ -1,0 +1,477 @@
+{
+ "conf_candidates": [
+  "mysql/bob_wp.conf",
+  "backup/bob_wp.conf"
+ ],
+ "da_conf_password": [
+  {
+   "case": "flat_password",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "passwd=s3cret\n"
+  },
+  {
+   "case": "flat_password_word",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "password=s3cret\n"
+  },
+  {
+   "case": "flat_pass",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "pass=s3cret\n"
+  },
+  {
+   "case": "flat_db_password",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "db_password=s3cret\n"
+  },
+  {
+   "case": "flat_dbpass",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "dbpass=s3cret\n"
+  },
+  {
+   "case": "quoted",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "passwd='s3cret'\n"
+  },
+  {
+   "case": "double_quoted",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "passwd=\"s3cret\"\n"
+  },
+  {
+   "case": "url_encoded",
+   "found": {
+    "password": "s3 cret",
+    "password_hash": ""
+   },
+   "text": "passwd=s3%20cret\n"
+  },
+  {
+   "case": "native_hash",
+   "found": {
+    "password": "",
+    "password_hash": "*1234567890ABCDEF1234567890ABCDEF12345678"
+   },
+   "text": "passwd=*1234567890ABCDEF1234567890ABCDEF12345678\n"
+  },
+  {
+   "case": "native_hash_encoded",
+   "found": {
+    "password": "",
+    "password_hash": "*1234567890ABCDEF1234567890ABCDEF12345678"
+   },
+   "text": "passwd=%2A1234567890ABCDEF1234567890ABCDEF12345678\n"
+  },
+  {
+   "case": "native_hash_lower",
+   "found": {
+    "password": "",
+    "password_hash": "*1234567890abcdef1234567890abcdef12345678"
+   },
+   "text": "passwd=*1234567890abcdef1234567890abcdef12345678\n"
+  },
+  {
+   "case": "almost_hash_short",
+   "found": {
+    "password": "*1234567890ABCDEF",
+    "password_hash": ""
+   },
+   "text": "passwd=*1234567890ABCDEF\n"
+  },
+  {
+   "case": "query_string",
+   "found": {
+    "password": "",
+    "password_hash": "*1234567890ABCDEF1234567890ABCDEF12345678"
+   },
+   "text": "bob_wp=accesshosts=localhost&passwd=%2A1234567890ABCDEF1234567890ABCDEF12345678&plugin=mysql_native_password\n"
+  },
+  {
+   "case": "query_string_clear",
+   "found": {
+    "password": "plaintext",
+    "password_hash": ""
+   },
+   "text": "bob_wp=accesshosts=localhost&passwd=plaintext&plugin=mysql_native_password\n"
+  },
+  {
+   "case": "query_string_empty",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "bob_wp=accesshosts=localhost&passwd=&plugin=x\n"
+  },
+  {
+   "case": "comment_only",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "# passwd=ignored\n"
+  },
+  {
+   "case": "no_equals",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "nothing here\n"
+  },
+  {
+   "case": "empty",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": ""
+  },
+  {
+   "case": "blank_value",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "passwd=\n"
+  },
+  {
+   "case": "other_key",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "user=bob\n"
+  },
+  {
+   "case": "second_line_wins",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "user=bob\npasswd=s3cret\n"
+  },
+  {
+   "case": "uppercase_key",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "PASSWD=s3cret\n"
+  },
+  {
+   "case": "spaced",
+   "found": {
+    "password": "s3cret",
+    "password_hash": ""
+   },
+   "text": "  passwd  =  s3cret  \n"
+  }
+ ],
+ "import_db_password": [
+  {
+   "app_config": {
+    "DB_PASSWORD": "fromapp"
+   },
+   "case": "app_config_wins",
+   "da_credentials": {
+    "password": "fromda",
+    "password_hash": "*AA"
+   },
+   "password": "fromapp",
+   "password_hash": "",
+   "reused": true
+  },
+  {
+   "app_config": {},
+   "case": "hash_over_clear",
+   "da_credentials": {
+    "password": "fromda",
+    "password_hash": "*AA"
+   },
+   "password": "",
+   "password_hash": "*AA",
+   "reused": true
+  },
+  {
+   "app_config": {},
+   "case": "clear_when_no_hash",
+   "da_credentials": {
+    "password": "fromda",
+    "password_hash": ""
+   },
+   "password": "fromda",
+   "password_hash": "",
+   "reused": true
+  },
+  {
+   "app_config": {},
+   "case": "nothing_reused",
+   "da_credentials": {
+    "password": "",
+    "password_hash": ""
+   },
+   "password": "<generated>",
+   "password_hash": "",
+   "reused": false
+  },
+  {
+   "app_config": {
+    "DB_PASSWORD": ""
+   },
+   "case": "empty_app_password",
+   "da_credentials": {
+    "password": "fromda",
+    "password_hash": ""
+   },
+   "password": "fromda",
+   "password_hash": "",
+   "reused": true
+  },
+  {
+   "app_config": {
+    "DB_PASSWORD": "fromapp"
+   },
+   "case": "no_da_credentials",
+   "da_credentials": {},
+   "password": "fromapp",
+   "password_hash": "",
+   "reused": true
+  },
+  {
+   "app_config": {},
+   "case": "neither",
+   "da_credentials": {},
+   "password": "<generated>",
+   "password_hash": "",
+   "reused": false
+  }
+ ],
+ "replace_define": [
+  {
+   "case": "present",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\ndefine('DB_NAME', 'old');\n",
+   "value": "new"
+  },
+  {
+   "case": "double_quoted",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine(\"DB_NAME\", 'new');\n",
+   "text": "<?php\ndefine(\"DB_NAME\", \"old\");\n",
+   "value": "new"
+  },
+  {
+   "case": "spaced",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine (  'DB_NAME' ,  'new'  ) ;\n",
+   "text": "<?php\ndefine (  'DB_NAME' ,  'old'  ) ;\n",
+   "value": "new"
+  },
+  {
+   "case": "absent",
+   "key": "DB_NAME",
+   "result": "<?php\n// nothing\n\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\n// nothing\n",
+   "value": "new"
+  },
+  {
+   "case": "twice",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_NAME','new');\ndefine('DB_NAME','b');\n",
+   "text": "<?php\ndefine('DB_NAME','a');\ndefine('DB_NAME','b');\n",
+   "value": "new"
+  },
+  {
+   "case": "other_key",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_USER', 'old');\n\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\ndefine('DB_USER', 'old');\n",
+   "value": "new"
+  },
+  {
+   "case": "empty_value",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\ndefine('DB_NAME', '');\n",
+   "value": "new"
+  }
+ ],
+ "unique_email": [
+  {
+   "case": "from_backup",
+   "domains": [
+    "example.com"
+   ],
+   "email": "bob@example.com",
+   "preferred": "bob@example.com",
+   "username": "bob"
+  },
+  {
+   "case": "no_email",
+   "domains": [
+    "example.com"
+   ],
+   "email": "bob@example.com",
+   "preferred": "",
+   "username": "bob"
+  },
+  {
+   "case": "no_email_no_domain",
+   "domains": [],
+   "email": "bob@import.local",
+   "preferred": "",
+   "username": "bob"
+  },
+  {
+   "case": "email_without_at",
+   "domains": [
+    "example.com"
+   ],
+   "email": "bob@example.com",
+   "preferred": "notanemail",
+   "username": "bob"
+  },
+  {
+   "case": "email_with_odd_local",
+   "domains": [
+    "example.com"
+   ],
+   "email": "a.b.c@example.com",
+   "preferred": "a b!c@example.com",
+   "username": "bob"
+  },
+  {
+   "case": "email_all_odd_local",
+   "domains": [
+    "example.com"
+   ],
+   "email": "bob@example.com",
+   "preferred": "!!!@example.com",
+   "username": "bob"
+  },
+  {
+   "case": "email_no_host",
+   "domains": [
+    "example.com"
+   ],
+   "email": "local@example.com",
+   "preferred": "local@",
+   "username": "bob"
+  }
+ ],
+ "update_config": [
+  {
+   "after": "<?php\ndefine('DB_NAME', 'new_db');\ndefine('DB_USER', 'new_user');\ndefine('DB_PASSWORD', 'new_pass');\ndefine('DB_HOST', 'localhost');\n",
+   "before": "<?php\ndefine('DB_NAME', 'old');\ndefine('DB_USER', 'olduser');\ndefine('DB_PASSWORD', 'oldpass');\ndefine('DB_HOST', 'oldhost');\n",
+   "case": "wp_full",
+   "file": "wp-config.php"
+  },
+  {
+   "after": "<?php\ndefine('DB_NAME', 'new_db');\n\ndefine('DB_USER', 'new_user');\n\ndefine('DB_PASSWORD', 'new_pass');\n\ndefine('DB_HOST', 'localhost');\n",
+   "before": "<?php\ndefine('DB_NAME', 'old');\n",
+   "case": "wp_partial",
+   "file": "wp-config.php"
+  },
+  {
+   "after": "<?php\ndefine(\"DB_NAME\", 'new_db');\n\ndefine('DB_USER', 'new_user');\n\ndefine('DB_PASSWORD', 'new_pass');\n\ndefine('DB_HOST', 'localhost');\n",
+   "before": "<?php\ndefine(\"DB_NAME\", \"old\");\n",
+   "case": "wp_double_quoted",
+   "file": "wp-config.php"
+  },
+  {
+   "after": "<?php\n\ndefine('DB_NAME', 'new_db');\n\ndefine('DB_USER', 'new_user');\n\ndefine('DB_PASSWORD', 'new_pass');\n\ndefine('DB_HOST', 'localhost');\n",
+   "before": "<?php\n",
+   "case": "wp_empty",
+   "file": "wp-config.php"
+  },
+  {
+   "after": "APP_NAME=x\nDB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "APP_NAME=x\nDB_DATABASE=old\nDB_USERNAME=olduser\nDB_PASSWORD=oldpass\nDB_HOST=oldhost\n",
+   "case": "env_full",
+   "file": ".env"
+  },
+  {
+   "after": "DB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "DB_DATABASE=old\n",
+   "case": "env_partial",
+   "file": ".env"
+  },
+  {
+   "after": "DB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "DB_DATABASE = old\n",
+   "case": "env_spaced",
+   "file": ".env"
+  },
+  {
+   "after": "DB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "db_database=old\n",
+   "case": "env_lowercase",
+   "file": ".env"
+  },
+  {
+   "after": "DB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "",
+   "case": "env_empty",
+   "file": ".env"
+  },
+  {
+   "after": "APP_KEY=abc\nDB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "APP_KEY=abc\n",
+   "case": "env_unrelated",
+   "file": ".env"
+  },
+  {
+   "after": "DB_DATABASE=new_db\nDB_USERNAME=new_user\nDB_PASSWORD=new_pass\nDB_HOST=127.0.0.1\n",
+   "before": "DB_DATABASE=old",
+   "case": "env_no_trailing_newline",
+   "file": ".env"
+  },
+  {
+   "after": "<?php\nclass X {\n public $db = 'new_db';\n public $user = 'new_user';\n public $password = 'new_pass';\n public $host = 'localhost';\n}\n",
+   "before": "<?php\nclass X {\n public $db = 'old';\n public $user = 'olduser';\n public $password = 'oldpass';\n public $host = 'oldhost';\n}\n",
+   "case": "php_public",
+   "file": "configuration.php"
+  },
+  {
+   "after": "<?php\n$db = 'old';\n",
+   "before": "<?php\n$db = 'old';\n",
+   "case": "php_bare",
+   "file": "configuration.php"
+  },
+  {
+   "after": "<?php\npublic db = 'new_db';\n",
+   "before": "<?php\npublic db = 'old';\n",
+   "case": "php_public_no_dollar",
+   "file": "configuration.php"
+  },
+  {
+   "after": "<?php\n",
+   "before": "<?php\n",
+   "case": "php_empty",
+   "file": "configuration.php"
+  }
+ ]
+}
