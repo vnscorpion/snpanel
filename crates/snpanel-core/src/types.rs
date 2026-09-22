@@ -224,6 +224,28 @@ impl TryFrom<String> for AppName {
     }
 }
 
+/// Source: `_parse_access_log_line`'s `digest` — the first sixteen hex
+/// characters of `sha256(f"{domain}\0{sequence}\0{line}")`.
+///
+/// The sequence is in the digest because two identical lines in one file are
+/// two different entries, and the page keys its rows on this.
+pub fn access_entry_id(domain: &str, sequence: u64, line: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(sequence.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(line.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..16]
+        .to_string()
+}
+
 /// The twelve hex characters that identify a site in its PHP-FPM pool name.
 ///
 /// Source: `site_php_pool_glob` and `ensure_php_pool`, which both compute

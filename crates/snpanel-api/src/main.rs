@@ -24,6 +24,7 @@
 // code does.
 #![allow(clippy::result_large_err)]
 
+mod access_log;
 mod auth;
 mod backups;
 mod client;

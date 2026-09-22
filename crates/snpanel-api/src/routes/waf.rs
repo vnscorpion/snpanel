@@ -80,7 +80,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/waf/access-logs",
-            axum::routing::delete(clear_access_logs).fallback(crate::fallback),
+            get(access_logs)
+                .delete(clear_access_logs)
+                .fallback(crate::fallback),
         )
 }
 
@@ -1572,6 +1574,331 @@ async fn clear_access_logs(
     .into_response()
 }
 
+/// Source: `access_logs`' four query parameters and their bounds.
+struct AccessLogQuery {
+    verdict: String,
+    query: String,
+    limit: usize,
+    lines: usize,
+}
+
+fn access_log_query(
+    params: &std::collections::HashMap<String, String>,
+) -> Result<AccessLogQuery, Response> {
+    let website_verdict = params
+        .get("verdict")
+        .map(String::as_str)
+        .unwrap_or("all")
+        .to_string();
+    // `pattern="^(all|allow|block|error)^"` on the query parameter, which
+    // pydantic refuses before the handler runs.
+    if !matches!(
+        website_verdict.as_str(),
+        "all" | "allow" | "block" | "error"
+    ) {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["query", "verdict"],
+            "msg": "String should match pattern '^(all|allow|block|error)$'",
+            "input": website_verdict,
+            "ctx": { "pattern": "^(all|allow|block|error)$" },
+        })]));
+    }
+    let query = params.get("q").cloned().unwrap_or_default();
+    if query.chars().count() > 200 {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "string_too_long",
+            "loc": ["query", "q"],
+            "msg": "String should have at most 200 characters",
+            "input": query,
+            "ctx": { "max_length": 200 },
+        })]));
+    }
+    let number = |name: &str, default: i64, min: i64, max: i64| -> Result<i64, Response> {
+        let Some(raw) = params.get(name) else {
+            return Ok(default);
+        };
+        let Ok(value) = raw.trim().parse::<i64>() else {
+            return Err(crate::errors::validation_error(vec![json!({
+                "type": "int_parsing",
+                "loc": ["query", name],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": raw,
+            })]));
+        };
+        if value < min || value > max {
+            return Err(crate::errors::validation_error(vec![json!({
+                "type": if value < min { "greater_than_equal" } else { "less_than_equal" },
+                "loc": ["query", name],
+                "msg": if value < min {
+                    format!("Input should be greater than or equal to {min}")
+                } else {
+                    format!("Input should be less than or equal to {max}")
+                },
+                "input": raw,
+                "ctx": if value < min { json!({ "ge": min }) } else { json!({ "le": max }) },
+            })]));
+        }
+        Ok(value)
+    };
+    Ok(AccessLogQuery {
+        verdict: website_verdict,
+        query,
+        limit: number("limit", 50, 1, 500)? as usize,
+        lines: number("lines", 5000, 1, 5000)? as usize,
+    })
+}
+
+/// Source: `scan_lines` in `access_logs`.
+///
+/// **Without a filter the newest `limit` lines per site are all that can be
+/// shown**, so there is no reason to tail (and parse) thousands. With a
+/// filter the deep history is needed to find enough matches — a search for an
+/// IP that last appeared an hour ago has to reach it.
+fn access_scan_lines(limit: usize, lines: usize, filtering: bool) -> usize {
+    if filtering {
+        lines
+    } else {
+        lines.min((limit * 4).max(400))
+    }
+}
+
+/// Source: `_read_site_logs` — one helper spawn for every site's log.
+///
+/// The helper answers with `\x1f`-separated blocks, each `domain\ncontent`,
+/// and `SNPANEL_LOG_MISSING` for a file that is not there. A missing file is
+/// **not** an empty one: the payload reports it under `missing` so the page
+/// can say "this site has never been visited" rather than "no matches".
+///
+/// **A batch that does not answer is retried one site at a time.** The batch
+/// verb is only asked when the helper is in use at all, and a non-zero answer
+/// from it is not evidence that the logs are unreadable — so the fallback
+/// reads each site through `site-log-read`, exactly as the per-site log
+/// viewer does. A read that genuinely fails there stops the request with the
+/// helper's own message; reporting every site as missing instead would show
+/// an operator "nobody has visited any of your sites" for what is really a
+/// broken log directory.
+async fn read_site_logs(
+    state: &AppState,
+    domains: &[String],
+    lines: usize,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    let mut blocks: std::collections::HashMap<String, Option<String>> =
+        domains.iter().map(|d| (d.clone(), None)).collect();
+    if domains.is_empty() {
+        return Ok(blocks);
+    }
+    let count = lines.to_string();
+    let batch = if shell::use_helper() {
+        let mut args: Vec<&str> = vec!["access", &count];
+        args.extend(domains.iter().map(String::as_str));
+        let result = shell::privileged(
+            state.settings.command_dry_run,
+            "site-logs-read-many",
+            &args,
+            None,
+            None,
+        )
+        .await;
+        result.ok().then_some(result)
+    } else {
+        None
+    };
+
+    let Some(result) = batch else {
+        for domain in domains {
+            let path = format!("/var/log/nginx/{domain}.access.log");
+            let result = shell::privileged(
+                state.settings.command_dry_run,
+                "site-log-read",
+                &[domain, "access", &count],
+                None,
+                Some(&["tail", "-n", &count, &path]),
+            )
+            .await;
+            // The helper says so on stderr rather than failing, because "no
+            // log yet" is the normal state of a site nobody has visited.
+            let missing = result.stderr.contains("SNPANEL_LOG_MISSING=1");
+            if !result.ok() && !missing {
+                return Err(result
+                    .failure_detail("Cannot read log file")
+                    .trim()
+                    .to_string());
+            }
+            blocks.insert(
+                domain.clone(),
+                if missing { None } else { Some(result.stdout) },
+            );
+        }
+        return Ok(blocks);
+    };
+
+    split_log_blocks(&result.stdout, &mut blocks);
+    Ok(blocks)
+}
+
+/// Source: the `\x1f` loop in `_read_site_logs`.
+///
+/// Every rule here is a contract with `site-logs-read-many`: the separator
+/// leads each block, so the first chunk is empty and skipped; a block with no
+/// newline is a domain that produced nothing; a domain nobody asked for is
+/// ignored rather than added; and `SNPANEL_LOG_MISSING` means the file is not
+/// there, which the payload reports separately from an empty one.
+fn split_log_blocks(stdout: &str, blocks: &mut std::collections::HashMap<String, Option<String>>) {
+    for chunk in stdout.split('\x1f') {
+        if chunk.is_empty() {
+            continue;
+        }
+        let (head, body) = match chunk.split_once('\n') {
+            Some((head, body)) => (head, body),
+            None => (chunk, ""),
+        };
+        let domain = head.trim();
+        if !blocks.contains_key(domain) {
+            continue;
+        }
+        let value = if body.trim() == "SNPANEL_LOG_MISSING" {
+            None
+        } else {
+            Some(body.to_string())
+        };
+        blocks.insert(domain.to_string(), value);
+    }
+}
+
+/// `datetime.now(timezone.utc).isoformat()`.
+///
+/// **With microseconds and `+00:00`, not `Z`.** `isoformat` omits the
+/// microseconds only when they are zero, and `now()` essentially never is —
+/// so the field the page displays carries six digits, and a port that wrote
+/// seconds would differ on every request.
+fn generated_at_now() -> String {
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6f+00:00")
+        .to_string()
+}
+
+/// `GET /waf/access-logs`.
+///
+/// Source: `get_waf_access_logs`.
+///
+/// **The cache is deliberately not ported.** The Python keeps the last
+/// thirty-two answers for four seconds because reading two dozen nginx logs
+/// off a cold disk takes seconds and the page polls; this process reads the
+/// same files through the same helper and pays the same cost, so the cache is
+/// worth having — but it is a *process-local* cache, and while both
+/// implementations are serving, two caches keyed the same way would answer
+/// differently depending on which front door the poll reached. `cached` is
+/// always `false` here, which is what the page renders when the answer is
+/// fresh.
+async fn access_logs(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let website_id = match params.get("website_id") {
+        Some(raw) => match raw.trim().parse::<i64>() {
+            Ok(id) if id >= 1 => Some(id),
+            Ok(_) => {
+                return crate::errors::validation_error(vec![json!({
+                    "type": "greater_than_equal",
+                    "loc": ["query", "website_id"],
+                    "msg": "Input should be greater than or equal to 1",
+                    "input": raw,
+                    "ctx": { "ge": 1 },
+                })])
+            }
+            Err(_) => {
+                return crate::errors::validation_error(vec![json!({
+                    "type": "int_parsing",
+                    "loc": ["query", "website_id"],
+                    "msg": "Input should be a valid integer, unable to parse string as an integer",
+                    "input": raw,
+                })])
+            }
+        },
+        None => None,
+    };
+    let q = match access_log_query(&params) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
+    let websites = match log_scope(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    let filtering = q.verdict != "all" || !q.query.trim().is_empty();
+    let scan_lines = access_scan_lines(q.limit, q.lines, filtering);
+    // `[_validate_domain(w.domain) for w in websites]`. A stored domain that
+    // no longer passes the pattern stops the whole request rather than being
+    // skipped, because the name is about to be pasted into a log path.
+    let mut domains: Vec<String> = Vec::with_capacity(websites.len());
+    for site in &websites {
+        match crate::waf::validate_domain(&site.domain) {
+            Ok(domain) => domains.push(domain),
+            Err(e) => return bad_request(&e.to_string()),
+        }
+    }
+    let blocks = match read_site_logs(&state, &domains, scan_lines).await {
+        Ok(blocks) => blocks,
+        Err(detail) => return bad_request(&detail),
+    };
+
+    let mut sortable: Vec<(i64, u64, Value)> = Vec::new();
+    let mut parsed_count = 0u64;
+    let mut sequence = 0u64;
+    let mut missing: Vec<String> = Vec::new();
+    for domain in &domains {
+        let Some(Some(content)) = blocks.get(domain) else {
+            missing.push(domain.clone());
+            continue;
+        };
+        for line in content.lines() {
+            sequence += 1;
+            // The country table is not ported; see the plan. An empty pair is
+            // what the Python gives when neither source can answer, which is
+            // what a stock installation has.
+            let Some(entry) = crate::access_log::parse_access_line(
+                domain,
+                line,
+                sequence,
+                &(String::new(), String::new()),
+            ) else {
+                continue;
+            };
+            parsed_count += 1;
+            if crate::access_log::matches_access_filter(&entry.item, &q.verdict, &q.query) {
+                sortable.push((entry.sort_time, parsed_count, entry.item));
+            }
+        }
+    }
+    // `sort(key=(time, parsed_count), reverse=True)` — the counter breaks a
+    // tie, so two entries in the same second keep the order they were read
+    // in, newest first.
+    sortable.sort_by_key(|(time, seq, _)| std::cmp::Reverse((*time, *seq)));
+    let total = sortable.len();
+    let items: Vec<Value> = sortable
+        .into_iter()
+        .take(q.limit)
+        .map(|(_, _, v)| v)
+        .collect();
+
+    axum::Json(json!({
+        "items": items,
+        "total": total,
+        "scanned": parsed_count,
+        "limit": q.limit,
+        "lines": scan_lines,
+        "verdict": q.verdict,
+        "query": q.query.trim(),
+        "missing": missing,
+        "generated_at": generated_at_now(),
+        "cached": false,
+    }))
+    .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1669,5 +1996,149 @@ mod tests {
             .map(|rule| rule.id)
             .collect();
         assert_eq!(ids.len(), crate::waf::DEFAULT_RULES.len());
+    }
+
+    /// How deep the read goes, and why it is not always `lines`.
+    ///
+    /// Source: `scan_lines = safe_lines if filtering else min(safe_lines,
+    /// max(safe_limit * 4, 400))`. Unfiltered, only the newest `limit` lines
+    /// can be shown, so tailing five thousand and parsing them would be work
+    /// nobody sees — but the cap is `limit * 4`, not `limit`, because a line
+    /// that does not parse still consumes one. **Filtering flips it**: a
+    /// search for an IP that last appeared an hour ago has to reach back that
+    /// far, so the full `lines` is read.
+    #[test]
+    fn a_search_reads_deeper_than_a_first_page_does() {
+        // Unfiltered: the floor is 400 even for a tiny page.
+        assert_eq!(access_scan_lines(1, 5000, false), 400);
+        assert_eq!(access_scan_lines(50, 5000, false), 400);
+        // Above 100 the multiple takes over from the floor.
+        assert_eq!(access_scan_lines(100, 5000, false), 400);
+        assert_eq!(access_scan_lines(101, 5000, false), 404);
+        assert_eq!(access_scan_lines(500, 5000, false), 2000);
+        // `lines` still caps it: asking for a big page of a short read.
+        assert_eq!(access_scan_lines(500, 100, false), 100);
+        // Filtering reads everything that was asked for, whatever the page.
+        assert_eq!(access_scan_lines(1, 5000, true), 5000);
+        assert_eq!(access_scan_lines(500, 5000, true), 5000);
+        assert_eq!(access_scan_lines(50, 10, true), 10);
+    }
+
+    /// What the four query parameters accept, and what they refuse.
+    ///
+    /// These are `Query(...)` declarations, so pydantic refuses them before
+    /// the handler runs and the answer is a 422 naming the parameter — not
+    /// the clamp the service would apply to the same value if it were called
+    /// directly.
+    #[test]
+    fn the_query_parameters_are_bounded_the_way_pydantic_bounds_them() {
+        let q = |pairs: &[(&str, &str)]| {
+            let params: std::collections::HashMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            access_log_query(&params)
+        };
+
+        let ok = q(&[]).unwrap_or_else(|_| panic!("the defaults are valid"));
+        assert_eq!(ok.verdict, "all");
+        assert_eq!(ok.query, "");
+        assert_eq!(ok.limit, 50);
+        assert_eq!(ok.lines, 5000);
+
+        for verdict in ["all", "allow", "block", "error"] {
+            assert!(q(&[("verdict", verdict)]).is_ok(), "{verdict} is a verdict");
+        }
+        // Not a prefix match, and not case-folded.
+        for verdict in ["", "ALL", "allowed", "block ", "deny"] {
+            assert!(q(&[("verdict", verdict)]).is_err(), "{verdict:?} is not");
+        }
+
+        // The bounds, each side of each edge.
+        assert!(q(&[("limit", "1")]).is_ok());
+        assert!(q(&[("limit", "500")]).is_ok());
+        assert!(q(&[("limit", "0")]).is_err());
+        assert!(q(&[("limit", "501")]).is_err());
+        assert!(q(&[("limit", "-1")]).is_err());
+        assert!(q(&[("limit", "50.0")]).is_err(), "a float is not an int");
+        assert!(q(&[("limit", "")]).is_err());
+        assert!(q(&[("lines", "1")]).is_ok());
+        assert!(q(&[("lines", "5000")]).is_ok());
+        assert!(q(&[("lines", "0")]).is_err());
+        assert!(q(&[("lines", "5001")]).is_err());
+
+        // `max_length` counts characters, not bytes: a 200-character search
+        // in a non-Latin script is 600 bytes and still allowed.
+        let two_hundred_wide: String = "é".repeat(200);
+        assert_eq!(
+            two_hundred_wide.len(),
+            400,
+            "the needle is wider than ASCII"
+        );
+        assert!(q(&[("q", &two_hundred_wide)]).is_ok());
+        let too_long: String = "a".repeat(201);
+        assert!(q(&[("q", &too_long)]).is_err());
+        // The search is *not* trimmed here; the payload echoes it trimmed,
+        // but a needle of 200 spaces is a valid parameter.
+        let spaces = " ".repeat(200);
+        assert_eq!(q(&[("q", &spaces)]).ok().map(|v| v.query), Some(spaces));
+    }
+
+    /// The `\x1f` framing, including the block that is not a file.
+    #[test]
+    fn the_helpers_blocks_are_unpacked_per_site() {
+        let mut blocks: std::collections::HashMap<String, Option<String>> =
+            ["a.example.com", "b.example.com", "c.example.com"]
+                .iter()
+                .map(|d| ((*d).to_string(), None))
+                .collect();
+        // A leading separator, a site with content, a site whose file is not
+        // there, a site that was never asked for, and a bare domain.
+        let stdout = "\x1fa.example.com\nfirst\nsecond\n\
+                      \x1fb.example.com\nSNPANEL_LOG_MISSING\n\
+                      \x1fnot-asked-for.example.com\nignored\n\
+                      \x1fc.example.com";
+        split_log_blocks(stdout, &mut blocks);
+
+        assert_eq!(
+            blocks["a.example.com"].as_deref(),
+            Some("first\nsecond\n"),
+            "the content keeps its own newlines"
+        );
+        assert_eq!(
+            blocks["b.example.com"], None,
+            "a missing file is not an empty one"
+        );
+        assert_eq!(
+            blocks["c.example.com"].as_deref(),
+            Some(""),
+            "a block with no newline is a site that produced nothing"
+        );
+        assert_eq!(blocks.len(), 3, "an unasked-for domain is not added");
+
+        // An empty answer leaves every site as it was, which is `None` —
+        // reported under `missing`, not as a site with no visitors.
+        let mut untouched: std::collections::HashMap<String, Option<String>> =
+            [("a.example.com".to_string(), None)].into_iter().collect();
+        split_log_blocks("", &mut untouched);
+        assert_eq!(untouched["a.example.com"], None);
+    }
+
+    /// `isoformat()` writes microseconds and `+00:00`, never `Z`.
+    #[test]
+    fn the_generated_at_stamp_is_shaped_like_pythons() {
+        let stamp = generated_at_now();
+        assert_eq!(stamp.len(), 32, "{stamp}");
+        assert!(stamp.ends_with("+00:00"), "{stamp}");
+        assert!(!stamp.contains('Z'), "{stamp}");
+        let (date, rest) = stamp.split_once('T').expect("a T separator");
+        assert_eq!(date.len(), 10, "{stamp}");
+        let fraction = rest
+            .trim_end_matches("+00:00")
+            .split_once('.')
+            .expect("a fractional part")
+            .1;
+        assert_eq!(fraction.len(), 6, "microseconds, not milliseconds: {stamp}");
+        assert!(fraction.chars().all(|c| c.is_ascii_digit()), "{stamp}");
     }
 }

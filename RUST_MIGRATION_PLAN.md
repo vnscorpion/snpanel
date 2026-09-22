@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **144 of 211** | 68% |
+| API endpoints answered by Rust | **145 of 211** | 69% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -1223,16 +1223,43 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `waf` (1), `websites` (1), then
-`provisioning` (13) and `site_apps` (10), which need the `docker` domain.
-**67 endpoints**, counted by `list-missing-endpoints.py`;
-`check-counters-agree.py` fails the build if that disagrees with
-`endpoint-coverage.py`.
+`maintenance` (31), `malware` (11), `websites` (1), then `provisioning`
+(13) and `site_apps` (10), which need the `docker` domain. **66 endpoints**,
+counted by `list-missing-endpoints.py`; `check-counters-agree.py` fails the
+build if that disagrees with `endpoint-coverage.py`.
 
-Two are recorded as **not portable as they stand**: `waf GET /access-logs`
-and the `malware` job endpoints read `_file_jobs`, an in-memory dict that
-Python background threads write. Moving them needs the job state somewhere
-both processes can see, which is a Stage G question and not a routing one.
+`waf` is finished. `GET /access-logs` was on the blocked list beside the
+malware job endpoints, recorded as reading `_file_jobs` — **that note was
+wrong**. It reads nginx's access logs through `site-logs-read-many`, and the
+only process-local state it touches is a four-second response cache, which
+is a cache and not a fact. A portable endpoint sat on the blocked list for
+two stages because a note nobody re-checked said it was not.
+
+What is genuinely blocked is smaller than it looked: the `malware` job
+endpoints read `_file_jobs`, an in-memory dict that Python background
+threads write. Moving them needs the job state somewhere both processes can
+see, which is a Stage G question and not a routing one.
+
+Three differences in the access-log port are deliberate and recorded here
+rather than in a comment nobody reads:
+
+- **The response cache is not ported.** It is keyed per process, and while
+  both implementations are serving, two caches keyed the same way would
+  answer a poll differently depending on which front door it reached.
+  `cached` is always `false`, which is what the page renders for a fresh
+  answer.
+- **The country columns are always empty.** The Python asks `maxminddb`
+  first and falls back to a DB-IP range table it builds in the background.
+  `maxminddb` is installed but no `.mmdb` ships, so on a stock box the
+  fallback is the only path — and it is a table this crate does not have
+  yet. An empty pair is exactly what the Python returns when neither source
+  can answer.
+- **`\S` is Python's, not ASCII's.** Porting the log pattern by hand turned
+  up a real difference: `u8::is_ascii_whitespace` does not know the vertical
+  tab, `\x1c`-`\x1f` or the non-breaking space, so a line with one of them
+  after the address parsed here and was refused there. Same for the request
+  split: `str.split()` is not `split_whitespace`. Both now go through the
+  generated `pyunicode` tables, and the corpus carries a line for each.
 
 **Exit:** endpoint coverage **100%**; the proxy path is never taken in normal
 operation.

@@ -234,24 +234,23 @@ that now listens on loopback only.
 | Login rate limiting on the **shared** Redis keys (C9) | done |
 | `xtask shadow-diff` (§9.3), 89 requests | done |
 
-Routers, in the order they were ported:
+Routers, in the order they were ported. The numbers are what
+`list-missing-endpoints.py` prints, not a recollection — an earlier version
+of this table said `users` had five endpoints proxied long after it had
+none, which read as progress that had already happened.
 
-| Batch | State |
+| Batch | Still Python's |
 |---|---|
-| `services` | whole |
-| `auth` — all ten endpoints | whole |
-| `packages` | whole |
-| `users` | the five DB-only endpoints; five proxied |
-| `firewall` — all eleven endpoints | whole |
-| `databases` | the listing and both SSO halves; four proxied |
-| `updates` — all four endpoints | whole |
-| `addons` | the listing; install and uninstall proxied |
-| `websites` | the listing, aliases and the two nginx reads; the rest proxied |
-| `waf` | the engine status and the rule catalogue; the rest proxied |
-| `terminal` | the command allowlist; exec and the websocket proxied |
-| `malware` | the status read; scans, install and schedule proxied |
-| `panel_settings` | `/public` and the full read; every write proxied |
-| `maintenance`, `site_apps`, `provisioning` | **not started** |
+| `services`, `auth`, `packages`, `firewall`, `updates`, `addons`, `terminal` | whole |
+| `users` | 0 of 10 |
+| `databases` | 0 of 7 |
+| `panel_settings` | 0 of 10 |
+| `waf` | 0 of 18 |
+| `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
+| `maintenance` | 31 of 67 |
+| `provisioning` | 13 of 13 — needs the `docker` domain |
+| `site_apps` | 10 of 10 — needs the `docker` domain |
+| `malware` | 11 of 12 — the job endpoints read an in-process dict |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
 
 ### Porting a router in part, by method
@@ -667,16 +666,60 @@ useful on its own — an operator can run a second helper on a scratch path
 without disturbing the live one. The systemd path is covered in the container,
 where systemd itself passes the fd.
 
+### `\S` is not `is_ascii_whitespace`
+
+The access-log pattern was ported by hand, like every other pattern here,
+because `regex` is deliberately not in the lock file. Two of its whitespace
+decisions were wrong, and neither showed up until a mutation run asked for a
+corpus line that reached them.
+
+Python's `\s` is `Py_UNICODE_ISSPACE`. It covers the vertical tab, the four
+separator controls at `\x1c`-`\x1f` and the non-breaking space — none of
+which `u8::is_ascii_whitespace` knows, and two of which `char::is_whitespace`
+does not know either. So:
+
+- A line whose address was followed by one of them **parsed here and was
+  refused there.** The pattern wants a literal space after `\S+`; with the
+  ASCII predicate the scanner swallowed the separator into the address and
+  found its space one field later. The two implementations disagreed about
+  whether a request had happened at all.
+- `_split_request` uses `str.split()`, which is the same predicate.
+  `split_whitespace` would have kept `\x1f` inside a word, putting the path
+  in the method column.
+
+Both now go through the generated `pyunicode` tables — the same ones the
+username and password rules use — and the corpus carries a line for each.
+The fix is small; what it cost was a reminder that "whitespace" is three
+different sets depending on who is asking.
+
+Two more branches were only found by breaking them: `body_bytes` is `\S+`
+and required, but every corpus line that omitted it also omitted the space
+before it, so an earlier check refused them first — only a *double* space
+after the status reaches that rule. And the two-word request arm
+upper-cases its method, but the corpus's only lowercase method was in a
+three-word request. Two survivors, two lines, both closed.
+
+One mutation was deliberately deleted rather than made to fail: the search
+haystack joins `status` as a number, and every raw line already carries its
+own status, so no search can tell the formatted number from the raw text.
+The arm stays because the Python joins the same thirteen fields. A test that
+cannot fail is not evidence, and pretending otherwise inflates the count.
+
 ---
 
 ## Not started
 
-The write halves of `websites` and `waf`, and `maintenance` (1670 lines),
-`site_apps` (517), `provisioning` (407), `malware` (203) and `panel_settings`
-(206), plus the `siteapp` helper domain and the long tail of the others. Then
-Phases 5-6: DA import and removing Python. Phase 4, the multi-OS installer, has
-landed for AlmaLinux 10 - see below - and has Debian 12 and Rocky still to go. `snpanel-installer` and `snpanel-daimport` are
-not workspace members yet; each is added as its phase lands, so CI never spends
+Measured, not recalled: **66 endpoints**, which is `maintenance` (31),
+`provisioning` (13), `malware` (11), `site_apps` (10) and one on `websites`
+— `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
+workspace does not have yet. `provisioning` and `site_apps` need the
+`siteapp`/`docker` helper domain. The `malware` job endpoints read an
+in-process dict, which is a Stage G question.
+
+Then Phases 5-6: DA import and removing Python. Phase 4, the multi-OS
+installer, has landed for AlmaLinux 10 — see below — and has Debian 12 and
+Rocky still to go. `snpanel-installer` and `snpanel-daimport` are not
+workspace members yet; each is added as its phase lands, so CI never spends
 time building an empty shell.
 
 Within the Rust API specifically, three things are known to be missing rather
