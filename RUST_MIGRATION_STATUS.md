@@ -248,7 +248,7 @@ none, which read as progress that had already happened.
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
 | `maintenance` | 17 of 67 |
-| `provisioning` | 7 of 13 — the ones that create and destroy accounts |
+| `provisioning` | 4 of 13 — create, suspend, unsuspend, terminate |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
@@ -957,12 +957,49 @@ the allowlist corpus, and one was a mutation too weak to be worth
 anything: a counter in the *first* byte of a token still varies the first
 character, so the test now samples the last one too.
 
+### Three provisioning writes, and an audit entry with no actor
+
+`POST /accounts/{id}/login`, `PATCH /password` and `PATCH /package`.
+
+The login endpoint hands out a **one-use ticket** so that a billing system
+can log a customer into the panel without ever holding their password: five
+minutes, written `O_EXCL` with mode 0600, and gone the moment it is read.
+That last part is what keeps a login link sitting in a billing system's
+email log from being a standing key to the account.
+
+Two things the port had to get right rather than infer:
+
+- **The answer carries the same URL three times.** `login_url` is the
+  documented field, `url` is kept for billing modules built against the
+  original shape, and `path` is what a module behind a reverse proxy wants
+  when it would rather build the absolute URL itself. With no panel URL
+  configured the absolute fields fall back to the *path*, not to an empty
+  string, so a module that uses `login_url` blindly produces a relative
+  link rather than a broken one.
+- **A package change copies the limits onto the user.** They are copies,
+  not references, because enforcement reads one row — a change that did not
+  copy them would leave the customer on their old limits until somebody
+  happened to edit the package itself.
+
+The password change does both halves in the Python's order: the panel's
+stored hash and the Linux account's password, because a customer whose
+billing system reset their password expects SFTP to work with the new one.
+The token version goes up, so every session opened with the old password
+stops. The secret reaches the helper on stdin, never in argv.
+
+And these endpoints write an audit entry with **no actor**. Every other
+entry in the panel names a user; these do not, because the caller is a
+machine holding a token, and recording the token's own administrator would
+name somebody who was asleep at the time.
+
+31 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **46 endpoints**, which is `maintenance` (17),
-`malware` (11), `site_apps` (10), `provisioning` (7) and one on `websites`
+Measured, not recalled: **43 endpoints**, which is `maintenance` (17),
+`malware` (11), `site_apps` (10), `provisioning` (4) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the
 `siteapp`/`docker` helper domain. The `malware` job endpoints read an

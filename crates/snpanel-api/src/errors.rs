@@ -127,6 +127,20 @@ pub fn check_range(field: &str, value: i64, min: i64, max: i64) -> Result<(), Re
 }
 
 /// Source: `int_parsing` - a value that is not an integer at all.
+/// `int_type`: the field is there and is not a number at all.
+///
+/// Distinct from `int_parsing`, which is a string that *looks* like it
+/// might be one. A list where an integer belongs is the wrong kind; `"12x"`
+/// is the right kind badly written, and the panel shows the difference.
+pub fn int_type(field: &str, input: &Value) -> Response {
+    validation_error(vec![json!({
+        "type": "int_type",
+        "loc": ["body", field],
+        "msg": "Input should be a valid integer",
+        "input": input,
+    })])
+}
+
 pub fn int_parsing(field: &str, input: &Value) -> Response {
     validation_error(vec![json!({
         "type": "int_parsing",

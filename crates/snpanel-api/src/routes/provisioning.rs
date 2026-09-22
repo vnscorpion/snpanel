@@ -16,7 +16,7 @@
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::permissions;
@@ -39,6 +39,18 @@ pub fn router() -> Router<AppState> {
         .route(
             "/provisioning/v1/accounts/{external_id}/usage",
             get(get_usage).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/login",
+            post(create_login_url).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/password",
+            patch(change_password).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/package",
+            patch(change_package).fallback(crate::fallback),
         )
         .route(
             "/provisioning/v1/tokens",
@@ -361,6 +373,295 @@ async fn get_usage(
     .into_response()
 }
 
+/// `POST /api/provisioning/v1/accounts/{external_id}/login`.
+///
+/// Source: `create_login_url`.
+///
+/// A one-use ticket that logs the customer into the panel **without the
+/// billing system ever holding their password**. Five minutes, and the
+/// answer carries the same URL three times: `login_url` is the documented
+/// field, `url` is kept for billing modules built against the original
+/// shape, and `path` is what a module behind a reverse proxy wants when it
+/// would rather build the absolute URL itself.
+async fn create_login_url(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    // An inactive user is a 404 and not a 403: from the billing system's
+    // side the account it asked about is not one it can log into, and
+    // which of the two reasons applies is not its business.
+    let user = match account.user_id {
+        Some(id) => match state.db.users().by_id(id).await {
+            Ok(Some(u)) if u.is_active => u,
+            Ok(_) => return not_found("Account user not found or inactive"),
+            Err(e) => {
+                tracing::error!("user lookup failed: {e}");
+                return crate::errors::internal_error();
+            }
+        },
+        None => return not_found("Account user not found or inactive"),
+    };
+
+    let token = match crate::sso::create_panel_login_token(&user.username) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("could not write a panel login token: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    let (path, absolute) = login_url(&panel_base_url(&state.settings), &token);
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_login",
+        &external_id,
+        &user.username,
+    )
+    .await;
+    axum::Json(json!({
+        "login_url": absolute,
+        "url": absolute,
+        "path": path,
+        "expires_in": 300,
+    }))
+    .into_response()
+}
+
+/// The path and the absolute URL a login ticket is handed out as.
+///
+/// Source: `create_login_url`. With no panel URL configured the absolute
+/// field falls back to the **path**, not to an empty string: a billing
+/// module that builds its own base from the path still works, and one that
+/// uses `login_url` blindly produces a relative link rather than a broken
+/// one.
+fn login_url(base: &str, token: &str) -> (String, String) {
+    let path = format!("/api/auth/sso/{token}");
+    let absolute = if base.is_empty() {
+        path.clone()
+    } else {
+        format!("{base}{path}")
+    };
+    (path, absolute)
+}
+
+/// `PATCH /api/provisioning/v1/accounts/{external_id}/password`.
+///
+/// Source: `change_password`.
+///
+/// Both halves, in the Python's order: the panel's stored hash **and** the
+/// Linux account's password, because a customer whose billing system reset
+/// their password expects SFTP to work with the new one too. The token
+/// version goes up, so every session opened with the old password stops.
+async fn change_password(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let password = match payload.get("password") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => return crate::errors::string_type("password", other),
+        None => return crate::errors::missing_field("password", payload.clone()),
+    };
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let Some(user_id) = account.user_id else {
+        return bad_request("Account has no user");
+    };
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return bad_request("Account has no user"),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+
+    let hashed = match snpanel_core::crypto::password::hash_password(&password) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("hashing failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    if let Err(e) = state.db.users().set_hashed_password(user.id, &hashed).await {
+        tracing::error!("storing the password failed: {e}");
+        return crate::errors::internal_error();
+    }
+    if let Err(e) = state.db.users().bump_token_version(user.id).await {
+        tracing::error!("bumping the token version failed: {e}");
+        return crate::errors::internal_error();
+    }
+    // Source: `site_users.set_panel_user_password`. The secret goes on
+    // stdin, never in argv — `/proc/<pid>/cmdline` is world-readable.
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "panel-user-password",
+        &[user.username.as_str()],
+        Some(&format!("{password}\n")),
+        Some(&["true"]),
+    )
+    .await;
+    if !result.ok() {
+        tracing::error!(
+            "setting the system password failed: {}",
+            result.failure_detail("panel-user-password")
+        );
+        return crate::errors::internal_error();
+    }
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_last_action(account.id, "change_password", &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("recording the provisioning action failed: {e}");
+    }
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_change_password",
+        &external_id,
+        "",
+    )
+    .await;
+    axum::Json(json!({ "ok": true })).into_response()
+}
+
+/// `PATCH /api/provisioning/v1/accounts/{external_id}/package`.
+///
+/// Source: `change_package`.
+///
+/// The package's limits are **copied onto the user**, not referenced. The
+/// enforcement path reads one row, so a user without a package still has to
+/// resolve to something — and a package change that did not copy them would
+/// leave the customer on their old limits until somebody edited the package
+/// itself.
+async fn change_package(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let package_id = match payload.get("package_id") {
+        Some(Value::Number(n)) if n.is_i64() => n.as_i64().unwrap_or(0),
+        Some(other) => return crate::errors::int_type("package_id", other),
+        None => return crate::errors::missing_field("package_id", payload.clone()),
+    };
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let Some(user_id) = account.user_id else {
+        return bad_request("Account has no user");
+    };
+    let package = match state.db.packages().by_id(package_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return not_found("Package not found"),
+        Err(e) => {
+            tracing::error!("package lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_package(account.id, package.id, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("setting the provisioning package failed: {e}");
+        return crate::errors::internal_error();
+    }
+    let fields = snpanel_db::UserFields {
+        package_id: Some(Some(package.id)),
+        website_limit: Some(package.website_limit),
+        storage_limit_mb: Some(package.storage_limit_mb),
+        ..Default::default()
+    };
+    if let Err(e) = state.db.users().update(user_id, &fields, false).await {
+        tracing::error!("copying the package limits failed: {e}");
+        return crate::errors::internal_error();
+    }
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_change_package",
+        &external_id,
+        &package.id.to_string(),
+    )
+    .await;
+    axum::Json(json!({ "ok": true, "package_id": package.id })).into_response()
+}
+
+/// Source: `_account_by_external_id`.
+async fn account_or_404(
+    state: &AppState,
+    external_id: &str,
+) -> Result<snpanel_db::ProvisioningAccount, Response> {
+    match state.db.provisioning().by_external_id(external_id).await {
+        Ok(Some(a)) => Ok(a),
+        Ok(None) => Err(not_found("Account not found")),
+        Err(e) => {
+            tracing::error!("provisioning account lookup failed: {e}");
+            Err(crate::errors::internal_error())
+        }
+    }
+}
+
+/// `log_action(db, None, ...)` — an audit line with **no actor**.
+///
+/// Every other audit entry in the panel names a user. These do not: the
+/// caller is a machine holding a token, and recording the token's own
+/// administrator would name somebody who was asleep at the time.
+async fn audit_provisioning(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    action: &str,
+    target: &str,
+    detail: &str,
+) {
+    let ip = crate::client::audit_ip(parts);
+    let ua = parts
+        .headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let detail = if detail.is_empty() {
+        format!("ip={ip} ua={ua}")
+    } else {
+        format!("{detail} ip={ip} ua={ua}")
+    };
+    if let Err(e) = state.db.audits().log(None, action, target, &detail).await {
+        tracing::error!("could not write the {action} audit entry: {e}");
+    }
+}
+
 /// Source: `ApiTokenOut` — what an administrator is shown about a token.
 ///
 /// **Never the token.** The hash is not in it either: a hash is not a
@@ -509,6 +810,49 @@ mod tests {
             .join("../../tests/golden/provisioning.json");
         serde_json::from_str(&std::fs::read_to_string(&path).expect("the provisioning corpus"))
             .expect("the corpus parses")
+    }
+
+    /// The link a billing system hands to a customer.
+    ///
+    /// The absolute field falls back to the **path** when no panel URL is
+    /// configured, not to an empty string — a module that uses `login_url`
+    /// blindly then produces a relative link rather than a broken one. And
+    /// the base is joined without a separator, because both halves already
+    /// carry their own: the base has no trailing slash and the path has a
+    /// leading one.
+    #[test]
+    fn a_login_link_is_built_the_way_python_builds_it() {
+        let (path, absolute) = login_url("https://panel.example:2222", "abc");
+        assert_eq!(path, "/api/auth/sso/abc");
+        assert_eq!(absolute, "https://panel.example:2222/api/auth/sso/abc");
+        assert!(!absolute.contains("//api"), "a doubled slash: {absolute}");
+
+        let (path, absolute) = login_url("", "abc");
+        assert_eq!(path, "/api/auth/sso/abc");
+        assert_eq!(
+            absolute, path,
+            "with no base, the absolute field is the path"
+        );
+    }
+
+    /// A login ticket is written, read once and gone.
+    #[test]
+    fn a_login_ticket_can_be_spent_exactly_once() {
+        // `TOKEN_DIR` is a constant in both implementations, so this uses
+        // the real directory. That is safe: the ticket's name is random, and
+        // consuming it removes only its own file.
+        let token = crate::sso::create_panel_login_token("alice").expect("the ticket");
+        assert!(!token.is_empty());
+        assert_eq!(
+            crate::sso::consume_panel_login_token(&token).as_deref(),
+            Some("alice")
+        );
+        // Spent: the file is gone and a replay gets nothing. That is what
+        // keeps a login link in a billing system's email log from being a
+        // standing key to the account.
+        assert_eq!(crate::sso::consume_panel_login_token(&token), None);
+        // And a ticket nobody made is not honoured either.
+        assert_eq!(crate::sso::consume_panel_login_token("made-up"), None);
     }
 
     /// The digest every existing token is stored as.

@@ -89,6 +89,50 @@ impl<'a> ProvisioningRepo<'a> {
             .await?)
     }
 
+    /// Source: `account.last_action = ...; db.commit()`.
+    ///
+    /// The row records what was last done to it, which is the only trace a
+    /// billing system's action leaves on the account itself — the audit
+    /// entry beside it names no actor, because the caller is a machine.
+    pub async fn set_last_action(
+        &self,
+        id: i64,
+        action: &str,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts SET last_action = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(action)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `change_package` — the account's half of the change.
+    ///
+    /// The user's half is the caller's: the limits are **copied** onto the
+    /// user row, not referenced, because enforcement reads one row.
+    pub async fn set_package(
+        &self,
+        id: i64,
+        package_id: i64,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts \
+             SET package_id = ?, last_action = 'change_package', updated_at = ? WHERE id = ?",
+        )
+        .bind(package_id)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// How many websites and databases an account's user owns.
     ///
     /// Source: the two `.count()` calls in `get_usage`. They count what the

@@ -31,6 +31,12 @@ fn token_path(token: &str) -> Option<PathBuf> {
 /// is a link that is followed immediately or not at all.
 const PHPMYADMIN_TTL_SECONDS: i64 = 60;
 
+/// Source: `PANEL_LOGIN_TTL_SECONDS` - five minutes.
+///
+/// Longer than the phpMyAdmin hand-off because a billing system puts this
+/// in a link a human then clicks, rather than following it itself.
+const PANEL_LOGIN_TTL_SECONDS: i64 = 300;
+
 /// Consume a phpMyAdmin token. Source: `consume_phpmyadmin_token`.
 ///
 /// Note the default in `data.get("kind", "phpmyadmin")`: a token written
@@ -74,6 +80,45 @@ pub fn create_phpmyadmin_token(
         "db_user": db_user,
         "db_password": db_password,
         "db_name": db_name,
+        "expires_at": expires.to_rfc3339(),
+    });
+
+    let path = dir.join(format!("{token}.json"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(&path)?;
+    use std::io::Write;
+    if let Err(e) = file.write_all(payload.to_string().as_bytes()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
+    Ok(token)
+}
+
+/// Source: `create_panel_login_token`.
+///
+/// A one-use ticket that logs a billing system's customer into the panel
+/// without the billing system ever holding their password. Five minutes,
+/// written `O_EXCL` with mode 0600 like every other token here — the
+/// exclusive create is what stops a symlink already sitting at the path
+/// from redirecting the write.
+pub fn create_panel_login_token(username: &str) -> std::io::Result<String> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    cleanup_expired_tokens();
+
+    let token = snpanel_core::crypto::token::generate_jti();
+    let dir = PathBuf::from(TOKEN_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(PANEL_LOGIN_TTL_SECONDS);
+    let payload = serde_json::json!({
+        "kind": "panel_login",
+        "username": username,
         "expires_at": expires.to_rfc3339(),
     });
 
