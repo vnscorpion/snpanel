@@ -3432,6 +3432,7 @@ name = "snpanel-installer"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "snpanel-core",
  "snpanel-osabi",
 ]
 

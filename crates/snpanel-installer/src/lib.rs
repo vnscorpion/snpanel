@@ -17,5 +17,6 @@ pub mod backend_env;
 pub mod bootstrap;
 pub mod nginx_conf;
 pub mod panel_ssl;
+pub mod php;
 pub mod systemd_units;
 pub mod tools_vhost;

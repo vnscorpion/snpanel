@@ -7,6 +7,7 @@ license.workspace = true
 description = "The phases of a SNPanel installation, ported from installer/install.sh."
 
 [dependencies]
+snpanel-core = { path = "../snpanel-core" }
 snpanel-osabi = { path = "../snpanel-osabi" }
 
 [dev-dependencies]

@@ -1,4 +1,37 @@
 {
+ "php_ext_debian": {
+  "0": "php8.4-fpm",
+  "1": "php8.4-cli",
+  "10": "php8.4-intl",
+  "11": "php8.4-bcmath",
+  "12": "php8.4-redis",
+  "13": "php8.4-imagick",
+  "2": "php8.4-mysql",
+  "3": "php8.4-sqlite3",
+  "4": "php8.4-gd",
+  "5": "php8.4-xml",
+  "6": "php8.4-mbstring",
+  "7": "php8.4-curl",
+  "8": "php8.4-zip",
+  "9": "php8.4-opcache"
+ },
+ "php_ext_rhel": {
+  "0": "php84-php-fpm",
+  "1": "php84-php-cli",
+  "10": "php84-php-bcmath",
+  "11": "php84-php-soap",
+  "12": "php84-php-pecl-zip",
+  "13": "php84-php-pecl-redis6",
+  "14": "php84-php-pecl-imagick-im7",
+  "2": "php84-php-common",
+  "3": "php84-php-mysqlnd",
+  "4": "php84-php-pdo",
+  "5": "php84-php-gd",
+  "6": "php84-php-xml",
+  "7": "php84-php-mbstring",
+  "8": "php84-php-opcache",
+  "9": "php84-php-intl"
+ },
  "platform_debian": {
   "BASE_PACKAGES": "ca-certificates",
   "CLAMAV_SERVICE": "clamav-daemon.service",

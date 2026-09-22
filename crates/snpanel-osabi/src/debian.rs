@@ -34,6 +34,12 @@ macro_rules! debian_family {
             fn php_default(&self) -> &'static str {
                 $default
             }
+            fn php_extensions(&self) -> &'static [&'static str] {
+                &[
+                    "fpm", "cli", "mysql", "sqlite3", "gd", "xml", "mbstring", "curl", "zip",
+                    "opcache", "intl", "bcmath", "redis", "imagick",
+                ]
+            }
             fn install_argv(&self) -> Vec<&'static str> {
                 vec!["apt-get", "install", "-y", "--no-install-recommends"]
             }

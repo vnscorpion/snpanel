@@ -89,6 +89,19 @@ pub trait Platform: Send + Sync {
 
     /// Source: `PLATFORM_PHP_DEFAULT`. Always one of [`php_versions`].
     fn php_default(&self) -> &'static str;
+
+    /// The extensions a working panel needs, in the order the shell lists
+    /// them.
+    ///
+    /// Source: `php_ext_packages`. These are the *extension* names, not the
+    /// package names — [`php_package`] turns each into one. The two families
+    /// disagree about more than the prefix, which is why this is a list per
+    /// platform and not one list with a prefix applied.
+    ///
+    /// The order is kept because the shell installs them in it and reports
+    /// the ones it had to skip; a reordered list makes that message differ
+    /// from the one an operator has seen before.
+    fn php_extensions(&self) -> &'static [&'static str];
     fn epel_required(&self) -> bool {
         self.family() == Family::Rhel
     }
@@ -185,6 +198,8 @@ mod shell_table_tests {
         type Table = std::collections::BTreeMap<String, String>;
         #[derive(serde::Deserialize)]
         struct Tables {
+            php_ext_debian: Table,
+            php_ext_rhel: Table,
             platform_ubuntu: Table,
             platform_debian: Table,
             platform_debian12: Table,
@@ -305,6 +320,31 @@ mod shell_table_tests {
         ] {
             assert!(table.len() >= 15);
         }
+        // The package names `install_php` asks for. Recorded by running
+        // `php_ext_packages`, so a list that drifts here is a PHP with an
+        // extension missing — which surfaces as a WordPress that cannot
+        // reach its database rather than as an install that failed.
+        for (name, table, platform) in [
+            ("debian", &tables.php_ext_debian, debian),
+            ("rhel", &tables.php_ext_rhel, rhel),
+        ] {
+            let version = snpanel_core::PhpVersion::parse("8.4").expect("a version");
+            let ours: Vec<String> = platform
+                .php_extensions()
+                .iter()
+                .map(|ext| platform.php_package(version, ext))
+                .collect();
+            let shell: Vec<String> = (0..table.len())
+                .map(|index| {
+                    table
+                        .get(&index.to_string())
+                        .unwrap_or_else(|| panic!("{name}: the list has a gap at {index}"))
+                        .clone()
+                })
+                .collect();
+            assert_eq!(ours, shell, "{name} php_ext_packages");
+        }
+
         // And the two Debians have to actually differ, or the fixture was
         // generated without `OS_MAJOR` reaching the function and both rows
         // are the same distribution recorded twice.

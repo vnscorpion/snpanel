@@ -31,6 +31,28 @@ impl Platform for AlmaLinux10 {
     fn php_default(&self) -> &'static str {
         "8.4"
     }
+    fn php_extensions(&self) -> &'static [&'static str] {
+        // `common` and `soap` are EL-only, `mysqlnd` and `pdo` are what
+        // Debian's single `mysql` package provides, and the PECL ones carry
+        // the version suffixes Remi ships them under.
+        &[
+            "fpm",
+            "cli",
+            "common",
+            "mysqlnd",
+            "pdo",
+            "gd",
+            "xml",
+            "mbstring",
+            "opcache",
+            "intl",
+            "bcmath",
+            "soap",
+            "pecl-zip",
+            "pecl-redis6",
+            "pecl-imagick-im7",
+        ]
+    }
     fn php_repo(&self) -> PhpRepo {
         PhpRepo::Remi
     }
