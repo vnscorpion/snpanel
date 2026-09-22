@@ -180,6 +180,10 @@ pub fn int_type(field: &str, input: &Value) -> Response {
 /// bound. It is saturated here rather than refused, because every caller
 /// uses the result as a row id and a saturated one matches no row - the
 /// same 404 the Python reaches by looking it up.
+pub fn read_int(field: &str, value: Option<&Value>) -> Result<Option<i64>, Response> {
+    read_int_entry(field, value).map_err(|entry| validation_error(vec![entry]))
+}
+
 pub fn read_int_entry(field: &str, value: Option<&Value>) -> Result<Option<i64>, Value> {
     let Some(value) = value else {
         return Ok(None);

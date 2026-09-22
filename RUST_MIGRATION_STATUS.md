@@ -1306,21 +1306,91 @@ package" is how a panel ends up running `apt-get` on AlmaLinux.
 
 24 mutations, all caught.
 
+### The scan worker, and why the job endpoints could not move alone
+
+`POST /run`, `GET /jobs`, `GET /jobs/latest` and `GET /jobs/{id}` move
+here, together with the worker behind them. `malware` is now 12 of 12.
+
+They had to arrive together. **Reading a job is a write**: every read
+passes it through `_finalize_stale_malware_job`, which asks whether a
+worker *in this process* still owns it and, finding none, marks it
+interrupted and writes that to disk. Split across two processes, each one
+declares the other's running scans dead. The Rust side keeps a task handle
+where the Python keeps a thread, and `JoinHandle::is_finished` answers the
+one question `Thread.is_alive` was asked.
+
+There are three scan paths and they are not interchangeable:
+
+- **LMD**, when `maldet` is installed. One `maldet -a /home` replaces a
+  per-file loop over a few hundred thousand files, and it names malware
+  families rather than reporting a ClamAV signature id.
+- **A per-file `clamdscan` loop**, for a website's own root — enough for a
+  tree the panel owns, walked from the panel's own account.
+- **The helper**, for the whole machine. Most of 150,000 files on a small
+  VPS are unreadable to anyone but root, so that path runs privileged,
+  hands `clamd` an open descriptor per file, and reports progress through
+  a log this side reads as it grows.
+
+Four decisions inside are worth stating:
+
+- **The progress bar is capped at 99 while a scan runs.** 100 is what the
+  finish writes; a bar sitting at 100 for the last minute of a six-hour
+  scan reads as a hang.
+- **A site whose root is missing fails the whole request.** Scanning the
+  others quietly would report a clean machine while one site went
+  unlooked-at, which is the one answer a malware scan must never give.
+- **A failed scan is a scan result, not a crash.** The request that
+  started it returned minutes ago, so the job is the only place left to
+  report it.
+- **`clamdscan` exits 1 when it found something and 2 on an error**, and
+  neither means the scan failed to run. Only something else does.
+
+The progress reader holds back a partial last line until the rest of it
+arrives: a scanner flushing a 4KB buffer mid-path would otherwise produce
+a threat report for half a filename.
+
+`shell::exec_argv` was also extracted, so an ordinary command can use the
+runner the privileged path already had — two pipes drained in parallel so
+a chatty command cannot wedge, and a timeout that kills the child and
+still collects what was captured. `scan_file_with_clamdscan` runs
+unprivileged, and a second copy of that machinery would have drifted.
+
+#### Seven mutations survived the first run
+
+Two were written badly — one added an unused variable and changed nothing,
+one used a variable it never declared. Two were guards that could not
+change an answer: `path.startswith("/")` in `parse_report_text` is already
+enforced by the pattern that matched the line, and the `if part` in
+`"\n".join(...)` cannot matter because the `.strip()` after it removes the
+blank line an empty stream contributes. The first is gone; the second is
+the **Python's** line and stays, with the reasoning written beside it.
+
+The last three were the corpus, not the code: a one-character upper-case
+domain label, a `queued` job older than a finished one, and a "total
+files" line that does not end in digits — without which the branch
+choosing between the first and last run of digits was never reached.
+
+55 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **30 endpoints**, in four groups:
+Measured, not recalled: **26 endpoints**, in three groups:
 
 | group | left | what it needs |
 |---|---|---|
-| `maintenance` | 15 | the DA-import worker (5); the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) needs the **`siteapp`/`docker` helper domain**; `POST /user-restore` (1) |
+| `maintenance` | 15 | the DA-import worker (5) is plain code; the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) and `POST /user-restore` (1) need the **`siteapp`/`docker` helper domain** |
 | `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
-| `malware` | 4 | the scan worker — `run`, `jobs`, `jobs/latest` and `jobs/{id}` share a registry where **reading a job is a write** |
 | `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` needs the **`siteapp`/`docker` helper domain** |
 
 The bold two are dependency and architecture decisions on a hosting panel,
-not code that is merely unwritten. Everything else is code.
+not code that is merely unwritten. **The DA-import worker is the only
+plain code left**: five endpoints and about 1,500 lines of Python.
+
+`POST /user-restore` used to be filed with it. Re-measured, it is not:
+`restore_user_backup` calls `_restore_applications`, which collects each
+application through `site_apps.export_payload`.
 
 The third used to be an outbound HTTPS client for `ssl/wildcard`. It was
 not a decision at all: every crate it needed was already in the lock file,

@@ -104,6 +104,19 @@ impl<'a> WebsiteRepo<'a> {
         Ok(query.fetch_all(self.pool).await?)
     }
 
+    /// Every website, ordered by domain.
+    ///
+    /// Source: `_select_scan_websites`'s
+    /// `db.query(Website).order_by(Website.domain.asc())`. That order is
+    /// not cosmetic: it reaches the scan job's `domains` list, which is
+    /// what the page shows while the scan runs.
+    pub async fn all_by_domain(&self) -> Result<Vec<Website>, DbError> {
+        let sql = format!("SELECT {} FROM websites ORDER BY domain ASC", COLUMNS);
+        Ok(sqlx::query_as::<_, Website>(&sql)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
     pub async fn by_id(&self, id: i64) -> Result<Option<Website>, DbError> {
         Ok(
             sqlx::query_as::<_, Website>(&format!("SELECT {COLUMNS} FROM websites WHERE id = ?"))

@@ -249,6 +249,36 @@ pub async fn privileged_timed(
     }
 
     let argv = std::mem::take(&mut argv);
+    exec_argv(argv, quoted, stdin, timeout).await
+}
+
+/// Run an argv as this process's own user.
+///
+/// Source: `subprocess.run(..., capture_output=True, timeout=...)`, which
+/// is what `scan_file_with_clamdscan` calls directly. No helper and no
+/// sudo: scanning a file the panel already owns needs neither.
+pub async fn run_timed(dry_run: bool, program: &str, args: &[&str], timeout: u64) -> CommandResult {
+    let mut argv: Vec<String> = vec![program.to_string()];
+    argv.extend(args.iter().map(|a| (*a).to_string()));
+    let quoted = quote_argv(&argv);
+    if dry_run {
+        return CommandResult {
+            command: quoted.clone(),
+            returncode: 0,
+            stdout: format!("DRY RUN: {quoted}"),
+            stderr: String::new(),
+        };
+    }
+    exec_argv(argv, quoted, None, Some(timeout)).await
+}
+
+/// Spawn an argv, drain both pipes, and honour a timeout.
+async fn exec_argv(
+    argv: Vec<String>,
+    quoted: String,
+    stdin: Option<&str>,
+    timeout: Option<u64>,
+) -> CommandResult {
     let mut cmd = tokio::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .stdin(if stdin.is_some() {
@@ -262,8 +292,10 @@ pub async fn privileged_timed(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            // `sudo` missing is not a panic: it is a failed command, reported
-            // the way a failed command is.
+            // A missing binary is not a panic: it is a failed command,
+            // reported the way a failed command is. `clamdscan` absent is
+            // exactly this, and the Python's own `except FileNotFoundError`
+            // says so too.
             return CommandResult {
                 command: quoted,
                 returncode: -1,
