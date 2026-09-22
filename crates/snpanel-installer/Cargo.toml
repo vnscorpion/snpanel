@@ -8,3 +8,6 @@ description = "The phases of a SNPanel installation, ported from installer/insta
 
 [dependencies]
 snpanel-osabi = { path = "../snpanel-osabi" }
+
+[dev-dependencies]
+serde_json.workspace = true
