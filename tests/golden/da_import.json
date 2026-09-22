@@ -246,6 +246,18 @@
   {
    "existing": [],
    "fallback": "site",
+   "name": "word_press",
+   "raw": "word  press"
+  },
+  {
+   "existing": [],
+   "fallback": "site",
+   "name": "a_b",
+   "raw": "a!!!b"
+  },
+  {
+   "existing": [],
+   "fallback": "site",
    "name": "wp",
    "raw": "__wp__"
   },

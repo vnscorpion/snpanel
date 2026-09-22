@@ -1550,11 +1550,11 @@ fn match_public_assignment(after: &str, key: &str) -> Option<(usize, usize)> {
     // `\$?` - the dollar is optional.
     let s = trimmed.strip_prefix('$').unwrap_or(trimmed);
     let s = s.strip_prefix(key)?;
-    // The name must end here, or `db` would match inside `dbuser`.
-    match s.chars().next() {
-        Some(c) if c.is_ascii_alphanumeric() || c == '_' => return None,
-        _ => {}
-    }
+    // No word boundary, and none in the Python either: the pattern is
+    // `public\s+\$?<key>\s*=`, so `db` inside `db_name` fails at the `=`
+    // rather than at the name. A boundary check here would be a guard
+    // that cannot change an answer - the same one that was written and
+    // removed in `find_php_variable`.
     let s = skip_ws(s);
     let s = s.strip_prefix('=')?;
     let s = skip_ws(s);
@@ -2844,7 +2844,7 @@ mod tests {
     fn a_da_conf_password_is_read_the_way_python_reads_it() {
         let corpus = db_corpus();
         let cases = corpus["da_conf_password"].as_array().expect("the cases");
-        assert_eq!(cases.len(), 23, "the corpus changed size");
+        assert_eq!(cases.len(), 25, "the corpus changed size");
 
         let mut failures = Vec::new();
         for case in cases {
@@ -2970,7 +2970,7 @@ mod tests {
     fn a_define_is_replaced_the_way_python_replaces_it() {
         let corpus = db_corpus();
         let cases = corpus["replace_define"].as_array().expect("the cases");
-        assert_eq!(cases.len(), 7, "the corpus changed size");
+        assert_eq!(cases.len(), 9, "the corpus changed size");
 
         let mut failures = Vec::new();
         for case in cases {
@@ -3008,7 +3008,7 @@ mod tests {
     fn a_site_config_is_rewritten_the_way_python_rewrites_it() {
         let corpus = db_corpus();
         let cases = corpus["update_config"].as_array().expect("the cases");
-        assert_eq!(cases.len(), 15, "the corpus changed size");
+        assert_eq!(cases.len(), 17, "the corpus changed size");
 
         let mut failures = Vec::new();
         for case in cases {

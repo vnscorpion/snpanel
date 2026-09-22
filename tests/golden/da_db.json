@@ -101,6 +101,14 @@
    "text": "passwd=*1234567890ABCDEF\n"
   },
   {
+   "case": "hash_without_star",
+   "found": {
+    "password": "1234567890ABCDEF1234567890ABCDEF12345678",
+    "password_hash": ""
+   },
+   "text": "passwd=1234567890ABCDEF1234567890ABCDEF12345678\n"
+  },
+  {
    "case": "query_string",
    "found": {
     "password": "",
@@ -131,6 +139,14 @@
     "password_hash": ""
    },
    "text": "# passwd=ignored\n"
+  },
+  {
+   "case": "comment_query_string",
+   "found": {
+    "password": "",
+    "password_hash": ""
+   },
+   "text": "# x=a&passwd=secret\n"
   },
   {
    "case": "no_equals",
@@ -317,6 +333,20 @@
    "result": "<?php\ndefine('DB_NAME', 'new');\n",
    "text": "<?php\ndefine('DB_NAME', '');\n",
    "value": "new"
+  },
+  {
+   "case": "unclosed",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_NAME', 'old'\n\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\ndefine('DB_NAME', 'old'\n",
+   "value": "new"
+  },
+  {
+   "case": "no_semicolon",
+   "key": "DB_NAME",
+   "result": "<?php\ndefine('DB_NAME', 'old')\n\ndefine('DB_NAME', 'new');\n",
+   "text": "<?php\ndefine('DB_NAME', 'old')\n",
+   "value": "new"
   }
  ],
  "unique_email": [
@@ -459,6 +489,18 @@
    "after": "<?php\n$db = 'old';\n",
    "before": "<?php\n$db = 'old';\n",
    "case": "php_bare",
+   "file": "configuration.php"
+  },
+  {
+   "after": "<?php\npublicdb = 'old';\n",
+   "before": "<?php\npublicdb = 'old';\n",
+   "case": "php_glued",
+   "file": "configuration.php"
+  },
+  {
+   "after": "<?php\npublic $db = 'new_db';\npublic $db = 'second';\n",
+   "before": "<?php\npublic $db = 'first';\npublic $db = 'second';\n",
+   "case": "php_twice",
    "file": "configuration.php"
   },
   {
