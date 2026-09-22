@@ -521,9 +521,167 @@ fn strip_marker(command: &str) -> String {
     trimmed[..hash].trim_end().to_string()
 }
 
+/// Source: `CRON_PHP_TOKEN_RE` — `(&&\s+)((?:/usr/bin/)?php(?:\d\.\d)?)(\s)`.
+///
+/// Rewrite the **first** PHP binary on one cron line, as `re.sub(..., count=1)`
+/// does. Hand-written because this tree carries no regex engine, and written
+/// against a corpus rather than against a reading of the pattern: two of the
+/// four things it does surprised me.
+///
+/// - the token must be preceded by `&&` **and at least one space**, so
+///   `&&php8.1` is left alone and so is a `php` at the start of the command;
+/// - whatever the `\s+` matched is put back verbatim, tab or three spaces;
+/// - the version is exactly `\d.\d`, and the trailing `\s` is part of the
+///   match — so `php8.4.1` does **not** become `<bin>.1`, it is not rewritten
+///   at all, because after `php8.4` the next character is `.` and not
+///   whitespace, and backtracking to a bare `php` then finds `8`;
+/// - a token at the very end of a line has no trailing whitespace and so
+///   does not match either.
+///
+/// Getting any of these wrong leaves a site's cron jobs running the PHP
+/// version it no longer has — and cron then looks dead while the schedule is
+/// firing correctly.
+pub fn retarget_php_line(line: &str, php_bin: &str) -> String {
+    let bytes = line.as_bytes();
+    let is_space = |i: usize| {
+        line[i..]
+            .chars()
+            .next()
+            .is_some_and(snpanel_core::pyunicode::is_space)
+    };
+
+    let mut start = 0;
+    while let Some(offset) = line[start..].find("&&") {
+        let amp = start + offset;
+        // `\s+`, greedy, and whatever it takes is put back as it was.
+        let ws_start = amp + 2;
+        let mut ws_end = ws_start;
+        while ws_end < bytes.len() && is_space(ws_end) {
+            ws_end += next_char_len(line, ws_end);
+        }
+        if ws_end == ws_start {
+            // The regex engine tries the next position, not the next `&&`:
+            // `&&&  php ` matches at offset one.
+            start = amp + 1;
+            continue;
+        }
+
+        if let Some(end) = php_token_end(line, ws_end) {
+            let tail_len = next_char_len(line, end);
+            return format!(
+                "{}{}{}{}",
+                &line[..ws_end],
+                php_bin,
+                &line[end..end + tail_len],
+                &line[end + tail_len..]
+            );
+        }
+        start = amp + 1;
+    }
+    line.to_string()
+}
+
+/// Where `((?:/usr/bin/)?php(?:\d\.\d)?)` ends, given it starts at `from`, or
+/// `None` when the whole group including its trailing `\s` does not match.
+///
+/// The trailing whitespace is checked **here** because the version is
+/// optional and the engine backtracks: `php8.4.1` fails with the version and
+/// fails again without it, and the answer is "no match" rather than a partial
+/// one.
+fn php_token_end(line: &str, from: usize) -> Option<usize> {
+    let rest = &line[from..];
+    // `(?:/usr/bin/)?` is greedy, and without it the group would have to
+    // start at `/`, which cannot match `php`. So there is only one way in.
+    let after_prefix = if rest.starts_with("/usr/bin/php") {
+        from + "/usr/bin/php".len()
+    } else if rest.starts_with("php") {
+        from + "php".len()
+    } else {
+        return None;
+    };
+
+    let followed_by_space = |at: usize| {
+        line[at..]
+            .chars()
+            .next()
+            .is_some_and(snpanel_core::pyunicode::is_space)
+    };
+
+    // With the version first, because `(?:\d\.\d)?` is greedy.
+    let version: Vec<char> = line[after_prefix..].chars().take(3).collect();
+    if version.len() == 3
+        && version[0].is_ascii_digit()
+        && version[1] == '.'
+        && version[2].is_ascii_digit()
+    {
+        let with_version = after_prefix + 3;
+        if followed_by_space(with_version) {
+            return Some(with_version);
+        }
+    }
+    // Backtrack: no version.
+    followed_by_space(after_prefix).then_some(after_prefix)
+}
+
+/// The byte length of the character at `at`.
+fn next_char_len(line: &str, at: usize) -> usize {
+    line[at..].chars().next().map_or(0, char::len_utf8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `CRON_PHP_TOKEN_RE` verdict the real Python gave, replayed.
+    ///
+    /// The cases that matter are the ones that look like they should be
+    /// rewritten and are not: `php8.4.1` (the trailing `\s` has nowhere to
+    /// match and backtracking to a bare `php` then finds `8`), `&&php8.1` (no
+    /// whitespace after `&&`), a `php` at the end of a line, and anything
+    /// reached through a path other than `/usr/bin/`.
+    #[test]
+    fn a_cron_line_is_retargeted_the_way_the_python_retargets_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/cron_php_token.json");
+        let corpus: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the cron corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["cases"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 78, "the corpus changed size");
+        // The pattern is in the corpus so a change to it on the Python side
+        // shows up here rather than as a silent disagreement.
+        assert_eq!(
+            corpus["pattern"].as_str(),
+            Some(r"(&&\s+)((?:/usr/bin/)?php(?:\d\.\d)?)(\s)")
+        );
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut rewritten = 0usize;
+        for case in cases {
+            let line = case["line"].as_str().unwrap_or("");
+            let php_bin = case["php_bin"].as_str().unwrap_or("");
+            let want = case["rewritten"].as_str().unwrap_or("");
+            let got = retarget_php_line(line, php_bin);
+            if case["changed"].as_bool().unwrap_or(false) {
+                rewritten += 1;
+            }
+            if got != want {
+                failures.push(format!(
+                    "{line:?} with {php_bin:?}\n  python {want:?}\n  rust   {got:?}"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+        // A corpus in which nothing is rewritten would agree with a function
+        // that never rewrites anything.
+        assert!(rewritten >= 20, "only {rewritten} cases rewrite anything");
+    }
 
     fn corpus() -> serde_json::Value {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

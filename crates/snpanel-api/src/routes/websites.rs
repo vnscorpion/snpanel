@@ -53,7 +53,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/websites/{website_id}",
-            axum::routing::delete(delete_website).fallback(crate::fallback),
+            axum::routing::delete(delete_website)
+                .patch(update_website)
+                .fallback(crate::fallback),
         )
         .route(
             "/websites/{website_id}/aliases",
@@ -180,6 +182,74 @@ fn website_json(
         "app_id": w.app_id,
         "aliases": aliases.iter().map(alias_json).collect::<Vec<_>>(),
     })
+}
+
+/// Source: `nginx.update_custom_block`.
+///
+/// Write the customer's snippet to its own include file, then make sure the
+/// vhost includes it **in the right place** — and rewrite the vhost only if
+/// the include line moved. When it did not, the file is left alone and only
+/// tested and reloaded: rewriting a file that does not need it is a backup
+/// taken, a window where the file is half-written, and a diff for an
+/// administrator to wonder about.
+///
+/// Two endpoints call this: `PUT /websites/{id}/nginx-custom` and the
+/// `nginx_custom` branch of `PATCH /websites/{id}`.
+async fn update_custom_block(
+    state: &AppState,
+    domain: &str,
+    validated: &snpanel_nginx::CustomDirectives,
+) -> Result<(), Response> {
+    if state.settings.command_dry_run {
+        return Ok(());
+    }
+    let Some(existing) = read_vhost(state, domain).await else {
+        // Source: `FileNotFoundError(str(target))` — the Python's message is
+        // the path and nothing else.
+        return Err(bad_request(&format!(
+            "/etc/nginx/sites-available/{domain}.conf"
+        )));
+    };
+    let positioned = snpanel_nginx::ensure_custom_include_position(&existing, domain)
+        .map_err(|e| bad_request(&e.to_string()))?;
+    let write = shell::privileged(
+        false,
+        "nginx-custom-write",
+        &[domain],
+        Some(validated.as_str()),
+        None,
+    )
+    .await;
+    if !write.ok() {
+        return Err(bad_request(
+            write
+                .failure_detail("Cannot write the custom nginx block")
+                .trim(),
+        ));
+    }
+    if positioned != existing {
+        let plan = snpanel_nginx::VhostPlan {
+            path: vhost_path_for(state, domain).expect("a validated domain"),
+            content: positioned,
+            previous: Some(existing),
+            custom_include: validated.as_str().to_string(),
+            custom_include_path: String::new(),
+        };
+        return apply_vhost(state, &plan).await;
+    }
+    let test = shell::privileged(false, "nginx-test", &[], None, Some(&["nginx", "-t"])).await;
+    if !test.ok() {
+        return Err(bad_request(test.failure_detail("nginx -t failed").trim()));
+    }
+    let _ = shell::privileged(
+        false,
+        "nginx-reload",
+        &[],
+        None,
+        Some(&["bash", "-lc", "nginx -t && systemctl reload nginx"]),
+    )
+    .await;
+    Ok(())
 }
 
 /// Source: `_has_live_certificate`.
@@ -697,59 +767,8 @@ async fn set_nginx_custom(
         Err(e) => return bad_request(&e.to_string()),
     };
 
-    if !state.settings.command_dry_run {
-        let Some(existing) = read_vhost(&state, &website.domain).await else {
-            return bad_request(&format!(
-                "/etc/nginx/sites-available/{}.conf",
-                website.domain
-            ));
-        };
-        let positioned =
-            match snpanel_nginx::ensure_custom_include_position(&existing, &website.domain) {
-                Ok(p) => p,
-                Err(e) => return bad_request(&e.to_string()),
-            };
-        let write = shell::privileged(
-            false,
-            "nginx-custom-write",
-            &[&website.domain],
-            Some(validated.as_str()),
-            None,
-        )
-        .await;
-        if !write.ok() {
-            return bad_request(
-                write
-                    .failure_detail("Cannot write the custom nginx block")
-                    .trim(),
-            );
-        }
-        if positioned != existing {
-            let plan = snpanel_nginx::VhostPlan {
-                path: vhost_path_for(&state, &website.domain).expect("a validated domain"),
-                content: positioned,
-                previous: Some(existing),
-                custom_include: validated.as_str().to_string(),
-                custom_include_path: String::new(),
-            };
-            if let Err(r) = apply_vhost(&state, &plan).await {
-                return r;
-            }
-        } else {
-            let test =
-                shell::privileged(false, "nginx-test", &[], None, Some(&["nginx", "-t"])).await;
-            if !test.ok() {
-                return bad_request(test.failure_detail("nginx -t failed").trim());
-            }
-            let _ = shell::privileged(
-                false,
-                "nginx-reload",
-                &[],
-                None,
-                Some(&["bash", "-lc", "nginx -t && systemctl reload nginx"]),
-            )
-            .await;
-        }
+    if let Err(r) = update_custom_block(&state, &website.domain, &validated).await {
+        return r;
     }
 
     if let Err(e) = state
@@ -4199,9 +4218,1083 @@ async fn rewrite_for_wordpress(
     .map(|_| ())
 }
 
+/// Source: `WebsiteUpdate`'s validators.
+///
+/// Each field is optional, and each one that is present is validated before
+/// any of them is applied — pydantic runs on the whole body first. So a
+/// request carrying a good `php_version` and a bad `status` changes nothing,
+/// which is **not** what the handler's own per-branch failures do.
+struct WebsiteUpdateFields {
+    php_version: Option<String>,
+    app_type: Option<String>,
+    app_id: Option<i64>,
+    document_root: Option<String>,
+    status: Option<String>,
+    owner_id: Option<i64>,
+    nginx_custom: Option<String>,
+    nginx_rewrite_mode: Option<String>,
+    waf_enabled: Option<bool>,
+    http_flood_enabled: Option<bool>,
+}
+
+/// Source: `_validate_document_root`.
+///
+/// **Not the same function as `DocumentRoot::parse`**, which is
+/// `site_users.validate_document_root` and allows a different set of
+/// characters. This one is the schema's, and it is stricter: every segment
+/// must match `[A-Za-z0-9._-]+`, so `public html` is refused here and
+/// accepted there.
+fn schema_document_root(value: &str) -> Result<String, String> {
+    let cleaned = value.trim().replace('\\', "/");
+    let bytes = cleaned.as_bytes();
+    let drive_prefix =
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/';
+    if cleaned.starts_with('/') || drive_prefix {
+        return Err("document_root must be relative to the website root".to_string());
+    }
+    let cleaned = cleaned.trim_matches('/');
+    if cleaned.is_empty() || cleaned.chars().count() > 255 {
+        return Err("document_root must be a relative path up to 255 characters".to_string());
+    }
+    let parts: Vec<&str> = cleaned.split('/').collect();
+    let safe = |part: &&str| {
+        !part.is_empty()
+            && *part != "."
+            && *part != ".."
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    if !parts.iter().all(safe) {
+        return Err(
+            "document_root must be a safe relative path such as public_html/public".to_string(),
+        );
+    }
+    Ok(parts.join("/"))
+}
+
+/// Source: `WebsiteUpdate`'s five `field_validator`s.
+///
+/// Every message is the Python's, because pydantic renders a raised
+/// `ValueError` as `Value error, <message>` and an administrator reads it.
+fn website_update_fields(payload: &Value) -> Result<WebsiteUpdateFields, Response> {
+    let text = |key: &str| payload.get(key).and_then(Value::as_str);
+    let value_error = |field: &str, message: &str| {
+        crate::errors::value_error(field, message, payload.get(field).unwrap_or(&Value::Null))
+    };
+
+    let php_version = match text("php_version") {
+        Some(v) => {
+            if !snpanel_nginx::ALLOWED_PHP_VERSIONS.contains(&v) {
+                let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_PHP_VERSIONS.to_vec();
+                allowed.sort_unstable();
+                return Err(value_error(
+                    "php_version",
+                    &format!("Unsupported PHP version. Allowed: {allowed:?}"),
+                ));
+            }
+            Some(v.to_string())
+        }
+        None => None,
+    };
+
+    let app_type = match text("app_type") {
+        Some(v) => {
+            if !snpanel_nginx::ALLOWED_APP_TYPES.contains(&v) {
+                let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_APP_TYPES.to_vec();
+                allowed.sort_unstable();
+                return Err(value_error(
+                    "app_type",
+                    &format!("Unsupported app type. Allowed: {allowed:?}"),
+                ));
+            }
+            Some(v.to_string())
+        }
+        None => None,
+    };
+
+    // `value.strip().lower()` **before** the membership check, and the
+    // normalised value is what is stored — so ` Laravel ` is accepted and
+    // saved as `laravel`.
+    let nginx_rewrite_mode = match text("nginx_rewrite_mode") {
+        Some(v) => {
+            let normalized = v.trim().to_lowercase();
+            if !snpanel_nginx::ALLOWED_REWRITE_MODES.contains(&normalized.as_str()) {
+                let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_REWRITE_MODES.to_vec();
+                allowed.sort_unstable();
+                return Err(value_error(
+                    "nginx_rewrite_mode",
+                    &format!("Unsupported nginx rewrite mode. Allowed: {allowed:?}"),
+                ));
+            }
+            Some(normalized)
+        }
+        None => None,
+    };
+
+    let document_root = match text("document_root") {
+        Some(v) => match schema_document_root(v) {
+            Ok(cleaned) => Some(cleaned),
+            Err(message) => return Err(value_error("document_root", &message)),
+        },
+        None => None,
+    };
+
+    let status = match text("status") {
+        Some(v) => {
+            if !matches!(v, "active" | "suspended" | "pending") {
+                return Err(value_error(
+                    "status",
+                    "status must be one of ['active', 'pending', 'suspended']",
+                ));
+            }
+            Some(v.to_string())
+        }
+        None => None,
+    };
+
+    Ok(WebsiteUpdateFields {
+        php_version,
+        app_type,
+        app_id: payload.get("app_id").and_then(Value::as_i64),
+        document_root,
+        status,
+        owner_id: payload.get("owner_id").and_then(Value::as_i64),
+        nginx_custom: text("nginx_custom").map(str::to_string),
+        nginx_rewrite_mode,
+        waf_enabled: payload.get("waf_enabled").and_then(Value::as_bool),
+        http_flood_enabled: payload.get("http_flood_enabled").and_then(Value::as_bool),
+    })
+}
+
+/// Source: `next_rewrite_mode` in the `app_type` branch.
+///
+/// **The requested rewrite mode is only honoured for a type that has a
+/// choice.** A WordPress site is a front controller and a static site is
+/// none, whatever was asked for — asking for `laravel` on a static site would
+/// otherwise write a `try_files` that reaches a PHP pool the site does not
+/// have.
+fn rewrite_mode_for_app_type<'a>(
+    app_type: &str,
+    requested: Option<&'a str>,
+    current: &'a str,
+) -> &'a str {
+    match app_type {
+        "wordpress" => "front_controller",
+        "static" => "none",
+        _ => requested.unwrap_or(current),
+    }
+}
+
+/// An allow-listed app type, as a `'static` string.
+///
+/// `RewriteOverrides` holds `&'static str` because the suspend path passes a
+/// literal. The value here came out of `ALLOWED_APP_TYPES`, so the matching
+/// entry of that list **is** the same string with a longer lifetime. The
+/// fallback is unreachable for a validated value, and it is the Python's own
+/// default rather than a panic.
+fn static_app_type(value: &str) -> &'static str {
+    snpanel_nginx::ALLOWED_APP_TYPES
+        .iter()
+        .copied()
+        .find(|t| *t == value)
+        .unwrap_or("wordpress")
+}
+
+/// The same for a rewrite mode.
+fn static_rewrite_mode(value: &str) -> &'static str {
+    snpanel_nginx::ALLOWED_REWRITE_MODES
+        .iter()
+        .copied()
+        .find(|m| *m == value)
+        .unwrap_or("none")
+}
+
+/// The three things every branch that touches the vhost does first.
+///
+/// Source: `waf.sync_website_rules` then `_sync_http_flood_zones` then
+/// `_rewrite_website_vhost`, repeated in five of this endpoint's branches.
+/// Written once because five copies is five places for the order to drift,
+/// and the order matters: the rule file has to exist before a vhost that
+/// includes it is tested.
+async fn resync_and_rewrite(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    overrides: RewriteOverrides,
+) -> Result<(), String> {
+    let waf =
+        crate::waf::sync_website_rules(state.settings.command_dry_run, website, &server_crs_mode())
+            .await
+            .map_err(|e| e.to_string())?;
+    if !waf.ok() {
+        return Err(command_error(&waf));
+    }
+    if website.http_flood_enabled {
+        sync_http_flood_zones(state)
+            .await
+            .map_err(|_| "Could not write the HTTP flood zones".to_string())?;
+    }
+    rewrite_owned_vhost(state, website, overrides)
+        .await
+        .map(|_| ())
+}
+
+/// `PATCH /websites/{website_id}`.
+///
+/// Source: `update_website`. Nine independent branches, each with its own
+/// `try`.
+///
+/// **A branch that fails does not undo the branches before it.** The Python
+/// assigns each field to the session as its branch succeeds and commits once
+/// at the end, so a request that changes the PHP version and then fails on
+/// the document root leaves the new PHP version written. That is reproduced
+/// rather than tidied into all-or-nothing: an administrator who retries sees
+/// the same state the Python would have left them.
+async fn update_website(
+    State(state): State<AppState>,
+    Path(website_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // Pydantic validates the whole body before the handler runs, so a bad
+    // field refuses the request without applying the good ones.
+    let fields = match website_update_fields(&payload) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let mut website = match authorized(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+
+    if let Some(php_version) = &fields.php_version {
+        if let Err(r) = apply_php_version(&state, &mut website, php_version).await {
+            return r;
+        }
+    }
+
+    let requested_app_type = fields
+        .app_type
+        .as_deref()
+        .filter(|t| *t != current_app_type(&website));
+    if let Some(next_app_type) = requested_app_type {
+        if let Err(r) = apply_app_type(&state, &current, &mut website, next_app_type, &fields).await
+        {
+            return r;
+        }
+    } else if let Some(app_id) = fields.app_id {
+        // Same mode, different application behind it. Only for a type that
+        // proxies: setting `app_id` on a static site would store a pointer
+        // nothing reads.
+        if website.app_type == "application" {
+            if let Err(r) = apply_app_id(&state, &current, &mut website, app_id).await {
+                return r;
+            }
+        }
+    }
+
+    if let Some(status) = &fields.status {
+        if let Err(e) = state.db.websites().set_status(website.id, status).await {
+            tracing::error!("setting the status of {} failed: {e}", website.domain);
+            return internal_error();
+        }
+        website.status = status.clone();
+    }
+
+    if let Some(document_root) = fields
+        .document_root
+        .as_deref()
+        .filter(|d| *d != current_document_root(&website))
+    {
+        if let Err(r) = apply_document_root(&state, &mut website, document_root).await {
+            return r;
+        }
+    }
+
+    if let Some(owner_id) = fields.owner_id {
+        if let Err(r) = apply_owner(&state, &current, &mut website, owner_id).await {
+            return r;
+        }
+    }
+
+    if let Some(nginx_custom) = &fields.nginx_custom {
+        let validated = match snpanel_nginx::CustomDirectives::validate(nginx_custom) {
+            Ok(v) => v,
+            Err(e) => return bad_request(&e.to_string()),
+        };
+        if let Err(r) = update_custom_block(&state, &website.domain, &validated).await {
+            return r;
+        }
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_nginx_custom(website.id, validated.as_str())
+            .await
+        {
+            tracing::error!("saving the custom block for {} failed: {e}", website.domain);
+            return internal_error();
+        }
+        website.nginx_custom = validated.as_str().to_string();
+        website.nginx_config_mode = "managed".to_string();
+    }
+
+    if let Some(requested) = fields
+        .nginx_rewrite_mode
+        .as_deref()
+        .filter(|m| *m != current_rewrite_mode(&website))
+    {
+        if let Err(r) = apply_rewrite_mode(&state, &mut website, requested).await {
+            return r;
+        }
+    }
+
+    if let Some(waf_enabled) = fields.waf_enabled {
+        if let Err(r) = apply_waf_enabled(&state, &current, &mut website, waf_enabled).await {
+            return r;
+        }
+    }
+
+    if let Some(http_flood_enabled) = fields.http_flood_enabled {
+        // `ensure_role(current_user.role, Role.admin)` — the flood zones are
+        // shared nginx state, so a customer cannot turn their own on.
+        if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+            return not_enough_permissions();
+        }
+        if let Err(r) = apply_http_flood(&state, &mut website, http_flood_enabled).await {
+            return r;
+        }
+    }
+
+    audit_website(&state, current.user.id, "update_website", &website.domain).await;
+
+    let row = match state.db.websites().by_id(website.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let aliases = state
+        .db
+        .websites()
+        .aliases(row.id)
+        .await
+        .unwrap_or_default();
+    let wordpress = has_wordpress_install(&row);
+    let ssl_enabled = row.ssl_enabled;
+    axum::Json(website_json(&row, &aliases, wordpress, ssl_enabled)).into_response()
+}
+
+/// `website.app_type or "wordpress"`, which the Python writes six times.
+fn current_app_type(website: &snpanel_db::Website) -> &str {
+    if website.app_type.is_empty() {
+        "wordpress"
+    } else {
+        &website.app_type
+    }
+}
+
+/// `website.document_root or "public_html"`.
+fn current_document_root(website: &snpanel_db::Website) -> &str {
+    if website.document_root.is_empty() {
+        "public_html"
+    } else {
+        &website.document_root
+    }
+}
+
+/// `_website_rewrite_mode` — `website.nginx_rewrite_mode or "none"`.
+fn current_rewrite_mode(website: &snpanel_db::Website) -> &str {
+    if website.nginx_rewrite_mode.is_empty() {
+        "none"
+    } else {
+        &website.nginx_rewrite_mode
+    }
+}
+
+async fn apply_php_version(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    php_version: &str,
+) -> Result<(), Response> {
+    let app_type = current_app_type(website).to_string();
+    let runtime_php = matches!(app_type.as_str(), "wordpress" | "php").then_some(php_version);
+    if let (Some(linux_user), Some(runtime)) = (
+        website.linux_user.as_deref().filter(|u| !u.is_empty()),
+        runtime_php,
+    ) {
+        // The pool for the new version has to exist before a vhost pointing
+        // at its socket is tested.
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-ensure",
+            &[linux_user, &website.root_path, runtime],
+            None,
+            None,
+        )
+        .await;
+    }
+
+    // The row the rewrite reads is the row as it is about to become.
+    let mut updated = website.clone();
+    updated.php_version = php_version.to_string();
+    resync_and_rewrite(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some(static_app_type(&app_type)),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map_err(|message| bad_request(&format!("Cannot write Nginx config: {message}")))?;
+
+    state
+        .db
+        .websites()
+        .set_php_version(website.id, php_version)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the PHP version of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.php_version = php_version.to_string();
+
+    // `except (RuntimeError, ValueError): pass` — existing cron lines carry
+    // the previous PHP CLI path, and leaving them would keep running the site
+    // on a version it no longer has. A failure here is not worth undoing the
+    // version change for.
+    retarget_website_cron(state, website).await;
+    Ok(())
+}
+
+/// Source: `cron.retarget_php_binary`.
+///
+/// Reads the whole crontab, rewrites the lines carrying this site's marker,
+/// and writes it back — but **only if something changed**, because a crontab
+/// rewritten to the same bytes is still a crontab replaced.
+async fn retarget_website_cron(state: &AppState, website: &snpanel_db::Website) {
+    let php_bin = crate::cron::php_binary(&website.php_version);
+    let cron_user = crate::cron::cron_user_for_website(
+        website.linux_user.as_deref(),
+        &website.root_path,
+        &super::maintenance::web_user(),
+    );
+    let marker = format!("snpanel:{}", website.domain);
+    let all = super::maintenance::list_cron_all(state, &cron_user).await;
+
+    let mut changed = 0usize;
+    let mut updated: Vec<String> = Vec::new();
+    for line in all.lines() {
+        if line.contains(&marker) {
+            let next = crate::cron::retarget_php_line(line, &php_bin);
+            if next != line {
+                changed += 1;
+                updated.push(next);
+                continue;
+            }
+        }
+        updated.push(line.to_string());
+    }
+    if changed == 0 {
+        return;
+    }
+    let content = if updated.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", updated.join("\n"))
+    };
+    if let Err(e) = super::maintenance::write_crontab(state, &cron_user, &content).await {
+        tracing::error!(
+            "could not retarget the cron jobs of {}: {e:?}",
+            website.domain
+        );
+    }
+}
+
+async fn apply_app_type(
+    state: &AppState,
+    current: &CurrentUser,
+    website: &mut snpanel_db::Website,
+    next_app_type: &str,
+    fields: &WebsiteUpdateFields,
+) -> Result<(), Response> {
+    let next_app = if next_app_type == "application" {
+        Some(resolve_app_for_owner(state, website.owner_id, fields.app_id, current).await?)
+    } else {
+        None
+    };
+
+    let runtime_php = matches!(next_app_type, "wordpress" | "php")
+        .then(|| website.php_version.clone())
+        .filter(|v| !v.is_empty());
+    if let (Some(linux_user), Some(runtime)) = (
+        website.linux_user.as_deref().filter(|u| !u.is_empty()),
+        runtime_php.as_deref(),
+    ) {
+        let _ = shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-ensure",
+            &[linux_user, &website.root_path, runtime],
+            None,
+            None,
+        )
+        .await;
+    }
+
+    let next_rewrite_mode = rewrite_mode_for_app_type(
+        next_app_type,
+        fields.nginx_rewrite_mode.as_deref(),
+        current_rewrite_mode(website),
+    )
+    .to_string();
+
+    let mut updated = website.clone();
+    updated.app_type = next_app_type.to_string();
+    updated.nginx_rewrite_mode = next_rewrite_mode.clone();
+    updated.app_id = next_app.as_ref().map(|a| a.id);
+    resync_and_rewrite(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some(static_app_type(next_app_type)),
+            rewrite_mode: Some(static_rewrite_mode(&next_rewrite_mode)),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map_err(|message| bad_request(&format!("Cannot change website mode: {message}")))?;
+
+    state
+        .db
+        .websites()
+        .set_app_mode(
+            website.id,
+            next_app_type,
+            &next_rewrite_mode,
+            next_app.as_ref().map(|a| a.id),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the mode of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.app_type = next_app_type.to_string();
+    website.nginx_rewrite_mode = next_rewrite_mode;
+    website.app_id = next_app.as_ref().map(|a| a.id);
+    Ok(())
+}
+
+async fn apply_app_id(
+    state: &AppState,
+    current: &CurrentUser,
+    website: &mut snpanel_db::Website,
+    app_id: i64,
+) -> Result<(), Response> {
+    let app = resolve_app_for_owner(state, website.owner_id, Some(app_id), current).await?;
+    let name = app.name.clone();
+    rewrite_owned_vhost(state, website, RewriteOverrides::default())
+        .await
+        .map_err(|message| {
+            bad_request(&format!("Cannot point this website at {name}: {message}"))
+        })?;
+    state
+        .db
+        .websites()
+        .set_app_id(website.id, Some(app.id))
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the application of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.app_id = Some(app.id);
+    Ok(())
+}
+
+async fn apply_document_root(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    document_root: &str,
+) -> Result<(), Response> {
+    let wrap = |message: String| bad_request(&format!("Cannot change document root: {message}"));
+
+    // `site_users.ensure_document_root` — the directory has to exist before a
+    // vhost with a `root` pointing at it is tested.
+    if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+        let result = shell::privileged(
+            state.settings.command_dry_run,
+            "site-document-root-ensure",
+            &[linux_user, &website.root_path, document_root],
+            None,
+            None,
+        )
+        .await;
+        if !result.ok() {
+            return Err(wrap(command_error(&result)));
+        }
+    }
+
+    let mut updated = website.clone();
+    updated.document_root = document_root.to_string();
+    resync_and_rewrite(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some(static_app_type(current_app_type(website))),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map_err(wrap)?;
+
+    state
+        .db
+        .websites()
+        .set_document_root(website.id, document_root)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "setting the document root of {} failed: {e}",
+                website.domain
+            );
+            internal_error()
+        })?;
+    website.document_root = document_root.to_string();
+    Ok(())
+}
+
+async fn apply_owner(
+    state: &AppState,
+    current: &CurrentUser,
+    website: &mut snpanel_db::Website,
+    owner_id: i64,
+) -> Result<(), Response> {
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return Err(not_enough_permissions());
+    }
+    let owner = match state.db.users().by_id(owner_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return Err(not_found("Owner not found")),
+        Err(e) => {
+            tracing::error!("owner lookup failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    // The count excludes this website: moving a site to an owner who is
+    // already at their limit is refused, but moving it to the owner it
+    // already has is not.
+    let assigned = state
+        .db
+        .websites()
+        .count_for_owner_excluding(owner.id, website.id)
+        .await
+        .unwrap_or(i64::MAX);
+    if !permissions::is_admin_role(&owner.role) && assigned >= owner.website_limit {
+        return Err(crate::errors::error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Website limit reached",
+        ));
+    }
+    if owner_id == website.owner_id {
+        // The Python still assigns it, and the files are not moved.
+        state
+            .db
+            .websites()
+            .set_owner_id(website.id, owner_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("setting the owner of {} failed: {e}", website.domain);
+                internal_error()
+            })?;
+        return Ok(());
+    }
+
+    // The new owner's allowance has to cover what is about to land in it.
+    let incoming = crate::storage_quota::website_storage_used_bytes(&website.root_path);
+    if let Err(message) = enforce_owner_quota(state, &owner, incoming).await {
+        return Err(crate::errors::error(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            &message,
+        ));
+    }
+
+    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&owner.username) else {
+        return Err(internal_error());
+    };
+    let Ok(domain) = snpanel_core::Domain::parse(&website.domain) else {
+        return Err(internal_error());
+    };
+    let new_root = snpanel_core::types::SitePath::site_root(&panel_user, &domain);
+    let new_root_path = new_root.as_path().to_string_lossy().into_owned();
+    let new_linux_user = panel_user.as_str().to_string();
+    let runtime_php = matches!(current_app_type(website), "wordpress" | "php")
+        .then(|| website.php_version.clone())
+        .filter(|v| !v.is_empty());
+
+    let moved = shell::privileged(
+        state.settings.command_dry_run,
+        "site-runtime-move",
+        &[
+            &new_linux_user,
+            &website.root_path,
+            &new_root_path,
+            runtime_php.as_deref().unwrap_or("none"),
+        ],
+        None,
+        None,
+    )
+    .await;
+    if !moved.ok() {
+        return Err(bad_request(&command_error(&moved)));
+    }
+
+    let mut updated = website.clone();
+    updated.root_path = new_root_path.clone();
+    updated.linux_user = Some(new_linux_user.clone());
+    resync_and_rewrite(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some(static_app_type(current_app_type(website))),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map_err(|message| bad_request(&message))?;
+
+    state
+        .db
+        .websites()
+        .set_owner(website.id, owner_id, &new_root_path, &new_linux_user)
+        .await
+        .map_err(|e| {
+            tracing::error!("moving {} to another owner failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.owner_id = owner_id;
+    website.root_path = new_root_path;
+    website.linux_user = Some(new_linux_user);
+    Ok(())
+}
+
+async fn apply_rewrite_mode(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    requested: &str,
+) -> Result<(), Response> {
+    let app_type = current_app_type(website).to_string();
+    let next = rewrite_mode_for_app_type(&app_type, Some(requested), requested).to_string();
+
+    let mut updated = website.clone();
+    updated.nginx_rewrite_mode = next.clone();
+    resync_and_rewrite(
+        state,
+        &updated,
+        RewriteOverrides {
+            app_type: Some(static_app_type(&app_type)),
+            rewrite_mode: Some(static_rewrite_mode(&next)),
+            ..RewriteOverrides::default()
+        },
+    )
+    .await
+    .map_err(|message| bad_request(&format!("Cannot change Nginx rewrite: {message}")))?;
+
+    state
+        .db
+        .websites()
+        .set_rewrite_mode(website.id, &next)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the rewrite mode of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.nginx_rewrite_mode = next;
+    website.nginx_config_mode = "managed".to_string();
+    Ok(())
+}
+
+async fn apply_waf_enabled(
+    state: &AppState,
+    current: &CurrentUser,
+    website: &mut snpanel_db::Website,
+    waf_enabled: bool,
+) -> Result<(), Response> {
+    // This endpoint already restricts the website itself to its owner, so the
+    // only extra question is whether their package includes the WAF.
+    if !may_manage_waf(state, current).await {
+        return Err(crate::errors::error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Your hosting package does not include WAF settings",
+        ));
+    }
+    let waf =
+        crate::waf::sync_website_rules(state.settings.command_dry_run, website, &server_crs_mode())
+            .await
+            .map_err(|e| bad_request(&e.to_string()))?;
+    if !waf.ok() {
+        return Err(bad_request(&command_error(&waf)));
+    }
+    update_waf_block(state, &website.domain, waf_enabled).await?;
+    state
+        .db
+        .websites()
+        .set_waf_enabled(website.id, waf_enabled)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the WAF flag of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.waf_enabled = waf_enabled;
+    Ok(())
+}
+
+async fn apply_http_flood(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    enabled: bool,
+) -> Result<(), Response> {
+    // The row is written **first**, because the zone file is built from the
+    // rows: writing the zones before the row would build them from the old
+    // answer.
+    state
+        .db
+        .websites()
+        .set_http_flood_enabled(website.id, enabled)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the flood flag of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.http_flood_enabled = enabled;
+
+    let config = snpanel_nginx::HttpFloodConfig::from_text(&website.http_flood_config);
+    // **Turning it on writes the zones first; turning it off writes the vhost
+    // first.** Either way the vhost never references a zone that is not
+    // defined, which nginx refuses to start on — and that would take every
+    // site down, not just this one.
+    if enabled {
+        sync_http_flood_zones(state).await?;
+        update_http_flood_block(state, &website.domain, true, &config).await?;
+    } else {
+        update_http_flood_block(state, &website.domain, false, &config).await?;
+        sync_http_flood_zones(state).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rewrite mode a type is allowed to have.
+    ///
+    /// Source: `next_rewrite_mode = "front_controller" if app_type ==
+    /// "wordpress" else "none" if app_type == "static" else
+    /// payload.nginx_rewrite_mode or _website_rewrite_mode(website)`.
+    ///
+    /// **Two of the four types have no choice.** Asking for `laravel` on a
+    /// static site would otherwise write a `try_files` that falls through to a
+    /// PHP pool the site does not have, and every URL that is not a file
+    /// would 502 rather than 404.
+    #[test]
+    fn only_a_type_with_a_choice_gets_the_rewrite_mode_it_asked_for() {
+        // WordPress and static are decided by the type, whatever was asked.
+        assert_eq!(
+            rewrite_mode_for_app_type("wordpress", Some("laravel"), "none"),
+            "front_controller"
+        );
+        assert_eq!(
+            rewrite_mode_for_app_type("static", Some("laravel"), "front_controller"),
+            "none"
+        );
+        // PHP and application take the request.
+        assert_eq!(
+            rewrite_mode_for_app_type("php", Some("laravel"), "none"),
+            "laravel"
+        );
+        assert_eq!(
+            rewrite_mode_for_app_type("application", Some("codeigniter"), "none"),
+            "codeigniter"
+        );
+        // And keep what the row had when nothing was asked for.
+        assert_eq!(
+            rewrite_mode_for_app_type("php", None, "seohburl"),
+            "seohburl"
+        );
+        assert_eq!(
+            rewrite_mode_for_app_type("application", None, "none"),
+            "none"
+        );
+    }
+
+    /// The schema's document root is not the site's.
+    ///
+    /// Source: `_validate_document_root` in `schemas.py`, which is **not**
+    /// `site_users.validate_document_root`. The schema's is stricter: every
+    /// segment must match `[A-Za-z0-9._-]+`, so a space is refused here and
+    /// accepted by the other one. Two functions with the same name and
+    /// different answers is exactly the shape that got `is_domain` wrong
+    /// earlier in this migration.
+    #[test]
+    fn the_schemas_document_root_is_the_stricter_of_the_two() {
+        assert_eq!(
+            schema_document_root("public_html").as_deref(),
+            Ok("public_html")
+        );
+        assert_eq!(
+            schema_document_root("  public_html/public  ").as_deref(),
+            Ok("public_html/public")
+        );
+        // Backslashes become slashes, and the surrounding ones are stripped.
+        assert_eq!(
+            schema_document_root("/public_html\\public/")
+                .as_deref()
+                .map_err(String::as_str),
+            Err("document_root must be relative to the website root")
+        );
+        assert_eq!(
+            schema_document_root("public_html\\public").as_deref(),
+            Ok("public_html/public")
+        );
+        // An empty segment is refused rather than collapsed: the Python
+        // splits on `/` and checks every part, and `""` is in the rejected
+        // set alongside `.` and `..`.
+        assert!(schema_document_root("a//b").is_err());
+        // A **trailing** slash is stripped, and this is the only shape that
+        // says so: every other case here with a slash to strip has one at the
+        // start, which the check above refuses before the strip is reached.
+        assert_eq!(
+            schema_document_root("public_html/").as_deref(),
+            Ok("public_html")
+        );
+        assert_eq!(
+            schema_document_root("public_html//").as_deref(),
+            Ok("public_html")
+        );
+        assert_eq!(schema_document_root("a/b/").as_deref(), Ok("a/b"));
+        // Stripped to nothing is refused, not accepted as empty.
+        assert!(schema_document_root("//").is_err());
+        // The **message**, not just the refusal. A Windows drive prefix is
+        // also caught by the character rule below it - `:` is not in
+        // `[A-Za-z0-9._-]` - so only the message says which check fired, and
+        // a mutation deleting the drive check survived a test that read one
+        // and not the other.
+        assert_eq!(
+            schema_document_root("C:/win")
+                .as_deref()
+                .map_err(String::as_str),
+            Err("document_root must be relative to the website root")
+        );
+        assert_eq!(
+            schema_document_root("a b")
+                .as_deref()
+                .map_err(String::as_str),
+            Err("document_root must be a safe relative path such as public_html/public")
+        );
+        assert_eq!(
+            schema_document_root("   ")
+                .as_deref()
+                .map_err(String::as_str),
+            Err("document_root must be a relative path up to 255 characters")
+        );
+
+        for bad in ["/abs", "C:/win", "", "   ", "..", "a/../b", "a/./b"] {
+            assert!(schema_document_root(bad).is_err(), "{bad:?} was accepted");
+        }
+        // A space is a segment character the *other* validator allows.
+        assert!(schema_document_root("public html").is_err());
+        assert!(schema_document_root("a b/c").is_err());
+        // 255 characters, counted after the slashes are stripped.
+        assert!(schema_document_root(&"a".repeat(255)).is_ok());
+        assert!(schema_document_root(&"a".repeat(256)).is_err());
+    }
+
+    /// The payload is validated whole before anything is applied.
+    ///
+    /// Source: pydantic, which runs on the body before the handler sees it.
+    /// So a request carrying a good `php_version` and a bad `status` changes
+    /// **nothing** — which is not what the handler's own per-branch failures
+    /// do, and the difference is worth keeping straight.
+    #[test]
+    fn a_bad_field_refuses_the_request_rather_than_the_branch() {
+        let fields = |payload: Value| website_update_fields(&payload);
+
+        assert!(fields(json!({})).is_ok());
+        // Good php_version, bad status: refused, and nothing is applied.
+        assert!(fields(json!({ "php_version": "8.4", "status": "paused" })).is_err());
+        assert!(fields(json!({ "php_version": "9.9" })).is_err());
+        assert!(fields(json!({ "app_type": "django" })).is_err());
+        assert!(fields(json!({ "document_root": "/abs" })).is_err());
+        assert!(fields(json!({ "nginx_rewrite_mode": "symfony" })).is_err());
+
+        // The rewrite mode is trimmed and lowered **before** the membership
+        // check, and the normalised value is what is stored.
+        let ok = fields(json!({ "nginx_rewrite_mode": "  LARAVEL  " })).expect("accepted");
+        assert_eq!(ok.nginx_rewrite_mode.as_deref(), Some("laravel"));
+
+        // The three statuses, and nothing else.
+        for status in ["active", "suspended", "pending"] {
+            assert!(fields(json!({ "status": status })).is_ok(), "{status}");
+        }
+        for status in ["Active", "deleted", ""] {
+            assert!(fields(json!({ "status": status })).is_err(), "{status}");
+        }
+
+        // A field that is absent stays absent rather than becoming a default:
+        // `PATCH` with `{}` must change nothing at all.
+        let empty = fields(json!({})).expect("accepted");
+        assert!(empty.php_version.is_none());
+        assert!(empty.app_type.is_none());
+        assert!(empty.status.is_none());
+        assert!(empty.owner_id.is_none());
+        assert!(empty.waf_enabled.is_none());
+        assert!(empty.http_flood_enabled.is_none());
+    }
+
+    /// The row's blank columns read as the Python's defaults.
+    ///
+    /// Source: `website.app_type or "wordpress"`, `website.document_root or
+    /// "public_html"`, `_website_rewrite_mode`. A row written before a column
+    /// had a default carries an empty string, and comparing the request
+    /// against `""` rather than against the default would rewrite the vhost
+    /// for a change that is not one.
+    #[test]
+    fn a_blank_column_reads_as_the_python_default() {
+        let mut w = website();
+        w.app_type = String::new();
+        w.document_root = String::new();
+        w.nginx_rewrite_mode = String::new();
+        assert_eq!(current_app_type(&w), "wordpress");
+        assert_eq!(current_document_root(&w), "public_html");
+        assert_eq!(current_rewrite_mode(&w), "none");
+
+        w.app_type = "php".to_string();
+        w.document_root = "public".to_string();
+        w.nginx_rewrite_mode = "laravel".to_string();
+        assert_eq!(current_app_type(&w), "php");
+        assert_eq!(current_document_root(&w), "public");
+        assert_eq!(current_rewrite_mode(&w), "laravel");
+    }
+
+    /// An allow-listed value keeps its identity, not a default.
+    #[test]
+    fn a_validated_value_survives_the_lifetime_widening() {
+        for app_type in snpanel_nginx::ALLOWED_APP_TYPES {
+            assert_eq!(static_app_type(app_type), *app_type);
+        }
+        for mode in snpanel_nginx::ALLOWED_REWRITE_MODES {
+            assert_eq!(static_rewrite_mode(mode), *mode);
+        }
+        // The fallbacks are the Python's defaults, reached only by a value
+        // that never came through the validator.
+        assert_eq!(static_app_type("django"), "wordpress");
+        assert_eq!(static_rewrite_mode("symfony"), "none");
+    }
 
     /// `install_wordpress=true` on a static site installs nothing.
     ///

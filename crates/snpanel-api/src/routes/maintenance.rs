@@ -2512,16 +2512,19 @@ async fn write_as_site_user(
 
 /// Source: `platform.web_user()` - "`www-data` on Ubuntu, `nginx` on EL".
 ///
+/// Shared with `websites::retarget_website_cron`, which has to install a
+/// retargeted job under the same account the original was installed under.
+///
 /// A job installed under the wrong name does not run at all, which is the
 /// quietest way for a backup or a WordPress cron to stop happening.
-fn web_user() -> String {
+pub(super) fn web_user() -> String {
     snpanel_osabi::detect()
         .map(|p| p.web_user().to_string())
         .unwrap_or_else(|_| "www-data".to_string())
 }
 
 /// Source: `cron.list_cron_all`.
-async fn list_cron_all(state: &AppState, cron_user: &str) -> String {
+pub(super) async fn list_cron_all(state: &AppState, cron_user: &str) -> String {
     let result = shell::privileged(
         state.settings.command_dry_run,
         "cron-list",
@@ -2546,7 +2549,11 @@ fn lines_for_domain(all: &str, domain: &str) -> Vec<String> {
 ///
 /// The helper takes the entire file on stdin because a crontab has no
 /// line-addressed edit: the panel reads it, changes it, and writes it back.
-async fn write_crontab(state: &AppState, cron_user: &str, content: &str) -> Result<(), Response> {
+pub(super) async fn write_crontab(
+    state: &AppState,
+    cron_user: &str,
+    content: &str,
+) -> Result<(), Response> {
     let result = shell::privileged(
         state.settings.command_dry_run,
         "cron-write",

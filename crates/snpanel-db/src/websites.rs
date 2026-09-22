@@ -505,6 +505,25 @@ impl<'a> WebsiteRepo<'a> {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Source: `db.query(Website).filter(Website.owner_id == owner.id,
+    /// Website.id != website.id).count()`.
+    ///
+    /// Excluding one website, because moving a site to the owner it already
+    /// has must not count that site against their own limit.
+    pub async fn count_for_owner_excluding(
+        &self,
+        owner_id: i64,
+        exclude_id: i64,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM websites WHERE owner_id = ? AND id != ?",
+        )
+        .bind(owner_id)
+        .bind(exclude_id)
+        .fetch_one(self.pool)
+        .await?)
+    }
+
     /// Source: `db.query(Website).filter(Website.owner_id == owner_id).count()`
     /// - the count a website limit is checked against.
     pub async fn count_for_owner(&self, owner_id: i64) -> Result<i64, DbError> {
@@ -579,6 +598,125 @@ impl<'a> WebsiteRepo<'a> {
         .bind(id)
         .execute(self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Source: `website.php_version = payload.php_version`.
+    pub async fn set_php_version(&self, id: i64, php_version: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET php_version = ? WHERE id = ?")
+            .bind(php_version)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: the three assignments in the `app_type` branch.
+    ///
+    /// They move together because the rewrite mode is derived from the type
+    /// and `app_id` is only meaningful for a proxied one: a row with
+    /// `app_type = "static"` and an `app_id` still set names an application
+    /// nothing will ever proxy to.
+    pub async fn set_app_mode(
+        &self,
+        id: i64,
+        app_type: &str,
+        rewrite_mode: &str,
+        app_id: Option<i64>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET app_type = ?, nginx_rewrite_mode = ?, app_id = ? WHERE id = ?",
+        )
+        .bind(app_type)
+        .bind(rewrite_mode)
+        .bind(app_id)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `website.app_id = next_app.id` on the same-mode branch.
+    pub async fn set_app_id(&self, id: i64, app_id: Option<i64>) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET app_id = ? WHERE id = ?")
+            .bind(app_id)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `website.document_root = next_document_root`.
+    pub async fn set_document_root(&self, id: i64, document_root: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET document_root = ? WHERE id = ?")
+            .bind(document_root)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: the owner-change branch — `root_path`, `linux_user` and
+    /// `owner_id`.
+    ///
+    /// All three or none: the files have just been moved, and a row that kept
+    /// the old `root_path` would point the vhost at a directory that is no
+    /// longer there.
+    pub async fn set_owner(
+        &self,
+        id: i64,
+        owner_id: i64,
+        root_path: &str,
+        linux_user: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET owner_id = ?, root_path = ?, linux_user = ? WHERE id = ?")
+            .bind(owner_id)
+            .bind(root_path)
+            .bind(linux_user)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `website.owner_id = payload.owner_id` when the owner did not
+    /// actually change — the Python assigns it either way, and the files are
+    /// not moved.
+    pub async fn set_owner_id(&self, id: i64, owner_id: i64) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET owner_id = ? WHERE id = ?")
+            .bind(owner_id)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `website.nginx_rewrite_mode = next_rewrite_mode;
+    /// website.nginx_config_mode = "managed"`.
+    ///
+    /// Changing the rewrite through the panel is the panel taking the file
+    /// back, which is what `nginx_config_mode` records.
+    pub async fn set_rewrite_mode(&self, id: i64, rewrite_mode: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE websites SET nginx_rewrite_mode = ?, nginx_config_mode = 'managed' \
+             WHERE id = ?",
+        )
+        .bind(rewrite_mode)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `website.http_flood_enabled = next_enabled`, which the Python
+    /// assigns **before** it writes the zones — the zone file is built from
+    /// the rows, so the row has to say what it wants first.
+    pub async fn set_http_flood_enabled(&self, id: i64, enabled: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET http_flood_enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
         Ok(())
     }
 }

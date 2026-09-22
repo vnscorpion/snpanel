@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **141 of 211** | 66% |
+| API endpoints answered by Rust | **142 of 211** | 67% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -552,6 +552,52 @@ produced**:
 
 Both now assert against the constant or the formatter the production path
 uses.
+
+### There are two `validate_document_root`s and they disagree
+
+`schemas._validate_document_root` and `site_users.validate_document_root`
+share a name, a docstring shape and most of their body. They do **not** share
+their character set: the schema's requires every segment to match
+`[A-Za-z0-9._-]+`, and the site's does not, so `public html` is refused by
+one and accepted by the other.
+
+`PATCH /websites/{id}` goes through the schema's. `DocumentRoot::parse` in
+`snpanel-core` is the site's, and reaching for it here because the name
+matched would have widened what the endpoint accepts.
+
+This is the third pair of same-named functions in this migration that answer
+differently — after the two `is_domain`s, and after `sync_site_rules` against
+`sync_website_rules`. The lesson has not changed: **the name is not the
+contract**, and a port that follows the name rather than the call site
+inherits the wrong one.
+
+### A `PATCH` branch that fails does not undo the branches before it
+
+`update_website` has nine branches, each with its own `try`, and the Python
+assigns each field to the session as its branch succeeds. It commits once at
+the end — but SQLAlchemy has already been told about the earlier fields, so a
+request that changes the PHP version and then fails on the document root
+**leaves the new PHP version written**.
+
+Reproduced rather than tidied into all-or-nothing. An administrator who
+retries has to see the state the Python would have left them, or the retry
+does something different from what they expect.
+
+Worth keeping straight against the layer above it: pydantic validates the
+whole body *before* the handler runs, so a bad field refuses the request
+without applying any of the good ones. Same endpoint, two different
+atomicities, and which one applies depends on whether the failure is a
+validation error or a command failure.
+
+### Turning HTTP flood on and off are not mirror images
+
+On: write the row, write the **zones**, then write the vhost. Off: write the
+row, write the **vhost**, then the zones.
+
+Either way the vhost never references a `limit_req_zone` that is not defined,
+which nginx refuses to start on — and that takes every site on the box down,
+not just this one. The Python has the two orders written out separately and
+it is not an accident.
 
 ### `char::is_alphanumeric` is not `str.isalnum`, by 6167 code points
 
@@ -1093,9 +1139,9 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `users` (2), `websites` (2), `waf` (1),
+`maintenance` (31), `malware` (11), `users` (2), `waf` (1), `websites` (1),
 then `provisioning` (13) and `site_apps` (10), which need the `docker`
-domain. **70 endpoints**, counted by `list-missing-endpoints.py`;
+domain. **69 endpoints**, counted by `list-missing-endpoints.py`;
 `check-counters-agree.py` fails the build if that disagrees with
 `endpoint-coverage.py`.
 
