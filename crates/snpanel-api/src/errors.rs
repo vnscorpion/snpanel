@@ -203,6 +203,16 @@ pub fn bool_parsing(field: &str, input: &Value) -> Response {
     })])
 }
 
+/// `list_type`: the field is there and is not a list.
+pub fn list_type(field: &str, input: &Value) -> Response {
+    validation_error(vec![json!({
+        "type": "list_type",
+        "loc": ["body", field],
+        "msg": "Input should be a valid list",
+        "input": input,
+    })])
+}
+
 pub fn string_type(field: &str, input: &Value) -> Response {
     validation_error(vec![json!({
         "type": "string_type",

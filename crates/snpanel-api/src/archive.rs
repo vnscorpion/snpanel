@@ -36,33 +36,15 @@ fn env_int(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// Source: `_clean_relative_path`.
+/// `_clean_relative_path`, which lives with the rest of the path rules.
 ///
-/// Backslashes become slashes first, so a Windows-made archive cannot use
-/// them to smuggle a separator past the `..` check. A leading slash and a
-/// colon in the **first** segment are both "escapes the website root": the
-/// second is the drive letter in `C:/x`, which `Path` on Linux would
-/// otherwise treat as an ordinary directory name.
-pub fn clean_relative_path(path: &str) -> Result<String, String> {
-    if path.contains('\0') {
-        return Err("Invalid path".to_string());
-    }
-    let normalized = path.replace('\\', "/");
-    let first_segment = normalized.split('/').next().unwrap_or("");
-    if normalized.starts_with('/') || first_segment.contains(':') {
-        return Err("Path escapes website root".to_string());
-    }
-    let mut parts: Vec<&str> = Vec::new();
-    for part in normalized.split('/') {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part == ".." {
-            return Err("Path escapes website root".to_string());
-        }
-        parts.push(part);
-    }
-    Ok(parts.join("/"))
+/// It has been in [`crate::files`] since the file-manager reads were
+/// ported, unused and waiting for exactly this: the archive and upload
+/// endpoints are its callers in the Python. Re-transcribing it here would
+/// have left two copies of one function to drift apart, and the one that
+/// drifts is the one nobody is looking at.
+fn clean_relative_path(path: &str) -> Result<String, String> {
+    crate::files::clean_relative_path(path).map_err(|e| e.to_string())
 }
 
 /// Source: `_validate_archive_destination`.
@@ -299,6 +281,62 @@ pub fn tar_uncompressed_size(
 fn is_symlink(target: &Path) -> bool {
     std::fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink())
         && target.exists()
+}
+
+/// Source: `_archive_output_name`.
+///
+/// The extension is **added, not replaced**: `backup.tar.gz` asked for as a
+/// zip becomes `backup.tar.gz.zip`, because the name the customer typed is
+/// theirs and silently renaming their file would be worse than an odd
+/// suffix. The match is case-insensitive, so `BACKUP.ZIP` keeps its name.
+pub fn archive_output_name(
+    output_name: &str,
+    archive_format: &str,
+    now_unix: i64,
+) -> Result<String, String> {
+    let requested = if output_name.is_empty() {
+        format!("archive-{now_unix}")
+    } else {
+        output_name.to_string()
+    };
+    let name = crate::files::safe_entry_name(&requested).map_err(|e| e.to_string())?;
+    let lower = name.to_lowercase();
+    match archive_format {
+        "zip" => Ok(if lower.ends_with(".zip") {
+            name
+        } else {
+            format!("{name}.zip")
+        }),
+        "tar.gz" => Ok(if lower.ends_with(".tar.gz") {
+            name
+        } else {
+            format!("{name}.tar.gz")
+        }),
+        _ => Err("Unsupported archive format".to_string()),
+    }
+}
+
+/// Source: `_archive_arcname` — what a selected path is called inside the
+/// archive it goes into.
+///
+/// It is mostly a **check**: `relative_to` raises when the path is not
+/// under the folder being archived, which is how a selection from
+/// somewhere else in the tree is caught.
+///
+/// The folder itself is **not** an error here, however the Python reads.
+/// `str(Path("a").relative_to("a"))` is `"."`, not `""`, so the
+/// "Cannot archive the current folder into itself" branch below it never
+/// fires — the corpus records `.` for that case. Selecting the current
+/// folder is caught a few lines later in the caller, where the output turns
+/// out to be inside a selected folder.
+pub fn archive_arcname(base: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(base)
+        .map_err(|_| "Archive items must be inside the current folder".to_string())?;
+    if relative.as_os_str().is_empty() {
+        return Ok(".".to_string());
+    }
+    Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
 /// Read a zip's directory, or say it is unreadable.
@@ -725,5 +763,150 @@ mod tests {
             Ok(4)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the archive gets called, for every name and every format.
+    ///
+    /// The rule that surprises people: the extension is **added, not
+    /// replaced**. A customer who types `backup.tar.gz` and picks zip gets
+    /// `backup.tar.gz.zip`, because the name they typed is theirs. And the
+    /// format is matched exactly — `ZIP` is not `zip` and is refused, while
+    /// the *name* is matched case-insensitively so `BACKUP.ZIP` keeps its
+    /// own spelling rather than growing a second suffix.
+    #[test]
+    fn an_archive_is_named_the_way_python_names_it() {
+        let _lock = serialise();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/archive_names.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the name corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["output_name"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 162, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut named = 0usize;
+        let mut bad_format = 0usize;
+        let mut bad_name = 0usize;
+        for case in cases {
+            let name = case["output_name"].as_str().unwrap_or("");
+            let format = case["format"].as_str().unwrap_or("");
+            let now = case["now"].as_i64().unwrap_or(0);
+            let got = archive_output_name(name, format, now);
+            match (
+                case.get("result").and_then(Value::as_str),
+                case.get("error"),
+            ) {
+                (Some(want), _) => {
+                    named += 1;
+                    match got {
+                        Ok(ref value) if value == want => {}
+                        other => failures.push(format!(
+                            "{name:?}/{format:?}: python {want:?}, rust {other:?}"
+                        )),
+                    }
+                }
+                (None, Some(error)) => {
+                    let want = error.as_str().unwrap_or("");
+                    if want == "Unsupported archive format" {
+                        bad_format += 1;
+                    } else {
+                        bad_name += 1;
+                    }
+                    match got {
+                        Err(ref value) if value == want => {}
+                        other => failures.push(format!(
+                            "{name:?}/{format:?}: python {want:?}, rust {other:?}"
+                        )),
+                    }
+                }
+                _ => failures.push(format!("{name:?}/{format:?}: the corpus says neither")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(named >= 40, "only {named} names produced");
+        assert!(bad_format >= 80, "only {bad_format} format refusals");
+        assert!(bad_name >= 25, "only {bad_name} name refusals");
+        // The *name* is checked before the format, so a bad name with a bad
+        // format reports the name. Reversing the two would tell a customer
+        // their format was wrong when what they typed was `..`.
+        assert_eq!(
+            archive_output_name("..", "nonsense", 0),
+            Err("Invalid filename".to_string())
+        );
+        assert_eq!(
+            archive_output_name("fine", "nonsense", 0),
+            Err("Unsupported archive format".to_string())
+        );
+
+        // The empty name uses the clock, and nothing else does.
+        assert_eq!(
+            archive_output_name("", "zip", 1758500000).ok(),
+            Some("archive-1758500000.zip".to_string())
+        );
+        assert_eq!(
+            archive_output_name("x", "zip", 1758500000).ok(),
+            Some("x.zip".to_string())
+        );
+    }
+
+    /// What a selected path is called inside the archive.
+    ///
+    /// The case worth reading twice is the folder being archived itself:
+    /// `str(Path("a").relative_to("a"))` is `"."`, not `""`, so the
+    /// "cannot archive the current folder into itself" message the Python
+    /// carries is unreachable. Selecting the current folder is refused a
+    /// few lines later instead, where the output turns out to be inside it.
+    #[test]
+    fn a_member_is_named_relative_to_the_folder_being_archived() {
+        let _lock = serialise();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/archive_names.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the name corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["arcname"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 11, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut outside = 0usize;
+        for case in cases {
+            let base = std::path::Path::new(case["base"].as_str().unwrap_or(""));
+            let member = std::path::Path::new(case["path"].as_str().unwrap_or(""));
+            let got = archive_arcname(base, member);
+            match (
+                case.get("arcname").and_then(Value::as_str),
+                case.get("error"),
+            ) {
+                (Some(want), _) => match got {
+                    Ok(ref value) if value == want => {}
+                    other => failures.push(format!("{member:?}: python {want:?}, rust {other:?}")),
+                },
+                (None, Some(error)) => {
+                    outside += 1;
+                    let want = error.as_str().unwrap_or("");
+                    match got {
+                        Err(ref value) if value == want => {}
+                        other => {
+                            failures.push(format!("{member:?}: python {want:?}, rust {other:?}"))
+                        }
+                    }
+                }
+                _ => failures.push(format!("{member:?}: the corpus says neither")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        // Four different ways of being outside the folder, including the
+        // sibling whose name starts with the folder's own.
+        assert_eq!(outside, 4, "only {outside} refusals");
+        assert_eq!(
+            archive_arcname(
+                std::path::Path::new("/srv/site/public_html"),
+                std::path::Path::new("/srv/site/public_html")
+            )
+            .ok(),
+            Some(".".to_string()),
+            "the folder itself is `.`, not a refusal"
+        );
     }
 }

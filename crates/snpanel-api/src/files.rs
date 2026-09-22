@@ -120,12 +120,9 @@ pub fn safe_entry_name(name: &str) -> Result<String, PathError> {
 /// Note what it does *not* do: `....` is not `..`, and a name with spaces
 /// keeps them. The corpus pins both, because a port that "tidied" either
 /// would refuse paths the panel has always accepted.
-// Not called yet: its callers in the Python are the upload and archive
-// endpoints, which are a later batch. It is here now, and tested against the
-// Python's own verdicts, because it is half of the pair that keeps the file
-// manager inside a customer's site and porting it apart from `safe_path`
-// would mean generating the corpus twice.
-#[allow(dead_code)]
+// Its callers are the archive endpoints, which read it through
+// `crate::archive` — that batch has landed, so the `dead_code` allowance
+// that sat here is gone.
 pub fn clean_relative_path(path: &str) -> Result<String, PathError> {
     if path.contains('\0') {
         return refuse("Invalid path");

@@ -36,7 +36,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/maintenance/files/{website_id}",
-            get(list_files).fallback(crate::fallback),
+            get(list_files)
+                .delete(delete_file)
+                .fallback(crate::fallback),
         )
         .route(
             "/maintenance/files/{website_id}/read",
@@ -81,6 +83,10 @@ pub fn router() -> Router<AppState> {
         // These three move together on purpose: the registry they share is
         // process-local, so the endpoint that creates a job and the two
         // that read it have to be on the same side of the proxy.
+        .route(
+            "/maintenance/files/archive",
+            post(archive_entries).fallback(crate::fallback),
+        )
         .route(
             "/maintenance/files/extract",
             post(extract_archive).fallback(crate::fallback),
@@ -449,6 +455,29 @@ async fn body_and_json(body: Body) -> Result<(axum::body::Bytes, serde_json::Val
     Ok((bytes, value))
 }
 
+/// A `list[str]` body field, with pydantic's two refusals.
+///
+/// A missing field and a field that is not a list are different errors, and
+/// so is a list with a non-string in it — the panel shows the message, and
+/// "Field required" for a typo in a list is not the same help as "Input
+/// should be a valid string".
+fn string_list_field(payload: &Value, name: &str) -> Result<Vec<String>, Response> {
+    let Some(items) = payload.get(name) else {
+        return Err(crate::errors::missing_field(name, payload.clone()));
+    };
+    let Some(items) = items.as_array() else {
+        return Err(crate::errors::list_type(name, items));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::String(s) => out.push(s.clone()),
+            other => return Err(crate::errors::string_type(name, other)),
+        }
+    }
+    Ok(out)
+}
+
 fn string_field(payload: &Value, name: &str) -> Result<String, Response> {
     match payload.get(name) {
         Some(Value::String(s)) => Ok(s.clone()),
@@ -498,12 +527,38 @@ async fn run_as_site_user(
     args: &[&str],
     fallback: &[&str],
 ) -> Result<(), Response> {
+    let root = std::fs::canonicalize(&website.root_path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+    run_in_site_dir(
+        state,
+        website,
+        &root.to_string_lossy(),
+        command,
+        args,
+        fallback,
+    )
+    .await
+}
+
+/// [`run_as_site_user`] with the working directory named.
+///
+/// The Python's `_run_as_site_user` has always taken a `cwd`; every caller
+/// ported so far passed the site root, so the port folded it in. The
+/// archive endpoint is the first that does not — `zip -r name -- items` has
+/// to run **inside the folder being archived**, because that is what makes
+/// the names inside the archive relative to it rather than to the root.
+async fn run_in_site_dir(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    cwd: &str,
+    command: &str,
+    args: &[&str],
+    fallback: &[&str],
+) -> Result<(), Response> {
     let Some(user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
         return Err(bad_request("Website has no runtime user configured"));
     };
-    let root = std::fs::canonicalize(&website.root_path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
-    let root_str = root.to_string_lossy().into_owned();
+    let root_str = cwd.to_string();
     let mut argv: Vec<&str> = vec![user, &root_str, command];
     argv.extend_from_slice(args);
     let result = shell::privileged(
@@ -2079,6 +2134,259 @@ async fn retune_php_pools(State(state): State<AppState>, req: axum::extract::Req
         "output": snpanel_core::pyunicode::tail(result.stdout.trim(), 4000),
     }))
     .into_response()
+}
+
+/// `POST /maintenance/files/archive`.
+///
+/// Source: `archive_entries`.
+///
+/// Everything is validated before anything is written, and in the Python's
+/// order: the folder, then every selection, then the output name, then the
+/// two ways the output could sit inside its own input, then the quota. The
+/// order is the product — an operator who picked twenty folders and one bad
+/// one is told which rule they broke, not handed a half-written archive.
+async fn archive_entries(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let (raw, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let website = match file_target(&state, &current, &payload).await {
+        Ok(Target::Website(w)) => *w,
+        Ok(Target::Upstream) => return to_upstream(&state, parts, raw).await,
+        Err(r) => return r,
+    };
+    let admin = permissions::is_admin_role(&current.user.role);
+
+    // `base_path: str = site_users.PUBLIC_DIR`, `paths: list[str]`,
+    // `output_name: str = ""`, `format: str = "zip"`.
+    let base_rel = payload
+        .get("base_path")
+        .and_then(Value::as_str)
+        .unwrap_or("public_html")
+        .to_string();
+    let format = payload
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("zip")
+        .to_string();
+    let output_name = payload
+        .get("output_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let paths = match string_list_field(&payload, "paths") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    let base = match files::safe_path(&website.root_path, &base_rel, false) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    if !base.is_dir() {
+        return bad_request("Archive directory not found");
+    }
+    let mut selected: Vec<std::path::PathBuf> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        match files::safe_path(&website.root_path, path, false) {
+            Ok(p) => selected.push(p),
+            Err(e) => return bad_request(&e.to_string()),
+        }
+    }
+    if selected.is_empty() {
+        return bad_request("Select files or folders to archive");
+    }
+    for path in &selected {
+        if !path.exists() {
+            return bad_request("File or folder not found");
+        }
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return bad_request("Symlinks are not allowed");
+        }
+        if let Err(e) = assert_tree_read_allowed(path, "Archiving", admin) {
+            return bad_request(&e);
+        }
+        // Not for its answer: this is where a selection from outside the
+        // folder is caught, before the output name is even built.
+        if let Err(e) = crate::archive::archive_arcname(&base, path) {
+            return bad_request(&e);
+        }
+    }
+
+    let now_unix = chrono::Utc::now().timestamp();
+    let name = match crate::archive::archive_output_name(&output_name, &format, now_unix) {
+        Ok(n) => n,
+        Err(e) => return bad_request(&e),
+    };
+    let output_path = base.join(&name);
+    if output_path.exists() {
+        return bad_request("Archive output already exists");
+    }
+    for path in &selected {
+        // Two ways the output ends up inside its own input: it *is* a
+        // selected path, or it is under a selected folder. Either one makes
+        // the archive grow while it is being written.
+        if *path == output_path || (path.is_dir() && output_path.starts_with(path)) {
+            return bad_request("Archive output cannot be inside a selected folder");
+        }
+    }
+    if let Err(r) = quota_check(&state, &website, total_size(&selected), 0).await {
+        return r;
+    }
+
+    let output_str = output_path.to_string_lossy().into_owned();
+    // The Python has an in-process branch for a site with no runtime user,
+    // which is a development box with no helper. `run_in_site_dir` refuses
+    // with the message `_run_as_site_user` raises, and this process does not
+    // write into a customer's tree itself.
+    let mut items: Vec<String> = Vec::with_capacity(selected.len());
+    for path in &selected {
+        match crate::archive::archive_arcname(&base, path) {
+            Ok(item) => items.push(item),
+            Err(e) => return bad_request(&e),
+        }
+    }
+    // `zip -r <name> -- <items>` and `tar -czf <name> -- <items>`, both run
+    // as the site's user with the archive folder as the working directory,
+    // which is what makes the arcnames relative to it.
+    let mut args: Vec<&str> = if format == "zip" {
+        vec!["-r", &name, "--"]
+    } else {
+        vec!["-czf", &name, "--"]
+    };
+    args.extend(items.iter().map(String::as_str));
+    let base_str = base.to_string_lossy().into_owned();
+    let tool = if format == "zip" { "zip" } else { "tar" };
+    let mut fallback: Vec<String> = vec![tool.to_string()];
+    fallback.extend(args.iter().map(|a| (*a).to_string()));
+    let fallback_refs: Vec<&str> = fallback.iter().map(String::as_str).collect();
+    if let Err(r) = run_in_site_dir(&state, &website, &base_str, tool, &args, &fallback_refs).await
+    {
+        return r;
+    }
+
+    fix_site_path(&state, &output_str, website.linux_user.as_deref()).await;
+    clear_fastcgi_cache(&state).await;
+    audit_detail(
+        &state,
+        current.user.id,
+        "archive_files",
+        &website.domain,
+        &output_str,
+    )
+    .await;
+    axum::Json(json!({ "target": output_str })).into_response()
+}
+
+/// Source: `_assert_tree_read_allowed`.
+///
+/// A symlink **anywhere** under a selected folder stops the archive, not
+/// just at the top: `zip -r` would follow it and write whatever it points
+/// at into a file the customer can then download. The sensitive-name half
+/// of the Python's check is a no-op here for the same reason it is there —
+/// `SENSITIVE_READ_NAMES` is empty — and a permission error while walking
+/// is not a refusal, because a directory this process cannot read is one
+/// `zip` will not read either.
+fn assert_tree_read_allowed(
+    path: &std::path::Path,
+    _action: &str,
+    _allow_sensitive: bool,
+) -> Result<(), String> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("Symlinks are not allowed".to_string());
+    }
+    if !path.is_dir() {
+        return Ok(());
+    }
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&child) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                return Err("Symlinks are not allowed".to_string());
+            }
+            if meta.is_dir() {
+                stack.push(child);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `DELETE /maintenance/files/{website_id}`.
+///
+/// Source: `delete_file`.
+///
+/// **A symlink may be the final component here**, and only here: a
+/// Laravel-style `public/storage` has to be unlinkable without being
+/// followed. A directory is refused outright — the bulk endpoint is what
+/// deletes trees — but a symlink *to* a directory is not a directory for
+/// this purpose, which is the distinction that lets `public/storage` go.
+async fn delete_file(
+    State(state): State<AppState>,
+    AxumPath(website_id): AxumPath<i64>,
+    Query(params): Query<HashMap<String, String>>,
+    current: CurrentUser,
+) -> Response {
+    let Some(path) = params.get("path") else {
+        return crate::errors::validation_error(vec![json!({
+            "type": "missing",
+            "loc": ["query", "path"],
+            "msg": "Field required",
+            "input": null,
+        })]);
+    };
+    let website = match owned(&state, &current, website_id).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let target = match files::safe_path(&website.root_path, path, true) {
+        Ok(p) => p,
+        Err(e) => return bad_request(&e.to_string()),
+    };
+    let is_symlink = std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    if target.is_dir() && !is_symlink {
+        return bad_request("Cannot delete directory");
+    }
+    let admin = permissions::is_admin_role(&current.user.role);
+    if let Err(e) = files::assert_write_allowed(&target, "Deleting", admin) {
+        return bad_request(&e.to_string());
+    }
+
+    let target_str = target.to_string_lossy().into_owned();
+    if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+        let root = std::fs::canonicalize(&website.root_path)
+            .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
+        let root_str = root.to_string_lossy().into_owned();
+        let result = shell::privileged(
+            state.settings.command_dry_run,
+            "rm-site",
+            &[linux_user, &root_str, &target_str],
+            None,
+            Some(&["rm", "-f", "--", &target_str]),
+        )
+        .await;
+        if !result.ok() {
+            return bad_request(result.failure_detail("Cannot delete").trim());
+        }
+    } else {
+        // `unlink(missing_ok=True)` — a file that is already gone is not an
+        // error, because the page that asked may be showing a stale listing.
+        let _ = std::fs::remove_file(&target);
+    }
+    clear_fastcgi_cache(&state).await;
+    axum::Json(json!({ "deleted": target_str })).into_response()
 }
 
 /// `POST /maintenance/files/extract`.

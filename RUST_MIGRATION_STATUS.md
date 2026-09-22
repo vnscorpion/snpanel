@@ -247,7 +247,7 @@ none, which read as progress that had already happened.
 | `panel_settings` | 0 of 10 |
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
-| `maintenance` | 24 of 67 |
+| `maintenance` | 22 of 67 |
 | `provisioning` | 13 of 13 — needs the `docker` domain |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 11 of 12 — the job endpoints read an in-process dict |
@@ -826,11 +826,49 @@ the same second come back in the order they were queued. A `HashMap` gives
 neither, and the stamp has one-second resolution, so the two cards would
 have swapped places between one poll and the next.
 
+### Two more file-manager endpoints, and a function that was already here
+
+`POST /files/archive` and `DELETE /files/{website_id}`.
+
+The first thing this batch turned up is that it did not need a new
+function. `files.rs` has carried `clean_relative_path` since the
+file-manager reads landed, marked dead with a comment saying its callers
+are "the upload and archive endpoints, which are a later batch" — and the
+archive batch wrote a second copy of it anyway. Two transcriptions of one
+Python function drift, and the one that drifts is the one nobody is
+looking at. There is one now, and the `dead_code` allowance is gone.
+
+Two behaviours the corpus settled that a reading would not:
+
+- **The archive's extension is added, not replaced.** A customer who types
+  `backup.tar.gz` and picks zip gets `backup.tar.gz.zip`. The *name* is
+  matched case-insensitively, so `BACKUP.ZIP` keeps its own spelling; the
+  *format* is matched exactly, so `ZIP` is refused. And the name is
+  validated before the format, so `..` in a bad format reports the name.
+- **`_archive_arcname(base, base)` is `"."`, not `""`.**
+  `str(Path("a").relative_to("a"))` is a single dot, so the "Cannot archive
+  the current folder into itself" message the Python carries is
+  unreachable. The port returned an error there until the corpus said
+  otherwise. Selecting the current folder *is* refused, a few lines later,
+  where the output turns out to be inside a selected folder.
+
+`_run_as_site_user` takes a working directory and the port had it fixed at
+the site root, because every caller so far passed that. This is the first
+that does not: `zip -r name -- items` has to run **inside** the folder
+being archived, or the names inside the archive come out relative to the
+root.
+
+65 mutations, all caught. Two anchors were stale before the run — one
+because `rustfmt` had reflowed a match arm, one because the text appeared
+twice — and each would have been reported an hour later, beside results
+that were fine. Every runner now checks all its anchors before the first
+build, which turns that hour into a second.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **59 endpoints**, which is `maintenance` (24),
+Measured, not recalled: **57 endpoints**, which is `maintenance` (22),
 `provisioning` (13), `malware` (11), `site_apps` (10) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the
