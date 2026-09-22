@@ -52,6 +52,24 @@ impl EnvGuard {
             names,
         }
     }
+
+    /// The lock, with these variables **removed** for the duration.
+    ///
+    /// For a test whose corpus was generated with the variable unset: it is
+    /// not enough to leave it alone, because another test may be setting it
+    /// at that moment.
+    pub fn cleared(names: &[&str]) -> Self {
+        let guard = lock();
+        let mut held = Vec::new();
+        for name in names {
+            std::env::remove_var(name);
+            held.push((*name).to_string());
+        }
+        Self {
+            _guard: guard,
+            names: held,
+        }
+    }
 }
 
 impl Drop for EnvGuard {

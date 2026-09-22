@@ -1760,6 +1760,9 @@ mod tests {
     /// The container image, and which registry it may come from.
     #[test]
     fn an_image_is_validated_the_way_python_validates_it() {
+        // The corpus was generated with the allow-list variable popped, and
+        // another test sets it.
+        let _guard = crate::testenv::EnvGuard::cleared(&["SNPANEL_ALLOWED_REGISTRIES"]);
         let corpus = corpus();
         let cases = corpus["validate_image"].as_array().expect("the cases");
         assert_eq!(cases.len(), 22, "the corpus changed size");

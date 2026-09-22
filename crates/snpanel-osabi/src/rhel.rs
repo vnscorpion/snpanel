@@ -25,6 +25,12 @@ impl Platform for AlmaLinux10 {
         Family::Rhel
     }
 
+    fn php_versions(&self) -> &'static [&'static str] {
+        &["8.3", "8.4"]
+    }
+    fn php_default(&self) -> &'static str {
+        "8.4"
+    }
     fn php_repo(&self) -> PhpRepo {
         PhpRepo::Remi
     }

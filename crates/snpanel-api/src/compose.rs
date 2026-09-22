@@ -1594,6 +1594,9 @@ mod tests {
 
     #[test]
     fn a_compose_file_is_analysed_the_way_python_analyses_it() {
+        // `analyse` reaches `allowed_registries()` through
+        // `validate_image`, so this reads the process environment.
+        let _guard = crate::testenv::EnvGuard::cleared(&["SNPANEL_ALLOWED_REGISTRIES"]);
         let corpus = corpus();
         let cases = corpus["analyse"].as_array().expect("the cases");
         assert_eq!(cases.len(), 76, "the corpus changed size");
@@ -1633,6 +1636,9 @@ mod tests {
     /// not to its layout: this parses both sides and compares the structure.
     #[test]
     fn a_generated_compose_means_what_pythons_means() {
+        // `analyse` reaches `allowed_registries()` through
+        // `validate_image`, so this reads the process environment.
+        let _guard = crate::testenv::EnvGuard::cleared(&["SNPANEL_ALLOWED_REGISTRIES"]);
         let corpus = corpus();
         let mut failures = Vec::new();
         let mut checked = 0;
@@ -1671,6 +1677,9 @@ mod tests {
     /// scalar to PyYAML's rather than to my taste.
     #[test]
     fn a_generated_compose_is_written_the_way_python_writes_it() {
+        // `analyse` reaches `allowed_registries()` through
+        // `validate_image`, so this reads the process environment.
+        let _guard = crate::testenv::EnvGuard::cleared(&["SNPANEL_ALLOWED_REGISTRIES"]);
         let corpus = corpus();
         let mut failures = Vec::new();
         let mut checked = 0;

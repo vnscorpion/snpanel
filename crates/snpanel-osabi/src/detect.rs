@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::debian::{Debian13, Ubuntu2404};
+use crate::debian::{Debian12, Debian13, Ubuntu2404};
 use crate::platform::{CpuBaseline, Platform};
 use crate::rhel::AlmaLinux10;
 
@@ -90,12 +90,16 @@ pub fn platform_for(os: &OsRelease) -> Result<Box<dyn Platform>, OsError> {
     let major = os.version_id.split('.').next().unwrap_or("");
     match (os.id.as_str(), os.version_id.as_str(), major) {
         ("ubuntu", "24.04", _) => Ok(Box::new(Ubuntu2404)),
-        ("debian", "13", _) => Ok(Box::new(Debian13)),
+        ("debian", _, "13") => Ok(Box::new(Debian13)),
+        // The shell installer has accepted bookworm all along. Refusing
+        // it here would make the Rust installer a downgrade on every
+        // Debian 12 box that already runs the panel.
+        ("debian", _, "12") => Ok(Box::new(Debian12)),
         // Rocky, RHEL and Oracle 10 share the AlmaLinux layout exactly, so
         // they get the same impl. Plan §8 Phase 7 lists this as an extension;
         // it costs nothing to accept them now, and refusing them would be an
         // arbitrary "unsupported" for a system we already handle correctly.
-        ("almalinux" | "rocky" | "rhel" | "ol", _, "10") => Ok(Box::new(AlmaLinux10)),
+        ("almalinux" | "rocky" | "rhel" | "ol" | "centos", _, "10") => Ok(Box::new(AlmaLinux10)),
         _ => Err(OsError::Unsupported {
             id: os.id.clone(),
             ver: os.version_id.clone(),
@@ -239,12 +243,39 @@ PRETTY_NAME="AlmaLinux 10.0 (Purple Lion)"
         }
     }
 
+    /// Debian 12 is accepted, and that is a Phase 7 item brought forward
+    /// on purpose.
+    ///
+    /// The shell installer has taken bookworm all along, and every runtime
+    /// caller of `detect()` falls back to the Debian branch when it fails —
+    /// so the panel has worked there by accident of the fallback rather than
+    /// by decision. The **installer** cannot rely on that: bookworm's Sury
+    /// suite carries PHP 8.2 and 8.3 where trixie's carries 8.3 and 8.4, and
+    /// a Rust installer that could not tell them apart would ask bookworm
+    /// for a php8.4 it has no package for.
+    #[test]
+    fn bookworm_is_its_own_platform_and_not_trixies() {
+        let os = OsRelease::parse("ID=debian\nVERSION_ID=\"12\"\n");
+        let platform = platform_for(&os).expect("Debian 12 is supported");
+        assert_eq!(platform.distro(), Distro::Debian12);
+        assert_eq!(platform.php_versions(), ["8.2", "8.3"]);
+        assert_eq!(platform.php_default(), "8.3");
+
+        let trixie = platform_for(&OsRelease::parse("ID=debian\nVERSION_ID=\"13\"\n")).unwrap();
+        assert_eq!(trixie.php_versions(), ["8.3", "8.4"]);
+        assert_eq!(trixie.php_default(), "8.4");
+        // Everything else about the two is the same, which is why one table
+        // serves both in the shell.
+        assert_eq!(platform.web_user(), trixie.web_user());
+        assert_eq!(platform.php_repo(), trixie.php_repo());
+    }
+
     #[test]
     fn unsupported_systems_say_what_they_are() {
         for text in [
             "ID=ubuntu\nVERSION_ID=\"22.04\"\n",
             "ID=centos\nVERSION_ID=\"7\"\n",
-            "ID=debian\nVERSION_ID=\"12\"\n",
+            "ID=debian\nVERSION_ID=\"11\"\n",
             "ID=almalinux\nVERSION_ID=\"9.4\"\n",
         ] {
             let result = platform_for(&OsRelease::parse(text));

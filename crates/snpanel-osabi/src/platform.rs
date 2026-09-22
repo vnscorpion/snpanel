@@ -18,6 +18,7 @@ pub enum Family {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Distro {
     Ubuntu2404,
+    Debian12,
     Debian13,
     AlmaLinux10,
 }
@@ -26,6 +27,7 @@ impl Distro {
     pub fn pretty(&self) -> &'static str {
         match self {
             Self::Ubuntu2404 => "Ubuntu 24.04",
+            Self::Debian12 => "Debian 12",
             Self::Debian13 => "Debian 13",
             Self::AlmaLinux10 => "AlmaLinux 10",
         }
@@ -76,6 +78,17 @@ pub trait Platform: Send + Sync {
 
     // --- Packages ---
     fn php_repo(&self) -> PhpRepo;
+
+    /// The PHP versions this platform can actually provide, newest last.
+    ///
+    /// Source: `PLATFORM_PHP_VERSIONS`. `install.sh`'s `main()` reads it on
+    /// its second line and every later phase works from what it says — a
+    /// wrong value here is a pool directory that never appears and a default
+    /// version no package provides.
+    fn php_versions(&self) -> &'static [&'static str];
+
+    /// Source: `PLATFORM_PHP_DEFAULT`. Always one of [`php_versions`].
+    fn php_default(&self) -> &'static str;
     fn epel_required(&self) -> bool {
         self.family() == Family::Rhel
     }
@@ -169,21 +182,28 @@ mod shell_table_tests {
     /// the panel is a box where nothing can read a customer's files.
     #[test]
     fn the_shell_installers_table_agrees_with_this_one() {
+        type Table = std::collections::BTreeMap<String, String>;
         #[derive(serde::Deserialize)]
         struct Tables {
-            platform_debian: std::collections::BTreeMap<String, String>,
-            platform_rhel10: std::collections::BTreeMap<String, String>,
+            platform_ubuntu: Table,
+            platform_debian: Table,
+            platform_debian12: Table,
+            platform_rhel10: Table,
         }
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/golden/platform_table.json");
         let raw = std::fs::read_to_string(&path).expect("the platform fixture");
         let tables: Tables = serde_json::from_str(&raw).expect("it parses");
 
+        let ubuntu: &dyn Platform = &crate::debian::Ubuntu2404;
         let debian: &dyn Platform = &crate::debian::Debian13;
+        let bookworm: &dyn Platform = &crate::debian::Debian12;
         let rhel: &dyn Platform = &crate::rhel::AlmaLinux10;
 
         for (name, table, platform) in [
+            ("ubuntu", &tables.platform_ubuntu, ubuntu),
             ("debian", &tables.platform_debian, debian),
+            ("debian12", &tables.platform_debian12, bookworm),
             ("rhel", &tables.platform_rhel10, rhel),
         ] {
             let shell = |key: &str| -> &str {
@@ -234,6 +254,38 @@ mod shell_table_tests {
                 "{name} CLAMAV_SERVICE"
             );
 
+            // `install.sh`'s `main()` reads these two on its second line,
+            // and every later phase works from what they say. They are the
+            // one place Debian 12 and Debian 13 disagree.
+            assert_eq!(
+                platform.php_versions().join(" "),
+                shell("PLATFORM_PHP_VERSIONS"),
+                "{name} PLATFORM_PHP_VERSIONS"
+            );
+            assert_eq!(
+                platform.php_default(),
+                shell("PLATFORM_PHP_DEFAULT"),
+                "{name} PLATFORM_PHP_DEFAULT"
+            );
+            assert!(
+                platform.php_versions().contains(&platform.php_default()),
+                "{name}: the default PHP is not one of the versions offered"
+            );
+
+            // Where PHP comes from, which the shell records as two flags and
+            // this side as one enum. A box that takes PHP from the wrong
+            // repository gets no PHP at all.
+            let repo = match platform.php_repo() {
+                PhpRepo::Ondrej => ("yes", "no"),
+                PhpRepo::Sury => ("no", "yes"),
+                PhpRepo::Remi => ("no", "no"),
+            };
+            assert_eq!(
+                (shell("PHP_FROM_PPA"), shell("PHP_FROM_SURY")),
+                repo,
+                "{name} PHP repository"
+            );
+
             // The family name the shell picks has to be the one this side
             // would pick, or every branch downstream of it differs.
             let family = match platform.family() {
@@ -245,7 +297,25 @@ mod shell_table_tests {
 
         // The fixture has to be a real table, not an empty one that satisfies
         // every lookup by never being asked.
-        assert!(tables.platform_debian.len() >= 15);
-        assert!(tables.platform_rhel10.len() >= 15);
+        for table in [
+            &tables.platform_ubuntu,
+            &tables.platform_debian,
+            &tables.platform_debian12,
+            &tables.platform_rhel10,
+        ] {
+            assert!(table.len() >= 15);
+        }
+        // And the two Debians have to actually differ, or the fixture was
+        // generated without `OS_MAJOR` reaching the function and both rows
+        // are the same distribution recorded twice.
+        assert_ne!(
+            tables.platform_debian.get("PLATFORM_PHP_VERSIONS"),
+            tables.platform_debian12.get("PLATFORM_PHP_VERSIONS"),
+        );
+        // As do Ubuntu and Debian, which differ in where PHP comes from.
+        assert_ne!(
+            tables.platform_ubuntu.get("PHP_FROM_SURY"),
+            tables.platform_debian.get("PHP_FROM_SURY"),
+        );
     }
 }
