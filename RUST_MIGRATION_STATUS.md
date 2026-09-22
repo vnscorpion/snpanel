@@ -250,7 +250,7 @@ none, which read as progress that had already happened.
 | `maintenance` | 17 of 67 |
 | `provisioning` | 4 of 13 — create, suspend, unsuspend, terminate |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
-| `malware` | 11 of 12 — the job endpoints read an in-process dict |
+| `malware` | 9 of 12 — the rest wait on the scan worker |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
 
 ### Porting a router in part, by method
@@ -994,12 +994,44 @@ name somebody who was asleep at the time.
 
 31 mutations, all caught.
 
+### The malware scan schedule
+
+`GET /malware/schedule` and `PUT /malware/schedule` — the two endpoints of
+that family that do not touch the job registry, so they move on their own
+while the rest waits for the scan worker.
+
+Two schedules, one for the customers' websites and one for the machine,
+under a single key in the panel settings file. **The stored shape changed
+once and the reader still accepts both**, so a panel upgraded from the old
+single-entry shape keeps the schedule somebody set — and a legacy entry
+with an unrecognised scope folds onto `server` rather than onto `websites`,
+because a scan of the machine is the safer thing to keep running.
+
+The arithmetic is 126 corpus cases, every weekday against every hour
+against six moments, and the rule it exists for is the one a careless port
+loses: **a run due exactly now is next week's**. Without it a schedule read
+at its own appointed second reports itself as still to come this instant,
+and a runner that trusts the figure fires twice.
+
+The trap in the reader is Python's `bool()`: `bool("no")` is **true**,
+because every non-empty string is. The file is written by this panel, so
+the value is normally a real boolean — but the reader has to agree with
+the Python about the day somebody hand-edits it.
+
+28 mutations, all caught, after one round that taught something worth
+keeping. **Five survivors were all the same mistake in the fixture**: the
+update corpus started from the stored defaults, and when the stored value
+*is* the default, "leave this field alone" and "reset it to the default"
+are the same answer. Two real rules were invisible because of it. The
+fixture now starts somewhere else. A test fixture that happens to equal the
+fallback is a quiet way to prove nothing.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **43 endpoints**, which is `maintenance` (17),
-`malware` (11), `site_apps` (10), `provisioning` (4) and one on `websites`
+Measured, not recalled: **41 endpoints**, which is `maintenance` (17),
+`site_apps` (10), `malware` (9), `provisioning` (4) and one on `websites`
 — `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
 workspace does not have yet. `provisioning` and `site_apps` need the
 `siteapp`/`docker` helper domain. The `malware` job endpoints read an

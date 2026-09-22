@@ -92,7 +92,7 @@ fn data_dir() -> std::path::PathBuf {
     )
 }
 
-fn raw_settings() -> Value {
+pub(super) fn raw_settings() -> Value {
     std::fs::read_to_string(data_dir().join("panel-settings.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -514,7 +514,7 @@ async fn full(State(state): State<AppState>, current: CurrentUser) -> Response {
 
 /// Source: `panel_settings._write_raw` - a temporary file beside the real one,
 /// then a rename. Every page on the panel reads this file.
-fn write_raw(data: &Value) -> std::io::Result<()> {
+pub(super) fn write_raw(data: &Value) -> std::io::Result<()> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
     let mut text = serde_json::to_string_pretty(data)?;

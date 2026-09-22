@@ -36,6 +36,7 @@ mod file_jobs;
 mod files;
 mod helper_socket;
 mod malware;
+mod malware_schedule;
 mod manual_ssl;
 mod mariadb;
 mod middleware;
