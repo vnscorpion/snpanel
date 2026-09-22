@@ -1,0 +1,65 @@
+<?php
+declare(strict_types=1);
+
+session_save_path('/var/lib/php/sessions');
+ini_set('session.use_cookies', 'true');
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path' => '/',
+    'domain' => '',
+    'secure' => true,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
+session_name('SNPanelPmaSignon');
+if (!session_start()) {
+    http_response_code(500);
+    exit('Cannot start signon session');
+}
+
+$token = $_GET['snpanel_sso'] ?? '';
+if (!preg_match('/^[A-Za-z0-9_-]{20,}$/', $token)) {
+    http_response_code(403);
+    exit('Invalid token');
+}
+
+$apiUrl = 'https://127.0.0.1:2222/api/databases/phpmyadmin-sso/' . rawurlencode($token);
+$ch = curl_init($apiUrl);
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT => 5,
+    CURLOPT_SSL_VERIFYPEER => false,
+    CURLOPT_SSL_VERIFYHOST => false,
+    CURLOPT_HTTPHEADER => ['Accept: application/json'],
+]);
+$response = curl_exec($ch);
+$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($status !== 200 || !$response) {
+    http_response_code(403);
+    exit('Expired token');
+}
+
+$data = json_decode($response, true);
+if (!is_array($data) || empty($data['db_user']) || empty($data['db_password'])) {
+    http_response_code(403);
+    exit('Invalid signon data');
+}
+
+session_regenerate_id(true);
+$_SESSION = [];
+$_SESSION['PMA_single_signon_user'] = $data['db_user'];
+$_SESSION['PMA_single_signon_password'] = $data['db_password'];
+$_SESSION['PMA_single_signon_host'] = 'localhost';
+$_SESSION['PMA_single_signon_port'] = '';
+$_SESSION['PMA_single_signon_cfgupdate'] = [
+    'only_db' => $data['db_name'] ?? '',
+];
+$_SESSION['PMA_single_signon_HMAC_secret'] = bin2hex(random_bytes(16));
+session_write_close();
+
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Location: /phpmyadmin/index.php?server=1');
+exit;
