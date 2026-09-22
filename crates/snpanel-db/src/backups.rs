@@ -51,6 +51,17 @@ const SFTP_COLUMNS: &str =
 const SCHEDULE_COLUMNS: &str = "id, user_id, user_ids, all_users, target_id, schedule, retention, \
      is_active, last_run_at, last_status, last_message";
 
+/// The columns `_remove_user_from_backup_schedules` reads and writes.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ScheduleUsers {
+    pub id: i64,
+    pub user_id: Option<i64>,
+    /// JSON, or a comma-separated list from before it was JSON. Both shapes
+    /// are still out there.
+    pub user_ids: Option<String>,
+    pub all_users: bool,
+}
+
 pub struct BackupScheduleRepo<'a> {
     pool: &'a SqlitePool,
 }
@@ -107,6 +118,36 @@ impl<'a> BackupScheduleRepo<'a> {
         .bind(crate::sqlalchemy_now())
         .fetch_one(self.pool)
         .await?)
+    }
+
+    /// Every schedule's user columns, for the one caller that has to rewrite
+    /// them: deleting a panel user.
+    ///
+    /// Returned raw because what the text column *means* is the route's
+    /// question - it holds JSON, or a comma-separated list from before it
+    /// held JSON, and deciding between them is not a repository's job.
+    pub async fn user_columns(&self) -> Result<Vec<ScheduleUsers>, DbError> {
+        Ok(sqlx::query_as::<_, ScheduleUsers>(
+            "SELECT id, user_id, user_ids, all_users FROM backup_schedules ORDER BY id",
+        )
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Source: the two assignments in `_remove_user_from_backup_schedules`.
+    pub async fn set_users(
+        &self,
+        id: i64,
+        user_id: Option<i64>,
+        user_ids: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE backup_schedules SET user_id = ?, user_ids = ? WHERE id = ?")
+            .bind(user_id)
+            .bind(user_ids)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn delete(&self, id: i64) -> Result<bool, DbError> {

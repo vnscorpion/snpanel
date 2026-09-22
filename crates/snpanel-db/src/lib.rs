@@ -31,12 +31,12 @@ pub mod site_apps;
 mod users;
 pub mod websites;
 
-pub use backups::{BackupSchedule, BackupScheduleRepo, SftpTarget, SftpTargetRepo};
+pub use backups::{BackupSchedule, BackupScheduleRepo, ScheduleUsers, SftpTarget, SftpTargetRepo};
 pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use site_apps::{SiteAppRepo, SiteAppRow, SiteAppTarget};
-pub use users::{AuditEntry, AuditRepo, RevokedTokenRepo, User, UserFields, UserRepo};
+pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
 pub use websites::{NewWebsite, Website, WebsiteAlias, WebsiteRepo};
 
 /// A timestamp in the form SQLAlchemy stores `DateTime` columns as on SQLite.

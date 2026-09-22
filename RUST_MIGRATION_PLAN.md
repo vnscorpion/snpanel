@@ -19,7 +19,7 @@ resolving.
 
 | | measured | |
 |---|---|---|
-| API endpoints answered by Rust | **142 of 211** | 67% |
+| API endpoints answered by Rust | **144 of 211** | 68% |
 | Routers served whole | 8 of 17 | `addons`, `auth`, `firewall`, `packages`, `panel_settings`, `services`, `terminal`, `updates` |
 | Routers served in part | 8 | the strangler proxies the rest of each |
 | Routers untouched | 3 | `provisioning`, `site_apps`, `deps` |
@@ -552,6 +552,52 @@ produced**:
 
 Both now assert against the constant or the formatter the production path
 uses.
+
+### `EmailStr` is not a pattern, and it is not ported
+
+Pydantic's `EmailStr` runs `email-validator`, and measured against it
+(`tests/golden/email.json`) it:
+
+- **decodes IDNA** — `admin@xn--mnchen-3ya.de` arrives as
+  `admin@münchen.de`;
+- accepts a **display name** — `Name <admin@example.com>` becomes
+  `admin@example.com`, and so does `<admin@example.com>`;
+- lowercases the domain and leaves the local part alone —
+  `ADMIN@EXAMPLE.COM` becomes `ADMIN@example.com`;
+- refuses `a@localhost`, `a@example`, `admin@127.0.0.1`,
+  `"quoted name"@example.com`, `admin@-example.com` and a local part over
+  64 characters.
+
+The normalised value is what lands in the column, so this is not only a
+validator — it is a transformation. Reproducing it needs an IDNA
+implementation, which is a **dependency decision** rather than a line of
+code.
+
+`PATCH /users/{id}` shipped with no email check at all. `POST /users` matches
+that rather than inventing a third answer, and both are marked in the code.
+The corpus is generated and waiting for whoever ports it.
+
+### A `user_ids` column the Python cannot read is a 500, not an empty list
+
+`_decode_schedule_user_ids` calls `int(item)` with **no exception handling**,
+and `_remove_user_from_backup_schedules` does not catch either — so
+`DELETE /users/{id}` answers 500 when a schedule's `user_ids` holds `abc`,
+`null`, `{"a": 1}` or `[[1]]`. Measured, all 31 cases, in
+`tests/golden/schedule_user_ids.json`.
+
+Three more things a reading of that function misses:
+
+- a JSON **string** is iterated character by character, so `"12"` decodes to
+  `[1, 2]`;
+- `int(True)` is `1`, so `[true]` decodes to `[1]`;
+- `> 0` drops zero and negatives rather than keeping them.
+
+Treating an unreadable column as "no users" would have been the obvious
+port, and it would silently keep a schedule the Python refuses to touch.
+
+`json.dumps` writes `[1, 2, 3]` — **with the space**. `serde_json` writes
+`[1,2,3]`, and this column is compared against the Python's bytes when a
+shadow diff runs.
 
 ### A package's limits are applied twice, and the second one decides
 
@@ -1177,9 +1223,9 @@ aliases go with it, or they need arms here first.
 
 ### Stage E — the remaining routers
 
-`maintenance` (31), `malware` (11), `users` (2), `waf` (1), `websites` (1),
-then `provisioning` (13) and `site_apps` (10), which need the `docker`
-domain. **69 endpoints**, counted by `list-missing-endpoints.py`;
+`maintenance` (31), `malware` (11), `waf` (1), `websites` (1), then
+`provisioning` (13) and `site_apps` (10), which need the `docker` domain.
+**67 endpoints**, counted by `list-missing-endpoints.py`;
 `check-counters-agree.py` fails the build if that disagrees with
 `endpoint-coverage.py`.
 

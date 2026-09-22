@@ -45,6 +45,24 @@ impl User {
 /// is doubly optional because setting it to NULL (no package) is a real
 /// operation distinct from not mentioning it.
 #[derive(Debug, Default, Clone)]
+/// Every column `create_user` writes.
+///
+/// A struct rather than eight positional arguments: `username`, `email`,
+/// `hashed_password` and `role` are all `&str`, and a call that swapped two of
+/// them would compile and store a password where a name goes.
+pub struct NewUser<'a> {
+    pub username: &'a str,
+    pub email: &'a str,
+    /// Already bcrypt. C1: the column never holds a plain password.
+    pub hashed_password: &'a str,
+    pub role: &'a str,
+    pub package_id: Option<i64>,
+    pub website_limit: i64,
+    pub storage_limit_mb: i64,
+    pub terminal_enabled: bool,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct UserFields {
     pub email: Option<String>,
     pub role: Option<String>,
@@ -252,6 +270,38 @@ impl<'a> UserRepo<'a> {
     }
 
     /// Every website root belonging to a user, for the storage figure.
+    /// Source: `db.add(User(...))` in `create_user`.
+    ///
+    /// `is_active` and `token_version` are left to their column defaults; the
+    /// Python's model sets neither on this path either.
+    pub async fn create(&self, new: &NewUser<'_>) -> Result<i64, DbError> {
+        Ok(sqlx::query(
+            "INSERT INTO users (username, email, hashed_password, role, package_id, \
+             website_limit, storage_limit_mb, terminal_enabled, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        )
+        .bind(new.username)
+        .bind(new.email)
+        .bind(new.hashed_password)
+        .bind(new.role)
+        .bind(new.package_id)
+        .bind(new.website_limit)
+        .bind(new.storage_limit_mb)
+        .bind(new.terminal_enabled)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid())
+    }
+
+    /// Source: `db.delete(user)`.
+    pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn website_roots(&self, owner_id: i64) -> Result<Vec<String>, DbError> {
         Ok(sqlx::query_scalar(
             "SELECT root_path FROM websites WHERE owner_id = ? AND root_path IS NOT NULL",

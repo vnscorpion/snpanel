@@ -38,10 +38,13 @@ use crate::storage;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/users", get(list).fallback(crate::fallback))
+        .route("/users", get(list).post(create).fallback(crate::fallback))
         .route("/users/me", get(me).fallback(crate::fallback))
         .route("/users/audit/log", get(audit_log).fallback(crate::fallback))
-        .route("/users/{user_id}", patch(update).fallback(crate::fallback))
+        .route(
+            "/users/{user_id}",
+            patch(update).delete(delete).fallback(crate::fallback),
+        )
         .route(
             "/users/{user_id}/2fa/reset",
             post(reset_two_factor).fallback(crate::fallback),
@@ -870,9 +873,776 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
     .into_response()
 }
 
+/// Source: `UserCreate`'s fields and its two validators.
+struct UserCreateFields {
+    username: String,
+    email: String,
+    password: String,
+    role: String,
+    package_id: Option<i64>,
+    website_limit: i64,
+    storage_limit_mb: i64,
+}
+
+/// Source: `UserCreate`.
+///
+/// The username pattern is `^[a-z_][a-z0-9_-]{2,31}$` **and** a reserved-name
+/// check, and the two produce different messages: a bad shape is pydantic's
+/// `string_pattern_mismatch`, a reserved name is a `value_error` from the
+/// validator. An administrator who typed `root` has to be told it is taken by
+/// the system rather than that it is malformed.
+fn user_create_fields(payload: &Value) -> Result<UserCreateFields, Response> {
+    let text = |key: &str| payload.get(key).and_then(Value::as_str);
+
+    let Some(username) = text("username") else {
+        return Err(crate::errors::missing_field("username", payload.clone()));
+    };
+    crate::errors::check_length("username", username, 3, 32)?;
+    let shape_ok = {
+        let mut chars = username.chars();
+        match chars.next() {
+            Some(first) if first.is_ascii_lowercase() || first == '_' => {
+                chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+            }
+            _ => false,
+        }
+    };
+    if !shape_ok {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["body", "username"],
+            "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+            "input": username,
+            "ctx": { "pattern": "^[a-z_][a-z0-9_-]{2,31}$" },
+        })]));
+    }
+    if snpanel_core::types::RESERVED_LINUX_USERS.contains(&username) {
+        return Err(crate::errors::value_error(
+            "username",
+            "username is reserved by the system",
+            payload.get("username").unwrap_or(&Value::Null),
+        ));
+    }
+
+    let Some(email) = text("email") else {
+        return Err(crate::errors::missing_field("email", payload.clone()));
+    };
+    // **`EmailStr` is not checked here, and that is a recorded gap.** Pydantic
+    // runs `email-validator`, which does far more than a pattern: it decodes
+    // IDNA (`xn--mnchen-3ya.de` arrives as `münchen.de`), accepts a display
+    // name (`Name <a@b.com>` becomes `a@b.com`), lowercases the domain while
+    // leaving the local part alone, and refuses `a@localhost`, `a@example`
+    // and `admin@127.0.0.1`. All measured, in `tests/golden/email.json`.
+    //
+    // Reproducing it needs an IDNA implementation, which is a dependency
+    // decision rather than a line of code. `PATCH /users/{id}` shipped
+    // without the check; this matches it rather than inventing a third
+    // answer, and the corpus is there for whoever ports it.
+
+    let Some(password) = text("password") else {
+        return Err(crate::errors::missing_field("password", payload.clone()));
+    };
+    // 72 is bcrypt's limit, not a policy. Longer and bcrypt silently
+    // truncates, so two different passwords would open the same account.
+    crate::errors::check_length("password", password, 12, 72)?;
+    // `_validate_linux_login_password` — the password is synced to the Linux
+    // and SFTP account through `chpasswd`, which reads `user:password` lines.
+    if password.contains(':')
+        || password.contains('\r')
+        || password.contains('\n')
+        || password.contains('\0')
+    {
+        return Err(crate::errors::value_error(
+            "password",
+            "password cannot contain ':', newlines, or NUL characters because it is \
+             synced to the Linux/SFTP account",
+            payload.get("password").unwrap_or(&Value::Null),
+        ));
+    }
+
+    let role = match text("role") {
+        Some(v) => {
+            if !matches!(v, "admin" | "end_user") {
+                return Err(literal_error(
+                    "role",
+                    payload.get("role").unwrap_or(&Value::Null),
+                ));
+            }
+            v.to_string()
+        }
+        None => "end_user".to_string(),
+    };
+
+    let package_id = match payload.get("package_id").filter(|v| !v.is_null()) {
+        Some(raw) => {
+            let Some(id) = raw.as_i64() else {
+                return Err(crate::errors::int_parsing("package_id", raw));
+            };
+            crate::errors::check_range("package_id", id, 1, i64::MAX)?;
+            Some(id)
+        }
+        None => None,
+    };
+
+    let number = |name: &str, default: i64, min: i64, max: i64| -> Result<i64, Response> {
+        match payload.get(name).filter(|v| !v.is_null()) {
+            Some(raw) => {
+                let Some(value) = raw.as_i64() else {
+                    return Err(crate::errors::int_parsing(name, raw));
+                };
+                crate::errors::check_range(name, value, min, max)?;
+                Ok(value)
+            }
+            None => Ok(default),
+        }
+    };
+
+    Ok(UserCreateFields {
+        username: username.to_string(),
+        email: email.to_string(),
+        password: password.to_string(),
+        role,
+        package_id,
+        website_limit: number("website_limit", 5, 0, 1000)?,
+        storage_limit_mb: number("storage_limit_mb", 1024, 0, 1024 * 1024)?,
+    })
+}
+
+/// `POST /users`.
+///
+/// Source: `create_user`.
+///
+/// **Only the username has to be unique.** Several panel users may share one
+/// contact email — a reseller managing many accounts, for instance — and a
+/// port that made the email unique would refuse a shape the panel supports.
+///
+/// The Linux account is made **before** the row, because the row is what
+/// makes the account findable: an account with no row is an orphan the
+/// orphan sweep reports, and a row with no account is a customer who cannot
+/// log in over SFTP and nothing to tell them why.
+async fn create(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current) {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let fields = match user_create_fields(&payload) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+
+    match state.db.users().by_username(&fields.username).await {
+        Ok(Some(_)) => {
+            return crate::errors::error(
+                axum::http::StatusCode::CONFLICT,
+                "Username already exists",
+            )
+        }
+        Err(e) => {
+            tracing::error!("username lookup failed: {e}");
+            return internal_error();
+        }
+        Ok(None) => {}
+    }
+
+    let package = match fields.package_id {
+        Some(id) => match state.db.packages().by_id(id).await {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => return not_found("Package not found"),
+            Err(e) => {
+                tracing::error!("package lookup failed: {e}");
+                return internal_error();
+            }
+        },
+        None => None,
+    };
+
+    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&fields.username) else {
+        return bad_request("Invalid panel Linux user");
+    };
+    let ensured = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "panel-user-ensure",
+        &[panel_user.as_str()],
+        None,
+        None,
+    )
+    .await;
+    if !ensured.ok() {
+        // `except RuntimeError as exc: raise HTTPException(500, ...)` — a
+        // helper that cannot make the account is a fault, not a bad request.
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ensured
+                .failure_detail("Could not create the system account")
+                .trim(),
+        );
+    }
+    let set = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "panel-user-password",
+        &[panel_user.as_str()],
+        Some(&format!("{}\n", fields.password)),
+        None,
+    )
+    .await;
+    if !set.ok() {
+        return crate::errors::error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            set.failure_detail("Could not set the system password")
+                .trim(),
+        );
+    }
+
+    let hashed = match snpanel_core::crypto::password::hash_password(&fields.password) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("hashing failed: {e}");
+            return internal_error();
+        }
+    };
+    // `_apply_package_limits(user, package)` runs **after** the row is built
+    // with the payload's numbers, so the package wins — the same rule
+    // `update_user` reaches by calling it twice.
+    let (website_limit, storage_limit_mb, terminal_enabled) = resolve_package_limits(
+        package.as_ref(),
+        Some(fields.website_limit),
+        Some(fields.storage_limit_mb),
+    );
+    let new = snpanel_db::NewUser {
+        username: &fields.username,
+        email: &fields.email,
+        hashed_password: &hashed,
+        role: &fields.role,
+        package_id: package.as_ref().map(|p| p.id),
+        website_limit: website_limit.unwrap_or(fields.website_limit),
+        storage_limit_mb: storage_limit_mb.unwrap_or(fields.storage_limit_mb),
+        // `User.terminal_enabled` is `default=True` on the model; a package
+        // that says otherwise overrides it.
+        terminal_enabled: terminal_enabled.unwrap_or(true),
+    };
+    let user_id = match state.db.users().create(&new).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("creating a user failed: {e}");
+            return internal_error();
+        }
+    };
+
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "create_user",
+        &fields.username,
+    )
+    .await;
+
+    let created = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        _ => return internal_error(),
+    };
+    axum::Json(user_out(&state, &created).await).into_response()
+}
+
+/// `DELETE /users/{user_id}`.
+///
+/// Source: `delete_user`.
+///
+/// **Every site the customer owns is checked before any of them is deleted.**
+/// A site whose `linux_user` is not this account's was moved or imported, and
+/// deleting it would take files that are not this customer's — so the whole
+/// request is refused rather than half-run.
+async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Request) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current) {
+        return r;
+    }
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found("User not found"),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    if user.id == current.user.id {
+        return bad_request("Cannot delete yourself");
+    }
+
+    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&user.username) else {
+        return bad_request("Invalid panel Linux user");
+    };
+    let websites = match state.db.websites().list(Some(user.id), "").await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("listing the websites of {} failed: {e}", user.username);
+            return internal_error();
+        }
+    };
+    // The whole check first, then the whole deletion. The Python has two
+    // loops and the order is the point.
+    for website in &websites {
+        if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+            if linux_user != panel_user.as_str() {
+                return bad_request(&format!(
+                    "Website {} is not owned by Linux user {}",
+                    website.domain,
+                    panel_user.as_str()
+                ));
+            }
+        }
+    }
+
+    let mut deleted_domains: Vec<String> = Vec::new();
+    for website in &websites {
+        if let Err(r) = delete_owned_website(&state, website).await {
+            return r;
+        }
+        deleted_domains.push(website.domain.clone());
+    }
+
+    if let Err(r) = forget_user_in_schedules(&state, user.id).await {
+        return r;
+    }
+    // `check=False` in the Python: an account that is already gone is not a
+    // reason to refuse a deletion that has already removed the websites.
+    let _ = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "panel-user-delete",
+        &[panel_user.as_str()],
+        None,
+        None,
+    )
+    .await;
+
+    if let Err(e) = state.db.users().delete(user.id).await {
+        tracing::error!("deleting {} failed: {e}", user.username);
+        return internal_error();
+    }
+
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "delete_user",
+        &user.username,
+        &deleted_domains.join(","),
+    )
+    .await;
+
+    axum::Json(json!({
+        "ok": true,
+        "deleted_websites": deleted_domains,
+    }))
+    .into_response()
+}
+
+/// Source: `_delete_owned_website`.
+///
+/// The same order as `DELETE /websites/{id}`: the database, the aliases, the
+/// vhost, **then** the certificate and the WAF rules — both of which are
+/// still referenced by the vhost while it exists, and a missing
+/// `modsecurity_rules_file` fails `nginx -t` for every site on the box.
+///
+/// It differs from that endpoint in one place: the certificate note is
+/// discarded rather than reported. Deleting an owner is not the moment to
+/// tell somebody about one site's lineage, and the Python throws it away too.
+async fn delete_owned_website(
+    state: &AppState,
+    website: &snpanel_db::Website,
+) -> Result<(), Response> {
+    let db_item = state
+        .db
+        .databases()
+        .by_website(website.id)
+        .await
+        .unwrap_or_default();
+    if let Some(item) = &db_item {
+        if let Err(e) = crate::mariadb::drop_database(&item.db_name, &item.db_user).await {
+            return Err(bad_request(&e.to_string()));
+        }
+    }
+    if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
+        tracing::error!("deleting the aliases of {} failed: {e}", website.domain);
+        return Err(internal_error());
+    }
+    super::websites::delete_website_vhost(state, &website.domain).await;
+    let _ = super::websites::release_site_certificates(state, &website.domain, website.id).await;
+    let _ = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "waf-site-delete",
+        &[&website.domain],
+        None,
+        None,
+    )
+    .await;
+    if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
+        let _ = crate::shell::privileged(
+            state.settings.command_dry_run,
+            "site-runtime-delete",
+            &[linux_user, &website.root_path],
+            None,
+            None,
+        )
+        .await;
+    }
+    if let Some(item) = &db_item {
+        if let Err(e) = state.db.databases().delete(item.id).await {
+            tracing::error!(
+                "deleting the database row for {} failed: {e}",
+                website.domain
+            );
+            return Err(internal_error());
+        }
+    }
+    if let Err(e) = state.db.websites().delete(website.id).await {
+        tracing::error!("deleting the row for {} failed: {e}", website.domain);
+        return Err(internal_error());
+    }
+    Ok(())
+}
+
+/// Source: `_decode_schedule_user_ids`.
+///
+/// ```python
+/// try: value = json.loads(raw)
+/// except json.JSONDecodeError: value = [item for item in raw.split(",") if item]
+/// if isinstance(value, int): value = [value]
+/// return [int(item) for item in value if int(item) > 0]
+/// ```
+///
+/// Four things a reading of that misses, all measured in
+/// `tests/golden/schedule_user_ids.json`:
+///
+/// - a JSON **string** is iterated as a string, so `"12"` yields `[1, 2]`;
+/// - `int(True)` is `1`, so `[true]` yields `[1]`;
+/// - `int(item)` has **no exception handling** and neither does the caller,
+///   so `abc`, `{"a":1}`, `null` and `[[1]]` make the endpoint answer **500**;
+/// - `> 0` drops zero and negatives rather than keeping them.
+///
+/// `Err` here is that 500: the value in the column is one the Python cannot
+/// read either, and answering "no users" instead would silently keep a
+/// schedule the Python would have refused to touch.
+pub(super) fn decode_schedule_user_ids(raw: Option<&str>) -> Result<Vec<i64>, ()> {
+    let Some(raw) = raw.filter(|r| !r.is_empty()) else {
+        return Ok(Vec::new());
+    };
+
+    // `json.loads` first; only a decode error falls back to the comma split.
+    let items: Vec<Value> = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Number(n)) => {
+            // `isinstance(value, int)` - a float is **not** an int, and
+            // iterating one raises. `1.0` is a float to Python's `json`.
+            if n.is_i64() || n.is_u64() {
+                vec![Value::Number(n)]
+            } else {
+                return Err(());
+            }
+        }
+        Ok(Value::Array(items)) => items,
+        // Iterating a dict yields its **keys**, which are strings.
+        Ok(Value::Object(map)) => map.keys().map(|k| Value::String(k.clone())).collect(),
+        // A JSON string is iterated character by character.
+        Ok(Value::String(s)) => s.chars().map(|c| Value::String(c.to_string())).collect(),
+        // `None` and `True`/`False` are not iterable: `TypeError`.
+        Ok(_) => return Err(()),
+        Err(_) => raw
+            .split(',')
+            .filter(|item| !item.is_empty())
+            .map(|item| Value::String(item.to_string()))
+            .collect(),
+    };
+
+    let mut out = Vec::new();
+    for item in items {
+        let value = python_int(&item)?;
+        if value > 0 {
+            out.push(value);
+        }
+    }
+    Ok(out)
+}
+
+/// `int(item)`, for the shapes that can reach it.
+///
+/// A float truncates toward zero, a bool is 0 or 1, and a string is parsed
+/// after stripping whitespace. Anything else raises, which is `Err`.
+fn python_int(item: &Value) -> Result<i64, ()> {
+    match item {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f.trunc() as i64))
+            .ok_or(()),
+        Value::Bool(b) => Ok(i64::from(*b)),
+        Value::String(s) => s.trim().parse().map_err(|_| ()),
+        _ => Err(()),
+    }
+}
+
+/// `json.dumps(user_ids)`, byte for byte.
+///
+/// Python's default separator is `", "` — **with the space**. `serde_json`
+/// writes `[1,2,3]`, and this column is compared against what the Python
+/// wrote when a shadow diff runs.
+pub(super) fn encode_schedule_user_ids(ids: &[i64]) -> String {
+    let parts: Vec<String> = ids.iter().map(i64::to_string).collect();
+    format!("[{}]", parts.join(", "))
+}
+
+/// Source: `_remove_user_from_backup_schedules`.
+///
+/// A schedule left naming nobody is **deleted**, not kept: one with no users
+/// and `all_users` off would run nightly and back up nothing, and the failure
+/// would read as a broken backup rather than a schedule that should not
+/// exist.
+async fn forget_user_in_schedules(state: &AppState, user_id: i64) -> Result<(), Response> {
+    let schedules = match state.db.backup_schedules().user_columns().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("listing the backup schedules failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    for schedule in schedules {
+        let Ok(mut ids) = decode_schedule_user_ids(schedule.user_ids.as_deref()) else {
+            // The Python raises out of here and nothing catches it.
+            tracing::error!(
+                "backup schedule {} has a user_ids column neither JSON nor a list of \
+                 numbers: {:?}",
+                schedule.id,
+                schedule.user_ids
+            );
+            return Err(internal_error());
+        };
+        let had = ids.contains(&user_id);
+        ids.retain(|item| *item != user_id);
+        let owner_cleared = schedule.user_id == Some(user_id);
+        if !had && !owner_cleared {
+            continue;
+        }
+        let owner = if owner_cleared {
+            None
+        } else {
+            schedule.user_id
+        };
+        if !schedule.all_users && owner.is_none() && ids.is_empty() {
+            if let Err(e) = state.db.backup_schedules().delete(schedule.id).await {
+                tracing::error!("deleting backup schedule {} failed: {e}", schedule.id);
+                return Err(internal_error());
+            }
+            continue;
+        }
+        if let Err(e) = state
+            .db
+            .backup_schedules()
+            .set_users(schedule.id, owner, &encode_schedule_user_ids(&ids))
+            .await
+        {
+            tracing::error!("updating backup schedule {} failed: {e}", schedule.id);
+            return Err(internal_error());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `_decode_schedule_user_ids` verdict the real Python gave.
+    ///
+    /// The cases that matter are the ones no reading of the function finds:
+    /// a JSON **string** is iterated character by character, so `"12"` is
+    /// `[1, 2]`; `int(True)` is `1`; and four shapes make the function
+    /// **raise**, which nothing catches — so the endpoint answers 500 rather
+    /// than treating the column as empty.
+    #[test]
+    fn a_schedule_user_list_is_decoded_the_way_the_python_decodes_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/schedule_user_ids.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the schedule corpus"))
+                .expect("the corpus parses");
+        let cases = corpus["cases"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 31, "the corpus changed size");
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut raised = 0usize;
+        for case in cases {
+            let raw = case["raw"].as_str();
+            let got = decode_schedule_user_ids(raw);
+            if case["ok"].as_bool().unwrap_or(false) {
+                let want: Vec<i64> = case["ids"]
+                    .as_array()
+                    .expect("ids")
+                    .iter()
+                    .filter_map(Value::as_i64)
+                    .collect();
+                if got.as_deref() != Ok(want.as_slice()) {
+                    failures.push(format!("{raw:?}\n  python {want:?}\n  rust   {got:?}"));
+                }
+            } else {
+                raised += 1;
+                if got.is_ok() {
+                    failures.push(format!(
+                        "{raw:?}: python raises {}, rust gave {got:?}",
+                        case["error"].as_str().unwrap_or("")
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} disagree:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+        // A corpus in which nothing raises would agree with a decoder that
+        // never refuses anything.
+        assert!(raised >= 4, "only {raised} cases raise");
+    }
+
+    /// What goes back into the column, byte for byte.
+    ///
+    /// `json.dumps` puts a **space after the comma**, and `serde_json` does
+    /// not. The column is compared against what the Python wrote when a
+    /// shadow diff runs, and a missing space is a difference on every
+    /// schedule with more than one user.
+    #[test]
+    fn the_schedule_column_is_the_pythons_bytes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/schedule_user_ids.json");
+        let corpus: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the schedule corpus"))
+                .expect("the corpus parses");
+        let encoded = corpus["encoded"].as_object().expect("the encodings");
+        assert!(!encoded.is_empty());
+
+        for (key, want) in encoded {
+            // The key is Python's `str(list)`, e.g. `[1, 2, 3]`.
+            let ids: Vec<i64> = key
+                .trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            assert_eq!(
+                encode_schedule_user_ids(&ids),
+                want.as_str().unwrap_or(""),
+                "for {key}"
+            );
+        }
+        // And the shape the space lives in.
+        assert_eq!(encode_schedule_user_ids(&[]), "[]");
+        assert_eq!(encode_schedule_user_ids(&[1]), "[1]");
+        assert_eq!(encode_schedule_user_ids(&[1, 2, 3]), "[1, 2, 3]");
+    }
+
+    /// A reserved name and a malformed one are different refusals.
+    ///
+    /// Source: `UserCreate` — the pattern is pydantic's and gives
+    /// `string_pattern_mismatch`; the reserved-name check is a
+    /// `field_validator` and gives `value_error`. An administrator who typed
+    /// `root` has to be told it is taken by the system, not that it is
+    /// malformed.
+    #[test]
+    fn a_reserved_username_is_refused_differently_from_a_malformed_one() {
+        let refusal = |payload: Value| -> axum::http::StatusCode {
+            user_create_fields(&payload)
+                .err()
+                .expect("refused")
+                .status()
+        };
+        let unprocessable = axum::http::StatusCode::UNPROCESSABLE_ENTITY;
+
+        let good = json!({
+            "username": "alice",
+            "email": "a@b.co",
+            "password": "correct horse battery",
+        });
+        let fields = user_create_fields(&good).expect("accepted");
+        assert_eq!(fields.username, "alice");
+        // The defaults, which are the schema's and not the column's.
+        assert_eq!(fields.role, "end_user");
+        assert_eq!(fields.website_limit, 5);
+        assert_eq!(fields.storage_limit_mb, 1024);
+        assert_eq!(fields.package_id, None);
+
+        // Reserved: every name the helper would refuse anyway, caught here
+        // with a message that says why.
+        for reserved in ["root", "nobody", "snpanel", "www-data", "mysql"] {
+            let mut payload = good.clone();
+            payload["username"] = json!(reserved);
+            assert_eq!(refusal(payload), unprocessable, "{reserved} was accepted");
+        }
+        // Malformed: a leading digit, a capital, a dot, too short.
+        //
+        // `aLice` and `aliceÉ` carry theirs **after** the first character,
+        // which is the only position the tail's `[a-z0-9_-]` decides: the
+        // first character has its own `[a-z_]` check, so a capital there
+        // proves nothing about the tail.
+        for bad in [
+            "1alice", "Alice", "aLice", "aliceB", "aliceÉ", "a.b", "ab", "-alice", "alice!",
+            "alice b", "",
+        ] {
+            let mut payload = good.clone();
+            payload["username"] = json!(bad);
+            assert_eq!(refusal(payload), unprocessable, "{bad:?} was accepted");
+        }
+        // A leading underscore is allowed by the pattern.
+        let mut payload = good.clone();
+        payload["username"] = json!("_alice");
+        assert!(user_create_fields(&payload).is_ok());
+        // 32 characters is the limit.
+        payload["username"] = json!("a".repeat(32));
+        assert!(user_create_fields(&payload).is_ok());
+        payload["username"] = json!("a".repeat(33));
+        assert_eq!(refusal(payload), unprocessable);
+    }
+
+    /// The password is synced to a Linux account, and `chpasswd` reads lines.
+    ///
+    /// Source: `_validate_linux_login_password`. A `:` or a newline in the
+    /// password would make `user:password` ambiguous — and the failure would
+    /// be a customer who cannot log in over SFTP with the password the panel
+    /// shows them.
+    #[test]
+    fn a_password_that_would_break_chpasswd_is_refused() {
+        let with = |password: &str| {
+            user_create_fields(&json!({
+                "username": "alice",
+                "email": "a@b.co",
+                "password": password,
+            }))
+        };
+        assert!(with("correct horse battery").is_ok());
+        // Twelve characters, and seventy-two - bcrypt's limit, not a policy.
+        assert!(with(&"a".repeat(12)).is_ok());
+        assert!(with(&"a".repeat(72)).is_ok());
+        assert!(with(&"a".repeat(11)).is_err());
+        assert!(with(&"a".repeat(73)).is_err());
+
+        for bad in [
+            "pass:word123",
+            "pass\nword123",
+            "pass\rword123",
+            "pass\0word12",
+        ] {
+            assert!(with(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
 
     /// A package overrides an explicit limit in the same request.
     ///

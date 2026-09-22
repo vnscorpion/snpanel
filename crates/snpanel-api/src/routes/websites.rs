@@ -2983,7 +2983,7 @@ async fn enable_ssl(
 ///
 /// Never fails the request: a website must stay deletable when certbot is
 /// unhappy. Every failure here becomes a sentence, not a status code.
-async fn release_site_certificates(
+pub(super) async fn release_site_certificates(
     state: &AppState,
     domain: &str,
     exclude_website_id: i64,
@@ -3060,7 +3060,7 @@ async fn release_site_certificates(
 /// and its failure is not reported: the vhost is already gone from disk, so
 /// the site is down either way and a 500 here would leave the administrator
 /// thinking the deletion did not happen.
-async fn delete_website_vhost(state: &AppState, domain: &str) {
+pub(super) async fn delete_website_vhost(state: &AppState, domain: &str) {
     if state.settings.command_dry_run {
         return;
     }
