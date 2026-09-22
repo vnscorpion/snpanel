@@ -472,6 +472,12 @@ fn schema_defaults() -> serde_json::Map<String, Value> {
 }
 
 /// Fill a handler's dict out to the full response model, as FastAPI does.
+/// `current_settings()` through the response model, which is what every
+/// endpoint answering with the whole settings object returns.
+pub(super) async fn settings_model(state: &AppState) -> Value {
+    to_response_model(&current_settings(state).await)
+}
+
 fn to_response_model(values: &Value) -> Value {
     let mut out = schema_defaults();
     if let Some(map) = values.as_object() {
@@ -514,7 +520,7 @@ async fn full(State(state): State<AppState>, current: CurrentUser) -> Response {
 
 /// Source: `panel_settings._write_raw` - a temporary file beside the real one,
 /// then a rename. Every page on the panel reads this file.
-pub(super) fn write_raw(data: &Value) -> std::io::Result<()> {
+pub(crate) fn write_raw(data: &Value) -> std::io::Result<()> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
     let mut text = serde_json::to_string_pretty(data)?;

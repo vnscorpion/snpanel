@@ -1258,17 +1258,65 @@ the user's applications through `site_apps.export_payload` — the
 had to correct, that one was re-measured: it is a real dependency, not a
 stale recollection.
 
+### Turning the malware scanner on and off
+
+Five of the nine `malware` endpoints move here: `toggle`, `realtime`,
+`start-daemon`, `lmd/install` and `lmd/update-sigs`. They were filed with
+the four job endpoints because "the whole family must move together"; that
+was measured again and it is not true of these five. None of them reads or
+writes `MALWARE_JOB_THREADS`. They persist a flag and drive the helper.
+
+**What these endpoints do is decide**, so the decision is a value rather
+than branches spread through two handlers. `scan_toggle_plan` and
+`realtime_toggle_plan` each return which flags to persist, which helper
+verbs to run and in what order, whether to start a background install, and
+what to say — and the corpus compares all four against the real Python
+rather than against a reading of it.
+
+Three of those decisions are worth stating:
+
+- **Enabling on a machine with no engine persists the flag and installs in
+  the background.** The install pulls a signature database well over a
+  gigabyte. Holding the request open would time out in the browser and
+  leave an administrator unable to tell whether anything had started.
+- **Turning it off gives the memory back.** The realtime flag goes with it,
+  the LMD monitor is stopped and so is `clamd`, whose resident signature
+  database is the whole reason the daemon is expensive on a small server.
+  LMD and ClamAV are left on disk: the next enable should not have to fetch
+  them again.
+- **Turning realtime on without LMD enables the scanner too.** Realtime
+  with the scanner off is a setting that does nothing, so the Python sets
+  both flags and installs; reproducing only the realtime half would leave
+  an account that looked protected and was not.
+
+#### One real bug, found by the corpus
+
+`(result.stdout or "LMD installed").strip()`. The order is the trap: `or`
+takes the default only for an **empty** string, and `strip` runs
+afterwards — so output of nothing but spaces is truthy, keeps itself, and
+strips to `""`. The first draft trimmed first and answered "LMD installed"
+where the Python answers nothing, which is a success message invented out
+of a helper that said nothing at all. The corpus case `"   "` is what
+caught it.
+
+`platform.install_command` also moved into `system.rs`. It had been written
+for the certbot DNS plugin an hour earlier and was wanted again for the
+ClamAV package; two copies of "how does this distribution install a
+package" is how a panel ends up running `apt-get` on AlmaLinux.
+
+24 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **35 endpoints**, in four groups:
+Measured, not recalled: **30 endpoints**, in four groups:
 
 | group | left | what it needs |
 |---|---|---|
 | `maintenance` | 15 | the DA-import worker (5); the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) needs the **`siteapp`/`docker` helper domain**; `POST /user-restore` (1) |
 | `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
-| `malware` | 9 | the scan worker and on-demand package installation |
+| `malware` | 4 | the scan worker — `run`, `jobs`, `jobs/latest` and `jobs/{id}` share a registry where **reading a job is a write** |
 | `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` needs the **`siteapp`/`docker` helper domain** |
 
 The bold two are dependency and architecture decisions on a hosting panel,

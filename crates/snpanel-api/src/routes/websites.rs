@@ -2054,27 +2054,11 @@ async fn wildcard_token(
 /// Source: `platform.install_command("python3-certbot-dns-cloudflare")`, the
 /// fallback `ssl.ensure_cloudflare_plugin` uses when the helper is absent.
 fn certbot_dns_plugin_install_command() -> String {
-    // `os_family() == "rhel"`. An undetectable platform takes the Debian
-    // branch, as the Python's `else` does.
-    let rhel = snpanel_osabi::detect()
-        .map(|p| p.family() == snpanel_osabi::Family::Rhel)
-        .unwrap_or(false);
-    install_command_for(rhel)
+    crate::system::install_command(CERTBOT_DNS_PLUGIN)
 }
 
-/// [`certbot_dns_plugin_install_command`] with the platform already
-/// decided, so both answers can be read on one machine.
-fn install_command_for(rhel: bool) -> String {
-    let package = "python3-certbot-dns-cloudflare";
-    if rhel {
-        format!("dnf -y install {package}")
-    } else {
-        format!(
-            "export DEBIAN_FRONTEND=noninteractive; apt-get update \
-             && apt-get install -y {package}"
-        )
-    }
-}
+/// The package that answers a DNS-01 challenge through Cloudflare.
+const CERTBOT_DNS_PLUGIN: &str = "python3-certbot-dns-cloudflare";
 
 /// `POST /websites/{website_id}/ssl/wildcard`.
 ///
@@ -6634,18 +6618,19 @@ mod tests {
     /// a broken mirror rather than a typo in the panel.
     #[test]
     fn the_dns_plugin_install_command_matches_the_platforms() {
+        let for_plugin = |rhel| crate::system::install_command_for(rhel, CERTBOT_DNS_PLUGIN);
         assert_eq!(
-            install_command_for(true),
+            for_plugin(true),
             "dnf -y install python3-certbot-dns-cloudflare"
         );
         assert_eq!(
-            install_command_for(false),
+            for_plugin(false),
             "export DEBIAN_FRONTEND=noninteractive; apt-get update \
              && apt-get install -y python3-certbot-dns-cloudflare"
         );
         // apt without `DEBIAN_FRONTEND=noninteractive` can stop on a
         // configuration prompt, and there is nobody at the keyboard.
-        assert!(install_command_for(false).contains("noninteractive"));
+        assert!(for_plugin(false).contains("noninteractive"));
         // Whichever platform this machine is, the real call answers with
         // one of the two and never with an empty string.
         assert!(!certbot_dns_plugin_install_command().is_empty());

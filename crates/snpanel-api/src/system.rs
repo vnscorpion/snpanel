@@ -417,6 +417,34 @@ pub fn waf_engine_available() -> bool {
     false
 }
 
+/// Source: `core.platform.install_command`.
+///
+/// The fallback the on-demand installs use when the privileged helper is
+/// absent, which is a panel somebody is setting up by hand. Getting the
+/// package name or the manager wrong there produces "no match for
+/// argument", which reads like a broken mirror rather than a typo.
+pub fn install_command(package: &str) -> String {
+    // `os_family() == "rhel"`. An undetectable platform takes the Debian
+    // branch, as the Python's `else` does.
+    let rhel = snpanel_osabi::detect()
+        .map(|p| p.family() == snpanel_osabi::Family::Rhel)
+        .unwrap_or(false);
+    install_command_for(rhel, package)
+}
+
+/// [`install_command`] with the platform already decided, so both answers
+/// can be read on one machine.
+pub fn install_command_for(rhel: bool, package: &str) -> String {
+    if rhel {
+        format!("dnf -y install {package}")
+    } else {
+        format!(
+            "export DEBIAN_FRONTEND=noninteractive; apt-get update \
+             && apt-get install -y {package}"
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
