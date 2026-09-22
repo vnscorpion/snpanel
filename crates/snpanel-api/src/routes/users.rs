@@ -892,6 +892,41 @@ struct UserCreateFields {
 /// `string_pattern_mismatch`, a reserved name is a `value_error` from the
 /// validator. An administrator who typed `root` has to be told it is taken by
 /// the system rather than that it is malformed.
+/// Source: `^[a-z_][a-z0-9_-]{2,31}$`, the pattern on every panel username.
+///
+/// Shared with the provisioning router rather than copied: the two schemas
+/// carry the same pattern, and a panel that let a billing system create a
+/// username its own form would refuse is a panel with two answers to the
+/// same question.
+///
+/// The length is checked separately, so this is only the shape - the
+/// pattern's own `{2,31}` says the same thing as `max_length=32` and
+/// pydantic reports whichever it reaches first.
+pub(super) fn panel_username_shape_ok(username: &str) -> bool {
+    let mut chars = username.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_lowercase() || first == '_' => {
+            chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        }
+        _ => false,
+    }
+}
+
+/// The 422 entry [`panel_username_shape_ok`] refuses with.
+pub(super) fn panel_username_pattern_entry(username: &str) -> Value {
+    json!({
+        "type": "string_pattern_mismatch",
+        "loc": ["body", "username"],
+        "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+        "input": username,
+        "ctx": { "pattern": "^[a-z_][a-z0-9_-]{2,31}$" },
+    })
+}
+
+pub(super) fn panel_username_pattern_error(username: &str) -> Response {
+    crate::errors::validation_error(vec![panel_username_pattern_entry(username)])
+}
+
 fn user_create_fields(payload: &Value) -> Result<UserCreateFields, Response> {
     let text = |key: &str| payload.get(key).and_then(Value::as_str);
 
@@ -899,23 +934,8 @@ fn user_create_fields(payload: &Value) -> Result<UserCreateFields, Response> {
         return Err(crate::errors::missing_field("username", payload.clone()));
     };
     crate::errors::check_length("username", username, 3, 32)?;
-    let shape_ok = {
-        let mut chars = username.chars();
-        match chars.next() {
-            Some(first) if first.is_ascii_lowercase() || first == '_' => {
-                chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-            }
-            _ => false,
-        }
-    };
-    if !shape_ok {
-        return Err(crate::errors::validation_error(vec![json!({
-            "type": "string_pattern_mismatch",
-            "loc": ["body", "username"],
-            "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
-            "input": username,
-            "ctx": { "pattern": "^[a-z_][a-z0-9_-]{2,31}$" },
-        })]));
+    if !panel_username_shape_ok(username) {
+        return Err(panel_username_pattern_error(username));
     }
     if snpanel_core::types::RESERVED_LINUX_USERS.contains(&username) {
         return Err(crate::errors::value_error(

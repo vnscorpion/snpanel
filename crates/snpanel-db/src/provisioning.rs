@@ -178,4 +178,110 @@ impl<'a> ProvisioningRepo<'a> {
                 .await?;
         Ok((websites, databases))
     }
+
+    /// Source: `db.add(ProvisioningAccount(...))` in `create_account`.
+    ///
+    /// The row goes in as `pending` **before** any system account is made,
+    /// so a create that dies half way leaves a record saying so rather than
+    /// leaving the billing system with nothing to look at.
+    pub async fn create(
+        &self,
+        external_id: &str,
+        package_id: i64,
+        now: &str,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query(
+            "INSERT INTO provisioning_accounts \
+             (external_id, package_id, status, last_action, last_message, created_at, updated_at) \
+             VALUES (?, ?, 'pending', 'create', '', ?, ?)",
+        )
+        .bind(external_id)
+        .bind(package_id)
+        .bind(now)
+        .bind(now)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid())
+    }
+
+    /// Source: `db.delete(existing)` — the stale row a retried create
+    /// replaces.
+    ///
+    /// Only reached for a row whose account is gone or was never finished;
+    /// an `active` or `pending` row with a user is returned as-is instead,
+    /// because a billing system retrying a call it lost the answer to must
+    /// not destroy the account the first call built.
+    pub async fn delete(&self, id: i64) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM provisioning_accounts WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `account.user_id = user.id` and
+    /// `account.primary_website_id = website.id`.
+    ///
+    /// Either may be left alone: the website is set only once there is one,
+    /// and an account with no domain never gets a second write.
+    pub async fn set_links(
+        &self,
+        id: i64,
+        user_id: Option<i64>,
+        primary_website_id: Option<i64>,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        if user_id.is_none() && primary_website_id.is_none() {
+            return Ok(());
+        }
+        let mut sql = String::from("UPDATE provisioning_accounts SET updated_at = ?");
+        if user_id.is_some() {
+            sql.push_str(", user_id = ?");
+        }
+        if primary_website_id.is_some() {
+            sql.push_str(", primary_website_id = ?");
+        }
+        sql.push_str(" WHERE id = ?");
+
+        let mut query = sqlx::query(&sql).bind(updated_at);
+        if let Some(value) = user_id {
+            query = query.bind(value);
+        }
+        if let Some(value) = primary_website_id {
+            query = query.bind(value);
+        }
+        query.bind(id).execute(self.pool).await?;
+        Ok(())
+    }
+
+    /// Source: `account.status = "failed"; account.last_message = str(exc)`.
+    ///
+    /// The message is the exception's own text, which is what the billing
+    /// system shows an operator, so it is stored whole rather than
+    /// summarised.
+    pub async fn fail(&self, id: i64, message: &str, updated_at: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts \
+             SET status = 'failed', last_message = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(message)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `account.status = "active"; account.last_message = ""`.
+    pub async fn activate(&self, id: i64, updated_at: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts \
+             SET status = 'active', last_message = '', updated_at = ? WHERE id = ?",
+        )
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
 }

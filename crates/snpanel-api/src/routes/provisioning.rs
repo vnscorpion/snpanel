@@ -34,6 +34,10 @@ pub fn router() -> Router<AppState> {
             get(list_plans).fallback(crate::fallback),
         )
         .route(
+            "/provisioning/v1/accounts",
+            post(create_account).fallback(crate::fallback),
+        )
+        .route(
             "/provisioning/v1/accounts/{external_id}",
             get(get_account).fallback(crate::fallback),
         )
@@ -293,6 +297,851 @@ fn panel_base_url(settings: &Settings) -> String {
         );
     }
     String::new()
+}
+
+/// Source: `DOMAIN_RE` — `^(?!-)([a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,}$`,
+/// applied with `fullmatch`.
+///
+/// Written out rather than matched with a pattern because this workspace
+/// has no regex crate. Two things about it are easy to get wrong and are
+/// the Python's, not a tidier rule: the `(?!-)` applies **only** at the
+/// start of the whole name, so `a.-b.com` passes, and the last label has a
+/// minimum of two but no maximum.
+pub fn domain_pattern_ok(name: &str) -> bool {
+    if name.starts_with('-') {
+        return false;
+    }
+    let labels: Vec<&str> = name.split('.').collect();
+    // `(...)+` needs at least one label before the final one.
+    if labels.len() < 2 {
+        return false;
+    }
+    let (last, rest) = labels.split_last().expect("at least two labels");
+    for label in rest {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return false;
+        }
+    }
+    last.len() >= 2 && last.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
+/// What `ProvisioningAccountCreate` carries, after pydantic.
+struct AccountCreate {
+    external_id: String,
+    username: String,
+    password: String,
+    package_id: i64,
+    /// `None` for an account with no website, which is a real shape: a
+    /// billing system can buy the account first and add the domain later.
+    domain: Option<String>,
+    php_version: String,
+    app_type: String,
+    install_wordpress: bool,
+    enable_ssl: bool,
+}
+
+impl AccountCreate {
+    /// Source: `_provisioning_app_type`.
+    ///
+    /// An account with no domain is `php` whatever was asked for — there is
+    /// no site for the app type to describe — and an account asking for
+    /// WordPress gets `wordpress` whatever `app_type` said.
+    fn app_type_value(&self) -> &str {
+        if self.domain.is_none() {
+            return "php";
+        }
+        if self.install_wordpress {
+            return "wordpress";
+        }
+        &self.app_type
+    }
+
+    /// Source: `install_wp = payload.install_wordpress and app_type_value ==
+    /// "wordpress"`.
+    ///
+    /// **The second clause is unreachable, in the Python as much as here.**
+    /// `validate_site_options` refuses `install_wordpress` without a
+    /// domain, and *with* a domain `app_type_value` is already `wordpress`
+    /// whenever the flag is set - so the `and` can never change the answer.
+    /// It is kept because it is the Python's line and this port reproduces
+    /// the Python; it is recorded here because a mutation of it cannot
+    /// fail, and the next person to notice that should find the reason
+    /// rather than the puzzle.
+    fn installs_wordpress(&self) -> bool {
+        self.install_wordpress && self.app_type_value() == "wordpress"
+    }
+
+    /// Source: `runtime_php = payload.php_version if app_type_value in
+    /// {"wordpress", "php"} else None`.
+    ///
+    /// A static site gets no PHP pool at all, which is the point of calling
+    /// it static: no interpreter is started for it and none can be reached.
+    fn runtime_php(&self) -> Option<&str> {
+        match self.app_type_value() {
+            "wordpress" | "php" => Some(&self.php_version),
+            _ => None,
+        }
+    }
+
+    /// Source: `rewrite_mode = "front_controller" if app_type_value ==
+    /// "wordpress" else "none"`.
+    fn rewrite_mode(&self) -> &'static str {
+        if self.app_type_value() == "wordpress" {
+            "front_controller"
+        } else {
+            "none"
+        }
+    }
+}
+
+/// Source: `_provisioning_email`.
+///
+/// The account's address is **derived**, not taken from the request. The
+/// model accepts an `email` field and then discards it, which is not an
+/// oversight worth fixing here: a billing system's contact address is not a
+/// panel login, and two accounts sharing one would collide on a column the
+/// panel treats as identifying.
+fn provisioning_email(username: &str) -> String {
+    format!("{username}@users.snpanel.dev")
+}
+
+/// Source: `ProvisioningAccountCreate`, field by field.
+///
+/// **Every bad field is reported, not the first.** Pydantic validates each
+/// one and collects the failures, so a body wrong in four ways comes back
+/// saying so - which is four fewer round trips for whoever is integrating
+/// against it. The order is the model's declaration order, because that is
+/// the order pydantic runs them in.
+fn account_create_fields(payload: &Value) -> Result<AccountCreate, Response> {
+    let mut errors: Vec<Value> = Vec::new();
+    macro_rules! push {
+        ($entry:expr) => {
+            errors.push($entry)
+        };
+    }
+
+    // --- external_id -------------------------------------------------------
+    let mut external_id = String::new();
+    match payload.get("external_id") {
+        None => push!(crate::errors::missing_entry("external_id", payload.clone())),
+        Some(Value::String(raw)) => match crate::errors::length_entry("external_id", raw, 1, 255) {
+            Some(entry) => push!(entry),
+            None => external_id = raw.clone(),
+        },
+        Some(other) => push!(crate::errors::string_type_entry("external_id", other)),
+    }
+
+    // --- username ----------------------------------------------------------
+    let mut username = String::new();
+    match payload.get("username") {
+        None => push!(crate::errors::missing_entry("username", payload.clone())),
+        Some(Value::String(raw)) => {
+            if let Some(entry) = crate::errors::length_entry("username", raw, 3, 32) {
+                push!(entry);
+            } else if !super::users::panel_username_shape_ok(raw) {
+                push!(super::users::panel_username_pattern_entry(raw));
+            } else if snpanel_core::types::RESERVED_LINUX_USERS.contains(&raw.as_str()) {
+                // A reserved name is a `ValueError` from the field
+                // validator, which pydantic reports as `value_error` rather
+                // than as a pattern failure - and it has to be, because the
+                // name *does* match the pattern.
+                push!(crate::errors::value_error_entry(
+                    "username",
+                    "username is reserved by the system",
+                    &Value::String(raw.clone()),
+                ));
+            } else {
+                username = raw.clone();
+            }
+        }
+        Some(other) => push!(crate::errors::string_type_entry("username", other)),
+    }
+
+    // --- email, which is accepted and then thrown away ---------------------
+    //
+    // **`EmailStr` is not checked, and that is a recorded gap** - the same
+    // one as `POST /users`. Pydantic runs `email-validator`, which decodes
+    // IDNA and refuses `a@localhost`; reproducing it is a dependency
+    // decision rather than a line of code, and the corpus is in
+    // `tests/golden/email.json`. The gap is narrower here than there,
+    // because `_provisioning_email` discards the value: the only thing this
+    // field can do is turn a request into a 422, and nothing stored
+    // depends on it.
+    match payload.get("email") {
+        None | Some(Value::Null) | Some(Value::String(_)) => {}
+        Some(other) => push!(crate::errors::string_type_entry("email", other)),
+    }
+
+    // --- password ----------------------------------------------------------
+    let mut password = String::new();
+    match payload.get("password") {
+        None => push!(crate::errors::missing_entry("password", payload.clone())),
+        Some(Value::String(raw)) => {
+            // 72 is bcrypt's limit, not a policy: longer and bcrypt
+            // silently truncates, so two different passwords would open the
+            // same account.
+            match crate::errors::length_entry("password", raw, 12, 72) {
+                Some(entry) => push!(entry),
+                None => password = raw.clone(),
+            }
+        }
+        Some(other) => push!(crate::errors::string_type_entry("password", other)),
+    }
+
+    // --- package_id --------------------------------------------------------
+    let mut package_id = 0;
+    match crate::errors::read_int_entry("package_id", payload.get("package_id")) {
+        Ok(None) => push!(crate::errors::missing_entry("package_id", payload.clone())),
+        // `Field(ge=1)`. The bound is checked *after* the coercion, which is
+        // why `"0"` and `False` reach it as zero rather than as bad text.
+        Ok(Some(value)) => match crate::errors::range_entry("package_id", value, 1, i64::MAX) {
+            None => package_id = value,
+            Some(entry) => push!(entry),
+        },
+        Err(entry) => push!(entry),
+    }
+
+    // --- domain ------------------------------------------------------------
+    //
+    // `validate_domain`: strip, lower, empty becomes `None`, then the
+    // pattern. The order matters - `"  "` is `None`, not a pattern failure,
+    // so a blank domain is an account with no website rather than a 422.
+    let mut domain = None;
+    match payload.get("domain") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(raw)) => {
+            let cleaned = snpanel_core::pyunicode::trim(raw).to_lowercase();
+            if cleaned.is_empty() {
+                // `None`, which is what the model stores.
+            } else if !domain_pattern_ok(&cleaned) {
+                push!(crate::errors::value_error_entry(
+                    "domain",
+                    "Invalid domain",
+                    &Value::String(raw.clone()),
+                ));
+            } else {
+                domain = Some(cleaned);
+            }
+        }
+        Some(other) => push!(crate::errors::string_type_entry("domain", other)),
+    }
+
+    // --- php_version -------------------------------------------------------
+    let mut php_version = "8.4".to_string();
+    match payload.get("php_version") {
+        None => {}
+        Some(Value::String(raw)) => {
+            if snpanel_nginx::ALLOWED_PHP_VERSIONS.contains(&raw.as_str()) {
+                php_version = raw.clone();
+            } else {
+                let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_PHP_VERSIONS.to_vec();
+                allowed.sort_unstable();
+                push!(crate::errors::value_error_entry(
+                    "php_version",
+                    &format!("Unsupported PHP version. Allowed: {allowed:?}"),
+                    &Value::String(raw.clone()),
+                ));
+            }
+        }
+        // `php_version: str = "8.4"`. An explicit `null` is not a string, so
+        // it is refused rather than defaulted - the default is for a field
+        // the body leaves out.
+        Some(other) => push!(crate::errors::string_type_entry("php_version", other)),
+    }
+
+    // --- app_type ----------------------------------------------------------
+    //
+    // `Literal["wordpress", "php", "static"]`, which is narrower than the
+    // panel's own app types: those also include `application`, and a
+    // billing system cannot provision a container account.
+    const ACCOUNT_APP_TYPES: &[&str] = &["wordpress", "php", "static"];
+    let mut app_type = "php".to_string();
+    match payload.get("app_type") {
+        None => {}
+        Some(Value::String(raw)) if ACCOUNT_APP_TYPES.contains(&raw.as_str()) => {
+            app_type = raw.clone()
+        }
+        Some(other) => push!(json!({
+            "type": "literal_error",
+            "loc": ["body", "app_type"],
+            "msg": "Input should be 'wordpress', 'php' or 'static'",
+            "input": other,
+            "ctx": { "expected": "'wordpress', 'php' or 'static'" },
+        })),
+    }
+
+    // --- the two booleans, in pydantic's lax mode --------------------------
+    let mut install_wordpress = false;
+    match crate::errors::read_bool_entry(
+        "install_wordpress",
+        payload.get("install_wordpress"),
+        false,
+    ) {
+        Ok(flag) => install_wordpress = flag,
+        Err(entry) => push!(entry),
+    }
+    let mut enable_ssl = false;
+    match crate::errors::read_bool_entry("enable_ssl", payload.get("enable_ssl"), false) {
+        Ok(flag) => enable_ssl = flag,
+        Err(entry) => push!(entry),
+    }
+
+    if !errors.is_empty() {
+        return Err(crate::errors::validation_error(errors));
+    }
+
+    // `validate_site_options` is a `model_validator(mode="after")`, so it
+    // runs only once every field has passed, and its `loc` is the body
+    // itself rather than any one field.
+    if domain.is_none() && (install_wordpress || enable_ssl) {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "value_error",
+            "loc": ["body"],
+            "msg": "Value error, domain is required for WordPress install or Auto SSL",
+            "input": payload.clone(),
+            "ctx": { "error": "domain is required for WordPress install or Auto SSL" },
+        })]));
+    }
+
+    Ok(AccountCreate {
+        external_id,
+        username,
+        password,
+        package_id,
+        domain,
+        php_version,
+        app_type,
+        install_wordpress,
+        enable_ssl,
+    })
+}
+
+/// `POST /api/provisioning/v1/accounts`.
+///
+/// Source: `create_account`. A billing system buys a hosting account: a
+/// panel user, a Linux account, optionally a website with its files, its
+/// vhost, its database and a certificate.
+///
+/// **A retried call must not destroy the account the first one built.** A
+/// billing module that loses the reply to this will send it again, so an
+/// existing row that is `active` or `pending` *and* still has a user is
+/// returned as it stands. Any other existing row — failed, terminated, or
+/// pointing at a user that is gone — is deleted and rebuilt, because that
+/// is a record of something that did not finish.
+///
+/// **The row is written before any of the work.** It goes in as `pending`
+/// so that a create which dies half way leaves the billing system a record
+/// saying `failed` with the reason, rather than nothing at all.
+async fn create_account(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let fields = match account_create_fields(&payload) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+
+    // `existing = db.query(...).first()`.
+    match state
+        .db
+        .provisioning()
+        .by_external_id(&fields.external_id)
+        .await
+    {
+        Ok(Some(existing)) => {
+            let live_user = match existing.user_id {
+                Some(id) => matches!(state.db.users().by_id(id).await, Ok(Some(_))),
+                None => false,
+            };
+            if matches!(existing.status.as_str(), "active" | "pending") && live_user {
+                return finished_account(&state, &fields.external_id).await;
+            }
+            if let Err(e) = state.db.provisioning().delete(existing.id).await {
+                tracing::error!("deleting the stale provisioning row failed: {e}");
+                return crate::errors::internal_error();
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("provisioning lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
+
+    let account_email = provisioning_email(&fields.username);
+
+    // The two conflicts, in the Python's order: a username collision is
+    // reported before a domain one, so a request wrong in both ways always
+    // gets the same answer.
+    match state.db.users().by_username(&fields.username).await {
+        Ok(Some(_)) => return error(axum::http::StatusCode::CONFLICT, "Username already exists"),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("username lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
+    if let Some(domain) = &fields.domain {
+        let taken = match state.db.websites().by_domain(domain).await {
+            Ok(row) => row.is_some(),
+            Err(e) => {
+                tracing::error!("domain lookup failed: {e}");
+                return crate::errors::internal_error();
+            }
+        };
+        // `or nginx.vhost_exists(domain)` — a vhost with no row is still a
+        // name this machine is already serving, and writing a second one
+        // would leave two server blocks fighting over it.
+        if taken || super::websites::vhost_exists(&state, domain).await {
+            return error(axum::http::StatusCode::CONFLICT, "Domain already exists");
+        }
+    }
+
+    let package = match state.db.packages().by_id(fields.package_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return not_found("Package not found"),
+        Err(e) => {
+            tracing::error!("package lookup failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+
+    let now = snpanel_db::sqlalchemy_now();
+    let account_id = match state
+        .db
+        .provisioning()
+        .create(&fields.external_id, fields.package_id, &now)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("creating the provisioning row failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+
+    // From here on a failure is recorded on the row before it is answered,
+    // so the billing system can read what went wrong without a support call.
+    // `site_users.ensure_panel_user(username, password)`.
+    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&fields.username) else {
+        // `validate_linux_user` raises `ValueError`, which the Python's
+        // `except (ValueError, RuntimeError)` turns into a 400.
+        return fail_account(&state, account_id, "Invalid panel Linux user").await;
+    };
+    let dry = state.settings.command_dry_run;
+    let ensured =
+        shell::privileged(dry, "panel-user-ensure", &[panel_user.as_str()], None, None).await;
+    if !ensured.ok() {
+        return fail_account(
+            &state,
+            account_id,
+            ensured
+                .failure_detail("Could not create the system account")
+                .trim(),
+        )
+        .await;
+    }
+    let set = shell::privileged(
+        dry,
+        "panel-user-password",
+        &[panel_user.as_str()],
+        // On stdin, never in argv: `/proc/<pid>/cmdline` is world-readable.
+        Some(&format!("{}\n", fields.password)),
+        None,
+    )
+    .await;
+    if !set.ok() {
+        return fail_account(
+            &state,
+            account_id,
+            set.failure_detail("Could not set the system password")
+                .trim(),
+        )
+        .await;
+    }
+
+    let hashed = match snpanel_core::crypto::password::hash_password(&fields.password) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("hashing failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    // The package's limits are **copied** onto the user row rather than
+    // referenced: enforcement reads one row, and a package edited later must
+    // not silently change what an account already sold allows.
+    let user_id = match state
+        .db
+        .users()
+        .create(&snpanel_db::NewUser {
+            username: &fields.username,
+            email: &account_email,
+            hashed_password: &hashed,
+            role: "end_user",
+            package_id: Some(package.id),
+            website_limit: package.website_limit,
+            storage_limit_mb: package.storage_limit_mb,
+            // The Python's `User(...)` sets neither `is_active` nor
+            // `terminal_enabled`, so both take the model default.
+            terminal_enabled: false,
+        })
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!("creating the panel user failed: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_links(
+            account_id,
+            Some(user_id),
+            None,
+            &snpanel_db::sqlalchemy_now(),
+        )
+        .await
+    {
+        tracing::error!("linking the provisioning row failed: {e}");
+        return crate::errors::internal_error();
+    }
+
+    let mut website_id = None;
+    if let Some(domain) = fields.domain.clone() {
+        match build_account_site(&state, &fields, &panel_user, &account_email, &domain).await {
+            Ok(built) => {
+                let created_at = snpanel_db::sqlalchemy_now();
+                let new_site = snpanel_db::NewWebsite {
+                    domain: &domain,
+                    owner_id: user_id,
+                    root_path: &built.root_path,
+                    document_root: "public_html",
+                    linux_user: Some(panel_user.as_str()),
+                    php_version: &fields.php_version,
+                    app_type: fields.app_type_value(),
+                    nginx_rewrite_mode: fields.rewrite_mode(),
+                    app_id: None,
+                    status: "active",
+                    waf_enabled: true,
+                    created_at: &created_at,
+                };
+                let id = match state.db.websites().create(&new_site).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::error!("creating the website row failed: {e}");
+                        return crate::errors::internal_error();
+                    }
+                };
+                website_id = Some(id);
+                if let Some(db_info) = &built.database {
+                    let encrypted = snpanel_core::crypto::fernet::encrypt(
+                        &state.settings.secret_key,
+                        &db_info.db_password,
+                    );
+                    if let Err(e) = state
+                        .db
+                        .databases()
+                        .create(
+                            user_id,
+                            Some(id),
+                            &db_info.db_name,
+                            &db_info.db_user,
+                            &encrypted,
+                        )
+                        .await
+                    {
+                        tracing::error!("recording the database account failed: {e}");
+                        return crate::errors::internal_error();
+                    }
+                }
+            }
+            Err(message) => return fail_account(&state, account_id, &message).await,
+        }
+    }
+
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_links(account_id, None, website_id, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("linking the provisioning website failed: {e}");
+        return crate::errors::internal_error();
+    }
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .activate(account_id, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("activating the provisioning row failed: {e}");
+        return crate::errors::internal_error();
+    }
+
+    // `except Exception: pass` — **a certificate that cannot be issued does
+    // not fail the account**. The site is up on HTTP and the customer can
+    // ask for SSL again; refusing the whole purchase because Let's Encrypt
+    // was rate-limited would be the worse answer.
+    if fields.enable_ssl {
+        if let (Some(domain), Some(id)) = (&fields.domain, website_id) {
+            issue_account_ssl(&state, domain, id).await;
+        }
+    }
+
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_create",
+        &fields.external_id,
+        // `detail=payload.domain or payload.username` — the domain when
+        // there is one, because that is what an operator searches for.
+        fields.domain.as_deref().unwrap_or(&fields.username),
+    )
+    .await;
+
+    finished_account(&state, &fields.external_id).await
+}
+
+/// Record a failure on the account row, then answer with it.
+///
+/// Source: `account.status = "failed"; account.last_message = str(exc);
+/// db.commit(); raise HTTPException(400, str(exc))`. The row is written
+/// **before** the 400 goes out, so a billing system that only ever reads
+/// the account back still learns what happened.
+async fn fail_account(state: &AppState, account_id: i64, message: &str) -> Response {
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .fail(account_id, message, &snpanel_db::sqlalchemy_now())
+        .await
+    {
+        tracing::error!("recording the provisioning failure failed: {e}");
+    }
+    bad_request(message)
+}
+
+/// What `build_account_site` made, for the rows that follow it.
+struct BuiltSite {
+    root_path: String,
+    database: Option<crate::mariadb::NewDatabase>,
+}
+
+/// Source: the `try:` block inside `create_account`'s `if payload.domain:`.
+///
+/// **The order is the Python's and it is not `create_website`'s.** Here the
+/// database is created *before* the runtime, the WAF file is written
+/// *before* the placeholder page, and a failure drops the database but does
+/// **not** remove the directory — `_cleanup_failed_site` is not called on
+/// this path. That last one looks like an oversight and may be; it is
+/// reproduced rather than improved, because an operator whose provisioning
+/// call failed will find the half-made directory where the Python left it.
+async fn build_account_site(
+    state: &AppState,
+    fields: &AccountCreate,
+    panel_user: &snpanel_core::types::PanelUsername,
+    account_email: &str,
+    domain: &str,
+) -> Result<BuiltSite, String> {
+    let dry = state.settings.command_dry_run;
+    // `site_users.site_root_for_panel_user(username, domain)`.
+    let root_path = format!("/home/{}/{}", panel_user.as_str(), domain);
+    let install_wp = fields.installs_wordpress();
+
+    let request = super::websites::CreateRequest {
+        domain: domain.to_string(),
+        owner_id: None,
+        php_version: fields.php_version.clone(),
+        app_type: fields.app_type_value().to_string(),
+        app_id: None,
+        install_wordpress: install_wp,
+        // `wordpress.install_wordpress(domain, db_info, payload.domain,
+        // "admin", payload.password, account_email, ...)` — the title is the
+        // domain and the administrator is always `admin`.
+        title: domain.to_string(),
+        admin_user: "admin".to_string(),
+        admin_password: fields.password.clone(),
+        admin_email: account_email.to_string(),
+    };
+    let php_for_runtime = fields.php_version.clone();
+    let site = super::websites::NewSite {
+        domain,
+        root_path: &root_path,
+        linux_user: panel_user.as_str(),
+        app_type: fields.app_type_value(),
+        rewrite_mode: fields.rewrite_mode(),
+        php_version: &fields.php_version,
+        // The WordPress branch always has a PHP runtime; the others take
+        // the app type's answer.
+        runtime_php: if install_wp {
+            Some(&php_for_runtime)
+        } else {
+            fields.runtime_php()
+        },
+        app_port: None,
+        install_wp,
+        request: &request,
+    };
+
+    let mut database = None;
+    if install_wp {
+        // `mariadb.create_database(payload.domain)` — the defaults are the
+        // `wp` prefix and `IF NOT EXISTS`.
+        let created = crate::mariadb::create_database(domain, "wp", true)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Err(message) = ensure_site_runtime(state, &site).await {
+            let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+            return Err(message);
+        }
+        if let Err(message) = super::websites::install_wordpress(state, &site, &created).await {
+            // `if db_info: mariadb.drop_database(...)` in the `except`.
+            let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+            return Err(message);
+        }
+        database = Some(created);
+    } else {
+        ensure_site_runtime(state, &site).await?;
+    }
+
+    // `if db_info: mariadb.drop_database(...)` — every failure from here on
+    // takes the database with it, because a database with no site and no row
+    // is invisible to the panel and nothing would ever clean it up.
+    //
+    // A function rather than a closure because `NewDatabase` is deliberately
+    // not `Clone`: it holds a plaintext password, and a type that copies
+    // itself on a whim is a type that ends up somewhere nobody looked.
+    async fn undo(database: &Option<crate::mariadb::NewDatabase>, message: String) -> String {
+        if let Some(created) = database {
+            let _ = crate::mariadb::drop_database(&created.db_name, &created.db_user).await;
+        }
+        message
+    }
+
+    if let Err(message) = super::websites::ensure_new_site_waf(state, domain).await {
+        return Err(undo(&database, message).await);
+    }
+    // `if not install_wp: if not settings.command_dry_run:` — the Python
+    // skips the page entirely in a dry run rather than letting the helper
+    // pretend, so the same guard is here rather than inside the write.
+    if !install_wp && !dry {
+        if let Err(message) = super::websites::write_placeholder_page(state, &site).await {
+            return Err(undo(&database, message).await);
+        }
+        // `site_users.fix_site_path(str(document_root(root_path)),
+        // linux_user)` — a second call on the path the placeholder writer
+        // already fixed. Kept: it is a helper invocation the Python makes.
+        let public = format!("{root_path}/public_html");
+        let _ = shell::privileged(
+            dry,
+            "site-path-fix",
+            &[&public, panel_user.as_str()],
+            None,
+            None,
+        )
+        .await;
+    }
+
+    if let Err(message) = super::websites::write_site_vhost(state, &site).await {
+        return Err(undo(&database, message).await);
+    }
+    Ok(BuiltSite {
+        root_path,
+        database,
+    })
+}
+
+/// Source: `site_users.ensure_site_runtime(domain, root_path, php, user)`.
+///
+/// `"none"` rather than an empty argument when there is no runtime PHP: the
+/// helper reads the third argument positionally.
+async fn ensure_site_runtime(
+    state: &AppState,
+    site: &super::websites::NewSite<'_>,
+) -> Result<(), String> {
+    let php_arg = site.runtime_php.unwrap_or("none");
+    let ensured = shell::privileged(
+        state.settings.command_dry_run,
+        "site-runtime-ensure",
+        &[site.linux_user, site.root_path, php_arg],
+        None,
+        None,
+    )
+    .await;
+    if ensured.ok() {
+        Ok(())
+    } else {
+        Err(ensured
+            .failure_detail("Could not prepare the website directory")
+            .trim()
+            .to_string())
+    }
+}
+
+/// Source: the `if payload.enable_ssl and payload.domain:` block.
+///
+/// Every failure is swallowed, including a helper that is not there. The
+/// account is already sold and the site is already up; SSL is something the
+/// customer can ask for again from the panel.
+async fn issue_account_ssl(state: &AppState, domain: &str, website_id: i64) {
+    let result = shell::privileged(
+        state.settings.command_dry_run,
+        "certbot-issue",
+        &[domain],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        tracing::warn!(
+            "provisioned {domain} without SSL: {}",
+            result.failure_detail("Could not issue SSL").trim()
+        );
+        return;
+    }
+    if let Err(e) = state
+        .db
+        .websites()
+        .set_ssl_state(
+            website_id,
+            true,
+            "letsencrypt",
+            None,
+            None,
+            None,
+            None,
+            &snpanel_db::sqlalchemy_now(),
+        )
+        .await
+    {
+        tracing::error!("recording the provisioned certificate failed: {e}");
+    }
+}
+
+/// `account_to_dict(account, db)` for a row that has just been written.
+async fn finished_account(state: &AppState, external_id: &str) -> Response {
+    match state.db.provisioning().view(external_id).await {
+        Ok(Some(view)) => {
+            axum::Json(account_payload(&view, &panel_base_url(&state.settings))).into_response()
+        }
+        Ok(None) => not_found("Account not found"),
+        Err(e) => {
+            tracing::error!("provisioning view failed: {e}");
+            crate::errors::internal_error()
+        }
+    }
 }
 
 /// `GET /api/provisioning/v1/accounts/{external_id}`.
@@ -1416,5 +2265,240 @@ mod tests {
             account_payload(&view, "")["service_label"],
             json!("SNPanel Hosting #1")
         );
+    }
+
+    fn account_corpus() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/account_create.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the account corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// What the 422 body says, entry for entry, against real pydantic.
+    ///
+    /// The `type` and the `loc` are what a billing system branches on, so
+    /// both are compared — and so is the **number** of entries, because a
+    /// body wrong in four ways has to come back saying four things.
+    #[tokio::test]
+    async fn the_body_is_validated_the_way_pydantic_validates_it() {
+        let corpus = account_corpus();
+        let cases = corpus["fields"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 93, "the corpus changed size");
+
+        // **The recorded `EmailStr` gap, made visible rather than hidden.**
+        // Pydantic runs `email-validator` and refuses these two; this port
+        // does not check the field at all, the same as `POST /users`. The
+        // count is asserted below so the skip cannot quietly grow, and the
+        // consequence here is only a 422 that does not happen - the value
+        // is discarded, so nothing stored differs.
+        const EMAIL_GAP: &[&str] = &["email_no_at", "email_localhost"];
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut skipped = 0;
+        for case in cases {
+            let name = case["case"].as_str().unwrap_or("");
+            if EMAIL_GAP.contains(&name) {
+                skipped += 1;
+                // The gap is one-way: the Python refuses and this accepts.
+                // If that ever reverses, the assertion below still fires.
+                assert!(
+                    account_create_fields(&case["body"]).is_ok(),
+                    "{name}: the gap is that this accepts what pydantic refuses"
+                );
+                continue;
+            }
+            let body = &case["body"];
+            let got = account_create_fields(body);
+            match case.get("errors").and_then(Value::as_array) {
+                Some(want) => {
+                    let Err(response) = got else {
+                        failures.push(format!("{name}: python refused it, rust accepted it"));
+                        continue;
+                    };
+                    let entries = entries_of(response).await;
+                    let want_pairs: Vec<(String, Vec<String>)> = want
+                        .iter()
+                        .map(|e| {
+                            (
+                                e["type"].as_str().unwrap_or("").to_string(),
+                                e["loc"]
+                                    .as_array()
+                                    .expect("a loc")
+                                    .iter()
+                                    .map(|v| v.as_str().unwrap_or("").to_string())
+                                    .collect(),
+                            )
+                        })
+                        .collect();
+                    // The Rust `loc` carries the `"body"` prefix FastAPI adds;
+                    // the corpus records pydantic's own, which does not.
+                    let got_pairs: Vec<(String, Vec<String>)> = entries
+                        .iter()
+                        .map(|e| {
+                            (
+                                e["type"].as_str().unwrap_or("").to_string(),
+                                e["loc"]
+                                    .as_array()
+                                    .expect("a loc")
+                                    .iter()
+                                    .skip(1)
+                                    .map(|v| v.as_str().unwrap_or("").to_string())
+                                    .collect(),
+                            )
+                        })
+                        .collect();
+                    if got_pairs != want_pairs {
+                        failures.push(format!("{name}: python {want_pairs:?}, rust {got_pairs:?}"));
+                    }
+                }
+                None => {
+                    let want = &case["value"];
+                    match got {
+                        Err(_) => {
+                            failures.push(format!("{name}: python accepted it, rust refused it"))
+                        }
+                        Ok(fields) => {
+                            let mismatch = fields.external_id
+                                != want["external_id"].as_str().unwrap_or("")
+                                || fields.username != want["username"].as_str().unwrap_or("")
+                                || fields.password != want["password"].as_str().unwrap_or("")
+                                || fields.package_id != want["package_id"].as_i64().unwrap_or(0)
+                                || fields.domain.as_deref() != want["domain"].as_str()
+                                || fields.php_version != want["php_version"].as_str().unwrap_or("")
+                                || fields.app_type != want["app_type"].as_str().unwrap_or("")
+                                || fields.install_wordpress
+                                    != want["install_wordpress"].as_bool().unwrap_or(false)
+                                || fields.enable_ssl
+                                    != want["enable_ssl"].as_bool().unwrap_or(false);
+                            if mismatch {
+                                failures.push(format!(
+                                    "{name}: python {want}, rust domain={:?} php={:?} app={:?} id={} wp={} ssl={}",
+                                    fields.domain,
+                                    fields.php_version,
+                                    fields.app_type,
+                                    fields.package_id,
+                                    fields.install_wordpress,
+                                    fields.enable_ssl,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert_eq!(
+            skipped,
+            EMAIL_GAP.len(),
+            "every skipped case is a known one"
+        );
+    }
+
+    /// The entries of a 422, for a test that has to look inside one.
+    async fn entries_of(response: Response) -> Vec<Value> {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the validation body");
+        let body: Value = serde_json::from_slice(&bytes).expect("a JSON body");
+        body["detail"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// The three values every later step is derived from.
+    ///
+    /// Source: `_provisioning_app_type` and the two lines after it. An
+    /// account with no domain is `php` whatever was asked for, and a
+    /// `static` site asking for WordPress gets neither.
+    #[test]
+    fn the_app_type_is_derived_the_way_python_derives_it() {
+        let corpus = account_corpus();
+        let cases = corpus["derived"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 7, "the corpus changed size");
+
+        for case in cases {
+            let fields = AccountCreate {
+                external_id: "x".to_string(),
+                username: "customer1".to_string(),
+                password: "a-long-enough-password".to_string(),
+                package_id: 1,
+                domain: case["domain"].as_str().map(str::to_string),
+                php_version: "8.4".to_string(),
+                app_type: case["app_type"].as_str().expect("an app type").to_string(),
+                install_wordpress: case["install_wordpress"].as_bool().unwrap_or(false),
+                enable_ssl: false,
+            };
+            let name = case["case"].as_str().unwrap_or("");
+            assert_eq!(
+                fields.app_type_value(),
+                case["app_type_value"].as_str().expect("the value"),
+                "app_type_value for {name}"
+            );
+            assert_eq!(
+                fields.installs_wordpress(),
+                case["install_wp"].as_bool().expect("the flag"),
+                "install_wp for {name}"
+            );
+            assert_eq!(
+                fields.runtime_php(),
+                case["runtime_php"].as_str(),
+                "runtime_php for {name}"
+            );
+            assert_eq!(
+                fields.rewrite_mode(),
+                case["rewrite_mode"].as_str().expect("the mode"),
+                "rewrite_mode for {name}"
+            );
+        }
+    }
+
+    /// The address is derived from the username, never taken from the body.
+    #[test]
+    fn the_account_email_is_derived_from_the_username() {
+        let corpus = account_corpus();
+        for case in corpus["email"].as_array().expect("the cases") {
+            let username = case["username"].as_str().expect("a username");
+            assert_eq!(
+                provisioning_email(username),
+                case["email"].as_str().expect("an address")
+            );
+        }
+        // A body that sends its own address does not change the account's:
+        // a billing system's contact address is not a panel login, and two
+        // accounts sharing one would collide on a column the panel treats
+        // as identifying.
+        let body = json!({
+            "external_id": "whmcs:1",
+            "username": "customer1",
+            "email": "billing@example.com",
+            "password": "a-long-enough-password",
+            "package_id": 1,
+        });
+        let fields = account_create_fields(&body).expect("a valid body");
+        assert_eq!(
+            provisioning_email(&fields.username),
+            "customer1@users.snpanel.dev"
+        );
+    }
+
+    /// `DOMAIN_RE`, including the two parts of it that look like mistakes.
+    #[test]
+    fn the_domain_pattern_is_the_pythons() {
+        // `(?!-)` guards the whole name, not each label, so a label may
+        // start with a dash even though the name may not.
+        assert!(domain_pattern_ok("a.-b.com"));
+        assert!(!domain_pattern_ok("-a.b.com"));
+        // The last label is letters only and at least two of them, which is
+        // what rejects a punycode TLD and a bare address.
+        assert!(!domain_pattern_ok("xn--e1afmkfd.xn--p1ai"));
+        assert!(!domain_pattern_ok("example.12"));
+        assert!(!domain_pattern_ok("example.c"));
+        assert!(!domain_pattern_ok("example"));
+        // Sixty-three is the cap on a label, and it is not on the last one.
+        assert!(domain_pattern_ok(&format!("{}.com", "a".repeat(63))));
+        assert!(!domain_pattern_ok(&format!("{}.com", "a".repeat(64))));
+        assert!(domain_pattern_ok(&format!("a.{}", "b".repeat(200))));
+        // An empty label is not a label.
+        assert!(!domain_pattern_ok("a..com"));
+        assert!(!domain_pattern_ok("example.com."));
+        assert!(!domain_pattern_ok(""));
     }
 }

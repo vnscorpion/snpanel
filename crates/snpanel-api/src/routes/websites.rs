@@ -3676,17 +3676,17 @@ async fn create_wordpress(State(state): State<AppState>, req: Request) -> Respon
 }
 
 /// What `WebsiteCreate` carries, after pydantic.
-struct CreateRequest {
-    domain: String,
-    owner_id: Option<i64>,
-    php_version: String,
-    app_type: String,
-    app_id: Option<i64>,
-    install_wordpress: bool,
-    title: String,
-    admin_user: String,
-    admin_password: String,
-    admin_email: String,
+pub(super) struct CreateRequest {
+    pub domain: String,
+    pub owner_id: Option<i64>,
+    pub php_version: String,
+    pub app_type: String,
+    pub app_id: Option<i64>,
+    pub install_wordpress: bool,
+    pub title: String,
+    pub admin_user: String,
+    pub admin_password: String,
+    pub admin_email: String,
 }
 
 /// Source: `WebsiteCreate`'s field defaults.
@@ -3933,17 +3933,17 @@ async fn create_site_from(
 }
 
 /// Everything `build_new_site` needs, so its arguments cannot be swapped.
-struct NewSite<'a> {
-    domain: &'a str,
-    root_path: &'a str,
-    linux_user: &'a str,
-    app_type: &'a str,
-    rewrite_mode: &'static str,
-    php_version: &'a str,
-    runtime_php: Option<&'a str>,
-    app_port: Option<i64>,
-    install_wp: bool,
-    request: &'a CreateRequest,
+pub(super) struct NewSite<'a> {
+    pub domain: &'a str,
+    pub root_path: &'a str,
+    pub linux_user: &'a str,
+    pub app_type: &'a str,
+    pub rewrite_mode: &'static str,
+    pub php_version: &'a str,
+    pub runtime_php: Option<&'a str>,
+    pub app_port: Option<i64>,
+    pub install_wp: bool,
+    pub request: &'a CreateRequest,
 }
 
 /// Make the files and the vhost, and clean up if any of it fails.
@@ -4012,8 +4012,18 @@ async fn build_new_site(
 
 /// Source: `_ensure_default_waf_file` then `nginx.write_vhost`.
 async fn write_new_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+    ensure_new_site_waf(state, site.domain).await?;
+    write_site_vhost(state, site).await
+}
+
+/// Source: `_ensure_default_waf_file`.
+///
+/// Separate from the vhost write because `create_account` puts the
+/// placeholder page between the two, and a placeholder that fails there
+/// leaves the rule file already written.
+pub(super) async fn ensure_new_site_waf(state: &AppState, domain: &str) -> Result<(), String> {
     let dry = state.settings.command_dry_run;
-    let waf = crate::waf::ensure_default_site_rules(dry, site.domain)
+    let waf = crate::waf::ensure_default_site_rules(dry, domain)
         .await
         .map_err(|e| e.to_string())?;
     if !waf.ok() {
@@ -4022,7 +4032,11 @@ async fn write_new_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), Str
             .trim()
             .to_string());
     }
+    Ok(())
+}
 
+/// Source: `nginx.write_vhost` for a site that has no row yet.
+pub(super) async fn write_site_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
     let custom = snpanel_nginx::CustomDirectives::validate("").map_err(|e| e.to_string())?;
     let root = std::path::PathBuf::from(site.root_path);
     let socket = new_site_fpm_socket(site);
@@ -4109,7 +4123,7 @@ async fn cleanup_failed_site(state: &AppState, site: &NewSite<'_>) {
 /// from a half-removed site or an out-of-band import would otherwise be
 /// silently overwritten by a fresh create - taking whatever that file was
 /// serving down with it.
-async fn vhost_exists(state: &AppState, domain: &str) -> bool {
+pub(super) async fn vhost_exists(state: &AppState, domain: &str) -> bool {
     let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
         .join(format!("{domain}.conf"));
     tokio::fs::metadata(&path)
@@ -4184,7 +4198,7 @@ async fn resolve_app_for_owner(
 /// the admin password goes in on stdin too via `--prompt=admin_password`.
 /// C37: `/proc/<pid>/cmdline` is readable by every account on the machine for
 /// as long as the process lives, and a shared host is full of them.
-async fn install_wordpress(
+pub(super) async fn install_wordpress(
     state: &AppState,
     site: &NewSite<'_>,
     db: &crate::mariadb::NewDatabase,
@@ -4312,7 +4326,10 @@ async fn install_wordpress(
 /// is HTML, and the only variable is a domain already constrained to
 /// `[a-z0-9-.]`. The escaping is here so that constraint stops being
 /// load-bearing.
-async fn write_placeholder_page(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+pub(super) async fn write_placeholder_page(
+    state: &AppState,
+    site: &NewSite<'_>,
+) -> Result<(), String> {
     let path = format!("{}/public_html/index.html", site.root_path);
     if tokio::fs::metadata(&path).await.is_ok() {
         // `if placeholder.exists(): return` - an import that already put a

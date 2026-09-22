@@ -1170,18 +1170,106 @@ calls `AuditRepo::detail_with_request`, the one that is tested.
 
 45 mutations, all caught.
 
+### Buying an account, and what pydantic actually accepts
+
+`POST /provisioning/v1/accounts` is the largest endpoint left: a panel
+user, a Linux account, and optionally a website with its files, its vhost,
+its database and a certificate. Two structural decisions in it are worth
+stating.
+
+**The account row is written before any of the work**, as `pending`. A
+create that dies half way then leaves the billing system a record saying
+`failed` with the reason on it, rather than nothing at all — and every
+failure path from that point writes the row before it answers.
+
+**A retried call does not destroy the account the first one built.** A
+billing module that loses the reply will send it again, so an existing row
+that is `active` or `pending` *and* still has a user is returned as it
+stands. Any other existing row — failed, terminated, or pointing at a user
+that is gone — is deleted and rebuilt, because that is a record of
+something that did not finish.
+
+The ordering inside is the Python's and it is **not** `create_website`'s:
+the database is created before the runtime, the WAF file before the
+placeholder page, and a failure drops the database but does *not* remove
+the directory. That last one looks like an oversight and may well be one;
+it is reproduced rather than improved, because an operator whose
+provisioning call failed will go looking for the half-made directory where
+the Python left it. `write_new_vhost` was split in two rather than copied
+so both orders can be expressed once.
+
+#### Four things the corpus found that reading could not
+
+The corpus was taken from the installed pydantic validating the real
+schema, and it disagreed with the first draft four times:
+
+- **`package_id` is pydantic's *lax* integer.** It accepts `"3"`, `" 3 "`,
+  `"+3"`, `"1_0"` — Python's own underscore separators — `"3.0"`, `3.0`
+  and `true`, which is `1`. It refuses `"۳"`, which Python's own `int()`
+  would have taken. The three failures are not interchangeable either:
+  `int_type` for the wrong kind, `int_parsing` for a string that is not a
+  number, and `int_from_float` for `3.5`. A `read_int` that read only
+  `Value::Number` would have turned most of a billing system's integers
+  into 422s.
+- **Pydantic reports every bad field, not the first.** A body wrong in
+  four ways comes back with four entries, in the model's declaration
+  order. The rest of this port stops at the first, which here would send
+  an integrator round the loop once per field. `errors.rs` now has an
+  *entry* form of each 422 so a caller can collect them; `validation_error`
+  always took a list and nothing could fill it.
+- **The model validator is not one of them.** `validate_site_options` is
+  `mode="after"`, so pydantic never runs it once a field has failed. A
+  port that ran it anyway would announce "domain is required for WordPress
+  install" about a request whose domain it had not managed to read.
+- **`DOMAIN_RE` has two parts that look like mistakes and are not.** The
+  `(?!-)` guards the start of the whole name, not each label, so
+  `a.-b.com` passes while `-a.b.com` does not; and the final label is
+  letters only, which is what refuses `xn--e1afmkfd.xn--p1ai` and
+  `example.12`. Written out by hand, because this workspace has no regex
+  crate.
+
+The `email` field is accepted and then thrown away — the account's address
+is `<username>@users.snpanel.dev`, derived. So `EmailStr` is the same
+recorded gap as `POST /users`, and the only thing it can change here is
+whether a 422 happens; nothing stored depends on it. The test names the
+two corpus cases it skips and asserts how many, so the gap cannot quietly
+grow.
+
+#### Three mutations that survived, and why
+
+All three were dead code. Two were **mine**: a branch for an integer above
+`i64::MAX` and another for an oversized numeric string, both redundant
+because the float fallback underneath already parses, finds the value
+whole, and saturates. They are gone. The third is the **Python's** —
+`install_wp = payload.install_wordpress and app_type_value ==
+"wordpress"`, whose second clause cannot be false when the first is true.
+That line stays, because this port reproduces the Python; the mutation is
+deleted with the reasoning written next to the code, so the next person to
+notice finds the reason rather than the puzzle.
+
+48 mutations, all caught.
+
+#### What is not ported
+
+`DELETE /accounts/{external_id}` stays with the backup family. Its
+`?backup=true` branch calls `create_user_backup`, which collects each of
+the user's applications through `site_apps.export_payload` — the
+`siteapp`/`docker` helper domain. Unlike the three notes this document has
+had to correct, that one was re-measured: it is a real dependency, not a
+stale recollection.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **36 endpoints**, in four groups:
+Measured, not recalled: **35 endpoints**, in four groups:
 
 | group | left | what it needs |
 |---|---|---|
 | `maintenance` | 15 | the DA-import worker (5); the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) needs the **`siteapp`/`docker` helper domain**; `POST /user-restore` (1) |
 | `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
 | `malware` | 9 | the scan worker and on-demand package installation |
-| `provisioning` | 2 | `POST /accounts` and `DELETE /accounts/{id}` |
+| `provisioning` | 1 | `DELETE /accounts/{id}`, whose `?backup=true` needs the **`siteapp`/`docker` helper domain** |
 
 The bold two are dependency and architecture decisions on a hosting panel,
 not code that is merely unwritten. Everything else is code.
