@@ -248,7 +248,7 @@ none, which read as progress that had already happened.
 | `waf` | 0 of 18 |
 | `websites` | 1 of 24 — `POST /{id}/ssl/wildcard` |
 | `maintenance` | 15 of 67 |
-| `provisioning` | 4 of 13 — create, suspend, unsuspend, terminate |
+| `provisioning` | 2 of 13 — create and terminate |
 | `site_apps` | 10 of 10 — needs the `docker` domain |
 | `malware` | 9 of 12 — the rest wait on the scan worker |
 | `rust-embed` frontend, background jobs, IPv6 dual-stack socket | **not started** |
@@ -1070,16 +1070,65 @@ what the code around them only implies.
 
 35 mutations, all caught.
 
+### Suspending and unsuspending an account
+
+Two more of the billing router, and they needed almost nothing new: the
+`RewriteOverrides` struct in `websites` already carried `app_type`,
+`rewrite_mode` and `preserve_existing_ssl`, with comments naming the
+suspend path as their caller. An earlier batch had left the door open.
+
+Two decisions are worth stating, and both are now functions of their own so
+they can be read and broken:
+
+- **Already suspended is a success.** A billing system that lost the answer
+  to its first call will send a second one, and telling it that the account
+  is already where it asked for it to be — as though something had gone
+  wrong — is what turns a network blip into a support ticket. Any *other*
+  status is refused rather than forced, because suspending a terminated
+  account is a mistake somebody should be shown.
+- **A WordPress site comes back as a front controller whatever the column
+  says.** The suspension rendered it static with no rewrite, and the row
+  may never have carried a mode of its own; deciding from the app type is
+  what gets the site working again rather than serving a directory listing.
+
+Suspension renders every site as a **static** vhost carrying
+`# SUSPENDED`, so nothing dynamic runs while the account is blocked, and
+the certificate paths are deliberately not carried over — a vhost serving
+nothing has no business claiming TLS from a file that may be about to go.
+The shell account is locked too, inside the Python's bare `except: pass`:
+a helper that refuses does not stop the suspension, because the vhost is
+what actually blocks the customer and the account lock is the second one.
+
+39 mutations, all caught.
+
 ---
 
 ## Not started
 
-Measured, not recalled: **39 endpoints**, which is `maintenance` (15),
-`site_apps` (10), `malware` (9), `provisioning` (4) and one on `websites`
-— `POST /{id}/ssl/wildcard`, which needs an outbound HTTPS client this
-workspace does not have yet. `provisioning` and `site_apps` need the
-`siteapp`/`docker` helper domain. The `malware` job endpoints read an
-in-process dict, which is a Stage G question.
+Measured, not recalled: **37 endpoints**. Three of the five groups need
+a decision rather than more work, and they are named here so nobody has to
+rediscover it:
+
+| group | left | what it needs |
+|---|---|---|
+| `maintenance` | 15 | the DA-import worker (5); the backup family (5) needs an **SSH/SFTP client**; `app-files` (4) needs the **`siteapp`/`docker` helper domain**; `POST /user-restore` (1) |
+| `site_apps` | 10 | the **`siteapp`/`docker` helper domain** |
+| `malware` | 9 | the scan worker and on-demand package installation |
+| `provisioning` | 2 | `POST /accounts` and `DELETE /accounts/{id}` |
+| `websites` | 1 | an **outbound HTTPS client** for `ssl/wildcard` |
+
+The bold three are dependency and architecture decisions on a hosting
+panel, not code that is merely unwritten. Everything else is code.
+
+Two notes that used to sit in this paragraph are gone because they were
+wrong. `provisioning` never needed the `docker` domain — it imports
+`mariadb`, `nginx`, `site_users`, `storage_quota` and `wordpress`, all
+ported long ago. And the `malware` job endpoints are blocked, but not by
+"an in-process dict": their store is merged with `MALWARE_JOBS_DIR/*.json`
+and the files are shared. What blocks them is that **reading one of those
+jobs is a write** — every read passes each job through
+`_finalize_stale_malware_job`, which asks whether a thread *in this
+process* still owns it and, finding none, marks it interrupted.
 
 Then Phases 5-6: DA import and removing Python. Phase 4, the multi-OS
 installer, has landed for AlmaLinux 10 — see below — and has Debian 12 and

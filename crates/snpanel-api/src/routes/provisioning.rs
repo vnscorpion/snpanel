@@ -23,6 +23,7 @@ use snpanel_core::permissions;
 
 use crate::auth::CurrentUser;
 use crate::errors::{bad_request, error, not_found};
+use crate::shell;
 use crate::state::AppState;
 use snpanel_core::config::Settings;
 
@@ -43,6 +44,14 @@ pub fn router() -> Router<AppState> {
         .route(
             "/provisioning/v1/accounts/{external_id}/login",
             post(create_login_url).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/suspend",
+            post(suspend).fallback(crate::fallback),
+        )
+        .route(
+            "/provisioning/v1/accounts/{external_id}/unsuspend",
+            post(unsuspend).fallback(crate::fallback),
         )
         .route(
             "/provisioning/v1/accounts/{external_id}/password",
@@ -453,6 +462,302 @@ fn login_url(base: &str, token: &str) -> (String, String) {
     (path, absolute)
 }
 
+/// `POST /api/provisioning/v1/accounts/{external_id}/suspend`.
+///
+/// Source: `suspend` the endpoint and `suspend_account`.
+///
+/// **Already suspended is a success, not an error.** A billing system
+/// retrying a call it is not sure landed must not be told something went
+/// wrong; any *other* status is refused, because suspending a terminated
+/// account is a mistake somebody should see.
+///
+/// Every site is rewritten as a **static** vhost carrying `# SUSPENDED`,
+/// so nothing dynamic runs while the account is blocked, and the
+/// certificate paths are deliberately not carried over: a vhost that is
+/// serving nothing has no business claiming TLS from a file that may be
+/// about to go.
+async fn suspend(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    // `reason: str = ""` — optional, and kept on the row as the record of
+    // why the account stopped.
+    let reason = payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match status_change(&account.status, "active", "suspended") {
+        StatusChange::AlreadyThere => {
+            return axum::Json(json!({ "ok": true, "status": "suspended" })).into_response()
+        }
+        StatusChange::Refuse => {
+            return bad_request(&format!(
+                "Cannot suspend account in status: {}",
+                account.status
+            ))
+        }
+        StatusChange::Proceed => {}
+    }
+
+    if let Some(user_id) = account.user_id {
+        // The user goes inactive and every session with it: a suspended
+        // customer must not still be logged into the panel.
+        let fields = snpanel_db::UserFields {
+            is_active: Some(false),
+            ..Default::default()
+        };
+        if let Err(e) = state.db.users().update(user_id, &fields, true).await {
+            tracing::error!("suspending the user failed: {e}");
+            return crate::errors::internal_error();
+        }
+        let websites = state
+            .db
+            .websites()
+            .list(Some(user_id), "")
+            .await
+            .unwrap_or_default();
+        for website in &websites {
+            if let Err(e) = state
+                .db
+                .websites()
+                .set_status(website.id, "suspended")
+                .await
+            {
+                tracing::error!("marking {} suspended failed: {e}", website.domain);
+            }
+            // The WordPress include goes first: the static vhost below must
+            // not keep pulling in a block that runs PHP.
+            let _ = shell::privileged(
+                state.settings.command_dry_run,
+                "wordpress-vhost-delete",
+                &[&website.domain],
+                None,
+                Some(&["true"]),
+            )
+            .await;
+            let overrides = super::websites::RewriteOverrides {
+                custom_directives: Some("# SUSPENDED".to_string()),
+                app_type: Some("static"),
+                rewrite_mode: Some("none"),
+                preserve_existing_ssl: Some(false),
+                ..Default::default()
+            };
+            if let Err(e) = super::websites::rewrite_website_vhost(&state, website, overrides).await
+            {
+                tracing::error!("suspending the vhost for {} failed", website.domain);
+                let _ = e;
+            }
+            lock_site_user(&state, website.linux_user.as_deref(), true).await;
+        }
+    }
+
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_status(
+            account.id,
+            "suspended",
+            "suspend",
+            &reason,
+            &snpanel_db::sqlalchemy_now(),
+        )
+        .await
+    {
+        tracing::error!("recording the suspension failed: {e}");
+        return crate::errors::internal_error();
+    }
+    audit_provisioning(
+        &state,
+        &parts,
+        "provisioning_suspend",
+        &external_id,
+        &reason,
+    )
+    .await;
+    axum::Json(json!({ "ok": true, "status": "suspended" })).into_response()
+}
+
+/// `POST /api/provisioning/v1/accounts/{external_id}/unsuspend`.
+///
+/// Source: `unsuspend` the endpoint and `unsuspend_account`.
+///
+/// The vhost is rebuilt from the row rather than from whatever the suspend
+/// left behind, which is why the site comes back with its own app type,
+/// its own rewrite mode and its own aliases. The **token version is not
+/// bumped**: the customer's sessions were already ended by the suspension,
+/// and there is nothing to invalidate on the way back.
+async fn unsuspend(
+    State(state): State<AppState>,
+    Path(external_id): Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let (parts, _) = req.into_parts();
+    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
+        return r;
+    }
+    let account = match account_or_404(&state, &external_id).await {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    match status_change(&account.status, "suspended", "active") {
+        StatusChange::AlreadyThere => {
+            return axum::Json(json!({ "ok": true, "status": "active" })).into_response()
+        }
+        StatusChange::Refuse => {
+            return bad_request(&format!(
+                "Cannot unsuspend account in status: {}",
+                account.status
+            ))
+        }
+        StatusChange::Proceed => {}
+    }
+
+    if let Some(user_id) = account.user_id {
+        let fields = snpanel_db::UserFields {
+            is_active: Some(true),
+            ..Default::default()
+        };
+        if let Err(e) = state.db.users().update(user_id, &fields, false).await {
+            tracing::error!("reactivating the user failed: {e}");
+            return crate::errors::internal_error();
+        }
+        let websites = state
+            .db
+            .websites()
+            .list(Some(user_id), "")
+            .await
+            .unwrap_or_default();
+        for website in &websites {
+            if let Err(e) = state.db.websites().set_status(website.id, "active").await {
+                tracing::error!("marking {} active failed: {e}", website.domain);
+            }
+            // Source: `rewrite_mode = "front_controller" if wordpress else
+            // (nginx_rewrite_mode or "none")`. A WordPress site's mode is
+            // decided by what it is, not by what the column happens to say,
+            // because a suspension wrote `none` into that column's place in
+            // the file and the row may never have carried one.
+            let rewrite_mode =
+                unsuspend_rewrite_mode(&website.app_type, &website.nginx_rewrite_mode);
+            let overrides = super::websites::RewriteOverrides {
+                rewrite_mode,
+                ..Default::default()
+            };
+            if let Err(e) = super::websites::rewrite_website_vhost(&state, website, overrides).await
+            {
+                tracing::error!("restoring the vhost for {} failed", website.domain);
+                let _ = e;
+            }
+            lock_site_user(&state, website.linux_user.as_deref(), false).await;
+        }
+    }
+
+    if let Err(e) = state
+        .db
+        .provisioning()
+        .set_status(
+            account.id,
+            "active",
+            "unsuspend",
+            "",
+            &snpanel_db::sqlalchemy_now(),
+        )
+        .await
+    {
+        tracing::error!("recording the unsuspension failed: {e}");
+        return crate::errors::internal_error();
+    }
+    audit_provisioning(&state, &parts, "provisioning_unsuspend", &external_id, "").await;
+    axum::Json(json!({ "ok": true, "status": "active" })).into_response()
+}
+
+/// What a status change should do before anything is touched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StatusChange {
+    /// Already where the caller wants it: answer success and do nothing.
+    AlreadyThere,
+    /// Somewhere else entirely: refuse, and name the status.
+    Refuse,
+    Proceed,
+}
+
+/// Source: the two guards at the top of `suspend` and `unsuspend`.
+///
+/// **Already there is a success, not an error.** A billing system retrying
+/// a call it is not sure landed must not be told something went wrong —
+/// that is what turns a network blip into a support ticket. Any *other*
+/// status is refused rather than forced, because suspending a terminated
+/// account is a mistake somebody should be shown.
+pub fn status_change(current: &str, from: &str, to: &str) -> StatusChange {
+    if current == to {
+        StatusChange::AlreadyThere
+    } else if current == from {
+        StatusChange::Proceed
+    } else {
+        StatusChange::Refuse
+    }
+}
+
+/// Source: `rewrite_mode = "front_controller" if wordpress else
+/// (nginx_rewrite_mode or "none")`.
+///
+/// A WordPress site's mode is decided by **what it is**, not by what the
+/// column says: the suspension rendered the site static with no rewrite,
+/// and the row may never have carried a mode of its own. Returning `None`
+/// lets the renderer use the column, which is right for everything else.
+pub fn unsuspend_rewrite_mode(app_type: &str, stored: &str) -> Option<&'static str> {
+    if app_type == "wordpress" {
+        Some("front_controller")
+    } else if stored.is_empty() {
+        Some("none")
+    } else {
+        None
+    }
+}
+
+/// Source: `site_users.lock_linux_user` / `unlock_linux_user`, both called
+/// inside a bare `except Exception: pass`.
+///
+/// A site with no runtime user, or a helper that refuses, does not stop the
+/// suspension: the vhost is already serving nothing, which is what actually
+/// blocks the customer. The shell account is a second lock, not the first.
+async fn lock_site_user(state: &AppState, linux_user: Option<&str>, lock: bool) {
+    let Some(user) = linux_user.filter(|u| !u.is_empty()) else {
+        return;
+    };
+    let Ok(safe) = snpanel_core::types::PanelUsername::parse(user) else {
+        return;
+    };
+    let verb = if lock {
+        "panel-user-lock"
+    } else {
+        "panel-user-unlock"
+    };
+    let flag = if lock { "-L" } else { "-U" };
+    let _ = crate::shell::privileged(
+        state.settings.command_dry_run,
+        verb,
+        &[safe.as_str()],
+        None,
+        Some(&["usermod", flag, safe.as_str()]),
+    )
+    .await;
+}
+
 /// `PATCH /api/provisioning/v1/accounts/{external_id}/password`.
 ///
 /// Source: `change_password`.
@@ -853,6 +1158,58 @@ mod tests {
         assert_eq!(crate::sso::consume_panel_login_token(&token), None);
         // And a ticket nobody made is not honoured either.
         assert_eq!(crate::sso::consume_panel_login_token("made-up"), None);
+    }
+
+    /// Retrying a suspension is a success; suspending the wrong thing is
+    /// not.
+    ///
+    /// A billing system that lost the answer to its first call will send
+    /// the second. Telling it that the account is *already* suspended as
+    /// though something had gone wrong is what turns a network blip into a
+    /// support ticket — and forcing the change from any status at all
+    /// would let a terminated account be suspended back into existence.
+    #[test]
+    fn a_repeated_status_change_succeeds_and_a_wrong_one_does_not() {
+        use StatusChange::*;
+
+        // Suspending.
+        assert_eq!(status_change("active", "active", "suspended"), Proceed);
+        assert_eq!(
+            status_change("suspended", "active", "suspended"),
+            AlreadyThere
+        );
+        assert_eq!(status_change("terminated", "active", "suspended"), Refuse);
+        assert_eq!(status_change("pending", "active", "suspended"), Refuse);
+        assert_eq!(status_change("", "active", "suspended"), Refuse);
+        // Unsuspending, which is the same rule the other way round.
+        assert_eq!(status_change("suspended", "suspended", "active"), Proceed);
+        assert_eq!(status_change("active", "suspended", "active"), AlreadyThere);
+        assert_eq!(status_change("terminated", "suspended", "active"), Refuse);
+        assert_eq!(status_change("pending", "suspended", "active"), Refuse);
+        // The target is checked before the source, so a status that is both
+        // reads as already there rather than as a change to make.
+        assert_eq!(status_change("x", "x", "x"), AlreadyThere);
+    }
+
+    /// Which rewrite mode a site comes back with.
+    #[test]
+    fn a_wordpress_site_comes_back_as_a_front_controller() {
+        // Whatever the column says, and it often says nothing: the
+        // suspension rendered the site static.
+        assert_eq!(
+            unsuspend_rewrite_mode("wordpress", ""),
+            Some("front_controller")
+        );
+        assert_eq!(
+            unsuspend_rewrite_mode("wordpress", "none"),
+            Some("front_controller")
+        );
+        // Everything else keeps its own, and an empty column means none.
+        assert_eq!(unsuspend_rewrite_mode("php", ""), Some("none"));
+        assert_eq!(unsuspend_rewrite_mode("static", ""), Some("none"));
+        // A column with a value is left to the renderer, which reads it.
+        assert_eq!(unsuspend_rewrite_mode("php", "front_controller"), None);
+        assert_eq!(unsuspend_rewrite_mode("static", "none"), None);
     }
 
     /// The digest every existing token is stored as.

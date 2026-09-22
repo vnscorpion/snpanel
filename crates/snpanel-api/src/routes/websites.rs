@@ -1001,7 +1001,7 @@ pub(super) async fn rewrite_owned_vhost(
 /// The overrides matter because the caller often knows something the database
 /// does not yet: an alias that has been added inside this transaction and is
 /// not committed, for instance.
-async fn rewrite_website_vhost(
+pub(super) async fn rewrite_website_vhost(
     state: &AppState,
     website: &snpanel_db::Website,
     overrides: RewriteOverrides,

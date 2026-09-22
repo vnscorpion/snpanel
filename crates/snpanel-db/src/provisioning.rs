@@ -133,6 +133,34 @@ impl<'a> ProvisioningRepo<'a> {
         Ok(())
     }
 
+    /// Source: the three fields `suspend_account` and `unsuspend_account`
+    /// set on the row before committing.
+    ///
+    /// `last_message` carries the reason a billing system gave, and is
+    /// **cleared** on unsuspend rather than left behind — an account that
+    /// is running again should not still show why it once stopped.
+    pub async fn set_status(
+        &self,
+        id: i64,
+        status: &str,
+        last_action: &str,
+        last_message: &str,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE provisioning_accounts \
+             SET status = ?, last_action = ?, last_message = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(status)
+        .bind(last_action)
+        .bind(last_message)
+        .bind(updated_at)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// How many websites and databases an account's user owns.
     ///
     /// Source: the two `.count()` calls in `get_usage`. They count what the
