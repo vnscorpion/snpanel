@@ -1372,6 +1372,63 @@ choosing between the first and last run of digits was never reached.
 
 55 mutations, all caught.
 
+### Testing what shipped, and measuring what DA-import needs
+
+No endpoint moves here. `da_safe_upload_name`, the archive suffix list and
+`resolve_backup_path` shipped some batches ago **without a test**, and they
+guard three different things: what a browser may name an uploaded file,
+what the extractor will accept, and whether a path taken from a JSON body
+can leave the backup directory. They now have one, against a corpus
+measured from `services/da_import.py` itself.
+
+Three of those are worth stating:
+
+- A **hidden** name is refused rather than un-hidden. A file called
+  `.bashrc.tar.gz` sitting in a directory somebody later globs is a
+  surprise nobody needs.
+- There is **no `.zip`** in the accepted suffixes, and that is not an
+  oversight: a DirectAdmin account backup is a tar, and accepting a zip at
+  upload would mean taking an archive the extractor cannot read and
+  failing at import, hours later.
+- The compound suffixes come **before** the `.tar` they end with, so
+  `a.tar.gz` is stripped whole. Reversed, the account name guessed from the
+  filename carries a `gz`.
+
+10 mutations, all caught.
+
+#### What the five DA-import endpoints are waiting on
+
+This was started as code and stopped as a measurement. Two things came out
+of it:
+
+**A first draft duplicated helpers that already exist.** `backup_dir`,
+`safe_upload_name` and `resolve_backup_path` were written fresh in a new
+module before a search found them already in `routes/maintenance.rs` —
+correct, and shipped. The new module was deleted. The corpus it was written
+against stays, as `tests/golden/email.json` does: measured Python for
+whoever ports the rest.
+
+**`POST /da-import/scan` needs a decompressor decision, and it is a real
+one.** `_safe_extract_tar` opens the archive with `tarfile.open(path,
+"r:*")`, which handles gzip, bzip2 and xz in-process, and pipes `.tar.zst`
+through the `zstd` binary. This workspace has `flate2` for gzip and nothing
+for the other three: `bzip2`, `xz2` and `zstd` are all absent from
+`Cargo.lock`, and two of them link C libraries.
+
+There are two honest shapes and neither is free:
+
+- **Three crates.** Faithful, in-process, and the error messages match. It
+  is three new dependencies, two of them building C.
+- **Pipe through the system binaries**, as the Python already does for
+  `.tar.zst`. No new dependency, and `tarfilter.rs` still does the safety
+  filtering so nothing about the security model changes — but an import
+  would fail on a host without `xz` or `bzip2`, where the Python succeeds.
+
+Everything after extraction is plain code: about sixty functions that turn
+another panel's conventions into this one's, all of them pure enough to
+measure. The corpus already covers the naming half — the account name, the
+domain, the database identifier, the `.conf` reader and the pointer file.
+
 ---
 
 ## Not started
@@ -1386,7 +1443,9 @@ Measured, not recalled: **26 endpoints**, in three groups:
 
 The bold two are dependency and architecture decisions on a hosting panel,
 not code that is merely unwritten. **The DA-import worker is the only
-plain code left**: five endpoints and about 1,500 lines of Python.
+group left that is mostly plain code**: five endpoints and about 1,500
+lines of Python. Its one dependency question is the archive decompressors,
+measured and written up in the section above.
 
 `POST /user-restore` used to be filed with it. Re-measured, it is not:
 `restore_user_backup` calls `_restore_applications`, which collects each

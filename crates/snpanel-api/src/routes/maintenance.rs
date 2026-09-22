@@ -4869,6 +4869,133 @@ async fn delete_da_backup(State(state): State<AppState>, req: axum::extract::Req
 }
 
 #[cfg(test)]
+mod da_import_tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn corpus() -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/da_import.json");
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the da import corpus"))
+            .expect("the corpus parses")
+    }
+
+    /// What a browser may name an uploaded backup.
+    ///
+    /// The name arrives from the browser and is joined onto the backup
+    /// directory, so every directory component has to go - including a
+    /// Windows one, because the browser may be Windows.
+    #[test]
+    fn an_uploaded_backup_name_is_the_pythons() {
+        let corpus = corpus();
+        let cases = corpus["safe_upload_name"].as_array().expect("the cases");
+        assert_eq!(cases.len(), 25, "the corpus changed size");
+
+        let mut failures = Vec::new();
+        for case in cases {
+            let raw = case["filename"].as_str().unwrap_or("");
+            let got = da_safe_upload_name(raw);
+            match case["name"].as_str() {
+                Some(want) => {
+                    if got.as_deref() != Ok(want) {
+                        failures.push(format!("{raw:?}: python {want:?}, rust {got:?}"));
+                    }
+                }
+                None => {
+                    if got.is_ok() {
+                        failures.push(format!("{raw:?}: python refused it, rust {got:?}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        // The three that matter on their own.
+        assert_eq!(
+            da_safe_upload_name("C:\\Users\\me\\user.bob.tar.gz").unwrap(),
+            "user.bob.tar.gz"
+        );
+        assert_eq!(
+            da_safe_upload_name("../../etc/x.tar.gz").unwrap(),
+            "x.tar.gz"
+        );
+        // A hidden name is refused rather than un-hidden: a file called
+        // `.bashrc.tar.gz` in a directory somebody later globs is a
+        // surprise nobody needs.
+        assert!(da_safe_upload_name(".hidden.tar.gz").is_err());
+    }
+
+    /// Which suffixes the extractor will actually accept.
+    ///
+    /// **There is no `.zip`**, and that is not an oversight: a
+    /// DirectAdmin account backup is a tar, and accepting a zip at upload
+    /// would mean an archive the extractor cannot read being taken and
+    /// then failing at import, hours later.
+    #[test]
+    fn the_accepted_archive_suffixes_are_the_pythons() {
+        for good in [
+            "a.tar.zst",
+            "a.tzst",
+            "a.tar.gz",
+            "a.tgz",
+            "a.tar.bz2",
+            "a.tbz2",
+            "a.tar.xz",
+            "a.txz",
+            "a.tar",
+        ] {
+            assert!(
+                da_safe_upload_name(good).is_ok(),
+                "{good} should be accepted"
+            );
+        }
+        for bad in ["a.zip", "a.gz", "a.rar", "a.tar.gz.exe", "noext"] {
+            assert!(da_safe_upload_name(bad).is_err(), "{bad} should be refused");
+        }
+        // The compound suffixes come first, so `.tar.gz` is matched whole
+        // rather than as the `.tar` it is not.
+        assert!(
+            ARCHIVE_SUFFIXES
+                .iter()
+                .position(|s| *s == ".tar.gz")
+                .unwrap()
+                < ARCHIVE_SUFFIXES.iter().position(|s| *s == ".tar").unwrap()
+        );
+    }
+
+    /// A path from the request body cannot leave the backup directory.
+    ///
+    /// Scan, import and delete all take this path from a JSON body, so it
+    /// is the guard between a malformed request and reading - or deleting
+    /// - an arbitrary file on the host.
+    #[test]
+    fn a_backup_path_cannot_escape_its_directory() {
+        for escape in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "..",
+            "a/../../../etc/shadow",
+            "/",
+        ] {
+            assert!(
+                resolve_backup_path(escape).is_err(),
+                "{escape:?} escaped the backup directory"
+            );
+        }
+        // An empty path is a missing argument, not an escape.
+        assert!(resolve_backup_path("").is_err());
+        assert!(resolve_backup_path("   ").is_err());
+
+        // A name inside it resolves to a path under the root.
+        let inside = resolve_backup_path("user.bob.tar.gz").expect("a path inside");
+        assert!(inside.starts_with(crate::files::resolve(&da_backup_dir())));
+        // And so does a relative path that stays inside after `..`.
+        let winding = resolve_backup_path("sub/../user.bob.tar.gz").expect("a path inside");
+        assert_eq!(winding, inside);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
