@@ -9,6 +9,7 @@ description = "The phases of a SNPanel installation, ported from installer/insta
 [dependencies]
 snpanel-core = { path = "../snpanel-core" }
 snpanel-osabi = { path = "../snpanel-osabi" }
-
-[dev-dependencies]
+# The update script's status file is JSON that the panel reads, and every
+# write merges into whatever is already there rather than replacing it - so
+# this side has to parse it, not only produce it.
 serde_json.workspace = true
