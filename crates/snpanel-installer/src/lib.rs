@@ -16,6 +16,7 @@
 pub mod backend_env;
 pub mod binaries;
 pub mod bootstrap;
+pub mod check;
 pub mod ctl;
 pub mod finish;
 pub mod ioncube;

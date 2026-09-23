@@ -1,5 +1,8 @@
 //! Reading `/etc/os-release` and picking the right [`Platform`].
 //!
+//! Source: `detect_platform` in `installer/platform.sh`, which does the
+//! same reading and then sources one of the per-distribution tables.
+//!
 //! Plan §6.1. This replaces `installer/install.sh` line 17, which hard-refuses
 //! anything that is not Ubuntu 24.04:
 //!

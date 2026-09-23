@@ -136,6 +136,14 @@ pub trait Platform: Send + Sync {
     fn update_index_argv(&self) -> Vec<&'static str>;
 
     // --- PHP ---
+    //
+    // These five are `platform.sh`'s `php_service`, `php_binary`,
+    // `php_fpm_pool_dir`, `php_ini_path` (via `php_etc_dir`) and
+    // `php_conf_dirs`, plus the `php_compact` spelling that
+    // [`PhpVersion::compact`] carries. Every one of them is pinned to
+    // the shell's own answer by the fixture in
+    // `the_shell_installers_table_agrees_with_this_one`, which runs the
+    // functions rather than reading them.
     fn php_service(&self, v: PhpVersion) -> String;
     fn php_binary(&self, v: PhpVersion) -> PathBuf;
     fn php_fpm_pool_dir(&self, v: PhpVersion) -> PathBuf;

@@ -509,7 +509,8 @@ fn is_site_root_for_domain(path: &Path, domain: &str, home_root: &Path) -> bool 
     snpanel_core::PanelUsername::parse(&user).is_ok() && site == domain.trim().to_ascii_lowercase()
 }
 
-/// Source: `_php_fpm_socket`.
+/// Source: `_php_fpm_socket`, and `php_fpm_socket` in `platform.sh`,
+/// which are the same path written twice.
 fn php_fpm_socket(php_version: Option<&str>, default: &str) -> Result<String, RenderError> {
     let version = match php_version {
         Some(v) => {
