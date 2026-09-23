@@ -10,7 +10,10 @@ use sqlx::sqlite::SqlitePool;
 
 use super::DbError;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+/// `Default` is for tests building a row to vary one field of. Nothing
+/// reads a defaulted row from the database — every column here is `NOT NULL`
+/// with its own default in the schema, and those are the schema's business.
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
 pub struct Website {
     pub id: i64,
     pub domain: String,
@@ -102,6 +105,30 @@ impl<'a> WebsiteRepo<'a> {
             }
         }
         Ok(query.fetch_all(self.pool).await?)
+    }
+
+    /// Every website, oldest first.
+    ///
+    /// Source: `db.query(Website).all()` with no `order_by`, which SQLite
+    /// answers from a plain table scan in rowid order.
+    ///
+    /// Separate from [`Self::list`] on purpose. That one is the listing
+    /// endpoint's `ORDER BY id DESC` — newest first, which is what the UI
+    /// wants and the wrong thing for a sweep that stops at its first
+    /// failure: the order decides which sites were already refreshed when it
+    /// stopped.
+    pub async fn all_by_id(&self) -> Result<Vec<Website>, DbError> {
+        Ok(sqlx::query_as::<_, Website>(
+            "SELECT id, domain, owner_id, root_path, document_root, linux_user, \
+                    php_version, app_type, ssl_enabled, ssl_mode, ssl_cert_path, \
+                    ssl_key_path, ssl_ca_path, ssl_updated_at, ssl_source_domain, \
+                    status, nginx_custom, nginx_config_mode, nginx_rewrite_mode, \
+                    waf_enabled, waf_default_rules, waf_custom_rules, crs_enabled, \
+                    http_flood_enabled, http_flood_config, blocked_bots, app_id \
+             FROM websites ORDER BY id ASC",
+        )
+        .fetch_all(self.pool)
+        .await?)
     }
 
     /// Every website, ordered by domain.
@@ -704,6 +731,21 @@ impl<'a> WebsiteRepo<'a> {
         Ok(())
     }
 
+    /// Source: `website.nginx_config_mode = "managed"` on its own, which is
+    /// what the whole-fleet refresh commits when it finds a vhost the panel
+    /// had stopped managing.
+    ///
+    /// **Only the one column.** The refresh does not change the rewrite
+    /// mode, and a setter that quietly reset it while marking the file
+    /// managed would be precisely the bug the sweep exists to avoid.
+    pub async fn set_config_mode_managed(&self, id: i64) -> Result<(), DbError> {
+        sqlx::query("UPDATE websites SET nginx_config_mode = 'managed' WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Source: `website.nginx_rewrite_mode = next_rewrite_mode;
     /// website.nginx_config_mode = "managed"`.
     ///
@@ -840,6 +882,27 @@ mod tests {
         .await
         .unwrap();
         pool
+    }
+
+    /// **The sweep walks them oldest first, the opposite of the listing.**
+    ///
+    /// Two orders for two jobs, asserted next to each other because the
+    /// failure mode is somebody tidying one into the other. On a clean
+    /// whole-fleet refresh the order changes nothing; on the strict one,
+    /// which stops at its first failure, it decides which sites were already
+    /// refreshed when it stopped — and that has to be the set the Python
+    /// would have refreshed, which is rowid order.
+    #[tokio::test]
+    async fn the_sweep_walks_oldest_first() {
+        let pool = scratch().await;
+        let ids: Vec<i64> = WebsiteRepo::new(&pool)
+            .all_by_id()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3]);
     }
 
     #[tokio::test]

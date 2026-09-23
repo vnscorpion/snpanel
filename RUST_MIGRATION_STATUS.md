@@ -1950,8 +1950,8 @@ stored text is byte-identical to what went in and Python's
 | --- | --- | --- |
 | `update.sh` | `run_migrations()` | the schema to move to this side (C11) |
 | `update.sh` orphan cleanup | `orphans.clean` | **done** — `--clean-orphans` |
-| `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | assembling a one-shot from parts that are all ported |
-| `update.sh` site-refresh | the same work, for every site | the same one-shot |
+| `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | **done** — `--refresh-sites-strict` |
+| `update.sh` site-refresh | the same work, for every site | **done** — `--refresh-sites` |
 | `install.sh` | `python -m app.seed` | nothing but ordering — `--init-db` replaces it once the binary ships before the seed |
 | `snpanel-upstream.service` | uvicorn on loopback | the cutover's own safety net, deliberately kept |
 
@@ -1979,15 +1979,70 @@ because an update that stopped over a stale certificate directory would
 leave a half-updated panel behind. Mutating it to report success instead
 fails a test by name.
 
-What is genuinely left is **one one-shot**: the per-site refresh that
-`snpanelctl fix-permissions` and `update.sh` both run. Every part of it is
-ported — `sync_http_flood_zones`, `sync_website_rules`,
-`rewrite_website_vhost`, and the `site-runtime-ensure`,
-`document-root-ensure` and permission verbs in the helper — so this is an
-assembly job rather than a blocked one. It is also the highest-consequence
-path in the system: it rewrites every vhost on the machine. That wants a
-real server to verify against, not a unit test, which is why it is written
-down here rather than done blind.
+### The whole-fleet site refresh, and two bugs it turned up
+
+The last of them, and the highest-consequence path in the system: it
+rewrites every vhost on the machine. So it was verified against a real
+install rather than a unit test — a panel in the container with one site
+that has an alias and a `laravel` rewrite mode, swept three ways.
+
+**Two flags, not one with an option**, because the difference is not a
+preference. `snpanelctl fix-permissions` lets the exception out and stops:
+somebody ran it by hand and is reading the output, and finishing quietly
+over a broken site would hide the thing they asked about. `update.sh` wraps
+each site in `except Exception` and carries on: an update that stopped at
+the first bad site would leave every site after it un-refreshed and the
+panel half-updated. A single flag would make the wrong one the default for
+whichever caller forgot to pass it. Measured on a panel with a broken site
+followed by a good one: strict exits 1 having written **no** vhost, lenient
+exits 0 having written the good one.
+
+#### The sites are walked oldest first
+
+`list()` is the listing endpoint's `ORDER BY id DESC` — newest first, which
+is what the UI wants and the wrong thing here. `db.query(Website).all()` has
+no `order_by`, and SQLite answers a plain table scan in rowid order. On a
+clean sweep the order changes nothing; on the strict one it decides which
+sites were already refreshed when it stopped, and that has to be the set the
+Python would have refreshed. This was caught by the measurement above
+reporting one vhost written where it should have been none.
+
+#### Two divergences, both deliberate, both measured
+
+Neither Python block calls the panel's own `_rewrite_website_vhost`. Both
+call `nginx.rewrite_vhost` with a hand-written keyword list, and what the
+list leaves out is the problem.
+
+**Aliases are dropped.** Neither block passes `aliases`, and `aliases=None`
+means "no aliases" rather than "keep what is there" — `_server_names` builds
+`[domain, www.domain]` and stops. On the probe site:
+
+| | `server_name` |
+| --- | --- |
+| the panel's own edit path | `probe.example www.probe.example alias.example;` |
+| both Python sweeps | `probe.example www.probe.example;` |
+
+So **every update silently deletes every alias from every vhost**, until
+somebody next edits that site in the panel. The alias stops resolving in the
+meantime, and nothing in the log says so.
+
+**`fix-permissions` also resets the rewrite mode.** It alone omits
+`rewrite_mode`, which defaults through `_check_rewrite_mode(None)` to
+`"none"`. On the same site, set to `laravel`, the document root came back as
+`.../public_html` instead of `.../public_html/public` — so it breaks every
+Laravel and CodeIgniter site it touches.
+
+**This reproduces neither.** The sweep goes through the panel's own
+`rewrite_website_vhost`, which reads the aliases from the database and the
+rewrite mode from the row. NT1 asks for behaviour to be reproduced rather
+than improved, and that is right for behaviour somebody might depend on;
+nobody depends on their aliases being deleted by an update. The divergence
+is named in the module, and undoing it is a one-line change if it turns out
+to be load-bearing.
+
+The proof is a diff rather than an assertion. Against the vhost the panel's
+own edit path writes for the same site: **the Rust sweep is byte-identical**,
+and the Python sweep differs by exactly the `server_name` line.
 
 ## Stage F — the installer
 

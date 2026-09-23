@@ -121,3 +121,25 @@ pub async fn panel(tag: &str) -> Option<crate::state::AppState> {
         upstream: None,
     })
 }
+
+/// A `Website` row with the shape a fresh site has.
+///
+/// Set to what the panel writes for a new WordPress site, so a test that
+/// changes one field is a test about that field.
+pub fn website_row() -> snpanel_db::Website {
+    snpanel_db::Website {
+        id: 1,
+        domain: "example.test".into(),
+        root_path: "/home/example/example.test".into(),
+        owner_id: 1,
+        php_version: "8.4".into(),
+        app_type: "wordpress".into(),
+        linux_user: Some("example".into()),
+        document_root: "public_html".into(),
+        nginx_rewrite_mode: "none".into(),
+        nginx_config_mode: "managed".into(),
+        status: "active".into(),
+        waf_enabled: true,
+        ..Default::default()
+    }
+}

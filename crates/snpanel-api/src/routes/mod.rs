@@ -14,6 +14,7 @@ pub mod malware;
 pub mod packages;
 pub mod panel_settings;
 pub mod provisioning;
+pub mod refresh;
 pub mod services;
 pub mod site_apps;
 pub mod terminal;

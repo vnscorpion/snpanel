@@ -229,6 +229,26 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The whole-fleet site refresh, for `update.sh` (lenient) and
+    // `snpanelctl fix-permissions` (strict).
+    for (flag, on_failure) in [
+        (REFRESH_SITES, routes::refresh::OnFailure::Warn),
+        (REFRESH_SITES_STRICT, routes::refresh::OnFailure::Stop),
+    ] {
+        if args.iter().any(|a| a == flag) {
+            let swept = routes::refresh::all_sites(&state, on_failure).await;
+            match swept {
+                Ok(swept) => {
+                    println!("{}", swept.report());
+                    return Ok(());
+                }
+                // The strict caller's failure. `run` turns this into the
+                // message and the non-zero exit the shell tests for.
+                Err(why) => anyhow::bail!("{why}"),
+            }
+        }
+    }
+
     // `update.sh`'s orphan sweep. A flag rather than a request, because an
     // update runs while the panel may be stopped and a request to it would
     // have nowhere to go.
@@ -487,6 +507,16 @@ pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
 
 /// The flag `update.sh` passes for the orphan sweep.
 pub(crate) const CLEAN_ORPHANS: &str = "--clean-orphans";
+
+/// The whole-fleet site refresh, in its two tempers.
+///
+/// Two flags rather than one with an option, because the difference is not a
+/// preference: `snpanelctl fix-permissions` is somebody watching the output
+/// and wanting to know about a broken site, and `update.sh` must not stop an
+/// update over one. A single flag would make the wrong one the default for
+/// whichever caller forgot to pass it.
+pub(crate) const REFRESH_SITES: &str = "--refresh-sites";
+pub(crate) const REFRESH_SITES_STRICT: &str = "--refresh-sites-strict";
 
 /// Source: `run_due` in `malware_schedule.py`.
 ///

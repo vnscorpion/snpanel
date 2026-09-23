@@ -1557,9 +1557,21 @@ async fn set_waf(
 /// site would drop the zones of all the others, and the next reload would fail
 /// for every vhost that names one.
 async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
+    sync_flood_zones(state)
+        .await
+        .map_err(|why| bad_request(&why))
+}
+
+/// The same write, for a caller that has to print the reason rather than
+/// return it.
+///
+/// Source: the same `nginx.sync_http_flood_zones`. The eleven handlers above
+/// go through [`sync_http_flood_zones`], which turns this into the response
+/// they always made.
+pub(super) async fn sync_flood_zones(state: &AppState) -> Result<(), String> {
     let websites = state.db.websites().list(None, "").await.map_err(|e| {
         tracing::error!("listing websites for the flood zones failed: {e}");
-        internal_error()
+        format!("could not list the websites for the flood zones: {e}")
     })?;
 
     let configs: Vec<(String, bool, snpanel_nginx::HttpFloodConfig)> = websites
@@ -1580,8 +1592,7 @@ async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
             config: *config,
         })
         .collect();
-    let content =
-        snpanel_nginx::render_http_flood_zones(&sites).map_err(|e| bad_request(&e.to_string()))?;
+    let content = snpanel_nginx::render_http_flood_zones(&sites).map_err(|e| e.to_string())?;
 
     let result = shell::privileged(
         state.settings.command_dry_run,
@@ -1598,11 +1609,10 @@ async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
     if result.ok() {
         Ok(())
     } else {
-        Err(bad_request(
-            result
-                .failure_detail("Could not save HTTP flood zones")
-                .trim(),
-        ))
+        Err(result
+            .failure_detail("Could not save HTTP flood zones")
+            .trim()
+            .to_string())
     }
 }
 

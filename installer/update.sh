@@ -1439,6 +1439,14 @@ SITE_REFRESH_INPUTS=(
 )
 if ! step_inputs_changed site-refresh "${SITE_REFRESH_INPUTS[@]}"; then
   log "Managed site config unchanged since last update; skipping the per-site refresh"
+elif [[ -x "${RUST_API:-/usr/local/bin/snpanel-api-rust}" ]] && id -u snpanel >/dev/null 2>&1; then
+  # Rust where it is installed. This sweep warns per site and carries on:
+  # an update that stopped at the first bad site would leave every site
+  # after it un-refreshed and the panel half-updated.
+  log "Refreshing managed site permissions"
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "${RUST_API:-/usr/local/bin/snpanel-api-rust}" --env "$APP_DIR/backend/.env" --refresh-sites \
+    || log "WARNING: the site refresh did not complete"
 elif id -u snpanel >/dev/null 2>&1; then
   log "Refreshing managed site permissions"
   sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY'

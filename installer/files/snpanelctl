@@ -362,7 +362,15 @@ SSHD
     chmod o+rX "$APP_DIR" "$APP_DIR/frontend" 2>/dev/null || true
     chmod -R o+rX "$APP_DIR/frontend/dist"
   fi
-  if [[ -x "$APP_DIR/backend/.venv/bin/python" ]]; then
+  # Rust where it is installed. The sweep stops at the first site it cannot
+  # fix, which is what this path has always done: somebody ran this by hand
+  # and is reading the output, so finishing quietly over a broken site would
+  # hide the thing they asked about.
+  if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+    runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+      "$RUST_API" --env "$ENV_FILE" --refresh-sites-strict \
+      || fail "Could not refresh the sites"
+  elif [[ -x "$APP_DIR/backend/.venv/bin/python" ]]; then
     cd "$APP_DIR/backend"
     runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY'
 from app.core.database import SessionLocal

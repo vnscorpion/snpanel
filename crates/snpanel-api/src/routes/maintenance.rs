@@ -4910,7 +4910,7 @@ async fn fix_wordpress_permissions(
 }
 
 /// Source: `platform.web_group()`.
-fn web_group() -> String {
+pub(super) fn web_group() -> String {
     snpanel_osabi::detect()
         .map(|p| p.web_group().to_string())
         .unwrap_or_else(|_| "www-data".to_string())
