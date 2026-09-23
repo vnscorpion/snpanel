@@ -18,9 +18,6 @@
 //! tree is tens of thousands of `stat` calls and holding a tokio worker for
 //! that stalls every other request on the runtime.
 
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-
 /// Source: `BYTES_PER_MB`.
 pub const BYTES_PER_MB: i64 = 1024 * 1024;
 
@@ -82,51 +79,9 @@ pub fn limit_bytes(role: &str, storage_limit_mb: i64) -> Option<i64> {
     Some(storage_limit_mb.max(0) * BYTES_PER_MB)
 }
 
-/// Source: `path_usage_bytes`.
-pub fn path_usage_bytes(path: impl AsRef<Path>) -> i64 {
-    let root = path.as_ref();
-    // lstat, not stat: the root's own inode size is part of the total.
-    let Ok(root_meta) = std::fs::symlink_metadata(root) else {
-        return 0;
-    };
-    let mut total = root_meta.size() as i64;
-
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else {
-            // 0750 customer homes read by the unprivileged API: short, not
-            // fatal.
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            if meta.is_symlink() {
-                // Not followed and not counted, exactly as Python has it.
-                continue;
-            }
-            total += meta.size() as i64;
-            if meta.is_dir() {
-                stack.push(entry.path());
-            }
-        }
-    }
-    total
-}
-
-/// Source: `website_storage_used_bytes`.
-pub fn website_usage(root_path: &str) -> i64 {
-    if root_path.is_empty() {
-        return 0;
-    }
-    path_usage_bytes(root_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn an_admin_has_no_limit_and_no_percentage() {
@@ -158,63 +113,6 @@ mod tests {
         assert_eq!(Usage::new(1, Some(3)).percent, 33.33);
         // Far over quota clamps at 999, not 12345.
         assert_eq!(Usage::new(1_000_000, Some(100)).percent, 999.0);
-    }
-
-    #[test]
-    fn a_directory_counts_its_own_inode_and_its_contents() {
-        let dir = std::env::temp_dir().join(format!("bp-usage-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let mut f = std::fs::File::create(dir.join("sub/file")).unwrap();
-        f.write_all(&[0u8; 1234]).unwrap();
-        drop(f);
-
-        let total = path_usage_bytes(&dir);
-        // The file, plus both directory inodes - so strictly more than the
-        // file alone. Omitting the root's own size is the subtle version of
-        // this bug and it would never show up as an obvious failure.
-        assert!(
-            total > 1234,
-            "expected the directories to count too, got {total}"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_missing_path_is_zero_rather_than_an_error() {
-        assert_eq!(path_usage_bytes("/nonexistent/path/for/a/test"), 0);
-        assert_eq!(website_usage(""), 0);
-    }
-
-    #[test]
-    fn a_symlink_is_not_counted_and_not_followed() {
-        // A before/after comparison would be a bad test: on tmpfs the
-        // directory's own inode grows as entries are added, so the figure
-        // moves even when nothing beneath it was counted. What actually
-        // matters is whether the *target* got followed, so the target is made
-        // large enough that following it would be unmistakable.
-        let dir = std::env::temp_dir().join(format!("bp-link-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let target = dir.join("target");
-        std::fs::write(&target, vec![0u8; 500_000]).unwrap();
-        assert!(
-            path_usage_bytes(&dir) >= 500_000,
-            "a real file must count towards the total"
-        );
-
-        let linked = dir.join("linked");
-        std::fs::create_dir_all(&linked).unwrap();
-        std::os::unix::fs::symlink(&target, linked.join("link")).unwrap();
-        let link_only = path_usage_bytes(&linked);
-        assert!(
-            link_only < 10_000,
-            "a symlink must not drag its 500 KB target into the total, got {link_only}"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

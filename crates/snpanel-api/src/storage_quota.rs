@@ -26,6 +26,14 @@ pub const BYTES_PER_MB: u64 = 1024 * 1024;
 /// Source: `VOLUME_USAGE_TTL_SECONDS`.
 const VOLUME_USAGE_TTL: Duration = Duration::from_secs(60);
 
+/// Source: `USER_USAGE_TTL_SECONDS`.
+///
+/// Five minutes, against the volume cache's one. The two answer different
+/// questions: the volume figure is one helper call, and the user figure is a
+/// walk of every file the customer owns — which on a busy box is the
+/// difference between a user list that loads and one that does not.
+const USER_USAGE_TTL: Duration = Duration::from_secs(300);
+
 /// Source: `StorageQuotaExceeded` - a `ValueError` subclass, which the router
 /// turns into a 413 rather than the 400 every other `ValueError` becomes.
 #[derive(Debug)]
@@ -113,6 +121,24 @@ pub fn website_storage_used_bytes(root_path: &str) -> u64 {
 /// seconds running out. Worth knowing before trusting this figure right after
 /// a container was removed.
 static VOLUME_USAGE: Mutex<Option<Vec<(String, Instant, u64)>>> = Mutex::new(None);
+
+/// Source: `_user_usage_cache`, keyed by user id.
+static USER_USAGE: Mutex<Option<Vec<(i64, Instant, u64)>>> = Mutex::new(None);
+
+fn cached_user_usage(user_id: i64) -> Option<u64> {
+    let cache = USER_USAGE.lock().ok()?;
+    let entries = cache.as_ref()?;
+    let (_, at, value) = entries.iter().find(|(id, ..)| *id == user_id)?;
+    (at.elapsed() < USER_USAGE_TTL).then_some(*value)
+}
+
+fn remember_user_usage(user_id: i64, total: u64) {
+    if let Ok(mut cache) = USER_USAGE.lock() {
+        let entries = cache.get_or_insert_with(Vec::new);
+        entries.retain(|(id, ..)| *id != user_id);
+        entries.push((user_id, Instant::now(), total));
+    }
+}
 
 /// Source: `volume_usage_bytes`.
 ///
@@ -245,6 +271,26 @@ pub async fn user_storage_used_bytes(
     total
 }
 
+/// Source: `user_storage_used_bytes` with `use_cache=True`.
+///
+/// Only the user **list** asks for this, matching Python's
+/// `_user_out(..., cached_usage=True)`: it walks every account's files at
+/// once, and a five-minute-old figure on a list is fine. **Nothing that
+/// decides whether a write is allowed may use it** — see the module header.
+pub async fn user_storage_used_bytes_cached(
+    dry_run: bool,
+    db: &snpanel_db::Database,
+    user_id: i64,
+    application_installed: bool,
+) -> u64 {
+    if let Some(cached) = cached_user_usage(user_id) {
+        return cached;
+    }
+    let total = user_storage_used_bytes(dry_run, db, user_id, application_installed).await;
+    remember_user_usage(user_id, total);
+    total
+}
+
 /// The account whose allowance a write is about to spend.
 ///
 /// Source: `website.owner` - the four things `enforce_user_storage_quota`
@@ -300,6 +346,69 @@ pub async fn enforce_user_storage_quota(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    /// Every place that reports a customer's usage asks this module for the
+    /// figure.
+    ///
+    /// The bug this is about had already happened: the enforcement path
+    /// counted an application's directory and its container volumes, and the
+    /// two endpoints that *reported* usage summed website roots alone. A
+    /// customer with a site app was refused a write at a figure the panel
+    /// had never shown them, and nothing failed — both halves were
+    /// individually correct.
+    ///
+    /// **The compiler is now the real guard.** `storage.rs` used to carry a
+    /// second copy of the tree walk, and deleting it means there is no
+    /// longer a function a caller could quietly go back to; both mutations
+    /// tried against this fail to compile rather than failing here.
+    ///
+    /// What this test still catches is narrower and worth its three lines:
+    /// a caller that stops asking for the figure at all. It is a statement
+    /// of intent more than a net.
+    #[test]
+    fn every_reported_usage_figure_counts_applications_too() {
+        for (name, source) in [
+            ("auth.rs", include_str!("routes/auth.rs")),
+            ("users.rs", include_str!("routes/users.rs")),
+            ("provisioning.rs", include_str!("routes/provisioning.rs")),
+        ] {
+            assert!(
+                source.contains("storage_quota::user_storage_used_bytes"),
+                "{name} no longer asks storage_quota for the figure"
+            );
+            assert!(
+                !source.contains("storage::website_usage"),
+                "{name} sums website roots itself again - applications would \
+                 stop being counted, silently"
+            );
+        }
+    }
+
+    // Moved from `storage.rs`, which carried a second copy of this walk.
+    // The other two cases it covered — a missing path, and a symlink —
+    // were already tested here; this one was not.
+    #[test]
+    fn a_directory_counts_its_own_inode_and_its_contents() {
+        let dir = std::env::temp_dir().join(format!("bp-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut f = std::fs::File::create(dir.join("sub/file")).unwrap();
+        f.write_all(&[0u8; 1234]).unwrap();
+        drop(f);
+
+        let total = path_usage_bytes(&dir);
+        // The file, plus both directory inodes - so strictly more than the
+        // file alone. Omitting the root's own size is the subtle version of
+        // this bug and it would never show up as an obvious failure.
+        assert!(
+            total > 1234,
+            "expected the directories to count too, got {total}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// A package of 0 MB is a limit of zero, not an absence of one. Reading it

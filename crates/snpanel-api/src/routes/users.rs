@@ -72,7 +72,10 @@ fn require_admin(current: &CurrentUser) -> Result<(), Response> {
 }
 
 /// Source: `_user_out`.
-async fn user_out(state: &AppState, user: &User) -> Value {
+/// `cached_usage` matches Python's `_user_out(..., cached_usage=)`: true only
+/// for the user **list**, which walks every account's files at once. Every
+/// other caller asks for a fresh figure.
+async fn user_out(state: &AppState, user: &User, cached_usage: bool) -> Value {
     let package_name = state
         .db
         .users()
@@ -80,19 +83,28 @@ async fn user_out(state: &AppState, user: &User) -> Value {
         .await
         .unwrap_or(None);
 
-    let roots = state
-        .db
-        .users()
-        .website_roots(user.id)
+    // Applications as well as websites — see `auth::user_storage` for why
+    // reporting less than the quota check enforces is the bug this fixes.
+    let application_installed = super::addons::application_installed();
+    let used = if cached_usage {
+        crate::storage_quota::user_storage_used_bytes_cached(
+            state.settings.command_dry_run,
+            &state.db,
+            user.id,
+            application_installed,
+        )
         .await
-        .unwrap_or_default();
-    let used = tokio::task::spawn_blocking(move || {
-        roots.iter().map(|r| storage::website_usage(r)).sum::<i64>()
-    })
-    .await
-    .unwrap_or(0);
+    } else {
+        crate::storage_quota::user_storage_used_bytes(
+            state.settings.command_dry_run,
+            &state.db,
+            user.id,
+            application_installed,
+        )
+        .await
+    };
     let usage = storage::Usage::new(
-        used,
+        used as i64,
         storage::limit_bytes(&user.role, user.storage_limit_mb),
     );
 
@@ -126,14 +138,14 @@ async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
     };
     let mut out = Vec::with_capacity(users.len());
     for user in &users {
-        out.push(user_out(&state, user).await);
+        out.push(user_out(&state, user, true).await);
     }
     axum::Json(out).into_response()
 }
 
 /// Every user may read their own record - no role check, as in the Python.
 async fn me(State(state): State<AppState>, current: CurrentUser) -> Response {
-    axum::Json(user_out(&state, &current.user).await).into_response()
+    axum::Json(user_out(&state, &current.user, false).await).into_response()
 }
 
 /// What a user's limits end up as, given a package and the request's own
@@ -330,7 +342,7 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         &updated.username,
     )
     .await;
-    axum::Json(user_out(&state, &updated).await).into_response()
+    axum::Json(user_out(&state, &updated, false).await).into_response()
 }
 
 async fn reset_two_factor(
@@ -1173,7 +1185,7 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Ok(Some(u)) => u,
         _ => return internal_error(),
     };
-    axum::Json(user_out(&state, &created).await).into_response()
+    axum::Json(user_out(&state, &created, false).await).into_response()
 }
 
 /// `DELETE /users/{user_id}`.

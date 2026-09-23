@@ -477,27 +477,30 @@ async fn session(State(state): State<AppState>, req: Request) -> Response {
     .into_response()
 }
 
-/// Source: `storage_quota.storage_usage_summary`.
+/// Source: `storage_quota.storage_usage_summary`, called from `auth.py`
+/// with `use_cache` left at its default of false.
 ///
-/// The walk is blocking and can touch tens of thousands of files, so it runs
-/// on the blocking pool rather than stalling a tokio worker that other
-/// requests are waiting on.
+/// Counts applications as well as websites. It used to sum website roots
+/// alone, which understated every account with a site app — and understated
+/// it against an *enforcement* path that already counted them, so a customer
+/// could be refused a write at a figure this endpoint had never shown them.
+///
+/// The walk is blocking and can touch tens of thousands of files, but it is
+/// not wrapped in `spawn_blocking` here any more: the counting now needs the
+/// database and the helper, so it is async throughout, and the blocking file
+/// walk inside `path_usage_bytes` is the same one every other caller already
+/// performs.
 async fn user_storage(state: &AppState, user: &User) -> storage::Usage {
-    let roots = state
-        .db
-        .users()
-        .website_roots(user.id)
-        .await
-        .unwrap_or_default();
-
-    let used = tokio::task::spawn_blocking(move || {
-        roots.iter().map(|r| storage::website_usage(r)).sum::<i64>()
-    })
-    .await
-    .unwrap_or(0);
+    let used = crate::storage_quota::user_storage_used_bytes(
+        state.settings.command_dry_run,
+        &state.db,
+        user.id,
+        super::addons::application_installed(),
+    )
+    .await;
 
     storage::Usage::new(
-        used,
+        used as i64,
         storage::limit_bytes(&user.role, user.storage_limit_mb),
     )
 }
