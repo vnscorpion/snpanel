@@ -3422,6 +3422,7 @@ dependencies = [
  "serde_json",
  "snpanel-core",
  "snpanel-ipc",
+ "snpanel-nginx",
  "snpanel-osabi",
  "tar",
  "thiserror 2.0.20",

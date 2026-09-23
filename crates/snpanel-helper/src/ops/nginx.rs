@@ -22,7 +22,16 @@ pub const CONF_DIR: &str = "/etc/nginx/conf.d";
 
 /// Where a site's operator-supplied extra directives live.
 /// Source: `_custom_include_path` in `services/nginx.py`.
-pub const CUSTOM_DIR: &str = "/etc/nginx/snpanel-custom";
+/// Where a site's custom nginx snippet lives.
+///
+/// **`snpanel/custom`, not `snpanel-custom`.** This is the path the vhost's
+/// `include` line names, so it is not this file's to choose: it has to match
+/// `snpanel_nginx::custom_include_path`, Python's `CUSTOM_INCLUDE_DIR`, and
+/// the bash helper's `NGINX_CUSTOM_DIR`. It did not, and the mismatch took
+/// out website creation entirely - the vhost included a file that had been
+/// written one directory over, `nginx -t` failed, and the create rolled
+/// back.
+pub const CUSTOM_DIR: &str = "/etc/nginx/snpanel/custom";
 
 pub fn vhost_path(domain: &Domain) -> PathBuf {
     PathBuf::from(CONF_DIR).join(format!("{domain}.conf"))
@@ -303,9 +312,15 @@ mod tests {
             vhost_path(&d).to_str().unwrap(),
             "/etc/nginx/conf.d/example.com.conf"
         );
+        // **Asked of the renderer, not pinned to a literal here.** The
+        // vhost's `include` line is built by `custom_include_path`, so a
+        // literal in this file can only ever prove it still says what it
+        // said yesterday - which it did, one directory away from where the
+        // vhost looked, for as long as this test has existed.
         assert_eq!(
             custom_path(&d).to_str().unwrap(),
-            "/etc/nginx/snpanel-custom/example.com.conf"
+            snpanel_nginx::custom_include_path("example.com").unwrap(),
+            "the helper writes the include somewhere the vhost does not read"
         );
     }
 
