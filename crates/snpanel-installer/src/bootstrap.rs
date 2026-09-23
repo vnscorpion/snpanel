@@ -1,8 +1,9 @@
 //! Getting the Rust binaries onto the machine, and the sudoers rule that
 //! lets the panel reach them.
 //!
-//! Source: `resolve_release_tag`, `fetch_rust_binaries` and the `requiretty`
-//! half of `install_privileged_helper`.
+//! Source: `resolve_release_tag`, `fetch_rust_binaries`,
+//! `sudoers_understands_requiretty`, and the `requiretty` half of
+//! `install_privileged_helper`.
 //!
 //! This is the part of the installer that runs a program fetched over the
 //! network as root, so the rule it is built on is worth stating plainly:

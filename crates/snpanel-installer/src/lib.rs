@@ -28,6 +28,7 @@ pub mod panel_user;
 pub mod php;
 pub mod php_shim;
 pub mod phpmyadmin;
+pub mod plan;
 pub mod pma_control;
 pub mod sources;
 pub mod systemd_units;
