@@ -334,18 +334,21 @@ impl HelperRequest {
                 Err(e) => return Err(InvocationError::invalid(e.to_string())),
             },
             ("panel-user-password", 1) => {
-                // C37: the password arrives on stdin, never as an argument, so it
-                // is not visible in `ps` for the life of the process.
+                // C37: the password arrives out of band, never as an argument,
+                // so it is not visible in `ps` for the life of the process.
+                //
+                // **Through the `stdin` closure**, like every other arm that
+                // needs bytes. This one read `std::io::stdin()` directly,
+                // which is the same thing in the helper binary and not the
+                // same thing at all in the API: a systemd service's stdin is
+                // /dev/null, so the password came out empty and the helper
+                // refused it as "12-72 characters" - a complaint about the
+                // operator's input describing a password they never typed.
                 let username = match PanelUsername::parse(&rest[0]) {
                     Ok(u) => u,
                     Err(e) => return Err(InvocationError::invalid(e.to_string())),
                 };
-                let mut password = String::new();
-                if std::io::Read::read_to_string(&mut std::io::stdin(), &mut password).is_err() {
-                    return Err(InvocationError::invalid(
-                        "could not read the password from stdin",
-                    ));
-                }
+                let password = String::from_utf8_lossy(&stdin()).into_owned();
                 HelperRequest::PanelUserPassword {
                     username,
                     password: snpanel_core::SecretString::new(password.trim_end_matches('\n')),
@@ -1247,6 +1250,58 @@ mod tests {
         }
     }
 
+    /// **The password comes from the closure, not the process's stdin.**
+    ///
+    /// `from_argv` has two callers. The helper binary passes a closure that
+    /// reads real stdin; the API passes one that returns the payload it
+    /// wants sent over the socket. This arm read `std::io::stdin()`
+    /// directly, which is the same thing in the helper and not the same
+    /// thing at all in a systemd service, whose stdin is /dev/null.
+    ///
+    /// The password therefore arrived empty, and the helper refused it as
+    /// "password must be 12-72 characters" — a complaint about the
+    /// operator's input describing a password they never typed. Every box
+    /// with the helper socket enabled, for every caller of this verb.
+    ///
+    /// Reading the test process's stdin here would give an empty string, so
+    /// this fails without the fix rather than passing by luck.
+    #[test]
+    fn the_panel_password_is_taken_from_the_payload() {
+        let request = HelperRequest::from_argv(&argv(&["panel-user-password", "alice"]), || {
+            b"a-real-password\n".to_vec()
+        })
+        .expect("the verb parses");
+        match request {
+            HelperRequest::PanelUserPassword { username, password } => {
+                assert_eq!(username.as_str(), "alice");
+                assert_eq!(
+                    password.expose(),
+                    "a-real-password",
+                    "the payload has to reach the helper, and the trailing \
+                     newline has to be gone: chpasswd reads a line"
+                );
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// **An empty payload is passed through, not turned into a refusal here.**
+    ///
+    /// The length rule belongs to the helper, which owns what a Linux
+    /// password may be. Refusing in the parser as well would put the same
+    /// rule in two places and let them disagree.
+    #[test]
+    fn an_empty_password_is_the_helpers_to_refuse() {
+        let request = HelperRequest::from_argv(&argv(&["panel-user-password", "alice"]), Vec::new)
+            .expect("the verb still parses");
+        match request {
+            HelperRequest::PanelUserPassword { password, .. } => {
+                assert_eq!(password.expose(), "");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
     /// A payload verb must not consume stdin when the verb is unknown.
     ///
     /// Stage B's finding, re-checked for the two payload verbs added here: the
@@ -1484,6 +1539,36 @@ mod tests {
         for case in cases {
             let result = HelperRequest::from_argv(&argv(case), || b"payload".to_vec());
             assert!(result.is_ok(), "{:?} did not map: {:?}", case, result.err());
+
+            // **And it has to survive the socket.**
+            //
+            // A type whose `Serialize` and `Deserialize` disagree round-trips
+            // nowhere, and nothing else here would notice: the argv path
+            // builds and consumes a request in one process, so the encoding
+            // is only exercised when the API sends it to the helper.
+            //
+            // Three types did disagree. `PhpVersion`, `SitePath` and
+            // `IpOrCidr` each derived `Serialize` on a multi-field struct and
+            // parsed a string on the way back, so on a box with the helper
+            // socket enabled every verb carrying a site path failed - which
+            // is most of website management. Creating a site came back
+            // "request is malformed: invalid type: map, expected a string".
+            let request = result.expect("mapped above");
+            let encoded = crate::Envelope::new(request.clone()).encode();
+            let decoded = crate::Envelope::decode(&encoded)
+                .map(|e| e.request)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{:?} encodes to something the helper cannot read: {e}\n  {}",
+                        case,
+                        String::from_utf8_lossy(&encoded)
+                    )
+                });
+            assert_eq!(
+                format!("{decoded:?}"),
+                format!("{request:?}"),
+                "{case:?} changed on the way through the socket"
+            );
         }
     }
 

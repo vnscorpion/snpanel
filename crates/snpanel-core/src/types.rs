@@ -10,7 +10,7 @@
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Reserved Linux usernames a panel user may never take over.
 ///
@@ -510,7 +510,7 @@ impl<'de> Deserialize<'de> for PanelUsername {
 ///
 /// Source: `site_users.PHP_VERSION_RE` = `^(?:5\.6|7\.4|8\.[0-5])$`, which is
 /// the same set as `schemas.SUPPORTED_PHP_VERSIONS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PhpVersion {
     major: u8,
     minor: u8,
@@ -553,6 +553,19 @@ impl fmt::Display for PhpVersion {
     }
 }
 
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for PhpVersion {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
 impl<'de> Deserialize<'de> for PhpVersion {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
@@ -573,7 +586,7 @@ impl<'de> Deserialize<'de> for PhpVersion {
 /// filesystem-touching step ([`SitePath::verify_no_symlinks`]) because the
 /// helper must be able to build a `SitePath` for a file that does not exist
 /// yet.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SitePath {
     user: PanelUsername,
     path: PathBuf,
@@ -689,6 +702,19 @@ impl SitePath {
 impl fmt::Display for SitePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for SitePath {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
@@ -822,7 +848,7 @@ impl<'de> Deserialize<'de> for Port {
 ///
 /// The firewall stores these in `rules.tsv` (C13), so `Display` must round-trip
 /// what was parsed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IpOrCidr {
     addr: std::net::IpAddr,
     prefix: u8,
@@ -1004,6 +1030,19 @@ impl fmt::Display for IpOrCidr {
         } else {
             write!(f, "{}", self.addr)
         }
+    }
+}
+
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for IpOrCidr {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
