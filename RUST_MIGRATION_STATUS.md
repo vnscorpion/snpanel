@@ -1673,7 +1673,7 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 
 | what | how it runs Python | state |
 | --- | --- | --- |
-| the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **unported**, and deliberately so — contract C11 gives Alembic the schema while Python is alive, and `snpanel-db` runs no migrations |
+| the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **still Alembic's** (C11); this side now *checks* the revision at startup and has a place for Rust-owned migrations |
 | backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**; the unit switches at cutover |
 | malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**; the unit switches at cutover |
 | fresh-install bootstrap | `python -m app.seed` | **unported** |
@@ -1742,6 +1742,34 @@ is the one with consequences: nothing would run migrations after the
 cutover, so the next release that adds a column would leave every box on the
 old schema and the panel would fail on a missing column at request time
 rather than at start.
+
+### Noticing a schema this build was not written for
+
+A panel running against a revision that is not the one it expects now says
+so at startup, where somebody is watching, rather than failing on a missing
+column in the middle of a request — which is how a customer finds it, on the
+one page they needed. Four states are kept apart because they call for
+different things, and each message names the revision found as well as the
+one wanted; "schema mismatch" alone sends an operator to compare by hand.
+
+**A warning and not a refusal, deliberately.** Python still owns the schema
+and migrates when *it* starts, so after an update that added a revision
+there is a window where the Rust process is up and the migration has not
+run. Refusing there turns a normal update into an outage. When the schema
+moves to this side the refusal becomes right, and the comment says so.
+
+`PYTHON_HEAD` is checked against the chain by a test rather than trusted: a
+constant naming a revision goes stale the moment somebody adds `0032`, and
+the symptom is the opposite of useful — a warning on every correct box and
+silence on the one that is behind. The head is taken to be the revision no
+other revision points at, not the highest filename.
+
+`RUST_MIGRATIONS` is empty, which is contract C12 rather than an omission:
+the first Rust migration must be a no-op on every existing database, and
+none at all is the only version of that which cannot be got wrong. Its
+bookkeeping table is this side's own — writing into `alembic_version` would
+make Alembic's own `upgrade` disagree with it, and while both sides are
+alive that is a fight neither wins.
 
 The schema also carries a choice rather than only work. Existing boxes are
 all at head, so a Rust runner needs no history — but a *fresh* install today
