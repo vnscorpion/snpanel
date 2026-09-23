@@ -8,6 +8,7 @@
 pub mod debian;
 pub mod detect;
 pub mod firewall;
+pub mod packages;
 pub mod platform;
 pub mod rhel;
 pub mod selinux;
