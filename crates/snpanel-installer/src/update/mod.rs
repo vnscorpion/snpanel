@@ -15,6 +15,7 @@
 pub mod env_file;
 pub mod hardening;
 pub mod migrations;
+pub mod panel_https;
 pub mod refs;
 pub mod release;
 pub mod steps;
