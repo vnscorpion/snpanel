@@ -12,6 +12,7 @@
 //!   command, because the update script runs as root and takes a branch
 //!   name, a tag and a repository URL.
 
+pub mod cleanup;
 pub mod env_file;
 pub mod hardening;
 pub mod migrations;
