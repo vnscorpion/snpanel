@@ -1675,10 +1675,10 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 | --- | --- | --- |
 | the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **unported**, and deliberately so — contract C11 gives Alembic the schema while Python is alive, and `snpanel-db` runs no migrations |
 | backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**; the unit switches at cutover |
-| malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **unported** |
+| malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**; the unit switches at cutover |
 | fresh-install bootstrap | `python -m app.seed` | **unported** |
 
-**The backup scheduler now runs from Rust.** `snpanel-api
+**Both schedulers now run from Rust.** `snpanel-api
 --run-backup-schedules` is the one-shot mode a timer invokes, doing the same
 setup the server does — same settings, same database, same schema check —
 because a scheduler that read its configuration differently from the panel
@@ -1714,13 +1714,28 @@ box with a timer calling a binary that is not there, and backups that stop
 silently. That line moves with the cutover, and both the unit and the module
 say so.
 
-**The malware scheduler is not ported.** Its decision layer is small — an
-`enabled` flag, a weekday, an hour compared with `>=` rather than `==` so a
-machine that was off at the appointed hour still scans when it comes back,
-and a twenty-hour floor between runs. What blocks the runner is that the
-scan is started inside the `run_scan` request handler rather than by a
-callable function, so it needs the same treatment `build_user_backup`
-already had.
+**The malware scheduler is ported too**, as `snpanel-api
+--run-malware-schedules`. Its hour is a floor rather than an appointment —
+compared with `>=`, so a machine that was off at 03:00 still scans when it
+comes back the same day — and a twenty-hour floor between runs is what then
+stops it starting again on every tick for the rest of that day. The two
+rules only make sense together; mutating `>=` to `==` fails both tests.
+
+The result is written *before* the scan is waited on, which is what makes a
+short timer interval safe: a tick landing while a scan is still running sees
+`last_run_at` for today and decides "not due" rather than starting a second
+scan of the same machine.
+
+Starting a scan used to be reachable only through `run_scan`'s HTTP body, so
+the server and all-websites branches moved into a callable `start_scan` —
+the same treatment `build_user_backup` had already had.
+
+**Both units still start Python, and both say why.** The Rust binary is
+installed as `/usr/local/bin/snpanel-api-rust` and only by
+`api-cutover.sh`, while the installer writes these units long before any
+cutover has run; pointing them there today would give a pre-cutover box
+timers calling a binary that is not present. They move together at cutover,
+and once they do **no Python remains on a timer**.
 
 The plan named three gaps for Stage G. Four more were here, and the schema
 is the one with consequences: nothing would run migrations after the
