@@ -7,6 +7,7 @@
 //! the admin password, move the panel's URL, repair the firewall, read the
 //! logs.
 
+pub mod menu;
 pub mod panel_url;
 pub mod passwords;
 pub mod status;

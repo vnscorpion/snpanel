@@ -99,6 +99,10 @@ pub fn php_present(exists: impl Fn(&str) -> bool) -> (Vec<&'static str>, Option<
 }
 
 /// The three counters the check keeps, and the exit code they add up to.
+///
+/// Source: `ok`, `bad` and `skip`, which are one line each — a `printf` and
+/// an increment. What is worth porting is not the printing but the
+/// distinction the three of them draw, which is the method below.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     pub pass: u32,
