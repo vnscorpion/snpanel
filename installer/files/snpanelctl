@@ -422,10 +422,18 @@ change_admin_password() {
   [[ ${#password} -ge 12 ]] || fail "Password must be at least 12 characters"
 
   cd "$APP_DIR/backend"
+  # The password travels in the environment, never in argv. `runuser` forks
+  # and waits rather than exec'ing, so it keeps its own argv for the whole
+  # life of the child - and /proc/<pid>/cmdline is mode 444 while
+  # /proc/<pid>/environ is 400. Written as `env VAR=value` the plaintext
+  # password was readable by any local process, which on this box includes
+  # every customer's PHP. --whitelist-environment carries it across the user
+  # switch by name; only the name reaches argv.
+  export SNPANEL_NEW_ADMIN_PASSWORD="$password"
   if id -u snpanel >/dev/null 2>&1; then
-    runner=(runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "SNPANEL_NEW_ADMIN_PASSWORD=$password" "$APP_DIR/backend/.venv/bin/python")
+    runner=(runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
   else
-    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "SNPANEL_NEW_ADMIN_PASSWORD=$password" "$APP_DIR/backend/.venv/bin/python")
+    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
   fi
   "${runner[@]}" - <<'PY'
 import os
@@ -447,6 +455,7 @@ try:
 finally:
     db.close()
 PY
+  unset SNPANEL_NEW_ADMIN_PASSWORD
   write_login_info "$password"
   echo "Admin password changed. Existing sessions were invalidated."
 }
@@ -492,10 +501,15 @@ sync_admin_root_password() {
   passwd -u admin >/dev/null 2>&1 || true
 
   cd "$APP_DIR/backend"
+  # Same as change_admin_password, and it matters more here: what would have
+  # been in argv is root's hash out of /etc/shadow, which is 0640
+  # root:shadow precisely so ordinary accounts cannot take it away and
+  # attack it offline.
+  export SNPANEL_ROOT_PASSWORD_HASH="$root_hash"
   if id -u snpanel >/dev/null 2>&1; then
-    runner=(runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "SNPANEL_ROOT_PASSWORD_HASH=$root_hash" "$APP_DIR/backend/.venv/bin/python")
+    runner=(runuser --whitelist-environment=SNPANEL_ROOT_PASSWORD_HASH -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
   else
-    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "SNPANEL_ROOT_PASSWORD_HASH=$root_hash" "$APP_DIR/backend/.venv/bin/python")
+    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
   fi
   "${runner[@]}" - <<'PY'
 import os
@@ -514,6 +528,7 @@ try:
 finally:
     db.close()
 PY
+  unset SNPANEL_ROOT_PASSWORD_HASH
   read -rsp "Root password to write to /root/login.txt (blank to skip): " login_password; echo
   if [[ -n "$login_password" ]]; then
     write_login_info "$login_password"
