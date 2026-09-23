@@ -16,6 +16,7 @@
 pub mod backend_env;
 pub mod bootstrap;
 pub mod ioncube;
+pub mod network;
 pub mod nginx_conf;
 pub mod node;
 pub mod packages;
@@ -24,6 +25,7 @@ pub mod panel_url;
 pub mod panel_user;
 pub mod php;
 pub mod phpmyadmin;
+pub mod pma_control;
 pub mod sources;
 pub mod systemd_units;
 pub mod tools_vhost;
