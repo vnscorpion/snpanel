@@ -102,7 +102,7 @@ pub(crate) fn favicon_filename() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-pub(super) fn raw_settings() -> Value {
+pub(crate) fn raw_settings() -> Value {
     std::fs::read_to_string(data_dir().join("panel-settings.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())

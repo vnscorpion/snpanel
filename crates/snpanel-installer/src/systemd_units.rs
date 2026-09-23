@@ -227,6 +227,12 @@ WantedBy=timers.target
 /// Its `ReadWritePaths` is **shorter** than the API's — no nginx directories,
 /// no DA import staging. That is the shell's, and a scanner that could write
 /// into `/etc/nginx` would be a scanner that could rewrite a vhost.
+/// **Still Python, for the same reason as the backup one.**
+///
+/// The runner is `snpanel-api --run-malware-schedules`, and it is the Rust
+/// binary's install path — `/usr/local/bin/snpanel-api-rust`, written only
+/// by `api-cutover.sh` — that keeps this line where it is. Both units move
+/// together at cutover.
 pub fn malware_scheduler_service(settings: &UnitSettings) -> String {
     let UnitSettings {
         app_dir,

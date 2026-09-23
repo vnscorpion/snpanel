@@ -176,6 +176,11 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if args.iter().any(|a| a == RUN_MALWARE_SCHEDULES) {
+        println!("{}", run_malware_schedules(&state).await);
+        return Ok(());
+    }
+
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;
 
@@ -414,8 +419,113 @@ fn send_file(path: &std::path::Path) -> Response {
     ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
 }
 
-/// The flag the systemd timer passes.
+/// The flags the systemd timers pass.
 pub(crate) const RUN_BACKUP_SCHEDULES: &str = "--run-backup-schedules";
+pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
+
+/// Source: `run_due` in `malware_schedule.py`.
+///
+/// Returns the line the unit prints, which is the Python's return value:
+/// `not due`, `no scan engine`, or `name: status` for each schedule that
+/// was started.
+///
+/// **The result is recorded before the scan is waited on**, which is the
+/// detail that makes a short timer interval safe: a tick landing while a
+/// scan is still running must see `last_run_at` for today and decide "not
+/// due", rather than starting a second scan of the same machine.
+async fn run_malware_schedules(state: &AppState) -> String {
+    let now = chrono::Utc::now();
+    let raw = routes::panel_settings::raw_settings();
+    let schedules = malware_schedule::read(&raw);
+
+    let due: Vec<&str> = malware_schedule::NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            let last = schedules
+                .meta
+                .get(&format!("{name}_last_run_at"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(malware_schedule::parse_meta_time);
+            malware_schedule::is_due(schedules.get(name), last, now)
+        })
+        .collect();
+
+    if due.is_empty() {
+        return "not due".to_string();
+    }
+
+    // Source: `if not malware_scan.engine_available()`. Recorded against
+    // every due schedule rather than logged and forgotten: the panel's page
+    // is where somebody looks to find out why a scan did not happen.
+    if !crate::clamav::engine_available(&state.settings.clamav_socket_path)
+        && !crate::malware::maldet_installed()
+    {
+        for name in &due {
+            record_malware_run(name, "", "error", "Trình quét malware chưa được cài", now);
+        }
+        return "no scan engine".to_string();
+    }
+
+    let mut outcomes = Vec::new();
+    for name in due {
+        match routes::malware::start_scan(state, name == "server").await {
+            Ok(job) => {
+                let job_id = job["job_id"].as_str().unwrap_or("").to_string();
+                record_malware_run(
+                    name,
+                    &job_id,
+                    "started",
+                    &format!("Đã bắt đầu ({name})"),
+                    chrono::Utc::now(),
+                );
+                outcomes.push(format!("{name}: started"));
+            }
+            Err(message) => {
+                record_malware_run(name, "", "error", &message, chrono::Utc::now());
+                tracing::warn!("scheduled malware scan {name} could not start: {message}");
+                outcomes.push(format!("{name}: failed"));
+            }
+        }
+    }
+    outcomes.join("; ")
+}
+
+/// Merge one run's metadata back into the settings file.
+///
+/// Read-modify-write, as the Python does. The panel and this share the
+/// file, and `write_raw` renames a temporary over it so a reader never sees
+/// half of one.
+fn record_malware_run(
+    name: &str,
+    job_id: &str,
+    status: &str,
+    message: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let mut raw = routes::panel_settings::raw_settings();
+    let Some(root) = raw.as_object_mut() else {
+        return;
+    };
+    let entry = root
+        .entry(malware_schedule::SETTINGS_KEY.to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(schedule) = entry.as_object_mut() else {
+        return;
+    };
+    let meta = schedule
+        .entry("_meta".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(meta) = meta.as_object_mut() else {
+        return;
+    };
+    for (key, value) in malware_schedule::run_meta(name, job_id, status, message, now) {
+        meta.insert(key, serde_json::Value::String(value));
+    }
+    if let Err(e) = routes::panel_settings::write_raw(&raw) {
+        tracing::error!("cannot record the malware schedule run for {name}: {e}");
+    }
+}
 
 /// Source: `run_due_schedules`.
 ///
