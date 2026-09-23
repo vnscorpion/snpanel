@@ -1674,9 +1674,53 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 | what | how it runs Python | state |
 | --- | --- | --- |
 | the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **unported**, and deliberately so — contract C11 gives Alembic the schema while Python is alive, and `snpanel-db` runs no migrations |
-| backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **unported** |
+| backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**; the unit switches at cutover |
 | malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **unported** |
 | fresh-install bootstrap | `python -m app.seed` | **unported** |
+
+**The backup scheduler now runs from Rust.** `snpanel-api
+--run-backup-schedules` is the one-shot mode a timer invokes, doing the same
+setup the server does — same settings, same database, same schema check —
+because a scheduler that read its configuration differently from the panel
+is a scheduler that backs up something else. A subcommand rather than its
+own crate: `snpanel-api` has no library target, so a separate binary could
+not reach `build_user_backup`, the SFTP client or the database layer without
+a much wider refactor.
+
+Three pieces had to be written for it. `prune_user_backups` is the one that
+deletes a customer's archives, and its ordering is the whole of it:
+`list_user_backups` sorts descending, so the list runs newest first and
+`[keep:]` is the tail. A list built ascending and pruned the same way would
+delete the *newest* backups and keep the oldest, silently, and the first
+anybody would know is a restore from three months ago. A retention of zero
+keeps one; there is no setting that means "delete everything".
+
+`record_run` writes `last_run_at`, `last_status` and `last_message`
+together — the columns were read today and only ever written at `create`.
+The timestamp matters twice: it is what the panel shows, and what the
+same-minute guard reads on the next tick. Writing the status without it
+leaves a schedule that runs again every sixty seconds for the rest of the
+minute.
+
+The `is_due` arithmetic is pinned by 504 verdicts taken from the real
+expressions, and two things are reproduced rather than tidied: `*` expands
+to `0-59` for every field, and Sunday answers to both `0` and `7`.
+
+**The unit still starts Python, deliberately.** The Rust API binary is
+installed as `/usr/local/bin/snpanel-api-rust`, and only by
+`api-cutover.sh`; the installer writes the scheduler unit long before any
+cutover has run. Pointing it at that path today would leave a pre-cutover
+box with a timer calling a binary that is not there, and backups that stop
+silently. That line moves with the cutover, and both the unit and the module
+say so.
+
+**The malware scheduler is not ported.** Its decision layer is small — an
+`enabled` flag, a weekday, an hour compared with `>=` rather than `==` so a
+machine that was off at the appointed hour still scans when it comes back,
+and a twenty-hour floor between runs. What blocks the runner is that the
+scan is started inside the `run_scan` request handler rather than by a
+callable function, so it needs the same treatment `build_user_backup`
+already had.
 
 The plan named three gaps for Stage G. Four more were here, and the schema
 is the one with consequences: nothing would run migrations after the
