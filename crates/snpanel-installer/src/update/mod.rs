@@ -13,6 +13,7 @@
 //!   name, a tag and a repository URL.
 
 pub mod env_file;
+pub mod migrations;
 pub mod refs;
 pub mod release;
 pub mod steps;
