@@ -41,6 +41,13 @@ rollback() {
     echo
     echo "!! rolling back to the Python front door"
     systemctl stop snpanel-rust snpanel-upstream 2>/dev/null
+    # The timers as well. A rollback that leaves these behind leaves the
+    # schedulers calling a binary the rollback has just taken the panel away
+    # from - and a backup that does not run is the failure nobody notices
+    # until they need one.
+    rm -rf /etc/systemd/system/snpanel-backup-scheduler.service.d
+    rm -rf /etc/systemd/system/snpanel-malware-scheduler.service.d
+    systemctl daemon-reload
     # Boot state, not just the running state: a rollback that leaves the
     # machine booting into the Rust front door has not rolled anything back.
     systemctl disable snpanel-rust snpanel-upstream 2>/dev/null
@@ -188,6 +195,57 @@ case "$served" in *'"implementation":"rust"'*) ok "/api/ready reports the Rust i
                   *) bad "ready" "$served" ;; esac
 case "$served" in *'"reachable":true'*) ok "the Python upstream is reachable from it" ;;
                   *) bad "upstream" "not reachable" ;; esac
+
+echo
+echo "=== the two scheduler timers ==="
+# Last, and only once the front door has answered: if anything above fails,
+# rollback runs and these were never touched.
+#
+# Drop-ins, not edits. install.sh and update.sh both rewrite the unit files,
+# so a cutover that edited them would be undone by the next update - quietly,
+# and the symptom would be backups that had gone back to Python months later.
+#
+# The empty ExecStart= is the load-bearing line. systemd *appends* to
+# ExecStart, so without it a Type=oneshot unit runs both commands in turn:
+# the Python runner and then the Rust one, every tick. Two backup runs a
+# minute, each recording over the other's last_run_at, and nothing about it
+# looks broken from outside.
+mkdir -p /etc/systemd/system/snpanel-backup-scheduler.service.d
+cat > /etc/systemd/system/snpanel-backup-scheduler.service.d/rust.conf <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env /opt/snpanel/backend/.env
+UNIT
+
+mkdir -p /etc/systemd/system/snpanel-malware-scheduler.service.d
+cat > /etc/systemd/system/snpanel-malware-scheduler.service.d/rust.conf <<'UNIT'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env /opt/snpanel/backend/.env
+UNIT
+
+systemctl daemon-reload
+
+# Asked of systemd rather than of the file: what matters is the command the
+# unit ends up with, which is where a missing reset line shows up as two.
+for pair in "snpanel-backup-scheduler:--run-backup-schedules" \
+            "snpanel-malware-scheduler:--run-malware-schedules"; do
+    unit=${pair%%:*}; flag=${pair##*:}
+    execs=$(systemctl show -p ExecStart --value "$unit.service" | grep -c 'path=' || true)
+    line=$(systemctl show -p ExecStart --value "$unit.service")
+    case "$line" in
+      *"snpanel-api-rust"*"$flag"*)
+        if [ "$execs" = "1" ]; then
+            ok "$unit runs the Rust binary with $flag"
+        else
+            bad "$unit" "$execs commands, not 1 - the ExecStart reset did not take"
+        fi ;;
+      *) bad "$unit" "still: $line" ;;
+    esac
+done
+
+# The timers keep their own schedule; only what they start has changed.
+systemctl restart snpanel-backup-scheduler.timer snpanel-malware-scheduler.timer 2>/dev/null
 
 echo
 echo "=== NT5: still unprivileged ==="

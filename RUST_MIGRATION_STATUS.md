@@ -1674,8 +1674,8 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 | what | how it runs Python | state |
 | --- | --- | --- |
 | the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **still Alembic's** (C11); this side now *checks* the revision at startup and has a place for Rust-owned migrations |
-| backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**; the unit switches at cutover |
-| malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**; the unit switches at cutover |
+| backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**, and `api-cutover.sh` now switches the unit |
+| malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**, and `api-cutover.sh` now switches the unit |
 | fresh-install bootstrap | `python -m app.seed` | **ported** as `snpanel-api --init-db`; `install.sh` still calls Python, because the Rust binary is not on the box until the cutover |
 
 **Both schedulers now run from Rust.** `snpanel-api
@@ -1706,13 +1706,41 @@ The `is_due` arithmetic is pinned by 504 verdicts taken from the real
 expressions, and two things are reproduced rather than tidied: `*` expands
 to `0-59` for every field, and Sunday answers to both `0` and `7`.
 
-**The unit still starts Python, deliberately.** The Rust API binary is
-installed as `/usr/local/bin/snpanel-api-rust`, and only by
-`api-cutover.sh`; the installer writes the scheduler unit long before any
+**The unit the installer writes still starts Python, deliberately.** The
+Rust API binary is installed as `/usr/local/bin/snpanel-api-rust`, and only
+by `api-cutover.sh`; the installer writes the scheduler unit long before any
 cutover has run. Pointing it at that path today would leave a pre-cutover
 box with a timer calling a binary that is not there, and backups that stop
-silently. That line moves with the cutover, and both the unit and the module
-say so.
+silently.
+
+**The cutover now moves it, with a drop-in rather than an edit.**
+`api-cutover.sh` used to move the web process and leave both timers calling
+Python — a panel served by one implementation and backed up by the other,
+keeping the venv alive for nothing. It now writes
+`snpanel-{backup,malware}-scheduler.service.d/rust.conf`, and `rollback`
+deletes them.
+
+A drop-in, because `install.sh` **and** `update.sh` both regenerate the unit
+files: a cutover that edited them would be undone by the next update,
+quietly, and the symptom would be a box whose backups had gone back to
+Python months later with nothing in the logs to say when.
+
+**The empty `ExecStart=` line is the load-bearing part**, and it was
+measured rather than cited. systemd appends to `ExecStart`, so on a throwaway
+`Type=oneshot` unit a drop-in without the reset produced *two* commands and
+ran both in turn — `python-runner` then `rust-runner`. With the reset:
+one command, and removing the drop-in put the original back. In the real
+units that would have been two backup runs a minute, each recording over the
+other's `last_run_at`, and nothing about it looks broken from outside.
+
+The switch comes **last**, after the front door has answered: if anything
+before it fails, `rollback` runs and the timers were never touched. What is
+verified is what systemd ends up with — `systemctl show -p ExecStart` must
+report exactly one command, naming the Rust binary with the right flag —
+because that is where a missing reset shows up as two. The units are not
+started to prove it: the malware one has `TimeoutStartSec=infinity` and a
+whole-server scan can take hours, and the timer proves it within a minute
+anyway.
 
 **The malware scheduler is ported too**, as `snpanel-api
 --run-malware-schedules`. Its hour is a floor rather than an appointment —
