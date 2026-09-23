@@ -1507,7 +1507,16 @@ fi
 # customer certificates, and "unreferenced" is a strong inference rather than a
 # certainty. The helper refuses outright if the panel cannot say which domains
 # are live, so a failed query cannot turn into a delete.
-if id -u snpanel >/dev/null 2>&1; then
+RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
+if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+  # Rust where it is installed. A flag rather than a request to the panel:
+  # an update runs while the panel may be stopped, and the sweep still has to
+  # happen. The Python stays below for a box that has not cut over.
+  log "Clearing orphaned certificates and configs"
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "$RUST_API" --env "$APP_DIR/backend/.env" --clean-orphans \
+    || log "WARNING: orphan cleanup did not complete"
+elif id -u snpanel >/dev/null 2>&1; then
   log "Clearing orphaned certificates and configs"
   sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY' || log "WARNING: orphan cleanup did not complete"
 from app.core.database import SessionLocal

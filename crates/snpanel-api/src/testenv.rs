@@ -79,3 +79,45 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+/// A panel to run a handler against: real settings, a real database built
+/// the way an install builds one, and nothing that reaches the network.
+///
+/// `tag` gives each caller its own directory. Tests here have collided over
+/// a shared name before.
+///
+/// Returns `None` rather than panicking when the database cannot be made,
+/// so a checkout on a filesystem that will not take SQLite skips instead of
+/// failing with something unrelated to the test.
+pub async fn panel(tag: &str) -> Option<crate::state::AppState> {
+    use std::sync::Arc;
+
+    let dir = std::env::temp_dir().join(format!("snpanel-panel-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+
+    // Four slashes for an absolute path: SQLAlchemy's convention, which
+    // `sqlite_path` reproduces.
+    let url = format!("sqlite:///{}", dir.join("snpanel.db").display());
+    let db = snpanel_db::Database::create(&url).await.ok()?;
+    db.create_fresh_schema().await.ok()?;
+
+    let settings = snpanel_core::config::Settings {
+        database_url: url,
+        // No helper on a test machine, and no real commands either: what
+        // these tests are about is which branch was taken, not what it ran.
+        command_dry_run: true,
+        ..Default::default()
+    };
+
+    Some(crate::state::AppState {
+        settings: Arc::new(settings),
+        db,
+        rate_limiter: Arc::new(crate::ratelimit::RateLimiter::new(
+            snpanel_core::config::RateLimitBackend::Memory,
+            "",
+        )),
+        serves_tls: false,
+        upstream: None,
+    })
+}

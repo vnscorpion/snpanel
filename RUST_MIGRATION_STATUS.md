@@ -1949,18 +1949,45 @@ stored text is byte-identical to what went in and Python's
 | call site | what it does | what it needs |
 | --- | --- | --- |
 | `update.sh` | `run_migrations()` | the schema to move to this side (C11) |
-| `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | `snpanel-api` to have a library target |
-| `update.sh` site-refresh | the same work, for every site | the same |
-| `update.sh` orphan cleanup | `orphans.clean` | the same |
-| `install.sh` | `python -m app.seed` | nothing — `--init-db` replaces it once the binary ships before the seed |
+| `update.sh` orphan cleanup | `orphans.clean` | **done** — `--clean-orphans` |
+| `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | assembling a one-shot from parts that are all ported |
+| `update.sh` site-refresh | the same work, for every site | the same one-shot |
+| `install.sh` | `python -m app.seed` | nothing but ordering — `--init-db` replaces it once the binary ships before the seed |
 | `snpanel-upstream.service` | uvicorn on loopback | the cutover's own safety net, deliberately kept |
 
-Three of those are one blocker: **`snpanel-api` is a binary with no library
-target**, so nothing else in the workspace can reach the ported nginx, WAF,
-site-user and orphan code. The venv cannot be removed until they move, and
-they cannot move until that changes. It is a structural change to the
-largest crate — 549 tests — rather than a port, so it is recorded here as
-the next decision rather than taken quietly.
+**A correction to the previous commit.** It said three of these were waiting
+on `snpanel-api` gaining a library target. That is the blocker for
+`snpanel-cli`, which is a separate synchronous binary — it is not the
+blocker for these, because the callers are *bash scripts*, and a bash script
+can run the binary with a flag. That is what the schedulers, `--init-db` and
+the password writes already do, and it is what `--clean-orphans` now does.
+
+Orphan cleanup turned out to need no new logic at all: `run_orphans`,
+`parse_orphans` and `describe_orphans` have served `POST /waf/orphans/clean`
+since Stage D. What was missing was a way in that is not an HTTP request,
+because an update runs while the panel may be stopped. `run_orphans` and
+`live_domains` now return the reason as text instead of a `Response`, which
+is the right answer for a handler and no answer at all for a caller that has
+to print a line; the two handlers turn it back into the response they always
+made.
+
+The refusal is the part with teeth. An empty domain list means "nothing on
+this server is live", and handing that to a cleanup verb is a request to
+delete every certificate on the box. The one-shot **reports** that refusal
+rather than raising it — the shell's own shape, `|| log "WARNING: ..."` —
+because an update that stopped over a stale certificate directory would
+leave a half-updated panel behind. Mutating it to report success instead
+fails a test by name.
+
+What is genuinely left is **one one-shot**: the per-site refresh that
+`snpanelctl fix-permissions` and `update.sh` both run. Every part of it is
+ported — `sync_http_flood_zones`, `sync_website_rules`,
+`rewrite_website_vhost`, and the `site-runtime-ensure`,
+`document-root-ensure` and permission verbs in the helper — so this is an
+assembly job rather than a blocked one. It is also the highest-consequence
+path in the system: it rewrites every vhost on the machine. That wants a
+real server to verify against, not a unit test, which is why it is written
+down here rather than done blind.
 
 ## Stage F — the installer
 

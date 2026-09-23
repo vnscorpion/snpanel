@@ -229,6 +229,14 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `update.sh`'s orphan sweep. A flag rather than a request, because an
+    // update runs while the panel may be stopped and a request to it would
+    // have nowhere to go.
+    if args.iter().any(|a| a == CLEAN_ORPHANS) {
+        println!("{}", routes::waf::clean_orphans_once(&state).await);
+        return Ok(());
+    }
+
     if args.iter().any(|a| a == ctl::SET_ADMIN_PASSWORD_HASH) {
         let hash = ctl::secret_from_env(ctl::ROOT_HASH_ENV)?;
         ctl::set_admin_password_hash(&state.db, &hash).await?;
@@ -476,6 +484,9 @@ fn send_file(path: &std::path::Path) -> Response {
 /// The flags the systemd timers pass.
 pub(crate) const RUN_BACKUP_SCHEDULES: &str = "--run-backup-schedules";
 pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
+
+/// The flag `update.sh` passes for the orphan sweep.
+pub(crate) const CLEAN_ORPHANS: &str = "--clean-orphans";
 
 /// Source: `run_due` in `malware_schedule.py`.
 ///

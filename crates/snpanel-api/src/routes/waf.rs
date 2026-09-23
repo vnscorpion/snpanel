@@ -1283,10 +1283,10 @@ const CATEGORY_LABELS: &[(&str, &str)] = &[
 ///
 /// An alias is as live as the website carrying it: a certificate covering only
 /// an alias is still in use, and deleting it would break a site that works.
-async fn live_domains(state: &AppState) -> Result<Vec<String>, Response> {
+async fn live_domains(state: &AppState) -> Result<Vec<String>, String> {
     let websites = state.db.websites().list(None, "").await.map_err(|e| {
         tracing::error!("listing websites failed: {e}");
-        crate::errors::internal_error()
+        format!("listing websites failed: {e}")
     })?;
     let ids: Vec<i64> = websites.iter().map(|w| w.id).collect();
     let aliases = state
@@ -1372,18 +1372,34 @@ fn parse_orphans(result: &crate::shell::CommandResult) -> Value {
     })
 }
 
+/// The same cleanup, for a caller with no HTTP request to make.
+///
+/// Source: the inline Python in `update.sh`,
+/// `orphans.describe(orphans.clean(db))`. Reached by
+/// `snpanel-api --clean-orphans`, because an update runs while the panel may
+/// be stopped and a request to it would have nowhere to go.
+///
+/// Returns the line the update log prints, and **reports failure rather than
+/// raising it** — the shell's shape too, `|| log "WARNING: ..."`. An update
+/// that stopped because a stale certificate directory could not be tidied
+/// would be an update that left a half-updated panel behind.
+pub(crate) async fn clean_orphans_once(state: &AppState) -> String {
+    match run_orphans(state, "orphans-clean").await {
+        Ok(outcome) => describe_orphans(&outcome),
+        Err(why) => format!("WARNING: orphan cleanup skipped: {why}"),
+    }
+}
+
 /// Source: `orphans._run`.
 ///
 /// The empty-list guard is the important line. An empty list would mean
 /// "nothing on this server is live", which the helper refuses - but the Python
 /// does not even ask, so a broken query cannot turn into a delete request at
 /// all. That guard is reproduced here rather than left to the helper.
-async fn run_orphans(state: &AppState, verb: &str) -> Result<Value, Response> {
+async fn run_orphans(state: &AppState, verb: &str) -> Result<Value, String> {
     let domains = live_domains(state).await?;
     if domains.is_empty() {
-        return Err(bad_request(
-            "refusing to run orphan cleanup without any live domains",
-        ));
+        return Err("refusing to run orphan cleanup without any live domains".to_string());
     }
     let payload = domains.join("\n") + "\n";
     let result = shell::privileged(
@@ -1409,7 +1425,7 @@ async fn scan_orphans(State(state): State<AppState>, current: CurrentUser) -> Re
     }
     let mut outcome = match run_orphans(&state, "orphans-scan").await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(why) => return bad_request(&why),
     };
     let total = outcome["total"].as_u64().unwrap_or(0);
     outcome["message"] = json!(if total > 0 {
@@ -1428,7 +1444,7 @@ async fn clean_orphans(State(state): State<AppState>, current: CurrentUser) -> R
     }
     let mut outcome = match run_orphans(&state, "orphans-clean").await {
         Ok(v) => v,
-        Err(r) => return r,
+        Err(why) => return bad_request(&why),
     };
     outcome["message"] = json!(describe_orphans(&outcome));
     axum::Json(outcome).into_response()
@@ -2141,5 +2157,36 @@ mod tests {
             .1;
         assert_eq!(fraction.len(), 6, "microseconds, not milliseconds: {stamp}");
         assert!(fraction.chars().all(|c| c.is_ascii_digit()), "{stamp}");
+    }
+}
+
+#[cfg(test)]
+mod orphan_one_shot_tests {
+    use super::*;
+
+    /// **A panel with no live domains refuses, and says so in the line the
+    /// update log prints.**
+    ///
+    /// The empty list is the dangerous case: it means "nothing on this
+    /// server is live", and handing that to a cleanup verb is a request to
+    /// delete every certificate on the box. The guard is in `run_orphans`;
+    /// what this pins is that the one-shot **reports** the refusal instead
+    /// of raising it, because an update that stopped here would leave a
+    /// half-updated panel behind.
+    #[tokio::test]
+    async fn no_live_domains_is_a_warning_and_not_a_deletion() {
+        let Some(state) = crate::testenv::panel("orphan-oneshot").await else {
+            eprintln!("skipped: could not build a test panel here");
+            return;
+        };
+        let line = clean_orphans_once(&state).await;
+        assert!(
+            line.starts_with("WARNING: orphan cleanup skipped:"),
+            "the update log needs a warning it can print, got: {line}"
+        );
+        assert!(
+            line.contains("without any live domains"),
+            "and it has to say which refusal this was, got: {line}"
+        );
     }
 }
