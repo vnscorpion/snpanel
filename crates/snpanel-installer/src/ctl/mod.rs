@@ -9,3 +9,4 @@
 
 pub mod panel_url;
 pub mod passwords;
+pub mod status;
