@@ -127,9 +127,127 @@ host=localhost
 /// everything.
 pub const MY_CNF_MODE: u32 = 0o600;
 
+/// The password back out of an existing `.my.cnf`.
+///
+/// Source: the `awk` in `refresh_snpanel_mariadb_grants`.
+///
+/// **This is what makes re-running an update safe.** The grant refresh
+/// re-issues `ALTER USER ... IDENTIFIED BY`, and if it minted a new password
+/// every time it ran, it would work — but any backup or cron job holding the
+/// old one would start failing, and so would a second panel process reading
+/// a `.my.cnf` it had already opened. Reading the existing password and
+/// setting the *same* one converges instead of churning. A new one is minted
+/// only when there is nothing to read.
+///
+/// Section-aware, as the awk is: `password` is taken from `[client]` and the
+/// scan stops at the next section header. `[mysqldump]` carries the same
+/// value today, so reading the wrong one would happen to work — which is
+/// exactly the kind of accident that stops working later.
+pub fn password_from_my_cnf(contents: &str) -> Option<&str> {
+    let mut in_client = false;
+    for line in contents.lines() {
+        if line.starts_with("[client]") {
+            in_client = true;
+            continue;
+        }
+        if line.starts_with('[') {
+            in_client = false;
+            continue;
+        }
+        if !in_client {
+            continue;
+        }
+        // `-F=` then `$1 == "password"`: the field before the first `=`.
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key != "password" {
+            continue;
+        }
+        // `gsub(/^"|"$/, "", value)` — one leading and one trailing quote.
+        let value = value.strip_prefix('"').unwrap_or(value);
+        let value = value.strip_suffix('"').unwrap_or(value);
+        return Some(value);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pair has to round-trip, or the update mints a new password on
+    /// every run: it writes `.my.cnf`, and the next update reads it back to
+    /// decide whether there is anything to change.
+    #[test]
+    fn what_is_written_can_be_read_back() {
+        for password in [
+            "abc123",
+            &shape_password("ab+cd/ef=ghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+            "0123456789abcdefghijABCDEFGHIJ12",
+        ] {
+            let written = my_cnf(password);
+            assert_eq!(
+                password_from_my_cnf(&written),
+                Some(password),
+                "{password:?} did not survive the round trip"
+            );
+        }
+    }
+
+    /// `[mysqldump]` carries the same value today, so reading the wrong
+    /// section would happen to work — which is exactly the kind of accident
+    /// that stops working later.
+    #[test]
+    fn the_password_is_read_from_the_client_section() {
+        let mixed = "[client]\n\
+                     user=snpanel\n\
+                     password=\"from-client\"\n\
+                     \n\
+                     [mysqldump]\n\
+                     password=\"from-mysqldump\"\n";
+        assert_eq!(password_from_my_cnf(mixed), Some("from-client"));
+
+        // And a password that appears only outside `[client]` is not the
+        // panel's password.
+        let elsewhere = "[mysqldump]\npassword=\"nope\"\n";
+        assert_eq!(password_from_my_cnf(elsewhere), None);
+
+        // A file with no sections at all yields nothing rather than the
+        // first thing that looks like a password.
+        assert_eq!(password_from_my_cnf("password=\"loose\"\n"), None);
+    }
+
+    /// Nothing to read means a fresh password is minted — which is right for
+    /// a box that has never had one, and is also why the round trip above
+    /// matters: a `.my.cnf` this cannot parse is indistinguishable from one
+    /// that is not there.
+    #[test]
+    fn an_unreadable_file_yields_nothing() {
+        assert_eq!(password_from_my_cnf(""), None);
+        assert_eq!(password_from_my_cnf("[client]\nuser=snpanel\n"), None);
+        assert_eq!(password_from_my_cnf("# a comment\n"), None);
+    }
+
+    /// Only one quote is stripped from each end, as `gsub(/^"|"$/, ...)`
+    /// does — a password that contains quotes keeps the inner ones.
+    #[test]
+    fn exactly_one_quote_is_stripped_from_each_end() {
+        assert_eq!(
+            password_from_my_cnf("[client]\npassword=\"a\"b\"\n"),
+            Some("a\"b")
+        );
+        // Unquoted values are read as they are.
+        assert_eq!(
+            password_from_my_cnf("[client]\npassword=plain\n"),
+            Some("plain")
+        );
+        // And an `=` inside the value survives, since only the first splits.
+        assert_eq!(
+            password_from_my_cnf("[client]\npassword=\"a=b\"\n"),
+            Some("a=b")
+        );
+    }
 
     /// Base64 of thirty-two bytes is forty-four characters, so there is
     /// always more than thirty-two left after the strip — the `cut` is what
