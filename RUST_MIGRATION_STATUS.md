@@ -1550,6 +1550,96 @@ the strangler, `storage_quota` still counts websites only, and the listening
 socket is still IPv4-only — the three known gaps below. Then Stage F, the
 installer, and Stage G, removing Python.
 
+## Stage G — removing Python
+
+The three gaps the plan named are closed. The cutover itself is not done,
+and it is not a code change — see the end of this section.
+
+### The dual-stack socket
+
+`serve.py` built an `AF_INET6` socket with `IPV6_V6ONLY` cleared and fell
+back to IPv4 on failure; Rust bound IPv4 only. Identical wherever IPv6 is
+off, which is why it had not bitten.
+
+Binding `[::]` is not enough on its own: a kernel may or may not share an
+`AF_INET6` socket with IPv4, so the option is cleared and then **read
+back** — `setsockopt` can succeed without the socket becoming what was asked
+for, and the difference is invisible until an IPv4 client is refused. Every
+failure lands on "IPv4 only", because losing IPv4 is far worse than not
+gaining IPv6.
+
+Built on `libc`, which the crate already depended on, so `Cargo.lock` is
+untouched.
+
+**A test of mine that passed while testing nothing.** The tests began `let
+Ok(listener) = dual_stack(0, true) else { skip }`, which is right for a
+machine with no IPv6 and wrong for everything else — a bug that makes
+`dual_stack` *refuse* lands on the same skip. Setting `IPV6_V6ONLY` instead
+of clearing it left all eight tests green. They now ask the machine
+independently, by binding `[::1]:0`: if that works, any refusal is ours, and
+the helper panics rather than skipping. Under the same mutation five tests
+now fail; under a second — binding `::1` instead of the wildcard — four do.
+
+### Site-app storage accounting
+
+Not what the plan said. `storage_quota` already counted an application's
+directory and its container volumes, and the *enforcement* path already used
+it. The two endpoints that **reported** usage did not — so a customer with a
+site app was refused a write at a figure the panel had never shown them.
+Both halves were individually correct and nothing failed.
+
+Both now ask `storage_quota`, with the same 300-second cache Python uses and
+the same single caller for it: the user list, which walks every account's
+files at once. Nothing that decides whether a write is allowed uses it.
+
+`storage.rs` carried a second copy of the tree walk. It agreed with the
+first, but two implementations of a measurement that decides whether a
+customer can write a file are two places for it to drift; the copy is gone,
+and the one test it had that was not duplicated moved across with it.
+
+### The frontend
+
+Every path outside `/api` fell through to the strangler, so with the
+upstream gone a panel would answer 404 at `/`. Rust now serves the build,
+the favicon and the brand assets.
+
+Read from `FRONTEND_DIST` rather than embedded. The plan suggested
+`rust-embed`; the installer builds the frontend on the machine and
+`FRONTEND_DIST` is a name contract C18 protects, so embedding would mean the
+release build runs npm and every existing box points at a directory nothing
+reads. Worth doing later together with dropping Node from the installer, and
+not part of closing this gap.
+
+**A live bug found on the way.** `asset_url` published
+`/api/panel-settings/assets/<name>`, which no router on either side answers
+— not this process, and not Python, which serves `/brand-assets/<name>`. A
+panel with an uploaded logo advertised a URL that 404s. The existence check
+and the `?v=<mtime_ns>-<size>` cache-buster had gone with it, so a replaced
+logo would also have been served from cache under an unchanged URL. Its test
+had asserted the broken path, so it pinned the bug and passed for as long as
+the bug was there.
+
+The traversal rule is the one that matters: the requested path is joined,
+**resolved**, and only then required to still be inside. Resolving first is
+what removes `..` before the check and what makes a symlink out of the tree
+a refusal rather than a follow.
+
+### What is not done: the cutover
+
+Stage G's exit is "`snpanel-upstream` is not installed and no Python process
+serves the panel". That is a deployment step, not a code change: the Rust
+side already defaults to no upstream, and what is left is
+`installer/files/snpanel-rust.service` setting
+`STRANGLER_UPSTREAM=http://127.0.0.1:8000` and `api-cutover.sh` installing
+`snpanel-upstream.service`.
+
+It has to be done on a real server and watched, and this environment has
+none. The new frontend path is therefore exercised by its tests and not yet
+by a running panel — it is taken only when there is no upstream, which is
+deliberate: FastAPI also answers `/docs` and `/openapi.json`, and a
+catch-all on this side would start returning `index.html` for them while
+Python is still there.
+
 ## Stage F — the installer
 
 Every function in every shell script Stage F covers now has a Rust
