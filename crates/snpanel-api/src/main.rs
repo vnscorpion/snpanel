@@ -59,6 +59,7 @@ mod sftp;
 mod shell;
 mod shlex;
 mod site_apps;
+mod spa;
 mod sso;
 mod state;
 mod storage;
@@ -317,13 +318,82 @@ fn build_router(state: AppState) -> Router {
 /// delete instead of letting Python handle it.
 pub(crate) async fn fallback(State(state): State<AppState>, req: Request<Body>) -> Response {
     match state.upstream.clone() {
+        // While Python is still there, nothing about this path changes.
+        // Serving the frontend from here *as well* would be harmless in
+        // principle and is not worth the risk in practice: FastAPI also
+        // answers `/docs` and `/openapi.json`, and a catch-all on this side
+        // would start returning `index.html` for them.
         Some(upstream) => strangler::proxy(State(upstream), req).await,
-        None => (
-            StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({ "detail": "Not Found" })),
+        // Nothing left to proxy to. This is the Stage G state, and the
+        // panel has to serve its own frontend or answer 404 at `/`.
+        None => serve_frontend(&state, req).await,
+    }
+}
+
+/// Source: `main.py`'s `favicon`, `brand_asset` and `serve_spa`, which are
+/// the whole of what Python answers outside `/api`.
+async fn serve_frontend(state: &AppState, req: Request<Body>) -> Response {
+    let path = req.uri().path().trim_start_matches('/').to_string();
+    let data_dir = spa::brand_assets_dir(&std::path::PathBuf::from(
+        std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()),
+    ));
+
+    // `/favicon.png` - the operator's upload if there is one, then the
+    // build's own.
+    if path == "favicon.png" {
+        let custom = crate::routes::panel_settings::favicon_filename();
+        if let Some(name) = custom.as_deref().and_then(spa::safe_asset_name) {
+            if let Some(response) = send_asset(&data_dir.join(name), spa::media_type(name)) {
+                return response;
+            }
+        }
+    }
+
+    if let Some(name) = path.strip_prefix("brand-assets/") {
+        let Some(name) = spa::safe_asset_name(name) else {
+            return not_found();
+        };
+        return send_asset(&data_dir.join(name), spa::media_type(name)).unwrap_or_else(not_found);
+    }
+
+    let dist = std::path::PathBuf::from(&state.settings.frontend_dist);
+    match spa::route(&dist, &path) {
+        spa::Spa::File(file) => send_file(&file),
+        spa::Spa::Index => send_file(&dist.join("index.html")),
+        spa::Spa::NotFound => not_found(),
+    }
+}
+
+fn not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({ "detail": "Not Found" })),
+    )
+        .into_response()
+}
+
+/// A brand asset, with the revalidation header Python sends.
+fn send_asset(path: &std::path::Path, media_type: Option<&'static str>) -> Option<Response> {
+    let media_type = media_type?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(
+        (
+            [
+                (axum::http::header::CONTENT_TYPE, media_type),
+                (axum::http::header::CACHE_CONTROL, spa::REVALIDATE),
+            ],
+            bytes,
         )
             .into_response(),
-    }
+    )
+}
+
+fn send_file(path: &std::path::Path) -> Response {
+    let Ok(bytes) = std::fs::read(path) else {
+        return not_found();
+    };
+    let media_type = spa::frontend_media_type(path);
+    ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {

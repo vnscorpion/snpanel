@@ -92,6 +92,16 @@ fn data_dir() -> std::path::PathBuf {
     )
 }
 
+/// The uploaded favicon's filename, if the operator set one.
+///
+/// Read by the frontend handler, which serves it in place of the build's own
+/// `favicon.png`. Source: the `favicon_filename` branch of `favicon` in
+/// `main.py`, which prefers the upload and falls back to the build.
+pub(crate) fn favicon_filename() -> Option<String> {
+    let name = string_field(&raw_settings(), "favicon_filename");
+    (!name.is_empty()).then_some(name)
+}
+
 pub(super) fn raw_settings() -> Value {
     std::fs::read_to_string(data_dir().join("panel-settings.json"))
         .ok()
@@ -107,14 +117,22 @@ fn string_field(raw: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// Source: `_asset_url` - a stored filename becomes a URL, and nothing stored
-/// becomes an empty string.
+/// Source: `_asset_url` - a stored filename becomes a URL, and nothing
+/// stored becomes an empty string.
+///
+/// This used to publish `/api/panel-settings/assets/<name>`, which **no
+/// router on either side answers**: not this process, which registers no
+/// such path, and not Python, which serves `/brand-assets/<name>`. A panel
+/// with an uploaded logo therefore advertised a URL that 404s, and the
+/// symptom is a broken image rather than an error anybody sees in a log.
+///
+/// Two things went missing with it, and [`crate::spa::asset_url`] restores
+/// all three: the path, the existence check that makes an absent file fall
+/// back to the built-in image instead of a broken one, and the
+/// `?v=<mtime_ns>-<size>` that makes a *replaced* logo appear rather than
+/// being served from cache under an unchanged URL.
 fn asset_url(filename: &str) -> String {
-    if filename.is_empty() {
-        String::new()
-    } else {
-        format!("/api/panel-settings/assets/{filename}")
-    }
+    crate::spa::asset_url(&crate::spa::brand_assets_dir(&data_dir()), filename)
 }
 
 /// Source: `parse_panel_url`, as `current_settings` uses it - a URL that will
@@ -1580,13 +1598,35 @@ mod tests {
         }
     }
 
+    /// This test used to assert `/api/panel-settings/assets/<name>`, which
+    /// is a path nothing serves — so it pinned the bug rather than the
+    /// behaviour, and passed for as long as the bug was there.
     #[test]
-    fn an_asset_url_is_empty_when_nothing_is_stored() {
+    fn an_asset_url_points_at_the_path_that_serves_it() {
+        let dir = std::env::temp_dir().join(format!("bp-asseturl-{}", std::process::id()));
+        let assets = dir.join("assets");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("logo-abc.png"), [0u8; 12]).unwrap();
+
+        let _env = crate::testenv::EnvGuard::set(&[(
+            "SNPANEL_DATA_DIR",
+            dir.to_str().expect("a utf-8 temp path"),
+        )]);
+
         assert_eq!(asset_url(""), "");
-        assert_eq!(
-            asset_url("logo-abc.png"),
-            "/api/panel-settings/assets/logo-abc.png"
+        // A filename with no file behind it falls back to the built-in
+        // image rather than to a broken one.
+        assert_eq!(asset_url("gone.png"), "");
+
+        let url = asset_url("logo-abc.png");
+        assert!(
+            url.starts_with("/brand-assets/logo-abc.png?v="),
+            "{url} is not a path anything serves"
         );
+        assert!(!url.contains("/api/"), "{url}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
