@@ -253,6 +253,20 @@ pub fn sha1_hex(text: &str) -> String {
         .collect()
 }
 
+/// SHA-256 of arbitrary bytes, lowercase hex.
+///
+/// [`sha256_hex`] takes a `&str` and so cannot hash a file that is not
+/// valid UTF-8 — which every compiled binary is not. The update script's
+/// step fingerprints hash program files, so they need this one.
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 pub fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
 

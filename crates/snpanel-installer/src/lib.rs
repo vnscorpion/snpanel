@@ -33,4 +33,5 @@ pub mod pma_control;
 pub mod sources;
 pub mod systemd_units;
 pub mod tools_vhost;
+pub mod update;
 pub mod waf_engine;
