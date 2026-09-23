@@ -14,7 +14,9 @@
 //! be tested should be tested somewhere other than that machine.
 
 pub mod backend_env;
+pub mod binaries;
 pub mod bootstrap;
+pub mod finish;
 pub mod ioncube;
 pub mod network;
 pub mod nginx_conf;
@@ -24,6 +26,7 @@ pub mod panel_ssl;
 pub mod panel_url;
 pub mod panel_user;
 pub mod php;
+pub mod php_shim;
 pub mod phpmyadmin;
 pub mod pma_control;
 pub mod sources;
