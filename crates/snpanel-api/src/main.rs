@@ -132,6 +132,32 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
+    // What revision the database is at, said once at startup rather than
+    // discovered as a missing column in the middle of a request — which is
+    // how a customer finds it, on the one page they needed.
+    //
+    // A **warning and not a refusal**, deliberately, and the ordering is
+    // why: Python still owns the schema and migrates when *it* starts, so
+    // after an update that added a revision there is a window where this
+    // process is up and the migration has not run. Refusing there would
+    // turn a normal update into an outage. Once the schema moves to this
+    // side the refusal becomes the right answer.
+    match db.schema_state().await {
+        Ok(state) => match state.message() {
+            Some(message) => tracing::warn!("{message}"),
+            None => tracing::info!(
+                revision = snpanel_db::schema::PYTHON_HEAD,
+                "the database is at the revision this build expects"
+            ),
+        },
+        Err(e) => tracing::warn!("cannot read the database's schema revision: {e}"),
+    }
+    match db.apply_rust_migrations().await {
+        Ok(applied) if applied.is_empty() => {}
+        Ok(applied) => tracing::info!(?applied, "applied Rust-owned migrations"),
+        Err(e) => tracing::error!("a Rust-owned migration failed: {e}"),
+    }
+
     let upstream = if settings.strangler_enabled() {
         let u = Upstream::new(&settings.strangler_upstream);
         // Say so at startup rather than at the first proxied request: an

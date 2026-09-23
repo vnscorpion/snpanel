@@ -29,6 +29,7 @@ pub mod cloudflare;
 mod databases;
 pub mod packages;
 pub mod provisioning;
+pub mod schema;
 pub mod site_apps;
 mod users;
 pub mod websites;
@@ -131,6 +132,15 @@ impl Database {
             tracing::error!(mode, "database is not in WAL mode");
             Err(DbError::NotWal)
         }
+    }
+
+    /// A `Database` over an existing pool.
+    ///
+    /// For tests, which build an in-memory schema rather than connecting to
+    /// a file.
+    #[cfg(test)]
+    pub(crate) fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     pub fn pool(&self) -> &SqlitePool {
