@@ -540,6 +540,47 @@ mod tests {
         }
     }
 
+    /// **The rollback waits for the panel rather than sleeping at it.**
+    ///
+    /// It reported `HTTP 000` on a rollback that had worked: the panel
+    /// answers about 3.7s after `systemctl start snpanel-api` and the check
+    /// fired after `sleep 2`. That is the worst line in the script to be
+    /// wrong about — an operator reading a false failure mid-emergency
+    /// starts doing something else to a panel that was already fine.
+    ///
+    /// Asserted against the shell because there is nothing else to assert
+    /// it against: a fixed sleep before the health check is the bug, and a
+    /// poll is the fix.
+    #[test]
+    fn the_rollback_polls_for_the_panel_instead_of_sleeping() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../installer/files/api-cutover.sh");
+        let Ok(shell) = std::fs::read_to_string(&path) else {
+            eprintln!("skipped: {} is not there", path.display());
+            return;
+        };
+        let rollback = shell
+            .split_once("rollback() {")
+            .expect("api-cutover.sh has no rollback")
+            .1
+            .split_once("\n}")
+            .expect("the rollback function does not end")
+            .0;
+
+        assert!(
+            rollback.contains("systemctl start snpanel-api"),
+            "the rollback has to start the Python front door"
+        );
+        assert!(
+            rollback.contains("for _ in $(seq 1 60); do"),
+            "the rollback has to poll for the panel:\n{rollback}"
+        );
+        assert!(
+            !rollback.contains("sleep 2\n"),
+            "a fixed sleep before the health check is the bug this test exists for"
+        );
+    }
+
     /// **The empty `ExecStart=` line is there, and it comes first.**
     ///
     /// systemd appends to `ExecStart`, so a drop-in without the reset leaves

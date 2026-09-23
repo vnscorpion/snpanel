@@ -5,9 +5,17 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/snpanel}"
 ENV_FILE="${APP_DIR}/backend/.env"
-# The Rust API binary, installed by api-cutover.sh and by nothing else. Two
-# verbs below prefer it when it is there and fall back to the venv when it is
-# not, which is what keeps this script working on a box that has not cut over.
+# The Rust API binary, installed by api-cutover.sh and by nothing else. The
+# one-shot verbs below prefer it when it is there and fall back to the venv
+# when it is not, which is what keeps this script working on a box that has
+# not cut over.
+#
+# **This is deliberately not the same question `panel_unit` asks**, and the
+# difference is worth keeping. The one-shots - the site refresh, the password
+# writes - talk to the database and the helper, and work the same whichever
+# process is serving HTTP; having the binary is reason enough to use it, and
+# a rolled-back box still has it. Which unit to *restart* is a different
+# question, and its only right answer is the one that is actually serving.
 RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/snpanel}"
 DEFAULT_PANEL_PORT="2222"
@@ -102,9 +110,36 @@ validate_port() {
   (( "$1" >= 1 && "$1" <= 65535 )) || fail "Port out of range: $1"
 }
 
+# Which unit serves the panel on this box.
+#
+# `api-cutover.sh` enables snpanel-rust and disables snpanel-api; its
+# rollback does the reverse. So the *enabled* state of snpanel-rust is the
+# fact to read - not whether /usr/local/bin/snpanel-api-rust exists, which a
+# rolled-back box still has.
+panel_unit() {
+  if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then
+    echo snpanel-rust
+  else
+    echo snpanel-api
+  fi
+}
+
 restart_panel() {
   systemctl daemon-reload || true
-  systemctl restart snpanel-api
+  # Restarting the wrong one is two failures at once. The change does not
+  # take effect, because the process serving the panel never reloaded it;
+  # and snpanel-api cannot bind the panel port while Rust holds it, so with
+  # Restart=always it loops forever. Measured on a cut-over box: NRestarts
+  # climbed to 4 in 30 seconds, running Alembic on every pass, and nothing
+  # looked wrong from outside because Rust kept answering.
+  local unit
+  unit="$(panel_unit)"
+  if [[ "$unit" == "snpanel-rust" ]]; then
+    # Python behind it reads the same .env and serves the routes that are
+    # still its, so it reloads first and Rust comes up to a ready upstream.
+    systemctl restart snpanel-upstream 2>/dev/null || true
+  fi
+  systemctl restart "$unit"
 }
 
 login_password_from_file() {
@@ -282,7 +317,7 @@ install_panel_ssl() {
     --non-interactive \
     --pre-hook "systemctl stop nginx || true" \
     --post-hook "systemctl start nginx || true" \
-    --deploy-hook "install -d -o root -g snpanel -m 0750 /etc/snpanel && install -m 0640 -o root -g snpanel /etc/letsencrypt/live/${domain}/fullchain.pem /etc/snpanel/panel-fullchain.pem && install -m 0640 -o root -g snpanel /etc/letsencrypt/live/${domain}/privkey.pem /etc/snpanel/panel-privkey.pem && systemctl restart snpanel-api || true"
+    --deploy-hook "install -d -o root -g snpanel -m 0750 /etc/snpanel && install -m 0640 -o root -g snpanel /etc/letsencrypt/live/${domain}/fullchain.pem /etc/snpanel/panel-fullchain.pem && install -m 0640 -o root -g snpanel /etc/letsencrypt/live/${domain}/privkey.pem /etc/snpanel/panel-privkey.pem && { if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then systemctl restart snpanel-rust; else systemctl restart snpanel-api; fi; } || true"
 
   install -d -o root -g snpanel -m 0750 /etc/snpanel
   install -m 0640 -o root -g snpanel "/etc/letsencrypt/live/${domain}/fullchain.pem" /etc/snpanel/panel-fullchain.pem
@@ -606,7 +641,9 @@ show_status() {
   echo "Panel URL: $(env_get PANEL_URL)"
   print_other_panel_urls
   echo "Local health: ${health} (${health_url})"
-  echo "API: $(systemctl is-active snpanel-api 2>/dev/null || echo unknown)"
+  # Named, because "API: inactive" about snpanel-api on a healthy cut-over
+  # box is a line that sends an operator looking for a fault there is not.
+  echo "API: $(systemctl is-active "$(panel_unit)" 2>/dev/null || echo unknown) ($(panel_unit))"
   echo "Nginx: $(systemctl is-active nginx 2>/dev/null || echo unknown)"
   echo "MariaDB: $(systemctl is-active mariadb 2>/dev/null || echo unknown)"
   echo "Redis: $(systemctl is-active redis-server 2>/dev/null || echo unknown)"
@@ -653,7 +690,9 @@ show_login_info() {
 
 restart_panel_command() {
   systemctl daemon-reload || true
-  for service in mariadb redis-server nginx snpanel-api; do
+  # The panel's unit last, and whichever one it is: on a cut-over box
+  # snpanel-api is disabled and restarting it starts the loop above.
+  for service in mariadb redis-server nginx "$(panel_unit)"; do
     if systemctl restart "$service" 2>/dev/null; then
       echo "${service}: restarted"
     else
@@ -663,8 +702,8 @@ restart_panel_command() {
 }
 
 show_logs() {
-  echo "== snpanel-api =="
-  journalctl -u snpanel-api -n 120 --no-pager 2>/dev/null || true
+  echo "== $(panel_unit) =="
+  journalctl -u "$(panel_unit)" -n 120 --no-pager 2>/dev/null || true
   echo ""
   echo "== nginx error.log =="
   tail -n 80 /var/log/nginx/error.log 2>/dev/null || echo "No nginx error log found."

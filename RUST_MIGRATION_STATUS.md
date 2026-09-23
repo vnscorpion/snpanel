@@ -2044,6 +2044,76 @@ The proof is a diff rather than an assertion. Against the vhost the panel's
 own edit path writes for the same site: **the Rust sweep is byte-identical**,
 and the Python sweep differs by exactly the `server_name` line.
 
+### Running the cutover, and the two things it turned up
+
+Everything above was shipped but never exercised end to end. The container's
+panel was already cut over from an earlier session — and its timers were
+still running Python, which is exactly the gap the scheduler drop-ins close.
+So the real case: an existing cut-over box being brought forward.
+
+The sweep works. Both drop-ins landed with exactly one `ExecStart` naming
+the Rust binary; `systemctl start snpanel-backup-scheduler.service` ran it
+for real and reported `SNPanel backup scheduler ran 0 job(s)` with
+`Result=success`; the rollback removed both drop-in directories and put the
+Python `ExecStart` back; and re-running the cutover restored all eight
+checks.
+
+Two defects came out of it, neither visible from a unit test.
+
+#### The rollback reported failure on a rollback that worked
+
+`rollback` slept two seconds and then checked the panel. Measured: the
+Python front door answers about **3.7 seconds** after `systemctl start
+snpanel-api`, so the check fired early and printed `panel is back: HTTP
+000`.
+
+That is the worst line in the script to be wrong about. An operator reading
+a false failure in the middle of an emergency rollback starts doing
+something else — to a panel that was already fine. It now polls, the way
+every other wait in that file does, and says plainly which of the two things
+happened.
+
+#### `snpanelctl` did not know the cutover exists
+
+Every place it named the serving unit was wrong once a box had cut over, and
+one was actively harmful.
+
+`restart_panel` ran `systemctl restart snpanel-api`. That unit is disabled
+by the cutover precisely because it cannot bind the panel port while Rust
+holds it — and it has `Restart=always`. Measured on the cut-over container:
+`NRestarts` climbed **0 → 4 in thirty seconds**, running Alembic on every
+pass, and nothing looked wrong from outside because Rust kept answering.
+`api-cutover.sh`'s own comment predicts this — "any stray `systemctl start`
+puts it into a three-second failure loop that never ends" — and
+`restart_panel` was that stray start, with four callers: `set-panel-url`,
+`install-panel-ssl`, and both password verbs.
+
+The quieter half of the same bug: the process that *was* serving never got
+restarted, so a changed panel URL or a newly installed certificate silently
+did not take effect.
+
+Four more places had it: the `restart` verb's service list, the status
+page's `API:` line, the `logs` verb's journal, and — worst, because it runs
+unattended twice a day — the certbot renewal `--deploy-hook`.
+
+All of them now read one fact, `panel_unit`: **is `snpanel-rust` enabled**.
+That is what `api-cutover.sh` sets and what its rollback clears. Not whether
+`/usr/local/bin/snpanel-api-rust` exists — a rolled-back box still has the
+binary, and restarting the Rust unit there would quietly undo the rollback.
+All three states were checked in the container: enabled, disabled, and
+unknown to systemd.
+
+Verified after the change on the live cut-over box: `restart_panel`
+restarted `snpanel-rust` (its MainPID moved), `snpanel-api` stayed inactive
+with `NRestarts` at **0**, and the panel stayed up.
+
+**Two different questions read two different facts, deliberately.** Whether
+the *binary* exists gates the one-shots — the site refresh, the password
+writes — because those talk to the database and the helper and work the same
+whichever process serves HTTP. Which unit to *restart* has only one right
+answer: the one that is serving. The comment in `snpanelctl` says so, so
+that nobody unifies them.
+
 ## Stage F — the installer
 
 Every function in every shell script Stage F covers now has a Rust

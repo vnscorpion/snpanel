@@ -54,9 +54,25 @@ rollback() {
     systemctl enable snpanel-api 2>/dev/null
     systemctl reset-failed snpanel-api 2>/dev/null
     systemctl start snpanel-api
-    sleep 2
-    curl -sk -o /dev/null -w '   panel is back: HTTP %{http_code}\n' --max-time 10 \
-        https://127.0.0.1:2222/api/health
+    # Polled, not slept. Measured in a container: the Python front door
+    # answers about 3.7s after `systemctl start`, and a check fired after
+    # `sleep 2` printed HTTP 000 on a rollback that had worked. This is the
+    # worst line in the script to be wrong about - an operator reading a
+    # false failure mid-emergency starts doing something else to a panel
+    # that was already fine.
+    code=000
+    for _ in $(seq 1 60); do
+        code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 2 \
+            https://127.0.0.1:2222/api/health)
+        [ "$code" = "200" ] && break
+        sleep 0.5
+    done
+    if [ "$code" = "200" ]; then
+        echo "   panel is back: HTTP 200"
+    else
+        echo "   panel did NOT come back: HTTP $code"
+        journalctl -u snpanel-api -n 20 --no-pager --output=cat | sed 's/^/   | /'
+    fi
 }
 
 if [ "${1:-}" = "rollback" ]; then rollback; exit 0; fi

@@ -62,8 +62,20 @@ pub fn health(curl_available: bool, exit_code: i32, http_code: &str, stderr: &st
     }
 }
 
-/// Services whose state is reported, in the order they are listed.
-pub const REPORTED: &[&str] = &["snpanel-api", "nginx", "mariadb", "redis-server"];
+/// Services whose state is reported, after the panel's own unit.
+///
+/// The panel's is first in the output and is not here, because it is not a
+/// constant: see [`panel_unit`]. "API: inactive" about `snpanel-api` on a
+/// healthy cut-over box is a line that sends an operator looking for a fault
+/// there is not.
+pub const REPORTED_AFTER_PANEL: &[&str] = &["nginx", "mariadb", "redis-server"];
+
+/// What the status page lists, in order, on a box in the given state.
+pub fn reported(cut_over: bool) -> Vec<&'static str> {
+    let mut all = vec![panel_unit(cut_over)];
+    all.extend_from_slice(REPORTED_AFTER_PANEL);
+    all
+}
 
 /// `systemctl is-active` with a fallback.
 ///
@@ -84,7 +96,37 @@ pub fn is_active(output: Option<&str>) -> &str {
 /// first it would come up, fail both, and sit there in a failed state while
 /// the things it needed started behind it. nginx before the API for the same
 /// reason in reverse: it is the one that answers while the API restarts.
-pub const RESTART_ORDER: &[&str] = &["mariadb", "redis-server", "nginx", "snpanel-api"];
+/// The last entry is **whichever unit serves the panel**, which is not
+/// always `snpanel-api`: see [`panel_unit`].
+pub const RESTART_ORDER_PREFIX: &[&str] = &["mariadb", "redis-server", "nginx"];
+
+/// The units to restart, in order, on a box in the given state.
+pub fn restart_order(cut_over: bool) -> Vec<&'static str> {
+    let mut order = RESTART_ORDER_PREFIX.to_vec();
+    order.push(panel_unit(cut_over));
+    order
+}
+
+/// Which unit serves the panel.
+///
+/// Source: `panel_unit` in `snpanelctl`, which reads whether `snpanel-rust`
+/// is **enabled** — the fact `api-cutover.sh` sets and its rollback clears.
+/// Not whether `/usr/local/bin/snpanel-api-rust` exists: a rolled-back box
+/// still has the binary, and restarting the Rust unit there would undo the
+/// rollback.
+///
+/// Getting this wrong is not cosmetic. `snpanel-api` cannot bind the panel
+/// port while Rust holds it and has `Restart=always`, so restarting it on a
+/// cut-over box loops forever — measured at four restarts in thirty
+/// seconds, running Alembic on every pass, with nothing visibly wrong
+/// because Rust kept answering.
+pub fn panel_unit(cut_over: bool) -> &'static str {
+    if cut_over {
+        "snpanel-rust"
+    } else {
+        "snpanel-api"
+    }
+}
 
 /// What `show_login_info` says when `/root/login.txt` is gone.
 ///
@@ -213,19 +255,56 @@ mod tests {
     /// both, and sit in a failed state while the things it needed started
     /// behind it.
     #[test]
-    fn the_api_is_restarted_after_what_it_depends_on() {
-        let api = RESTART_ORDER
-            .iter()
-            .position(|s| *s == "snpanel-api")
-            .expect("the api");
-        for dependency in ["mariadb", "redis-server", "nginx"] {
-            let at = RESTART_ORDER
-                .iter()
-                .position(|s| *s == dependency)
-                .unwrap_or_else(|| panic!("{dependency}"));
-            assert!(at < api, "{dependency} restarts after the API");
+    fn the_panel_restarts_last_whichever_unit_it_is() {
+        for cut_over in [false, true] {
+            let order = restart_order(cut_over);
+            assert_eq!(&order[..3], &["mariadb", "redis-server", "nginx"]);
+            assert_eq!(order.last().copied(), Some(panel_unit(cut_over)));
         }
-        assert_eq!(*RESTART_ORDER.last().unwrap(), "snpanel-api");
+    }
+
+    /// **A cut-over box restarts the unit that is serving.**
+    ///
+    /// Restarting `snpanel-api` there is an endless loop: it cannot bind the
+    /// panel port while Rust holds it and it has `Restart=always`. And the
+    /// process that *is* serving never reloads, so whatever was changed
+    /// silently does not take effect.
+    #[test]
+    fn the_cut_over_box_does_not_restart_the_disabled_unit() {
+        assert_eq!(panel_unit(true), "snpanel-rust");
+        assert_eq!(panel_unit(false), "snpanel-api");
+        assert!(!restart_order(true).contains(&"snpanel-api"));
+        assert!(!restart_order(false).contains(&"snpanel-rust"));
+    }
+
+    /// **The shell reads the same fact the same way.**
+    ///
+    /// `is-enabled snpanel-rust`, not the presence of the binary — a
+    /// rolled-back box still has the binary, and restarting the Rust unit
+    /// there would quietly undo the rollback.
+    #[test]
+    fn the_shell_decides_it_from_the_enabled_state() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../installer/files/snpanelctl");
+        let Ok(shell) = std::fs::read_to_string(&path) else {
+            eprintln!("skipped: {} is not there", path.display());
+            return;
+        };
+        let body = shell
+            .split_once("panel_unit() {")
+            .expect("snpanelctl has no panel_unit")
+            .1
+            .split_once("\n}")
+            .expect("panel_unit does not end")
+            .0;
+        assert!(
+            body.contains("systemctl is-enabled snpanel-rust"),
+            "panel_unit has to read the enabled state:\n{body}"
+        );
+        assert!(
+            !body.contains("/usr/local/bin/snpanel-api-rust"),
+            "the binary's presence is the wrong fact: a rolled-back box has it"
+        );
     }
 
     /// An operator told only "not available" will look for the file, and the
@@ -260,10 +339,18 @@ mod tests {
         assert!(RESCUE_HINT.contains("snpanel-rescue-firewall"));
     }
 
+    /// **Nothing is restarted without a line saying so**, on either kind of
+    /// box. A service that goes down and comes back silently is a service
+    /// whose failure to come back is silent too.
     #[test]
     fn every_service_that_is_restarted_is_also_reported() {
-        for service in RESTART_ORDER {
-            assert!(REPORTED.contains(service), "{service} is restarted unseen");
+        for cut_over in [false, true] {
+            for service in restart_order(cut_over) {
+                assert!(
+                    reported(cut_over).contains(&service),
+                    "{service} is restarted unseen (cut_over={cut_over})"
+                );
+            }
         }
     }
 }
