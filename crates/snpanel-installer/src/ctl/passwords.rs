@@ -7,8 +7,14 @@
 //! One requirement belongs to both paths and is enforced by neither of the
 //! functions here, because it lives in the database layer: **`token_version`
 //! must be bumped.** A password change that leaves existing tokens working
-//! is not a password change, and both shell paths do it — the note is here
-//! so whoever wires these up does not have to rediscover it from the bash.
+//! is not a password change.
+//!
+//! That is now done in
+//! `snpanel_db::UserRepo::set_password_and_invalidate_sessions`, in the same
+//! UPDATE as the hash, and reached through `snpanel-api --set-admin-password`
+//! and `--set-admin-password-hash`. `snpanelctl` prefers those when the Rust
+//! binary is installed and keeps its inline Python for a box that has not
+//! cut over yet.
 
 /// The shortest admin password the menu accepts.
 ///

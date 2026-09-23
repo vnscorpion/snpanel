@@ -5,6 +5,10 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/snpanel}"
 ENV_FILE="${APP_DIR}/backend/.env"
+# The Rust API binary, installed by api-cutover.sh and by nothing else. Two
+# verbs below prefer it when it is there and fall back to the venv when it is
+# not, which is what keeps this script working on a box that has not cut over.
+RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/snpanel}"
 DEFAULT_PANEL_PORT="2222"
 
@@ -433,12 +437,22 @@ change_admin_password() {
   # mechanism if anybody ever adds --login. Either way the value itself
   # never reaches a command line.
   export SNPANEL_NEW_ADMIN_PASSWORD="$password"
-  if id -u snpanel >/dev/null 2>&1; then
-    runner=(runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+  # Rust where it is installed, Python where it is not. `snpanel-api-rust`
+  # arrives with `api-cutover.sh`, so a box that has not cut over does not
+  # have it - and a rescue tool that could only change the password on a
+  # cut-over box would stop working exactly where it is needed.
+  if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+    runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- \
+      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+      "$RUST_API" --env "$ENV_FILE" --set-admin-password \
+      || { unset SNPANEL_NEW_ADMIN_PASSWORD; fail "Could not change the admin password"; }
   else
-    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-  fi
-  "${runner[@]}" - <<'PY'
+    if id -u snpanel >/dev/null 2>&1; then
+      runner=(runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+    else
+      runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+    fi
+    "${runner[@]}" - <<'PY'
 import os
 from app.core.database import SessionLocal
 from app.core.security import hash_password
@@ -458,6 +472,7 @@ try:
 finally:
     db.close()
 PY
+  fi
   unset SNPANEL_NEW_ADMIN_PASSWORD
   write_login_info "$password"
   echo "Admin password changed. Existing sessions were invalidated."
@@ -517,12 +532,19 @@ sync_admin_root_password() {
   # root:shadow precisely so ordinary accounts cannot take it away and
   # attack it offline.
   export SNPANEL_ROOT_PASSWORD_HASH="$root_hash"
-  if id -u snpanel >/dev/null 2>&1; then
-    runner=(runuser --whitelist-environment=SNPANEL_ROOT_PASSWORD_HASH -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+  # Same arrangement as change_admin_password: Rust where it is installed.
+  if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+    runuser --whitelist-environment=SNPANEL_ROOT_PASSWORD_HASH -u snpanel -- \
+      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+      "$RUST_API" --env "$ENV_FILE" --set-admin-password-hash \
+      || { unset SNPANEL_ROOT_PASSWORD_HASH; fail "Could not sync the admin password"; }
   else
-    runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-  fi
-  "${runner[@]}" - <<'PY'
+    if id -u snpanel >/dev/null 2>&1; then
+      runner=(runuser --whitelist-environment=SNPANEL_ROOT_PASSWORD_HASH -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+    else
+      runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
+    fi
+    "${runner[@]}" - <<'PY'
 import os
 from app.core.database import SessionLocal
 from app.models.entities import User
@@ -539,6 +561,7 @@ try:
 finally:
     db.close()
 PY
+  fi
   unset SNPANEL_ROOT_PASSWORD_HASH
   read -rsp "Root password to write to /root/login.txt (blank to skip): " login_password; echo
   if [[ -n "$login_password" ]]; then

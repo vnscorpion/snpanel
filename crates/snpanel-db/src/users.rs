@@ -195,6 +195,37 @@ impl<'a> UserRepo<'a> {
         Ok(new_version)
     }
 
+    /// Set the stored hash and invalidate every session, in one statement.
+    ///
+    /// Source: `snpanelctl`'s `change_admin_password` and
+    /// `sync_admin_root_password`, which both assign `hashed_password` and
+    /// `token_version + 1` and commit once.
+    ///
+    /// **One UPDATE rather than two**, for the same reason
+    /// [`Self::set_totp_enabled`] gives: a crash between them would leave
+    /// the password changed and the old sessions still valid, which is the
+    /// half that matters. The other order is merely annoying.
+    ///
+    /// The hash is written **as given**, which is deliberate: the root-sync
+    /// path stores a crypt(3) hash out of `/etc/shadow`, not bcrypt, and
+    /// `snpanel_core::crypto::password` is what tells the two apart at
+    /// verify time.
+    pub async fn set_password_and_invalidate_sessions(
+        &self,
+        user_id: i64,
+        hash: &str,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query_scalar(
+            "UPDATE users SET hashed_password = ?, \
+             token_version = COALESCE(token_version, 0) + 1 \
+             WHERE id = ? RETURNING token_version",
+        )
+        .bind(hash)
+        .bind(user_id)
+        .fetch_one(self.pool)
+        .await?)
+    }
+
     /// Source: the opportunistic rehash in `login`.
     pub async fn set_hashed_password(&self, user_id: i64, hash: &str) -> Result<(), DbError> {
         sqlx::query("UPDATE users SET hashed_password = ? WHERE id = ?")

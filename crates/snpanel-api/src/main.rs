@@ -40,6 +40,7 @@ mod cloudflare;
 mod compose;
 mod cron;
 mod cron_due;
+mod ctl;
 mod da_import;
 mod da_jobs;
 mod errors;
@@ -215,6 +216,22 @@ async fn run() -> anyhow::Result<()> {
 
     if args.iter().any(|a| a == RUN_MALWARE_SCHEDULES) {
         println!("{}", run_malware_schedules(&state).await);
+        return Ok(());
+    }
+
+    // The two writes `snpanelctl` used to open a Python session for. The
+    // secret comes from the environment under the name the bash already
+    // exports — never a flag, because /proc/<pid>/cmdline is mode 444 and a
+    // hosting box runs other people's PHP.
+    if args.iter().any(|a| a == ctl::SET_ADMIN_PASSWORD) {
+        let password = ctl::secret_from_env(ctl::NEW_PASSWORD_ENV)?;
+        ctl::set_admin_password(&state.db, &password, state.settings.command_dry_run).await?;
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == ctl::SET_ADMIN_PASSWORD_HASH) {
+        let hash = ctl::secret_from_env(ctl::ROOT_HASH_ENV)?;
+        ctl::set_admin_password_hash(&state.db, &hash).await?;
         return Ok(());
     }
 

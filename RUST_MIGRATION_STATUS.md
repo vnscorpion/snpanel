@@ -1905,6 +1905,63 @@ measured to store byte-for-byte what `usermod -p` stored. Sampling `/proc`
 from a shell loop never caught `usermod` in the act, so that one closes a
 narrow window rather than a demonstrated leak.
 
+### The two password writes `snpanelctl` asked Python for
+
+`change_admin_password` and `sync_admin_root_password` each opened a Python
+session to do the same three things: read the `admin` row, write
+`hashed_password`, bump `token_version`. Both are now flags on the Rust
+binary — `--set-admin-password` and `--set-admin-password-hash` — and both
+writes happen in **one UPDATE**, for the reason `set_totp_enabled` already
+gives: a crash between them would leave the password changed and the old
+sessions still valid, which is the half that matters. The other order is
+merely annoying.
+
+The hash is stored **as given**, and the root-sync path is why: it is root's
+crypt(3) hash out of `/etc/shadow`, not bcrypt. Hashing it again would store
+a bcrypt of the hash *text*, and the panel would then accept a password
+nobody knows while refusing the root password it was meant to match.
+Mutating that to re-hash fails a test by name.
+
+The secret arrives in the **environment**, under the name the bash already
+exported. A flag taking the password as an argument would undo the thing
+`snpanelctl` was fixed for two commits ago. An unset variable is an error
+rather than a quiet no-op: the bash exports it immediately before, so
+absence means the two sides have drifted, and changing nothing after telling
+the operator their password was changed is the worst outcome available.
+
+`snpanelctl` **keeps its inline Python as the fallback**, and has to:
+`snpanel-api-rust` is installed by `api-cutover.sh` and is not on a box that
+has not cut over. A rescue tool that could only change the password on a
+cut-over box would stop working exactly where it is needed. The
+`runuser -u snpanel` stays too — not because the writes need privilege, but
+because SQLite creates `-wal` and `-shm` beside the database and a
+root-owned pair of those is a panel that cannot write to its own database
+afterwards.
+
+Verified against Python rather than against itself: after
+`--set-admin-password`, Python's own `verify_password` accepts the new
+password and rejects the old one; after `--set-admin-password-hash`, the
+stored text is byte-identical to what went in and Python's
+`is_shadow_password_hash` recognises it. `token_version` moved each time.
+
+### What still calls Python, and what it is waiting on
+
+| call site | what it does | what it needs |
+| --- | --- | --- |
+| `update.sh` | `run_migrations()` | the schema to move to this side (C11) |
+| `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | `snpanel-api` to have a library target |
+| `update.sh` site-refresh | the same work, for every site | the same |
+| `update.sh` orphan cleanup | `orphans.clean` | the same |
+| `install.sh` | `python -m app.seed` | nothing — `--init-db` replaces it once the binary ships before the seed |
+| `snpanel-upstream.service` | uvicorn on loopback | the cutover's own safety net, deliberately kept |
+
+Three of those are one blocker: **`snpanel-api` is a binary with no library
+target**, so nothing else in the workspace can reach the ported nginx, WAF,
+site-user and orphan code. The venv cannot be removed until they move, and
+they cannot move until that changes. It is a structural change to the
+largest crate — 549 tests — rather than a port, so it is recorded here as
+the next decision rather than taken quietly.
+
 ## Stage F — the installer
 
 Every function in every shell script Stage F covers now has a Rust
