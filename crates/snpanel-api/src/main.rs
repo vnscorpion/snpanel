@@ -39,7 +39,6 @@ mod client;
 mod cloudflare;
 mod compose;
 mod cron;
-#[allow(dead_code, reason = "used by backup_scheduler, which is not wired yet")]
 mod cron_due;
 mod da_import;
 mod da_jobs;
@@ -90,6 +89,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use chrono::{Datelike, Timelike};
 use snpanel_core::config::Settings;
 use snpanel_db::Database;
 
@@ -164,6 +164,17 @@ async fn run() -> anyhow::Result<()> {
         upstream,
         serves_tls: tls.is_some(),
     };
+
+    // One-shot mode, for the systemd timer. Everything above is the same
+    // setup the server does — the same settings, the same database, the
+    // same schema check — because a scheduler that read its configuration
+    // differently from the panel is a scheduler that backs up something
+    // else.
+    if args.iter().any(|a| a == RUN_BACKUP_SCHEDULES) {
+        let ran = run_backup_schedules(&state).await;
+        println!("SNPanel backup scheduler ran {ran} job(s).");
+        return Ok(());
+    }
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;
@@ -401,6 +412,142 @@ fn send_file(path: &std::path::Path) -> Response {
     };
     let media_type = spa::frontend_media_type(path);
     ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
+}
+
+/// The flag the systemd timer passes.
+pub(crate) const RUN_BACKUP_SCHEDULES: &str = "--run-backup-schedules";
+
+/// Source: `run_due_schedules`.
+///
+/// Returns the number of schedules that ran cleanly, which is what the unit
+/// prints. A schedule where one user of several failed is reported as an
+/// error and is **not** counted — see [`backup_scheduler::outcome`].
+///
+/// Nothing here propagates an error. One customer's backup failing must not
+/// stop everybody else's, and a scheduler that exits non-zero on a single
+/// bad schedule would have systemd report the whole run as failed every
+/// minute.
+async fn run_backup_schedules(state: &AppState) -> usize {
+    let now = chrono::Local::now();
+    let stamp = now.format("%Y-%m-%dT%H:%M").to_string();
+
+    let schedules = match state.db.backup_schedules().list().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("cannot read the backup schedules: {e}");
+            return 0;
+        }
+    };
+
+    let minute = backup_scheduler::Minute {
+        stamp: &stamp,
+        minute: now.minute(),
+        hour: now.hour(),
+        day: now.day(),
+        month: now.month(),
+        // `chrono`'s Monday is 0 through `num_days_from_monday`, which is
+        // what `datetime.weekday()` returns.
+        weekday: now.weekday().num_days_from_monday(),
+    };
+
+    let mut ran = 0;
+    for schedule in schedules {
+        // `last_run_at` is stored as the panel writes it; only the leading
+        // `YYYY-MM-DDTHH:MM` is compared, which is the Python's truncation
+        // to the minute on both sides.
+        let last = schedule
+            .last_run_at
+            .as_deref()
+            .map(|v| v.chars().take(stamp.chars().count()).collect::<String>());
+        if backup_scheduler::should_run(
+            schedule.is_active,
+            &schedule.schedule,
+            last.as_deref(),
+            minute,
+        )
+        .is_err()
+        {
+            continue;
+        }
+
+        let users = schedule_users(state, &schedule).await;
+        if users.is_empty() {
+            let outcome = backup_scheduler::no_users();
+            record(state, schedule.id, &stamp, &outcome).await;
+            continue;
+        }
+
+        let mut successes = Vec::new();
+        let mut errors = Vec::new();
+        for user in users {
+            match routes::maintenance::build_user_backup(state, &user).await {
+                Ok(archive) => {
+                    let _ = crate::backups::prune_user_backups(
+                        &state.settings.backup_root,
+                        &user.username,
+                        schedule.retention,
+                        state.settings.command_dry_run,
+                    );
+                    successes.push(format!("{}: {archive}", user.username));
+                }
+                Err(e) => errors.push(format!("{}: {e}", user.username)),
+            }
+        }
+
+        let outcome = backup_scheduler::outcome(&successes, &errors);
+        if outcome.counts_as_run {
+            ran += 1;
+        }
+        record(state, schedule.id, &stamp, &outcome).await;
+    }
+    ran
+}
+
+async fn record(state: &AppState, id: i64, stamp: &str, outcome: &backup_scheduler::Outcome) {
+    if let Err(e) = state
+        .db
+        .backup_schedules()
+        .record_run(id, stamp, outcome.status, &outcome.message)
+        .await
+    {
+        tracing::error!("cannot record the result of schedule {id}: {e}");
+    }
+}
+
+/// Source: `_schedule_users`.
+///
+/// `all_users` takes every active account. Otherwise the stored id list is
+/// decoded, falling back to the single `user_id` column that predates it,
+/// and the users come back **in the order the ids were given** with the ones
+/// that no longer exist dropped.
+async fn schedule_users(
+    state: &AppState,
+    schedule: &snpanel_db::BackupSchedule,
+) -> Vec<snpanel_db::User> {
+    if schedule.all_users {
+        return state
+            .db
+            .users()
+            .active_ordered_by_id()
+            .await
+            .unwrap_or_default();
+    }
+
+    let mut ids = routes::users::decode_schedule_user_ids(Some(schedule.user_ids.as_str()))
+        .unwrap_or_default();
+    if ids.is_empty() {
+        if let Some(one) = schedule.user_id {
+            ids.push(one);
+        }
+    }
+
+    let mut users = Vec::new();
+    for id in ids {
+        if let Ok(Some(user)) = state.db.users().by_id(id).await {
+            users.push(user);
+        }
+    }
+    users
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {

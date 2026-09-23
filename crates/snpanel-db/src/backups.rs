@@ -157,6 +157,37 @@ impl<'a> BackupScheduleRepo<'a> {
         Ok(())
     }
 
+    /// What a run leaves behind on the schedule row.
+    ///
+    /// Source: the `schedule.last_run_at = now` / `last_status` /
+    /// `last_message` writes in `run_due_schedules`.
+    ///
+    /// All three move together, and `last_run_at` is the one that matters
+    /// twice over: it is what the panel shows, and it is what the
+    /// same-minute guard reads on the next tick. Writing the status without
+    /// the timestamp would leave a schedule that runs again every sixty
+    /// seconds for the rest of the minute.
+    pub async fn record_run(
+        &self,
+        id: i64,
+        last_run_at: &str,
+        status: &str,
+        message: &str,
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "UPDATE backup_schedules \
+             SET last_run_at = ?, last_status = ?, last_message = ? \
+             WHERE id = ?",
+        )
+        .bind(last_run_at)
+        .bind(status)
+        .bind(message)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
         let done = sqlx::query("DELETE FROM backup_schedules WHERE id = ?")
             .bind(id)

@@ -96,6 +96,27 @@ impl<'a> UserRepo<'a> {
         Ok(row)
     }
 
+    /// Every active user, oldest first.
+    ///
+    /// Source: `_schedule_users`' `all_users` branch —
+    /// `filter(User.is_active == True).order_by(User.id.asc())`.
+    ///
+    /// The order is part of the contract rather than incidental: the backup
+    /// scheduler reports what it did as a list of usernames, and an order
+    /// that moved between runs would make two identical runs look different
+    /// to whoever is reading the last message.
+    pub async fn active_ordered_by_id(&self) -> Result<Vec<User>, DbError> {
+        let rows = sqlx::query_as::<_, User>(
+            "SELECT id, username, email, hashed_password, role, is_active, package_id, \
+                    website_limit, storage_limit_mb, terminal_enabled, \
+                    token_version, totp_secret, totp_enabled \
+             FROM users WHERE is_active = 1 ORDER BY id ASC",
+        )
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn by_id(&self, id: i64) -> Result<Option<User>, DbError> {
         let row = sqlx::query_as::<_, User>(
             "SELECT id, username, email, hashed_password, role, is_active, package_id, \

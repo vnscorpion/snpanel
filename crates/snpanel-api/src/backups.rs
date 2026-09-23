@@ -141,6 +141,42 @@ pub fn list_user_backups(
     Ok(list_archives(&dir))
 }
 
+/// Source: `prune_user_backups`.
+///
+/// ```python
+/// keep = max(int(keep or 1), 1)
+/// for old_backup in list_user_backups(username)[keep:]:
+///     Path(old_backup).unlink(missing_ok=True)
+/// ```
+///
+/// **The ordering is the whole of it.** `list_user_backups` sorts the paths
+/// *descending*, so the list runs newest first and `[keep:]` is the tail —
+/// the oldest. A list built ascending and pruned the same way would delete
+/// the customer's newest backups and keep the oldest, silently, and the
+/// first anybody would know is a restore from three months ago.
+///
+/// A retention of zero or less keeps one, which is `keep or 1` followed by
+/// `max(..., 1)`: there is no setting that means "delete everything".
+///
+/// `unlink(missing_ok=True)`: a file that went between the listing and the
+/// delete is not an error. Two schedules for the same user can overlap.
+pub fn prune_user_backups(
+    backup_root: &str,
+    username: &str,
+    keep: i64,
+    dry_run: bool,
+) -> Result<usize, BackupError> {
+    let keep = keep.max(1) as usize;
+    let archives = list_user_backups(backup_root, username, dry_run)?;
+    let mut removed = 0;
+    for old in archives.into_iter().skip(keep) {
+        if std::fs::remove_file(&old).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Source: `user_backup_path`.
 ///
 /// Different from `backup_path` in one way that matters: the root itself
@@ -658,6 +694,86 @@ fn ascii_escape(text: &str) -> String {
 #[cfg(test)]
 mod upload_tests {
     use super::*;
+    /// A user backup directory with `count` archives whose names sort in the
+    /// order they were taken.
+    fn seeded(tag: &str, count: usize) -> (String, String) {
+        let root = std::env::temp_dir().join(format!("bp-prune-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("users").join("acme");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..count {
+            // `acme-2026-01-01.tar.gz`, ... — the real names are timestamped
+            // and this keeps the lexicographic order chronological, which is
+            // the assumption the prune rests on.
+            std::fs::write(dir.join(format!("acme-2026-01-{:02}.tar.gz", i + 1)), b"x").unwrap();
+        }
+        (
+            root.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        )
+    }
+
+    fn names(dir: &str) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// **The oldest go, the newest stay.** Pruning the other way round would
+    /// delete the customer's newest backups silently, and the first anybody
+    /// would know is a restore from three months ago.
+    #[test]
+    fn pruning_keeps_the_newest_and_deletes_the_oldest() {
+        let (root, dir) = seeded("order", 5);
+        let removed = prune_user_backups(&root, "acme", 2, false).unwrap();
+        assert_eq!(removed, 3);
+        assert_eq!(
+            names(&dir),
+            ["acme-2026-01-04.tar.gz", "acme-2026-01-05.tar.gz"],
+            "the wrong end of the list was deleted"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// There is no setting that means "delete everything".
+    #[test]
+    fn a_retention_of_zero_or_less_still_keeps_one() {
+        for keep in [0, -1, -100] {
+            let (root, dir) = seeded(&format!("zero{keep}"), 3);
+            prune_user_backups(&root, "acme", keep, false).unwrap();
+            assert_eq!(
+                names(&dir),
+                ["acme-2026-01-03.tar.gz"],
+                "keep={keep} removed everything"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// Fewer archives than the retention is not an error and deletes
+    /// nothing — the ordinary case for a new schedule.
+    #[test]
+    fn nothing_is_deleted_when_there_is_nothing_to_spare() {
+        let (root, dir) = seeded("few", 2);
+        assert_eq!(prune_user_backups(&root, "acme", 7, false).unwrap(), 0);
+        assert_eq!(names(&dir).len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A dry run reads as an empty listing on the Python side too, so it
+    /// deletes nothing rather than deleting everything but the newest.
+    #[test]
+    fn a_dry_run_deletes_nothing() {
+        let (root, dir) = seeded("dry", 5);
+        assert_eq!(prune_user_backups(&root, "acme", 1, true).unwrap(), 0);
+        assert_eq!(names(&dir).len(), 5);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use serde_json::Value;
 
     fn corpus() -> Value {

@@ -1371,7 +1371,7 @@ async fn delete_owned_website(
 /// `Err` here is that 500: the value in the column is one the Python cannot
 /// read either, and answering "no users" instead would silently keep a
 /// schedule the Python would have refused to touch.
-pub(super) fn decode_schedule_user_ids(raw: Option<&str>) -> Result<Vec<i64>, ()> {
+pub(crate) fn decode_schedule_user_ids(raw: Option<&str>) -> Result<Vec<i64>, ()> {
     let Some(raw) = raw.filter(|r| !r.is_empty()) else {
         return Ok(Vec::new());
     };

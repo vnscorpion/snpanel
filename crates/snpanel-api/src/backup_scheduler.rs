@@ -1,26 +1,14 @@
 //! Deciding which backup schedules are due, and what to record about them.
 //!
-//! **Not yet called.** Python still runs this on a timer
-//! (`snpanel-backup-scheduler.service` → `python -m
-//! app.services.backup_scheduler`). What is here is the half that can be
-//! decided and tested without a database; the runner that calls it needs
-//! five things that do not exist yet, and they are listed rather than
-//! guessed at:
-//!
-//! 1. a `snpanel-db` setter for `last_run_at`, `last_status` and
-//!    `last_message` — the columns are read today and only ever written at
-//!    `create`;
-//! 2. a users-by-ids query, to turn a schedule's decoded id list into users
-//!    in the order the ids were given;
-//! 3. `prune_user_backups(username, retention)` — the one that **deletes a
-//!    customer's older archives**, which is why it is not being written in
-//!    passing;
-//! 4. a `--run-backup-schedules` subcommand on this binary, since
-//!    `snpanel-api` has no library target for a separate one to import;
-//! 5. the unit's `ExecStart` changed to call it.
-//!
-//! `build_user_backup` and `crate::sftp::upload` already exist and are what
-//! the runner would call for the work itself.
+//! Called by `--run-backup-schedules`, the one-shot mode a systemd timer
+//! invokes. The unit does **not** call it yet: the Rust binary is installed
+//! as `/usr/local/bin/snpanel-api-rust` and only by `api-cutover.sh`, so
+//! pointing the timer at it before a box has cut over would stop backups
+//! silently. That one line moves with the cutover; see
+//! [`snpanel_installer::systemd_units::backup_scheduler_service`]. That mode does the same setup the server does — the same
+//! settings, the same database, the same schema check — because a scheduler
+//! that read its configuration differently from the panel is a scheduler
+//! that backs up something else.
 //!
 //! Source: `run_due_schedules` in `app/services/backup_scheduler.py`.
 //!

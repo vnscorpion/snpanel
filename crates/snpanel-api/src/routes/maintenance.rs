@@ -8505,7 +8505,7 @@ async fn audit_request(
 /// The applications are the part that is easy to leave out — their data is
 /// not under any website root — and leaving them out is how a restore brings
 /// back the sites and quietly drops every container's workflows.
-pub(super) async fn build_user_backup(
+pub(crate) async fn build_user_backup(
     state: &AppState,
     user: &snpanel_db::User,
 ) -> Result<String, String> {

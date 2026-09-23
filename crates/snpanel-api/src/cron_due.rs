@@ -1,11 +1,5 @@
 //! Is a schedule due at this minute?
-//!
-//! **Not yet called.** This is the decision half of the backup scheduler,
-//! landed ahead of the runner that uses it — see
-//! [`crate::backup_scheduler`] for what that runner still needs. It is
-//! `allow(dead_code)` deliberately rather than by oversight: the rules here
-//! are fully checked against the Python and there is nothing to gain by
-//! holding them back until the plumbing is ready.
+
 //!
 //! Source: `_field_matches` and `_cron_due` in
 //! `app/services/backup_scheduler.py`.

@@ -157,6 +157,18 @@ WantedBy=multi-user.target
     )
 }
 
+/// **Still Python, and deliberately so for now.**
+///
+/// The runner exists on this side — `snpanel-api --run-backup-schedules`,
+/// and [`crate::update::runtime`] writes the same unit — but the Rust API
+/// binary is installed as `/usr/local/bin/snpanel-api-rust`, and only by
+/// `api-cutover.sh`. The installer writes this unit long before any cutover
+/// has run, so pointing it at that path today would leave a pre-cutover box
+/// with a timer calling a binary that is not there — and backups that
+/// silently stop, which is the failure nobody notices until they need one.
+///
+/// Changing this line belongs to the cutover, beside the change that stops
+/// installing `snpanel-upstream`.
 pub fn backup_scheduler_service(settings: &UnitSettings) -> String {
     let UnitSettings {
         app_dir, web_group, ..
