@@ -1,0 +1,121 @@
+{
+ "base": "/tmp/resolve-cwd-corpus",
+ "cases": [
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site",
+   "target": ""
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site",
+   "target": "~"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site/public_html/deep",
+   "target": "deep"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site/public_html/deep",
+   "target": "./deep"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site",
+   "target": ".."
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site/storage",
+   "target": "../storage"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "../.."
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "../../outside"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "/etc"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site/storage",
+   "target": "/tmp/resolve-cwd-corpus/site/storage"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "/tmp/resolve-cwd-corpus/outside"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "/tmp/resolve-cwd-corpus/siteX"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "No such directory: nosuchdir",
+   "target": "nosuchdir"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "No such directory: ../nosuchdir",
+   "target": "../nosuchdir"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Path is outside this website",
+   "target": "../../nosuchdir"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "No such directory: file.txt",
+   "target": "file.txt"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "error": "Not a directory: ../file.txt",
+   "target": "../file.txt"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site/public_html",
+   "ok": "/tmp/resolve-cwd-corpus/site/storage",
+   "target": "to-storage"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site",
+   "error": "Path is outside this website",
+   "target": "escape"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site",
+   "ok": "/tmp/resolve-cwd-corpus/site/public_html/deep",
+   "target": "public_html/deep"
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site",
+   "ok": "/tmp/resolve-cwd-corpus/site/storage",
+   "target": "  storage  "
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site",
+   "ok": "/tmp/resolve-cwd-corpus/site",
+   "target": "."
+  },
+  {
+   "cwd": "/tmp/resolve-cwd-corpus/site",
+   "error": "Path is outside this website",
+   "target": "/"
+  }
+ ],
+ "root": "/tmp/resolve-cwd-corpus/site"
+}
