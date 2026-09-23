@@ -1176,8 +1176,25 @@ ENV
   chown -R snpanel:snpanel "${APP_DIR}/backend"
   chown -R snpanel:snpanel "${APP_DIR}/frontend" 2>/dev/null || true
 
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  # The password reaches the seed through the environment, never argv.
+  #
+  # `env` execs and drops its own command line, which is what made the old
+  # `sudo -u snpanel env SNPANEL_ADMIN_PASSWORD=... ` look safe. But sudo
+  # forks and waits, so sudo's argv — assignment and all — sits in
+  # /proc/<pid>/cmdline for as long as the seed runs. That file is mode 444;
+  # on a hosting box every customer's PHP can read it. Measured in a
+  # container: an unprivileged account read the password out of /proc during
+  # the seed, and cannot after this change.
+  #
+  # What carries the variable is that `runuser -u` does not reset the
+  # environment (unlike sudo, whose env_reset is why the value had to be
+  # spelled out). --whitelist-environment is stated for intent and for the
+  # day somebody adds --login, where it does become load-bearing.
+  export SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+  runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
+    env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
     "${APP_DIR}/backend/.venv/bin/python" -m app.seed
+  unset SNPANEL_ADMIN_PASSWORD
   deactivate || true
 }
 

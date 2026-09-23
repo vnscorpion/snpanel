@@ -1676,7 +1676,7 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 | the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **still Alembic's** (C11); this side now *checks* the revision at startup and has a place for Rust-owned migrations |
 | backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**; the unit switches at cutover |
 | malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**; the unit switches at cutover |
-| fresh-install bootstrap | `python -m app.seed` | **unported** |
+| fresh-install bootstrap | `python -m app.seed` | **ported** as `snpanel-api --init-db`; `install.sh` still calls Python, because the Rust binary is not on the box until the cutover |
 
 **Both schedulers now run from Rust.** `snpanel-api
 --run-backup-schedules` is the one-shot mode a timer invokes, doing the same
@@ -1771,11 +1771,111 @@ bookkeeping table is this side's own — writing into `alembic_version` would
 make Alembic's own `upgrade` disagree with it, and while both sides are
 alive that is a fight neither wins.
 
-The schema also carries a choice rather than only work. Existing boxes are
-all at head, so a Rust runner needs no history — but a *fresh* install today
-builds its schema by replaying all 31 revisions, and with Python gone
-something has to create those tables. Porting that DDL is where a wrong
-column type is silent corruption rather than a failed test.
+### Building the schema without replaying 31 revisions
+
+Existing boxes are all at head, so a Rust runner needs no history. A *fresh*
+install is the other half: today it builds its tables by replaying all 31
+revisions in Python, and with Python gone something has to create them.
+
+**That DDL was captured, not transcribed**, and the distinction is the whole
+point. Reading 31 migrations and writing out the tables they add is the one
+place in this port where a mistake is silent: a column typed `INTEGER` where
+SQLAlchemy wrote `VARCHAR` fails no test and corrupts a row months later. So
+nothing was read. `gen-schema-corpus.py` migrates an empty database to head
+with Alembic itself, inside the container, and dumps `sqlite_master` — which
+is SQLite's own record of what it was told to create. Fourteen tables and
+thirty-one indexes, verbatim.
+
+`BOOTSTRAP_DDL` is that dump rendered as Rust. Not a `.sql` file, and the
+dump says why: SQLAlchemy ends every column line with `", "`, which
+`sqlite_master` stores as part of the statement text — 152 lines of trailing
+whitespace that an editor set to strip it on save, or a pre-commit hook,
+would quietly rewrite. Inside a one-line escaped string literal there is
+nothing to strip.
+
+The test builds a database from `BOOTSTRAP_DDL` and compares every object
+against the captured dump, by name and by the statement text SQLite
+recorded. Retyping one column, dropping one index, or stripping that
+trailing whitespace each fail it by name. What the test does *not* claim is
+proof that the port is right in the abstract — both sides come from the same
+capture. It is a drift guard, and drift is the failure that would otherwise
+be silent.
+
+**The stamp is load-bearing.** The bootstrap writes `alembic_version` in the
+same transaction as the tables. Without it Python's own `run_migrations`
+would find a database with tables and no revision, try to replay all 31, and
+die on the first `CREATE TABLE`. With it, a database this side created can
+be handed straight back to Python — which was then checked by doing exactly
+that: `snpanel-api --init-db` here, then `run_migrations()` in the container
+against the result. Alembic ran no upgrades, the schema it saw was identical
+to the one it builds itself, and Python read the admin row through its own
+models and verified the password with its own verifier.
+
+`create_fresh_schema` touches **only** a database with no tables at all.
+Alembic-stamped means nothing to do. Tables but no `alembic_version` — the
+pre-Alembic shape — is left to Python, because the only two things this side
+could do are drop what is there or build alongside it, and both lose a live
+box's data.
+
+### The admin account
+
+`snpanel-api --init-db` is `app.seed`: make the database, build the schema,
+create `admin` if there is not one, ensure the Linux account. It prints what
+the Python printed, because that is what the installer shows the operator
+and the password appears exactly once in the world.
+
+A **subcommand and not a startup step**, deliberately. `Database::connect`
+refuses to create the file it is pointed at — an empty database appearing
+where the panel's should be looks like total data loss to whoever finds it,
+and a panel that quietly made itself one after a mount went missing would
+come up looking healthy with no customers in it. That refusal is worth
+keeping, so `Database::create` is a separate call and creating a database is
+something you ask for by name.
+
+The password rules are reproduced rather than improved: at least twelve
+characters, counted the way Python counts them, and no `:`, `\r`, `\n` or
+NUL. That last rule is not aesthetic — the password goes to the helper on
+stdin as one line and on to `chpasswd`, which splits on `:`. Any of the four
+sets a Linux account to something other than what the panel recorded, which
+locks the operator out of the machine they just installed. An unset *or
+empty* variable generates instead of refusing, because Python tested it for
+truthiness and refusing an empty one would fail the install over a variable
+nobody set.
+
+**`install.sh` still calls Python.** The Rust binary is installed as
+`/usr/local/bin/snpanel-api-rust` by `api-cutover.sh`, which has not run at
+the point the installer seeds. The subcommand is what makes a Python-free
+install possible; switching the call is part of the cutover.
+
+### The admin password was readable from /proc during every install
+
+Found while porting the seed, measured, and fixed.
+
+`install.sh` ran the seed as `sudo -u snpanel env HOME=... SNPANEL_USE_HELPER=true
+SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD" ... -m app.seed`. `env` execs and
+drops its own command line, which is what makes that line look safe. But
+`sudo` forks and waits, so *sudo's* argv — the assignment included — sits in
+`/proc/<pid>/cmdline` for as long as the seed runs. That file is mode 444;
+`environ` is 400. On a hosting box it is readable by every customer's PHP.
+
+In a container an unprivileged account read `SNPANEL_ADMIN_PASSWORD=...`
+straight out of `/proc` during the seed, and could not after the change.
+This is the same fault, and the same fix, as `snpanelctl` already carries.
+
+One thing the measurement corrected: `runuser -u` does **not** reset the
+environment, so `--whitelist-environment` is not what carries the variable —
+it is `sudo`'s `env_reset` that forced the old code to spell the value out.
+The flag is kept because it states the intent and because it does become the
+mechanism under `--login`, and the comments now say that rather than the
+tidier thing that is not true.
+
+The neighbouring `usermod -p "$root_hash" admin` in `snpanelctl` put root's
+`/etc/shadow` hash on a command line for the same reason — and `/etc/shadow`
+is `0640 root:shadow` precisely so ordinary accounts cannot take the hash
+away and attack it offline. It now goes to `chpasswd -e` on stdin, which was
+measured to store byte-for-byte what `usermod -p` stored. Sampling `/proc`
+from a shell loop never caught `usermod` in the act, so that one closes a
+narrow window rather than a demonstrated leak.
 
 ## Stage F — the installer
 

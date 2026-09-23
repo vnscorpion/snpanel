@@ -46,6 +46,7 @@ mod errors;
 mod file_jobs;
 mod files;
 mod helper_socket;
+mod initdb;
 mod listen;
 mod malware;
 mod malware_jobs;
@@ -123,6 +124,16 @@ async fn run() -> anyhow::Result<()> {
 
     let settings = Settings::load(Some(std::path::Path::new(&env_path)))?;
     tracing::info!(env = %env_path, "configuration loaded");
+
+    // Build the database, for an install that has no Python to do it.
+    //
+    // Ahead of `Database::connect` because that refuses a file that is not
+    // there, and ahead of the `looks_like_panel_schema` check below because
+    // that refuses one with no tables in it — both of which a fresh install
+    // is, right up until this runs.
+    if args.iter().any(|a| a == initdb::INIT_DB) {
+        return initdb::run(&settings.database_url, settings.command_dry_run).await;
+    }
 
     let db = Database::connect(&settings.database_url).await?;
     if !db.looks_like_panel_schema().await? {

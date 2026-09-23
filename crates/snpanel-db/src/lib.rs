@@ -86,15 +86,32 @@ impl Database {
     pub async fn connect(url: &str) -> Result<Self, DbError> {
         let path =
             sqlite_path(url).ok_or_else(|| DbError::Open(format!("unsupported URL: {url}")))?;
+        // Never create it: an empty database appearing where the panel's
+        // should be looks like total data loss to whoever finds it. Where
+        // creating one is actually wanted, [`Database::create`] says so.
         if !Path::new(&path).exists() {
             return Err(DbError::Open(format!("{path} does not exist")));
         }
+        Self::open(&path, false).await
+    }
 
+    /// Open the panel's database, making the file if it is not there.
+    ///
+    /// **Asked for by name, and only by the installer's `--init-db`.** The
+    /// refusal in [`Database::connect`] is the one that matters day to day:
+    /// a panel that silently made itself an empty database after a mount
+    /// went missing would come up looking healthy with no customers in it.
+    /// Creating one is a thing somebody decides to do.
+    pub async fn create(url: &str) -> Result<Self, DbError> {
+        let path =
+            sqlite_path(url).ok_or_else(|| DbError::Open(format!("unsupported URL: {url}")))?;
+        Self::open(&path, true).await
+    }
+
+    async fn open(path: &str, create_if_missing: bool) -> Result<Self, DbError> {
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
             .map_err(|e| DbError::Open(e.to_string()))?
-            // Never create it: an empty database appearing where the panel's
-            // should be looks like total data loss to whoever finds it.
-            .create_if_missing(false)
+            .create_if_missing(create_if_missing)
             .journal_mode(SqliteJournalMode::Wal)
             // §9.2. Without this the second writer fails instantly instead of
             // waiting for a transaction that is about to finish anyway.

@@ -7,6 +7,11 @@
 //! missing column at request time — which is how a customer finds it, on the
 //! one page they needed.
 //!
+//! A fresh install is the one case this side does build a schema, in
+//! [`Database::create_fresh_schema`] — and only on a database with no tables
+//! at all. The statements come from [`BOOTSTRAP_DDL`], which was captured
+//! from Alembic rather than transcribed from it.
+//!
 //! The mechanism for Rust-owned migrations is here too, with an empty list.
 //! Contract C12 requires the first of them to be a no-op on an existing
 //! database, and an empty list is the only version of that which cannot be
@@ -15,6 +20,11 @@
 //! not seen.
 
 use super::DbError;
+
+#[path = "bootstrap_schema.rs"]
+mod bootstrap_schema;
+
+pub use bootstrap_schema::BOOTSTRAP_DDL;
 
 /// The Alembic revision this build was written against.
 ///
@@ -76,6 +86,25 @@ impl SchemaState {
     }
 }
 
+/// What `create_fresh_schema` found, and what it did about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bootstrap {
+    /// The database was empty; the schema was built and stamped.
+    Created,
+    /// Alembic has already been here. Nothing was done, and nothing should
+    /// be: Python owns every schema it has stamped (C11).
+    AlreadyManaged,
+    /// Tables, but no `alembic_version` — the legacy shape from before the
+    /// panel adopted Alembic.
+    ///
+    /// Left alone **deliberately**. Python's `run_migrations` handles this
+    /// by stamping `0001_initial` and upgrading from there, which replays
+    /// only the DDL that came after. Building the schema here instead would
+    /// mean either dropping a live panel's tables or creating alongside
+    /// them, and neither is something to do without being asked.
+    LeftToPython,
+}
+
 /// Migrations this side owns.
 ///
 /// Empty, and that is contract C12 rather than an omission: the first Rust
@@ -116,6 +145,52 @@ impl super::Database {
             Some(found) => SchemaState::OtherRevision(found),
             None => SchemaState::Unstamped,
         })
+    }
+
+    /// Build the schema a fresh install starts with.
+    ///
+    /// The statements are [`BOOTSTRAP_DDL`], which is a copy of what
+    /// Alembic produces rather than a transcription of it — see that
+    /// module. The point of capturing instead of reading is that a column
+    /// typed wrongly here would not fail a test; it would corrupt a row
+    /// months later.
+    ///
+    /// **Only an empty database.** Anything else is reported and left
+    /// alone; see [`Bootstrap`].
+    ///
+    /// The `alembic_version` row is written as part of the same
+    /// transaction, and that is load-bearing rather than tidy. Without it
+    /// Python's own `run_migrations` would find an unstamped database whose
+    /// tables already exist, try to replay all of them, and fail on the
+    /// first `CREATE TABLE`. Stamping the head is what lets a database this
+    /// side created be handed back to Python untouched.
+    pub async fn create_fresh_schema(&self) -> Result<Bootstrap, DbError> {
+        let existing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_one(self.pool())
+        .await?;
+        if existing > 0 {
+            return Ok(match self.schema_state().await? {
+                SchemaState::NotManaged => Bootstrap::LeftToPython,
+                _ => Bootstrap::AlreadyManaged,
+            });
+        }
+
+        // One transaction: a half-built schema that survived a crash would
+        // be the `LeftToPython` shape above, and this side would then never
+        // touch it again.
+        let mut tx = self.pool().begin().await?;
+        for statement in BOOTSTRAP_DDL {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        sqlx::query("INSERT INTO alembic_version (version_num) VALUES (?)")
+            .bind(PYTHON_HEAD)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Bootstrap::Created)
     }
 
     /// Apply any Rust-owned migration this database has not seen.
@@ -182,6 +257,174 @@ mod tests {
     async fn state(pool: &SqlitePool) -> SchemaState {
         let db = super::super::Database::from_pool(pool.clone());
         db.schema_state().await.unwrap()
+    }
+
+    /// The dump the generator took, or `None` in a checkout without it.
+    ///
+    /// Same query as `gen-schema-corpus.py` ran against Python's database,
+    /// so the two sides are compared on the same footing.
+    fn corpus() -> Option<serde_json::Value> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/schema_head.json");
+        let text = std::fs::read_to_string(&path).ok()?;
+        Some(serde_json::from_str(&text).unwrap())
+    }
+
+    async fn dump(pool: &SqlitePool) -> Vec<(String, String, String, String)> {
+        sqlx::query_as(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master \
+             WHERE sql IS NOT NULL ORDER BY type, name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// **A database built here is the database Python builds.**
+    ///
+    /// Every object compared by name *and* by the statement text SQLite
+    /// recorded, against a dump taken from a database Alembic migrated. A
+    /// column dropped, retyped, renamed or given a different default fails
+    /// this by name — which is the whole reason the DDL was captured rather
+    /// than transcribed.
+    ///
+    /// What this does not claim: it is not proof that the port is right in
+    /// some absolute sense, because both sides came from the same capture.
+    /// It is a drift guard, and drift is the failure that would otherwise
+    /// be silent — someone editing the generated file, or Alembic gaining a
+    /// revision that nobody re-captured.
+    #[tokio::test]
+    async fn a_fresh_database_is_the_one_python_builds() {
+        let Some(corpus) = corpus() else {
+            eprintln!("skipped: no tests/golden/schema_head.json in this checkout");
+            return;
+        };
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let db = super::super::Database::from_pool(pool.clone());
+        assert_eq!(db.create_fresh_schema().await.unwrap(), Bootstrap::Created);
+
+        let expected = corpus["objects"].as_array().unwrap();
+        let found = dump(&pool).await;
+
+        let names = |v: &[(String, String, String, String)]| -> Vec<String> {
+            v.iter().map(|(t, n, ..)| format!("{t} {n}")).collect()
+        };
+        let expected_names: Vec<String> = expected
+            .iter()
+            .map(|o| {
+                format!(
+                    "{} {}",
+                    o["type"].as_str().unwrap(),
+                    o["name"].as_str().unwrap()
+                )
+            })
+            .collect();
+        assert_eq!(
+            names(&found),
+            expected_names,
+            "the set of tables and indexes differs from Python's"
+        );
+
+        for (object, (ty, name, table, sql)) in expected.iter().zip(&found) {
+            assert_eq!(ty, object["type"].as_str().unwrap());
+            assert_eq!(name, object["name"].as_str().unwrap());
+            assert_eq!(table, object["table"].as_str().unwrap());
+            assert_eq!(
+                sql,
+                object["sql"].as_str().unwrap(),
+                "the statement SQLite recorded for {ty} {name} is not the one \
+                 Python's database has"
+            );
+        }
+    }
+
+    /// **The capture and the constant describe the same revision.**
+    ///
+    /// The schema was captured at whatever head Alembic had that day. If
+    /// somebody adds `0032` and updates `PYTHON_HEAD` without re-running
+    /// the generator, a fresh install would be built at 31 revisions and
+    /// stamped as though it were at 32 — and Python would then never apply
+    /// the missing one. That is a corrupt install that starts cleanly, so
+    /// it is worth a test of its own.
+    #[test]
+    fn the_schema_was_captured_at_the_revision_this_build_stamps() {
+        let Some(corpus) = corpus() else {
+            eprintln!("skipped: no tests/golden/schema_head.json in this checkout");
+            return;
+        };
+        assert_eq!(corpus["revision"].as_str().unwrap(), PYTHON_HEAD);
+    }
+
+    /// **A database built here can be handed straight back to Python.**
+    ///
+    /// The stamp is what makes that true. Without it Python's
+    /// `run_migrations` finds tables and no revision, replays all 31, and
+    /// dies on the first `CREATE TABLE`.
+    #[tokio::test]
+    async fn a_fresh_database_is_stamped_at_the_head() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let db = super::super::Database::from_pool(pool.clone());
+        db.create_fresh_schema().await.unwrap();
+        assert_eq!(
+            db.schema_state().await.unwrap(),
+            SchemaState::AtExpectedHead
+        );
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alembic_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "exactly one revision row, as Alembic keeps it");
+    }
+
+    /// **Running it twice is not running it twice.**
+    #[tokio::test]
+    async fn it_leaves_a_database_alembic_has_stamped_alone() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let db = super::super::Database::from_pool(pool.clone());
+        assert_eq!(db.create_fresh_schema().await.unwrap(), Bootstrap::Created);
+        assert_eq!(
+            db.create_fresh_schema().await.unwrap(),
+            Bootstrap::AlreadyManaged
+        );
+        let tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+             AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tables, 14);
+    }
+
+    /// **The legacy shape is Python's to fix, and is left for it.**
+    ///
+    /// Tables but no `alembic_version`: a panel from before Alembic. The
+    /// only two things this side could do are drop what is there or build
+    /// alongside it, and both lose data on a live box.
+    #[tokio::test]
+    async fn it_leaves_the_pre_alembic_shape_to_python() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO users (id, username) VALUES (1, 'admin')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let db = super::super::Database::from_pool(pool.clone());
+        assert_eq!(
+            db.create_fresh_schema().await.unwrap(),
+            Bootstrap::LeftToPython
+        );
+
+        let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(username, "admin", "the existing row is still there");
     }
 
     /// **`PYTHON_HEAD` is still Alembic's head.**
@@ -354,11 +597,16 @@ mod tests {
         assert!(db.apply_rust_migrations().await.unwrap().is_empty());
     }
 
-    /// Alembic's table is read and never written. Writing into it would make
-    /// Alembic's own `upgrade` disagree with us, and while both sides are
-    /// alive that is a fight neither wins.
+    /// The migration runner reads Alembic's table and never writes it.
+    /// Writing into it would make Alembic's own `upgrade` disagree with us,
+    /// and while both sides are alive that is a fight neither wins.
+    ///
+    /// There is exactly one place that does write it — `create_fresh_schema`,
+    /// on a database that did not exist a moment earlier — and that is the
+    /// opposite case: without the stamp Python would find tables and no
+    /// revision and try to replay all 31.
     #[tokio::test]
-    async fn alembics_own_table_is_never_written() {
+    async fn the_migration_runner_never_writes_alembics_table() {
         let pool = stamped(Some(PYTHON_HEAD)).await;
         let db = super::super::Database::from_pool(pool.clone());
         db.apply_rust_migrations().await.unwrap();

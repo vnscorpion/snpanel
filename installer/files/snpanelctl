@@ -427,8 +427,11 @@ change_admin_password() {
   # life of the child - and /proc/<pid>/cmdline is mode 444 while
   # /proc/<pid>/environ is 400. Written as `env VAR=value` the plaintext
   # password was readable by any local process, which on this box includes
-  # every customer's PHP. --whitelist-environment carries it across the user
-  # switch by name; only the name reaches argv.
+  # every customer's PHP. What carries the value across the user switch is
+  # that `runuser -u` does not reset the environment, unlike sudo; the
+  # --whitelist-environment name is stated for intent, and becomes the
+  # mechanism if anybody ever adds --login. Either way the value itself
+  # never reaches a command line.
   export SNPANEL_NEW_ADMIN_PASSWORD="$password"
   if id -u snpanel >/dev/null 2>&1; then
     runner=(runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
@@ -497,7 +500,15 @@ sync_admin_root_password() {
     fi
   fi
   id -u admin >/dev/null 2>&1 || fail "Linux user admin not found"
-  usermod -p "$root_hash" admin
+  # On stdin, not in argv. `usermod -p "$hash"` would put root's /etc/shadow
+  # hash on a command line, and /proc/<pid>/cmdline is mode 444 — /etc/shadow
+  # is 0640 root:shadow exactly so that ordinary accounts cannot take the
+  # hash away and attack it offline. `chpasswd -e` stores byte-for-byte what
+  # `usermod -p` stored; that was measured rather than assumed. The window
+  # usermod leaves open is short, so this closes a narrow hole rather than a
+  # demonstrated leak.
+  printf '%s:%s\n' admin "$root_hash" | chpasswd -e \
+    || fail "Could not set the admin Linux password from root's hash"
   passwd -u admin >/dev/null 2>&1 || true
 
   cd "$APP_DIR/backend"
