@@ -121,6 +121,45 @@ trap cleanup_stable_copy EXIT
 APP_DIR="${APP_DIR:-/opt/snpanel}"                 # Production deployment dir
 DEFAULT_SOURCE_DIR="/opt/snpanel-source"           # Dev/branch checkout dir only
 
+# The Rust API binary, and which unit serves the panel.
+#
+# Both facts, and they are different questions. Whether the *binary* exists
+# gates the one-shots below - the site refresh, the orphan sweep - which talk
+# to the database and the helper and work the same whichever process serves
+# HTTP. Which unit to *restart* has only one right answer: the one that is
+# serving.
+#
+# `api-cutover.sh` enables snpanel-rust and disables snpanel-api; its
+# rollback does the reverse. So the enabled state is the fact to read - not
+# whether the binary exists, which a rolled-back box still has.
+#
+# Restarting the wrong one is two failures at once. The change does not take
+# effect, because the process serving the panel never reloaded it; and
+# snpanel-api cannot bind the panel port while Rust holds it, so with
+# Restart=always it loops forever. Measured on a cut-over box: NRestarts
+# climbed to 4 in thirty seconds, running Alembic on every pass, and nothing
+# looked wrong from outside because Rust kept answering.
+RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
+
+panel_unit() {
+  if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then
+    echo snpanel-rust
+  else
+    echo snpanel-api
+  fi
+}
+
+restart_panel() {
+  local unit
+  unit="$(panel_unit)"
+  if [[ "$unit" == "snpanel-rust" ]]; then
+    # Python behind it reads the same .env and still serves the routes that
+    # are its, so it reloads first and Rust comes up to a ready upstream.
+    systemctl restart snpanel-upstream 2>/dev/null || true
+  fi
+  systemctl restart "$unit"
+}
+
 # Resolve where THIS script lives. If it's inside a real git checkout we use
 # that. Otherwise we fall back to /opt/snpanel-source so users running the
 # script from the deploy dir still get a usable workflow.
@@ -1245,6 +1284,38 @@ if [[ "$venv_needs_recreate" == "true" ]]; then
 fi
 
 # --- Refresh helper + sudoers (idempotent) ---------------------------------
+# --- Rust binaries ---------------------------------------------------------
+#
+# Until now an update refreshed the Python and left every Rust binary alone.
+# On a cut-over box that means the panel itself - snpanel-rust runs the
+# installed binary, so an updated box went on serving the code it was
+# installed with, indefinitely, with nothing saying so.
+#
+# Only the API binary and the CLI are refreshed here. The Rust *helper* is
+# deliberately left to helper-cutover.sh: which path it occupies depends on
+# whether that cutover has been done, and the arrangement below already
+# threads that needle for the bash fallback. Replacing the privileged binary
+# on the same pass is a separate change with its own failure modes.
+if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
+  RUST_SOURCE_ROOT="$SOURCE_DIR"
+  # shellcheck source=lib/rust-binaries.sh
+  source "$SOURCE_DIR/installer/lib/rust-binaries.sh"
+  if fetch_rust_binaries; then
+    if [[ -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
+      log "Refreshing /usr/local/bin/snpanel-api-rust"
+      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
+        /usr/local/bin/snpanel-api-rust
+    fi
+    if [[ -x "${RUST_BIN_DIR}/snpanel" && -f /usr/local/sbin/snpanel-cli ]]; then
+      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
+    fi
+  else
+    log "No Rust binaries to refresh; leaving the installed ones alone"
+  fi
+  [[ -n "${RUST_BIN_TMP:-}" ]] && rm -rf -- "$RUST_BIN_TMP"
+  RUST_BIN_TMP=""
+fi
+
 if [[ -f "$SOURCE_DIR/installer/files/snpanel-helper.sh" ]]; then
   log "Refreshing /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel"
   update_progress 40 "runtime" "Refreshing panel helper and runtime"
@@ -1515,7 +1586,6 @@ fi
 # customer certificates, and "unreferenced" is a strong inference rather than a
 # certainty. The helper refuses outright if the panel cannot say which domains
 # are live, so a failed query cannot turn into a delete.
-RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
   # Rust where it is installed. A flag rather than a request to the panel:
   # an update runs while the panel may be stopped, and the sweep still has to
@@ -1668,7 +1738,7 @@ SystemCallFilter=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SERVICE
 systemctl daemon-reload
-systemctl restart snpanel-api
+restart_panel
 
 # --- Frontend --------------------------------------------------------------
 update_progress 80 "frontend" "Building frontend"
@@ -1714,8 +1784,8 @@ chmod -R o+rX "$APP_DIR/frontend/dist" 2>/dev/null || true
 # The API scans dist/assets at start, so a fresh bundle (new hashed filenames)
 # needs one more restart. An unchanged bundle does not.
 if [[ "$FRONTEND_REBUILT" == "1" ]]; then
-  log "Restarting snpanel-api after frontend build"
-  systemctl restart snpanel-api
+  log "Restarting $(panel_unit) after frontend build"
+  restart_panel
 fi
 
 # --- Reload Nginx ----------------------------------------------------------
@@ -1745,7 +1815,7 @@ if [[ -n "${PANEL_SWITCHED_TO_HTTPS:-}" ]]; then
     env_set PANEL_URL "http://$(detect_server_ip):${panel_port_now}"
     env_set ALLOWED_ORIGINS "http://$(detect_server_ip):${panel_port_now}"
     PANEL_SWITCHED_TO_HTTPS=""
-    systemctl restart snpanel-api
+    restart_panel
   fi
 fi
 

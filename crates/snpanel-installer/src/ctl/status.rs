@@ -284,26 +284,53 @@ mod tests {
     /// there would quietly undo the rollback.
     #[test]
     fn the_shell_decides_it_from_the_enabled_state() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../installer/files/snpanelctl");
-        let Ok(shell) = std::fs::read_to_string(&path) else {
-            eprintln!("skipped: {} is not there", path.display());
-            return;
-        };
-        let body = shell
-            .split_once("panel_unit() {")
-            .expect("snpanelctl has no panel_unit")
-            .1
-            .split_once("\n}")
-            .expect("panel_unit does not end")
-            .0;
+        // Both scripts carry their own copy: `snpanelctl` and `update.sh`
+        // are downloaded and run independently, so neither can source the
+        // other. Two copies is two chances to drift, which is what this
+        // checks.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer");
+        let mut checked = 0;
+        for name in ["files/snpanelctl", "update.sh"] {
+            let Ok(shell) = std::fs::read_to_string(root.join(name)) else {
+                eprintln!("skipped: {name} is not there");
+                continue;
+            };
+            let body = shell
+                .split_once("panel_unit() {")
+                .unwrap_or_else(|| panic!("{name} has no panel_unit"))
+                .1
+                .split_once("\n}")
+                .unwrap_or_else(|| panic!("{name}'s panel_unit does not end"))
+                .0;
+            assert!(
+                body.contains("systemctl is-enabled snpanel-rust"),
+                "{name}'s panel_unit has to read the enabled state:\n{body}"
+            );
+            assert!(
+                !body.contains("/usr/local/bin/snpanel-api-rust"),
+                "{name}: the binary's presence is the wrong fact - a rolled-back box has it"
+            );
+            // Per line, not per file. The certbot `--deploy-hook` is one
+            // string handed to certbot and cannot call `panel_unit`, so it
+            // carries the branch inline and its `else` half is a legitimate
+            // `systemctl restart snpanel-api`. What must not exist is an
+            // unguarded one.
+            for (n, line) in shell.lines().enumerate() {
+                if !line.contains("systemctl restart snpanel-api") {
+                    continue;
+                }
+                assert!(
+                    line.contains("is-enabled snpanel-rust"),
+                    "{name}:{} restarts snpanel-api unguarded, which loops on a \
+                     cut-over box:\n{line}",
+                    n + 1
+                );
+            }
+            checked += 1;
+        }
         assert!(
-            body.contains("systemctl is-enabled snpanel-rust"),
-            "panel_unit has to read the enabled state:\n{body}"
-        );
-        assert!(
-            !body.contains("/usr/local/bin/snpanel-api-rust"),
-            "the binary's presence is the wrong fact: a rolled-back box has it"
+            checked > 0,
+            "neither script was readable; the test proved nothing"
         );
     }
 

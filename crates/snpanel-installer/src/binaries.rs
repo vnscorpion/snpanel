@@ -80,6 +80,7 @@ pub fn cli_files(release_has_rust_cli: bool) -> Vec<Installed> {
             owner: "root",
             group: "root",
         });
+        out.push(API_BINARY);
     }
     out.push(Installed {
         path: "/usr/local/sbin/snpanel",
@@ -89,6 +90,25 @@ pub fn cli_files(release_has_rust_cli: bool) -> Vec<Installed> {
     });
     out
 }
+
+/// The Rust API binary.
+///
+/// The archive has always carried it — `fetch_rust_binaries` refuses one
+/// without it — but nothing in the installer put it on disk until now, and
+/// both `snpanel-rust.service` and `api-cutover.sh` name this exact path.
+///
+/// **`/usr/local/bin`, not `sbin`, and 0755 root:root.** The panel's units
+/// run it as the unprivileged `snpanel` user, so it has to be executable by
+/// somebody who is not root — which is the opposite of the helper, and the
+/// reason the two are not in the same list by accident. It carries no
+/// privilege of its own: everything privileged still goes through the
+/// helper.
+pub const API_BINARY: Installed = Installed {
+    path: "/usr/local/bin/snpanel-api-rust",
+    mode: 0o755,
+    owner: "root",
+    group: "root",
+};
 
 /// `snpanelctl` -> `snpanel`.
 pub const CTL_ALIAS: (&str, &str) = ("/usr/local/sbin/snpanelctl", "/usr/local/sbin/snpanel");
@@ -165,6 +185,54 @@ mod tests {
         assert!(paths.contains(&"/usr/local/sbin/snpanel-cli"));
         assert_eq!(CTL_ALIAS.0, "/usr/local/sbin/snpanelctl");
         assert_eq!(CTL_ALIAS.1, "/usr/local/sbin/snpanel");
+    }
+
+    /// **The API binary goes where an unprivileged unit can run it.**
+    ///
+    /// `snpanel-rust.service` and both scheduler drop-ins run it as
+    /// `User=snpanel`. In `/usr/local/sbin` with the helper's 0750
+    /// root:snpanel it would be unreachable, and the panel would fail to
+    /// start with a permissions error rather than anything that named the
+    /// cause.
+    #[test]
+    fn the_api_binary_is_runnable_by_the_account_its_unit_uses() {
+        let api = cli_files(true)
+            .into_iter()
+            .find(|f| f.path.ends_with("snpanel-api-rust"))
+            .expect("the API binary is installed when the archive has one");
+        assert_eq!(api.path, "/usr/local/bin/snpanel-api-rust");
+        assert_eq!(
+            api.mode & 0o001,
+            0o001,
+            "the snpanel user has to execute it"
+        );
+        assert_eq!(api.mode & 0o022, 0, "and nobody but root may write it");
+    }
+
+    /// **Every unit that names the binary names the path that is installed.**
+    ///
+    /// The path is spelled in four places across two shell files and a unit;
+    /// a binary installed one directory over is a panel that will not start,
+    /// and the error names a missing file rather than a wrong install.
+    #[test]
+    fn the_units_name_the_path_the_installer_writes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer");
+        for name in [
+            "files/snpanel-rust.service",
+            "files/api-cutover.sh",
+            "files/snpanelctl",
+            "install.sh",
+        ] {
+            let Ok(text) = std::fs::read_to_string(root.join(name)) else {
+                eprintln!("skipped: {name} is not there");
+                continue;
+            };
+            assert!(
+                text.contains(API_BINARY.path),
+                "{name} does not name {}",
+                API_BINARY.path
+            );
+        }
     }
 
     /// A release without the Rust CLI still installs the rescue menu. The

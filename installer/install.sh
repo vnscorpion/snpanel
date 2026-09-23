@@ -988,79 +988,21 @@ sudoers_understands_requiretty() {
 #
 # Empty when no binaries are available, and everything below degrades to what
 # this script did before.
-RUST_BIN_DIR=""
-RUST_ASSET_BASE="snpanel-rust-x86_64-linux-musl"
-
-resolve_release_tag() {
-  local tag="${SNPANEL_VERSION:-}"
-  if [[ -z "$tag" && -f "${PROJECT_ROOT}/VERSION" ]]; then
-    tag="v$(tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION")"
-  fi
-  [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-  printf '%s' "$tag"
-}
-
-fetch_rust_binaries() {
-  # A tree that has been built wins. Somebody running this from a checkout is
-  # testing what they built, and downloading a release over it would make the
-  # install say nothing about their work.
-  local built="${PROJECT_ROOT}/target/x86_64-unknown-linux-musl/release"
-  if [[ -x "${built}/snpanel-helper" ]]; then
-    RUST_BIN_DIR="$built"
-    log "Using locally built Rust binaries from ${built}"
-    return 0
-  fi
-
-  local tag
-  if ! tag="$(resolve_release_tag)"; then
-    log "No release tag to fetch Rust binaries for; the bash helper will be installed"
-    return 1
-  fi
-
-  local base="${SNPANEL_RUST_ASSET_BASE:-${SNPANEL_GITHUB}/releases/download/${tag}}"
-  local tmp archive sums
-  tmp="$(mktemp -d)"
-  archive="${tmp}/${RUST_ASSET_BASE}.tar.gz"
-  sums="${tmp}/SHA256SUMS"
-
-  if ! curl -fsSL --connect-timeout 10 --max-time 300 \
-        "${base}/${RUST_ASSET_BASE}.tar.gz" -o "$archive"; then
-    rm -rf -- "$tmp"
-    log "No Rust binaries published for ${tag}; the bash helper will be installed"
-    return 1
-  fi
-  # The checksum is not optional. These binaries run as root, and a release
-  # asset is fetched over the network from a host this script does not
-  # otherwise trust with anything.
-  if ! curl -fsSL --connect-timeout 10 --max-time 60 "${base}/SHA256SUMS" -o "$sums"; then
-    rm -rf -- "$tmp"
-    fail "Rust binaries for ${tag} have no SHA256SUMS; refusing to install them"
-  fi
-  if ! ( cd "$tmp" && sha256sum --check --ignore-missing --status SHA256SUMS ); then
-    rm -rf -- "$tmp"
-    fail "The Rust binaries for ${tag} do not match their published checksums"
-  fi
-  if ! tar xzf "$archive" -C "$tmp"; then
-    rm -rf -- "$tmp"
-    fail "Could not unpack the Rust binaries for ${tag}"
-  fi
-
-  local unpacked="${tmp}/${RUST_ASSET_BASE}"
-  [[ -d "$unpacked" ]] || unpacked="$tmp"
-  local missing=()
-  local name
-  for name in snpanel-helper snpanel-extract snpanel-api snpanel; do
-    [[ -x "${unpacked}/${name}" ]] || missing+=("$name")
-  done
-  if (( ${#missing[@]} )); then
-    rm -rf -- "$tmp"
-    fail "The Rust archive for ${tag} is missing: ${missing[*]}"
-  fi
-
-  RUST_BIN_DIR="$unpacked"
-  RUST_BIN_TMP="$tmp"
-  log "Fetched Rust binaries for ${tag}"
-}
+# Fetching them is shared with update.sh: the checksum check is the only
+# thing between a release asset and a binary that runs as root, and two
+# copies of it is two places for one of them to drift into being weaker.
+RUST_SOURCE_ROOT="${PROJECT_ROOT}"
+if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/lib/rust-binaries.sh" ]]; then
+  # shellcheck source=lib/rust-binaries.sh
+  source "${SCRIPT_DIR}/lib/rust-binaries.sh"
+else
+  # No tree behind this script - the `curl | bash` path. There is nothing to
+  # fetch binaries with, which is the same state as a release that published
+  # none, and everything below already degrades from an empty RUST_BIN_DIR.
+  RUST_BIN_DIR=""
+  RUST_BIN_TMP=""
+  fetch_rust_binaries() { return 1; }
+fi
 
 install_rust_helper() {
   # The bash helper stays, at the name the Rust one `exec`s for a verb it does
@@ -1127,6 +1069,24 @@ install_panel_cli() {
   if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel" ]]; then
     install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
   fi
+  # The API binary, which the archive has always carried and nothing ever
+  # installed: snpanel-rust.service and api-cutover.sh both name this path,
+  # and until now only out-of-band deploy scripts created it.
+  #
+  # /usr/local/bin, not sbin, and 0755 root:root: the panel's own units run
+  # it as the unprivileged `snpanel` user, so it has to be executable by
+  # somebody who is not root. It holds no privilege of its own - everything
+  # privileged still goes through the helper.
+  #
+  # Installing it here does more than enable the seed below. Several verbs in
+  # snpanelctl and update.sh prefer the Rust one-shot when this file exists,
+  # so from here a fresh box uses them: the site refresh, the orphan sweep
+  # and the two password writes. Each was checked against the Python it
+  # replaces before that switch was made.
+  if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
+      /usr/local/bin/snpanel-api-rust
+  fi
   install -m 0755 -o root -g root "${SCRIPT_DIR}/files/snpanelctl" /usr/local/sbin/snpanel
   ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
   sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
@@ -1191,9 +1151,19 @@ ENV
   # spelled out). --whitelist-environment is stated for intent and for the
   # day somebody adds --login, where it does become load-bearing.
   export SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
-  runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
-    env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
-    "${APP_DIR}/backend/.venv/bin/python" -m app.seed
+  # Rust where it is installed - which, after install_panel_cli above, is
+  # every box whose release carried the binary. `--init-db` builds the schema
+  # from a dump captured out of Alembic and stamps it at the same revision,
+  # so the database it makes is one Python can pick up unchanged.
+  if [[ -x /usr/local/bin/snpanel-api-rust ]]; then
+    runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
+      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+      /usr/local/bin/snpanel-api-rust --env "${APP_DIR}/backend/.env" --init-db
+  else
+    runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
+      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+      "${APP_DIR}/backend/.venv/bin/python" -m app.seed
+  fi
   unset SNPANEL_ADMIN_PASSWORD
   deactivate || true
 }
