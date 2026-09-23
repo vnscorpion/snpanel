@@ -28,12 +28,19 @@ mod access_log;
 mod archive;
 mod auth;
 mod backup_jobs;
+#[allow(
+    dead_code,
+    reason = "the decision half of a scheduler runner that is not wired yet; see the module docs"
+)]
+mod backup_scheduler;
 mod backups;
 mod clamav;
 mod client;
 mod cloudflare;
 mod compose;
 mod cron;
+#[allow(dead_code, reason = "used by backup_scheduler, which is not wired yet")]
+mod cron_due;
 mod da_import;
 mod da_jobs;
 mod errors;
