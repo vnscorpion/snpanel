@@ -1500,6 +1500,22 @@ if id -u snpanel >/dev/null 2>&1; then
 else
   python -c "from app.core.database import run_migrations; run_migrations()"
 fi
+
+# Then this side's, which is where new schema changes go now.
+#
+# Both, in this order, because the schema has two owners with one handover
+# between them: Alembic owns revisions 0001-0031 and they are frozen, and
+# anything after is Rust's, recorded in its own table. Python first because
+# its revisions build the tables the Rust ones are written against.
+#
+# Python's half stays until a release publishes the binaries. Today none
+# does, so on a real box there is nothing here to run.
+if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "$RUST_API" --env "$APP_DIR/backend/.env" --migrate \
+    || fail "The schema migration failed; the update stops here rather than \
+running new code against a half-migrated database"
+fi
 systemctl enable --now snpanel-backup-scheduler.timer >/dev/null 2>&1 || true
 systemctl enable --now snpanel-malware-scheduler.timer >/dev/null 2>&1 || true
 

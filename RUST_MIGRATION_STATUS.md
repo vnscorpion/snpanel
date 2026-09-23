@@ -1673,7 +1673,7 @@ Python, rather than assuming the plan's three gaps were the whole of it:
 
 | what | how it runs Python | state |
 | --- | --- | --- |
-| the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **still Alembic's** (C11); this side now *checks* the revision at startup and has a place for Rust-owned migrations |
+| the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **C11 withdrawn**: Alembic owns `0001`–`0031`, frozen; new schema changes come to this side |
 | backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **ported**, and `api-cutover.sh` now switches the unit |
 | malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **ported**, and `api-cutover.sh` now switches the unit |
 | fresh-install bootstrap | `python -m app.seed` | **ported** as `snpanel-api --init-db`; `install.sh` still calls Python, because the Rust binary is not on the box until the cutover |
@@ -1948,7 +1948,7 @@ stored text is byte-identical to what went in and Python's
 
 | call site | what it does | what it needs |
 | --- | --- | --- |
-| `update.sh` | `run_migrations()` | the schema to move to this side (C11) |
+| `update.sh` | `run_migrations()` | kept: it replays Alembic's frozen `0001`–`0031`, and `--migrate` now runs after it |
 | `update.sh` orphan cleanup | `orphans.clean` | **done** — `--clean-orphans` |
 | `snpanelctl fix-permissions` | vhost rewrite, WAF sync, site runtime, per-site permissions | **done** — `--refresh-sites-strict` |
 | `update.sh` site-refresh | the same work, for every site | **done** — `--refresh-sites` |
@@ -2113,6 +2113,60 @@ writes — because those talk to the database and the helper and work the same
 whichever process serves HTTP. Which unit to *restart* has only one right
 answer: the one that is serving. The comment in `snpanelctl` says so, so
 that nobody unifies them.
+
+### C11 withdrawn: the schema has two owners and one handover
+
+Decision taken. Alembic keeps revisions `0001`–`0031` and they are **frozen**;
+anything after is this side's, recorded in its own table. That split is what
+makes the two safe together, and it was checked rather than assumed:
+
+| step | Alembic revision | Rust migrations | column added by Rust |
+| --- | --- | --- | --- |
+| after `--init-db` | `0031` | none | no |
+| after a Rust migration | `0031` | `0032_rust_owned_marker` | yes |
+| after Alembic `upgrade head` | `0031` | `0032_rust_owned_marker` | **yes** |
+
+Alembic ran afterwards without complaint, did not undo the Rust column and
+did not touch the Rust table. The migration in that run was injected for the
+test: `RUST_MIGRATIONS` is still empty, because **C12 still stands** — the
+first one written here has to be a no-op on every existing database.
+
+**The runner is now exercised against migrations that do something.** It
+read the empty constant directly, so every test of it proved only that
+applying nothing applies nothing — which was fine while Alembic owned the
+schema and is not fine now. The list is a parameter, and the tests cover a
+migration applying once and not twice, ordering where the second depends on
+the first, a failure not being recorded as applied, and the run stopping at
+the first failure. Recording a failure as a success is the one state nothing
+recovers from on its own; mutating the runner to record before it runs fails
+that test by name.
+
+**A failed migration now stops the process.** The comment on the startup
+check always said the leniency was temporary — "when the schema moves to
+this side the refusal becomes the right answer" — and it has. Serving from a
+half-migrated schema shows up as a failed request to one customer rather
+than as a refusal somebody is watching for. With `RUST_MIGRATIONS` empty
+this cannot fire today, which is the point of changing it now rather than on
+the day it first could.
+
+`update.sh` runs Python's migrations and then `--migrate`, in that order,
+because Python's revisions build the tables the Rust ones are written
+against. `--migrate` does exactly what a server start does and then returns,
+rather than carrying its own copy: a migration path that differs from the
+one every start takes is a path that gets tested half as often.
+
+### Nothing Rust has ever shipped to a real box
+
+Worth stating plainly, because it bounds everything above. **There are no
+releases.** `resolve_release_tag` reads `v1.0.0` from `VERSION`, the fetch
+404s, and every real install falls back to bash and Python. CI's own
+end-to-end install proves it: `==> No Rust binaries published for v1.0.0`,
+then `Created admin user` from `app.seed` rather than from `--init-db`.
+
+So the installer work is correct and dormant. It takes effect the first time
+a release publishes `snpanel-rust-x86_64-linux-musl.tar.gz`, and that is
+also when Python's half of the schema can start being retired — until then
+every box needs it, because no box has the binary.
 
 ## Stage F — the installer
 

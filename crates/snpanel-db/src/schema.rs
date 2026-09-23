@@ -1,23 +1,26 @@
 //! What schema this build expects, and what the database actually has.
 //!
-//! Contract C11 gives Alembic the schema while Python is alive, and nothing
-//! here migrates a Python revision. What it does is **notice**: a panel
-//! running against a schema that is not the one it was built for should say
-//! so at startup, where somebody is watching, rather than failing on a
-//! missing column at request time — which is how a customer finds it, on the
-//! one page they needed.
+//! **C11 has been withdrawn.** It gave Alembic the schema while Python was
+//! alive; new schema changes now come here instead. What did not change is
+//! the handover: Alembic owns revisions `0001`–`0031` and they are frozen,
+//! so nothing here migrates a Python revision. Anything after is this
+//! side's, in its own bookkeeping table.
+//!
+//! This also still **notices**: a panel running against a schema that is not
+//! the one it was built for says so at startup, where somebody is watching,
+//! rather than failing on a missing column at request time — which is how a
+//! customer finds it, on the one page they needed.
 //!
 //! A fresh install is the one case this side does build a schema, in
 //! [`Database::create_fresh_schema`] — and only on a database with no tables
 //! at all. The statements come from [`BOOTSTRAP_DDL`], which was captured
 //! from Alembic rather than transcribed from it.
 //!
-//! The mechanism for Rust-owned migrations is here too, with an empty list.
-//! Contract C12 requires the first of them to be a no-op on an existing
-//! database, and an empty list is the only version of that which cannot be
-//! wrong. When the schema moves to this side, migrations are appended to
-//! [`RUST_MIGRATIONS`] and the runner below applies the ones a database has
-//! not seen.
+//! [`RUST_MIGRATIONS`] is still empty, and **C12 still stands**: the first
+//! migration written here has to be a no-op on every existing database. The
+//! runner is exercised against migrations that do something by the tests
+//! below, through [`Database::apply_migrations`], so the first real one will
+//! not be the first time this code ran anything.
 
 use super::DbError;
 
@@ -107,10 +110,13 @@ pub enum Bootstrap {
 
 /// Migrations this side owns.
 ///
-/// Empty, and that is contract C12 rather than an omission: the first Rust
-/// migration has to be a no-op on every existing database, and no migration
-/// at all is the only version of that which cannot be got wrong. Python
-/// owns the schema until the cutover.
+/// Empty, and that is contract C12 rather than an omission: the first
+/// migration written here has to be a no-op on every existing database, and
+/// no migration at all is the only version of that which cannot be got
+/// wrong.
+///
+/// This is now where a schema change goes. Adding one to `backend/alembic`
+/// instead would put it behind a Python that a cut-over box does not run.
 ///
 /// Each entry is `(name, sql)`. The name is recorded so a migration runs
 /// once; the SQL has to be safe to run against a database at
@@ -200,6 +206,21 @@ impl super::Database {
     /// mechanism is exercised by every start long before it first has to
     /// carry a real migration.
     pub async fn apply_rust_migrations(&self) -> Result<Vec<String>, DbError> {
+        self.apply_migrations(RUST_MIGRATIONS).await
+    }
+
+    /// [`Self::apply_rust_migrations`] against a given list.
+    ///
+    /// Split out so the runner can be tested against a migration that does
+    /// something. With [`RUST_MIGRATIONS`] empty, every test of the entry
+    /// point above proves only that applying nothing applies nothing — which
+    /// was fine while Alembic owned the schema, and is not fine now that new
+    /// schema changes come here. Otherwise the first real migration would be
+    /// the first time this code ran anything.
+    pub async fn apply_migrations(
+        &self,
+        migrations: &[(&str, &str)],
+    ) -> Result<Vec<String>, DbError> {
         sqlx::query(&format!(
             "CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} (\
                 name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -208,7 +229,7 @@ impl super::Database {
         .await?;
 
         let mut applied = Vec::new();
-        for (name, sql) in RUST_MIGRATIONS {
+        for (name, sql) in migrations {
             let seen: i64 = sqlx::query_scalar(&format!(
                 "SELECT COUNT(*) FROM {MIGRATIONS_TABLE} WHERE name = ?"
             ))
@@ -425,6 +446,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(username, "admin", "the existing row is still there");
+    }
+
+    /// A database with the schema a fresh install gets.
+    async fn fresh() -> (SqlitePool, super::super::Database) {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let db = super::super::Database::from_pool(pool.clone());
+        db.create_fresh_schema().await.unwrap();
+        (pool, db)
+    }
+
+    async fn columns(pool: &SqlitePool, table: &str) -> Vec<String> {
+        sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    /// **A migration runs, and runs once.**
+    ///
+    /// The first real one would otherwise be the first time this code ever
+    /// applied anything: [`RUST_MIGRATIONS`] is empty, so the shipped entry
+    /// point only ever proves that applying nothing applies nothing.
+    #[tokio::test]
+    async fn a_migration_is_applied_and_then_not_applied_again() {
+        let (pool, db) = fresh().await;
+        let list: &[(&str, &str)] = &[(
+            "0001_test_add_column",
+            "ALTER TABLE users ADD COLUMN test_marker TEXT NOT NULL DEFAULT ''",
+        )];
+
+        let applied = db.apply_migrations(list).await.unwrap();
+        assert_eq!(applied, vec!["0001_test_add_column".to_string()]);
+        assert!(columns(&pool, "users")
+            .await
+            .contains(&"test_marker".to_string()));
+
+        // Twice is once. A migration that reapplied on every start would
+        // have to be written idempotent by hand, which is the thing the
+        // bookkeeping table exists to avoid — and this one would fail,
+        // because the column is already there.
+        let again = db.apply_migrations(list).await.unwrap();
+        assert!(again.is_empty(), "it applied a second time: {again:?}");
+    }
+
+    /// **They run in the order they are written.**
+    ///
+    /// The second here depends on the first having run. A runner that
+    /// reordered them — by name, or by whatever a map iterated — would fail
+    /// on a pair like this and work on a pair that happened not to care,
+    /// which is the worst way to have that bug.
+    #[tokio::test]
+    async fn migrations_run_in_the_order_they_are_listed() {
+        let (pool, db) = fresh().await;
+        let applied = db
+            .apply_migrations(&[
+                ("0001_add", "ALTER TABLE users ADD COLUMN step_one TEXT"),
+                (
+                    "0002_use_it",
+                    "UPDATE users SET step_one = 'set by the second migration'",
+                ),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(applied, vec!["0001_add", "0002_use_it"]);
+        assert!(columns(&pool, "users")
+            .await
+            .contains(&"step_one".to_string()));
+    }
+
+    /// **A migration that fails is not recorded as applied.**
+    ///
+    /// Recording it would make the next start skip it, leaving a database
+    /// that is missing the change and says it has it — the one state from
+    /// which nothing recovers on its own.
+    #[tokio::test]
+    async fn a_failing_migration_is_not_recorded() {
+        let (pool, db) = fresh().await;
+        let bad: &[(&str, &str)] = &[("0001_broken", "ALTER TABLE nothing_here ADD COLUMN x TEXT")];
+
+        assert!(db.apply_migrations(bad).await.is_err());
+
+        let recorded: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {MIGRATIONS_TABLE}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(recorded, 0, "a failure must not be remembered as a success");
+    }
+
+    /// **A migration after a failing one does not run.**
+    ///
+    /// Stopping is the only safe answer: the later ones were written
+    /// against a schema the failed one was supposed to produce.
+    #[tokio::test]
+    async fn the_run_stops_at_the_first_failure() {
+        let (pool, db) = fresh().await;
+        let result = db
+            .apply_migrations(&[
+                ("0001_broken", "ALTER TABLE nothing_here ADD COLUMN x TEXT"),
+                (
+                    "0002_after",
+                    "ALTER TABLE users ADD COLUMN after_marker TEXT",
+                ),
+            ])
+            .await;
+        assert!(result.is_err());
+        assert!(
+            !columns(&pool, "users")
+                .await
+                .contains(&"after_marker".to_string()),
+            "the migration after the failure ran anyway"
+        );
     }
 
     /// **`PYTHON_HEAD` is still Alembic's head.**

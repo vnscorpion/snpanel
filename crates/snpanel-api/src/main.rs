@@ -164,11 +164,35 @@ async fn run() -> anyhow::Result<()> {
         },
         Err(e) => tracing::warn!("cannot read the database's schema revision: {e}"),
     }
-    match db.apply_rust_migrations().await {
+    // Rust-owned migrations, applied before anything serves a request.
+    //
+    // **A failure stops the process**, which is a change from when Alembic
+    // owned the schema: back then a migration here could only be a no-op, so
+    // logging and carrying on cost nothing. Now that new schema changes come
+    // to this side, carrying on means serving from a schema that is half
+    // what the code expects — and the half that is missing shows up as a
+    // failed request to one customer rather than as a refusal somebody is
+    // watching for.
+    let migrated = db.apply_rust_migrations().await;
+    match &migrated {
         Ok(applied) if applied.is_empty() => {}
         Ok(applied) => tracing::info!(?applied, "applied Rust-owned migrations"),
         Err(e) => tracing::error!("a Rust-owned migration failed: {e}"),
     }
+
+    // Bringing the schema forward without starting a panel, for `update.sh`:
+    // an update runs while the panel may be stopped, and the schema has to
+    // move before the new code does.
+    if args.iter().any(|a| a == MIGRATE) {
+        let applied = migrated?;
+        match applied.len() {
+            0 => println!("The schema is up to date."),
+            1 => println!("Applied 1 migration: {}", applied[0]),
+            n => println!("Applied {n} migrations: {}", applied.join(", ")),
+        }
+        return Ok(());
+    }
+    migrated?;
 
     let upstream = if settings.strangler_enabled() {
         let u = Upstream::new(&settings.strangler_upstream);
@@ -507,6 +531,14 @@ pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
 
 /// The flag `update.sh` passes for the orphan sweep.
 pub(crate) const CLEAN_ORPHANS: &str = "--clean-orphans";
+
+/// Bring the schema forward and stop.
+///
+/// It does exactly what a server start does — the same check, the same
+/// runner — and then returns, rather than carrying its own copy of that
+/// logic. A migration path that differs from the one every start takes is a
+/// migration path that gets tested half as often.
+pub(crate) const MIGRATE: &str = "--migrate";
 
 /// The whole-fleet site refresh, in its two tempers.
 ///

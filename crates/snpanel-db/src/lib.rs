@@ -9,10 +9,15 @@
 //! The plan calls for turning WAL on in Phase 0 as a backwards-compatible
 //! change; [`Database::connect`] asserts it rather than assuming somebody did.
 //!
-//! **C11: the schema is not touched.** No migrations run from here. Alembic
-//! owns the schema while Python is alive, and a Rust migration that "helpfully"
-//! adjusted a column would be the one change neither side could recover from.
-//! This crate reads and writes rows in tables that already exist.
+//! **C11 has been withdrawn: this crate may migrate.** It previously ran
+//! nothing at all, on the grounds that Alembic owned the schema while Python
+//! was alive. New schema changes now go to `schema::RUST_MIGRATIONS`, which
+//! the runner applies from its own bookkeeping table.
+//!
+//! The handover is unchanged: Alembic owns revisions `0001`–`0031`, frozen,
+//! and `alembic_version` is read and never written except by the fresh-install
+//! bootstrap, which stamps a database this side created so Python can pick it
+//! up unchanged.
 //!
 //! **The column names are the Python ones.** `hashed_password`, not
 //! `password_hash`; `totp_secret` holds a Fernet ciphertext with the
