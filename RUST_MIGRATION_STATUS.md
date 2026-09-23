@@ -1624,6 +1624,34 @@ The traversal rule is the one that matters: the requested path is joined,
 what removes `..` before the check and what makes a symlink out of the tree
 a refusal rather than a follow.
 
+### The interactive terminal, which was not "still Python's"
+
+Going through what Python still answers before touching the cutover turned
+up a route the endpoint sweep cannot see, because it matches
+`@router.get|post|…` and this is `@router.websocket("/ws/{website_id}")`:
+the interactive terminal. The coverage report said `terminal: 0 of 2` while
+counting only the two HTTP routes beside it.
+
+The note here used to say the websocket "stays with Python: it is a pty
+relay, not a request". Both halves were wrong. It is not a pty relay —
+`resize` is a no-op on the Python side too, and every `input` runs the same
+one-shot `exec_command` the REST endpoint runs. And it could not have stayed
+with Python: `strangler::proxy` strips `connection` and `upgrade` as
+hop-by-hop headers and has no upgrade branch, so a handshake reached uvicorn
+as a plain `GET` against a websocket-only route. **The web terminal has been
+unreachable on every box where the Rust process holds the port.** The proof
+was already in the suite — `hop_by_hop_headers_are_not_forwarded` asserts
+`upgrade` is dropped — and nobody had connected it to the terminal.
+
+It is ported now, with `resolve_cwd` pinned by a 23-case corpus (containment
+before existence; containment component-wise on the resolved paths, so a
+sibling named `siteX` beside a root named `site` is outside and a symlink
+out of the tree is refused) and `_origin_allowed` ported with it. That last
+one is the websocket's CSRF defence and nothing else stands in for it: an
+upgrade is a `GET`, so the CSRF header check does not run, and unlike
+`fetch` a `WebSocket` may be opened cross-origin by any page with the
+session cookie attached.
+
 ### What is not done: the cutover
 
 Stage G's exit is "`snpanel-upstream` is not installed and no Python process
@@ -1639,6 +1667,28 @@ by a running panel — it is taken only when there is no upstream, which is
 deliberate: FastAPI also answers `/docs` and `/openapi.json`, and a
 catch-all on this side would start returning `index.html` for them while
 Python is still there.
+
+**And the cutover is not only the web process.** Measuring what still runs
+Python, rather than assuming the plan's three gaps were the whole of it:
+
+| what | how it runs Python | state |
+| --- | --- | --- |
+| the schema | `run_migrations()` on every `main.py` import, 31 Alembic revisions | **unported**, and deliberately so — contract C11 gives Alembic the schema while Python is alive, and `snpanel-db` runs no migrations |
+| backup scheduler | `snpanel-backup-scheduler.service`, `python -m app.services.backup_scheduler`, every 60s | **unported** |
+| malware scheduler | `snpanel-malware-scheduler.service`, `python -m app.services.malware_schedule` | **unported** |
+| fresh-install bootstrap | `python -m app.seed` | **unported** |
+
+The plan named three gaps for Stage G. Four more were here, and the schema
+is the one with consequences: nothing would run migrations after the
+cutover, so the next release that adds a column would leave every box on the
+old schema and the panel would fail on a missing column at request time
+rather than at start.
+
+The schema also carries a choice rather than only work. Existing boxes are
+all at head, so a Rust runner needs no history — but a *fresh* install today
+builds its schema by replaying all 31 revisions, and with Python gone
+something has to create those tables. Porting that DDL is where a wrong
+column type is silent corruption rather than a failed test.
 
 ## Stage F — the installer
 
