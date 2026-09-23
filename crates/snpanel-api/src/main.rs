@@ -40,6 +40,7 @@ mod errors;
 mod file_jobs;
 mod files;
 mod helper_socket;
+mod listen;
 mod malware;
 mod malware_jobs;
 mod malware_scan;
@@ -165,18 +166,55 @@ async fn run() -> anyhow::Result<()> {
     // records no IP at all.
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
+    // Source: `dual_stack_socket` in `serve.py`. One socket for both
+    // families when IPv6 is on, and an ordinary IPv4 bind when it is not or
+    // when the machine cannot give us one — see `listen` for why every
+    // failure lands there rather than propagating.
+    let dual = listen::dual_stack(addr.port(), system::ipv6_enabled());
+    let dual = match dual {
+        Ok(listener) => {
+            tracing::info!(port = addr.port(), "listening on IPv4 and IPv6");
+            Some(listener)
+        }
+        Err(reason) => {
+            if let Some(message) = reason.message() {
+                tracing::warn!("{message}");
+            }
+            None
+        }
+    };
+
     match tls {
         Some(config) => {
             tracing::info!(%addr, "listening with TLS");
             // axum-server rather than axum::serve: the handshake needs a
             // certificate chosen per connection, which `axum::serve` has no
             // place to put.
-            axum_server::bind_rustls(addr, config)
-                .serve(service)
-                .await?;
+            match dual {
+                Some(listener) => {
+                    axum_server::from_tcp_rustls(listener, config)
+                        .serve(service)
+                        .await?;
+                }
+                None => {
+                    axum_server::bind_rustls(addr, config)
+                        .serve(service)
+                        .await?;
+                }
+            }
         }
         None => {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let listener = match dual {
+                // `axum::serve` wants a tokio listener, and a tokio listener
+                // wants a non-blocking descriptor. `from_std` does not set
+                // that for us, and a blocking accept inside the runtime
+                // stalls every other task on the thread.
+                Some(std_listener) => {
+                    std_listener.set_nonblocking(true)?;
+                    tokio::net::TcpListener::from_std(std_listener)?
+                }
+                None => tokio::net::TcpListener::bind(addr).await?,
+            };
             tracing::info!(%addr, "listening without TLS");
             axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
