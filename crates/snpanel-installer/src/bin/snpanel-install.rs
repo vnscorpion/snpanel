@@ -984,6 +984,52 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/installer")
     }
 
+    /// Neither installer script runs anything from the virtualenv.
+    ///
+    /// The Python backend is gone and `update.sh` deletes the `.venv` a
+    /// previous release left. What survived that removal was the block after
+    /// it: a `python -m py_compile` over thirty `app/*.py` files, and the
+    /// `deactivate` that used to close the `source .venv/bin/activate` above
+    /// it. Both were still there with nothing left to activate.
+    ///
+    /// On Debian this is not a no-op. There is no `python` at all - only
+    /// `python3` - so under `set -euo pipefail` the update stopped at that
+    /// line, part-done, with "python: command not found".
+    ///
+    /// `python3` is deliberately still allowed: `certbot` is written in it,
+    /// and the update's own status file is still four `python3` heredocs.
+    #[test]
+    fn neither_installer_script_still_runs_the_virtualenv() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut scanned = 0;
+        for name in ["installer/update.sh", "installer/install.sh"] {
+            let path = root.join(name);
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            for (n, line) in text.lines().enumerate() {
+                let code = line.trim();
+                if code.starts_with('#') {
+                    continue;
+                }
+                scanned += 1;
+                let first = code.split_whitespace().next().unwrap_or("");
+                assert!(
+                    first != "python" && first != "pip" && first != "deactivate",
+                    "{name}:{}: `{first}` is the virtualenv's, and there is no virtualenv: {code}",
+                    n + 1
+                );
+                assert!(
+                    !code.contains("bin/activate"),
+                    "{name}:{}: activating a virtualenv that no release creates: {code}",
+                    n + 1
+                );
+            }
+        }
+        assert!(
+            scanned > 2000,
+            "only {scanned} lines scanned across both scripts"
+        );
+    }
+
     /// Every variable a phase call interpolates is one the script sets.
     ///
     /// Both installer scripts run under `set -euo pipefail`, so a name the

@@ -1447,40 +1447,6 @@ for php_ini_dir in /etc/php/*/; do
   fi
 done
 
-log "Compiling backend modules"
-python -m py_compile \
-  app/main.py \
-  app/api/auth.py \
-  app/api/users.py \
-  app/api/websites.py \
-  app/api/databases.py \
-  app/api/maintenance.py \
-  app/api/packages.py \
-  app/api/firewall.py \
-  app/api/services.py \
-  app/api/updates.py \
-  app/api/waf.py \
-  app/api/panel_settings.py \
-  app/api/terminal.py \
-  app/services/firewall.py \
-  app/services/nginx.py \
-  app/services/panel_urls.py \
-  app/services/panel_settings.py \
-  app/services/updates.py \
-  app/services/waf.py \
-  app/services/mariadb.py \
-  app/services/wordpress.py \
-  app/services/file_manager.py \
-  app/services/backup.py \
-  app/services/backup_scheduler.py \
-  app/services/storage_quota.py \
-  app/services/site_users.py \
-  app/services/cron.py \
-  app/services/php.py \
-  app/schemas/schemas.py \
-  app/seed.py
-deactivate
-
 log "Restarting snpanel-api"
 mkdir -p /etc/systemd/system/snpanel-api.service.d
 cat >/etc/systemd/system/snpanel-api.service.d/10-snpanel-helper.conf <<'SERVICE'

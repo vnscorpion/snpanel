@@ -3606,6 +3606,38 @@ name for that command only, so the scanner now takes assignments only from
 statements that stand alone - which is the distinction the test exists to
 make.
 
+### The virtualenv block that outlived the virtualenv
+
+`update.sh` deletes `$APP_DIR/backend/.venv` - the Python backend is gone and
+the directory is several hundred megabytes of dead interpreter. What survived
+that removal was the block that used to run *inside* it:
+
+    log "Compiling backend modules"
+    python -m py_compile \
+      app/main.py \
+      ... twenty-eight more ...
+      app/seed.py
+    deactivate
+
+The `source .venv/bin/activate` above it went; these thirty-three lines did
+not. On Debian there is no `python` at all - only `python3` - so under
+`set -euo pipefail` this is not a slow no-op over files that no longer exist,
+it is `python: command not found` and an update that stops part-done.
+
+Confirmed against the release actually installed on the container, which
+still has the `source .venv/bin/activate`, the `pip install` and this block
+together and works. The removal happened on this branch, which is also why
+this has never reached a box.
+
+`neither_installer_script_still_runs_the_virtualenv` reads both scripts and
+refuses a command line beginning `python`, `pip` or `deactivate`, or any
+mention of `bin/activate`. `python3` stays allowed: `certbot` is written in
+it, and the update's own status file is still four `python3` heredocs.
+
+That is the second thing this batch found that would have stopped an update,
+and both were found the same way - by moving a block and having to explain
+every line in it.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is
