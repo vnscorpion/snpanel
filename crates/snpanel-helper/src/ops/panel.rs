@@ -21,6 +21,7 @@
 //! a website goes stale in two months when certbot renews the original, and
 //! the panel would serve the expired copy until somebody noticed.
 
+use snpanel_core::phpmyadmin;
 use std::path::Path;
 
 use snpanel_core::{Domain, Email, Port};
@@ -250,14 +251,14 @@ fn rewrite_phpmyadmin(scheme: &str, port: &str, secure: bool, host: &str) {
     const CONF_SIGNON: &str = "/etc/phpmyadmin/conf.d/snpanel-signon.php";
 
     if let Ok(text) = std::fs::read_to_string(SIGNON) {
-        let rewritten = rewrite_sso_url(&text, scheme, port);
+        let rewritten = phpmyadmin::rewrite_sso_url(&text, scheme, port);
         if rewritten != text {
             let _ = std::fs::write(SIGNON, rewritten);
         }
     }
     for path in [CONF_SIGNON, SIGNON] {
         if let Ok(text) = std::fs::read_to_string(path) {
-            let rewritten = rewrite_secure_flag(&text, secure);
+            let rewritten = phpmyadmin::rewrite_secure_flag(&text, secure);
             if rewritten != text {
                 let _ = std::fs::write(path, rewritten);
             }
@@ -265,7 +266,7 @@ fn rewrite_phpmyadmin(scheme: &str, port: &str, secure: bool, host: &str) {
     }
     if !host.is_empty() {
         if let Ok(text) = std::fs::read_to_string(CONF_SIGNON) {
-            let rewritten = rewrite_absolute_uri(&text, scheme, host);
+            let rewritten = phpmyadmin::rewrite_absolute_uri(&text, scheme, host);
             if rewritten != text {
                 let _ = std::fs::write(CONF_SIGNON, rewritten);
             }
@@ -273,91 +274,14 @@ fn rewrite_phpmyadmin(scheme: &str, port: &str, secure: bool, host: &str) {
     }
 }
 
-/// `/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#...#`
-///
-/// Only lines that already mention the endpoint, and only the quoted URL on
-/// them - the address the shim posts the single-sign-on token to has to follow
-/// the panel's port, or logging into phpMyAdmin stops working the moment the
-/// port changes.
-pub(crate) fn rewrite_sso_url(text: &str, scheme: &str, port: &str) -> String {
-    const NEEDLE: &str = "/api/databases/phpmyadmin-sso";
-    let mut out = String::with_capacity(text.len());
-    for (i, line) in text.lines().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        if !line.contains(NEEDLE) {
-            out.push_str(line);
-            continue;
-        }
-        match replace_quoted_ending_with(line, "/api/databases/phpmyadmin-sso/") {
-            Some((before, after)) => {
-                out.push_str(&before);
-                out.push_str(&format!(
-                    "'{scheme}://127.0.0.1:{port}/api/databases/phpmyadmin-sso/'"
-                ));
-                out.push_str(&after);
-            }
-            None => out.push_str(line),
-        }
-    }
-    if text.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
-
-/// The first `'...'` on the line whose contents end with `suffix`, split into
-/// what comes before and after it.
-fn replace_quoted_ending_with(line: &str, suffix: &str) -> Option<(String, String)> {
-    let open = line.find('\'')?;
-    let rest = &line[open + 1..];
-    let close = rest.find('\'')?;
-    let value = &rest[..close];
-    if !value.ends_with(suffix) || value.is_empty() {
-        return None;
-    }
-    Some((
-        line[..open].to_string(),
-        line[open + 1 + close + 1..].to_string(),
-    ))
-}
-
-/// `s#('secure' => )(true|false)#\1<secure>#`
-pub(crate) fn rewrite_secure_flag(text: &str, secure: bool) -> String {
-    let wanted = if secure { "true" } else { "false" };
-    let mut out = text.to_string();
-    for from in ["'secure' => true", "'secure' => false"] {
-        out = out.replace(from, &format!("'secure' => {wanted}"));
-    }
-    out
-}
-
-/// `/PmaAbsoluteUri/s#'https?://[^']+/phpmyadmin/'#'<scheme>://<host>/phpmyadmin/'#`
-pub(crate) fn rewrite_absolute_uri(text: &str, scheme: &str, host: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for (i, line) in text.lines().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        if !line.contains("PmaAbsoluteUri") {
-            out.push_str(line);
-            continue;
-        }
-        match replace_quoted_ending_with(line, "/phpmyadmin/") {
-            Some((before, after)) if line.contains("'http://") || line.contains("'https://") => {
-                out.push_str(&before);
-                out.push_str(&format!("'{scheme}://{host}/phpmyadmin/'"));
-                out.push_str(&after);
-            }
-            _ => out.push_str(line),
-        }
-    }
-    if text.ends_with('\n') {
-        out.push('\n');
-    }
-    out
-}
+// The three substitutions themselves are `snpanel_core::phpmyadmin`. They
+// used to be here, and `update.sh` had its own `sed` for the same three, so
+// there were two ports of one edit and the installer could not reach either.
+//
+// Moving them out found a bug in this copy: `rewrite_absolute_uri` looked at
+// only the first `'...'` on the line, and on
+// `$cfg['PmaAbsoluteUri'] = '<url>';` that is `PmaAbsoluteUri`. It had never
+// rewritten the file it was written for.
 
 // ---------------------------------------------------------------------------
 // the port, the restart, the hooks

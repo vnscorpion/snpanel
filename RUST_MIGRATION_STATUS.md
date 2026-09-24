@@ -3471,6 +3471,85 @@ The admin password stays the shell's to generate, because the shell needs it
 afterwards for `/root/login.txt` and the summary. The `SECRET_KEY` does not,
 so the phase generates it and it never becomes a shell variable at all.
 
+## `update.sh` follows, and the second copy turns out to be wrong
+
+`install.sh` moved first because it is the one CI runs. `update.sh` is the
+script that matters more: it runs on every box that already exists, and it
+carried its own copy of several things `install.sh` had already handed over.
+
+Four writers moved - the FastCGI cache, the WebSocket upgrade map, the tools
+vhost and the `sshd_config` splice. The fetch of the Rust binaries moved with
+them, several hundred lines earlier, because a phase cannot run a binary that
+has not been fetched yet. Only the fetch: installing them stays where it was,
+since replacing the panel's own binary is a restart and doing it earlier
+would move that restart into the middle of the migrations.
+
+### The test that said which file had stopped writing
+
+`every_writer_of_the_tools_vhost_silences_twig` started as four writers and
+is one. It asserts the count exactly rather than as a floor, so each time a
+copy moved the number had to come down by hand - and the message named the
+file, which is how `update.sh` leaving was noticed rather than assumed. An
+earlier version of it skipped files it could not read; that version would
+have gone on passing while checking nothing.
+
+### Two faults, one in the change itself
+
+**The tools vhost would have lost its certificate on every update.** The
+phase call was written by copying `install.sh`'s, which passes
+`PANEL_SSL_CERT="${PANEL_SSL_CERT:-}"`. There that is a shell variable the
+script sets after issuing the certificate. In `update.sh` it is only ever an
+`.env` key read with `env_get`, so it was always empty, and a tools vhost
+written without `listen 443 ssl` takes phpMyAdmin off HTTPS on a box that has
+a certificate. Caught by reading the diff against the published file before
+pushing it, not by a test.
+
+**Two of the three phpMyAdmin sign-on edits went out with the function
+body.** They sat at the end of `write_tools_nginx_config` and are not the
+vhost at all: they patch the single-sign-on shim an earlier install left, so
+that the address it posts its token to, the `secure` flag on its cookie and
+phpMyAdmin's `PmaAbsoluteUri` follow the panel. `install.sh` has no
+equivalent because it writes both files from scratch with placeholders.
+
+### `rewrite_absolute_uri` had never rewritten anything
+
+The three substitutions existed twice: as `sed` in `update.sh`, and as a port
+in `snpanel-helper` reached from `panel-url-set` and `panel-ssl-install`.
+Moving them into `snpanel-core` so the installer could reach them too made
+the second copy readable, and the line it targets is
+
+    $cfg['PmaAbsoluteUri'] = 'https://panel.example.com/phpmyadmin/';
+
+It took the first `'...'` on the line - `PmaAbsoluteUri` - decided it was not
+a URL, and returned the line unchanged. `sed` matches the leftmost place the
+*whole* pattern fits, which is the second quoted string. So moving the panel
+to a new hostname left phpMyAdmin building its own links from the old one,
+silently, on every box that has ever run `snpanel panel-url`.
+
+All three had zero tests. That is the whole explanation: a port nobody ran
+against the file it was written for.
+
+They now have eleven, including a golden fixture of twelve corpus lines with
+what GNU `sed` itself printed for each of the three substitutions - the
+definition of right being the program the bash runs, not a reading of the
+regex. On the container, against the box's own sign-on files, the phase and
+the three `sed` calls agree byte for byte in all three cases: a certificate
+named and present, named and gone, and not named at all.
+
+### A phase the help did not mention
+
+Nothing connected `snpanel-install`'s dispatch `match` to the list of
+`println!`s that is its `--help`, and both are edited by hand.
+`every_phase_is_in_the_help_and_every_help_line_is_a_phase` reads the
+binary's own source and requires the two to agree, in both directions - a
+phase nobody can find, and a help line that tells an operator to run
+something that exits 1. `snpanel firewall reopen` asking for a verb no
+mapping ever had is the same bug, and it shipped.
+
+Its own guard - "the scanner found nothing, so it is not reading this file
+any more" - failed on the first run, because the scanner was looking for
+`=>` where the source has `) =>`.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is

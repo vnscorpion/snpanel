@@ -248,41 +248,39 @@ mod tests {
         const NEEDLE: &str = "~E_USER_DEPRECATED";
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-        // This module is one of the writers, and the one the others are
-        // converging on: `install.sh`'s copy is `snpanel-install
-        // tools-vhost` now, and the bash rescue menu's went with the script.
+        // This module is the writer the others converged on. Four had their
+        // own copy: the bash rescue menu (deleted with the script),
+        // `install.sh` and `update.sh` (both `snpanel-install tools-vhost`
+        // now), and the helper - which is the one still below.
         assert!(
             tools_vhost(&debian_tools(None)).contains(NEEDLE),
             "this module writes the phpMyAdmin location without {NEEDLE}"
         );
 
-        // The two that still have their own copy.
-        let mut checked = 0;
-        for name in [
-            "installer/update.sh",
-            "crates/snpanel-helper/src/ops/panel.rs",
-        ] {
-            let text =
-                std::fs::read_to_string(root.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!(
-                text.contains("^/phpmyadmin/(.+"),
-                "{name} no longer writes the phpMyAdmin location - if its copy \
-                 moved, take it out of this list rather than leaving the list \
-                 checking a file that cannot fail it"
-            );
-            assert!(
-                text.contains(NEEDLE),
-                "{name} writes the phpMyAdmin location without {NEEDLE}, so running \
-                 it puts Twig's deprecations back in front of the administrator"
-            );
-            checked += 1;
-        }
-        // Asserted exactly, not as a floor. The previous version skipped a
-        // file it could not read and a file that had stopped writing the
-        // block, so a copy moving out left it passing on fewer writers than
-        // its name claims - which is how it came to be checking two while
-        // saying every.
-        assert_eq!(checked, 2);
+        // The one writer that still has its own copy: the helper's
+        // `refresh_tools_nginx`, reached from `panel-url-set` and
+        // `panel-ssl-install`. It writes this file at times the installer is
+        // not running at all, which is why it has one rather than calling a
+        // phase.
+        //
+        // Named as a constant rather than iterated. It was a list of four,
+        // and each time one moved the list came down by hand - `update.sh`
+        // leaving was noticed because this test said which file had stopped
+        // writing the block rather than quietly checking one fewer.
+        const LAST_WRITER: &str = "crates/snpanel-helper/src/ops/panel.rs";
+        let text = std::fs::read_to_string(root.join(LAST_WRITER))
+            .unwrap_or_else(|e| panic!("{LAST_WRITER}: {e}"));
+        assert!(
+            text.contains("^/phpmyadmin/(.+"),
+            "{LAST_WRITER} no longer writes the phpMyAdmin location - if its copy \
+             moved, take it out of this test rather than leaving it checking a \
+             file that cannot fail it"
+        );
+        assert!(
+            text.contains(NEEDLE),
+            "{LAST_WRITER} writes the phpMyAdmin location without {NEEDLE}, so \
+             running it puts Twig's deprecations back in front of the administrator"
+        );
     }
 
     #[test]

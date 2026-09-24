@@ -545,77 +545,56 @@ ensure_panel_https() {
 }
 
 write_tools_nginx_config() {
-  local panel_port panel_domain panel_cert panel_key php_version server_ip host api_scheme tools_scheme pma_secure ssl_block
-  panel_port="$(env_get PANEL_PORT)"; panel_port="${panel_port:-2222}"
-  panel_domain="$(env_get PANEL_DOMAIN)"
+  local panel_cert panel_key panel_domain server_ip panel_port host
+  # These are `.env` keys, not shell variables - this script never sets them
+  # in its own environment, so they have to be read out of the file the way
+  # the bash that used to be here read them.
   panel_cert="$(env_get PANEL_SSL_CERT)"
   panel_key="$(env_get PANEL_SSL_KEY)"
-  php_version="${PHP_DEFAULT:-8.4}"
+  panel_domain="$(env_get PANEL_DOMAIN)"
+  panel_port="$(env_get PANEL_PORT)"; panel_port="${panel_port:-2222}"
   server_ip="$(detect_server_ip)"
   host="${panel_domain:-$server_ip}"
-  api_scheme="http"; tools_scheme="http"; pma_secure="false"; ssl_block=""
-  if [[ -n "$panel_cert" && -n "$panel_key" && -f "$panel_cert" && -f "$panel_key" ]]; then
-    api_scheme="https"; tools_scheme="https"; pma_secure="true"
-    printf -v ssl_block '\n    listen 443 ssl http2 default_server;\n    ssl_certificate %s;\n    ssl_certificate_key %s;' "$panel_cert" "$panel_key"
-  fi
-  cat >/etc/nginx/conf.d/00-snpanel-tools.conf <<NGINX
-server {
-    listen 80 default_server;${ssl_block}
-    server_name _;
-    client_max_body_size 1100M;
 
-    # Panel certificates are issued through this, so the panel no longer has to
-    # stop nginx to prove it owns its own hostname.
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/snpanel-acme;
-        default_type text/plain;
-        try_files \$uri =404;
-        access_log off;
-        auth_basic off;
-    }
+  # `snpanel-install tools-vhost`. The block is
+  # `snpanel_installer::tools_vhost`, with a fixture for each of its two
+  # shapes - with a panel certificate and without.
+  #
+  # The certificate has to be on disk and not only named in `.env`: an
+  # `ssl_certificate` pointing at a file that is not there stops nginx from
+  # starting at all, which takes every site on the box with it.
+  PANEL_SSL_CERT="$panel_cert" PANEL_SSL_KEY="$panel_key" \
+  PHPMYADMIN_ROOT="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}" \
+  PHP_DEFAULT="${PHP_DEFAULT:-8.4}" \
+    "$(phase_runner)" tools-vhost \
+    || fail "Could not write the tools vhost"
 
-    location = /phpmyadmin { return 301 /phpmyadmin/; }
-    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files \$uri \$uri/ =404; }
-    location ~ ^/phpmyadmin/(.+\.php)$ {
-        alias /usr/share/phpmyadmin/\$1;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/\$1;
-        fastcgi_param SCRIPT_NAME /phpmyadmin/\$1;
-        # Twig raises its deprecations as E_USER_DEPRECATED, which php.ini's
-        # `E_ALL & ~E_DEPRECATED` does not exclude, so Debian's pairing of
-        # phpMyAdmin 5.2 with Twig 3.21 shows the administrator a wall of
-        # notices about a library they cannot change. phpMyAdmin only: a
-        # customer's own site may well want its deprecations.
-        fastcgi_param PHP_VALUE "error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED";
-        fastcgi_pass unix:/run/php/php${php_version}-fpm.sock;
-        fastcgi_read_timeout 300;
-    }
-}
-NGINX
-  sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${api_scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" /usr/share/phpmyadmin/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "s#('secure' => )(true|false)#\1${pma_secure}#" /etc/phpmyadmin/conf.d/snpanel-signon.php /usr/share/phpmyadmin/snpanel-signon.php 2>/dev/null || true
-  [[ -n "$host" ]] && sed -i -E "/PmaAbsoluteUri/s#'https?://[^']+/phpmyadmin/'#'${tools_scheme}://${host}/phpmyadmin/'#" /etc/phpmyadmin/conf.d/snpanel-signon.php 2>/dev/null || true
+  # `snpanel-install phpmyadmin-signon`, which was the three `sed -i -E` calls
+  # that used to sit at the end of this function: the address the sign-on shim
+  # posts its token to, the `secure` flag on its cookie, and phpMyAdmin's
+  # `PmaAbsoluteUri`. The substitutions are `snpanel_core::phpmyadmin`, and
+  # they are checked row by row against what GNU `sed` produced.
+  #
+  # Never fatal, the same as the `|| true` on each of the three. phpMyAdmin is
+  # optional and an update has other work to finish.
+  PANEL_PORT="$panel_port" PANEL_DOMAIN="$panel_domain" SERVER_IP="$server_ip" \
+  PANEL_SSL_CERT="$panel_cert" PANEL_SSL_KEY="$panel_key" \
+  PHPMYADMIN_ROOT="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}" \
+  PHPMYADMIN_CONF_DIR="${PHPMYADMIN_CONF_DIR:-/etc/phpmyadmin}" \
+    "$(phase_runner)" phpmyadmin-signon \
+    || log "Could not update phpMyAdmin's single-sign-on shim"
+  : "$host"
 }
 
 configure_fastcgi_cache() {
-  install -d -o "$WEB_USER" -g "$WEB_GROUP" -m 0755 /var/cache/nginx/snpanel-fastcgi
-  find /var/cache/nginx/snpanel-fastcgi -mindepth 1 -delete
-  cat >/etc/nginx/conf.d/00-snpanel-fastcgi-cache.conf <<'NGINX'
-fastcgi_cache_path /var/cache/nginx/snpanel-fastcgi levels=1:2 keys_zone=SNPANEL_FASTCGI:32m inactive=30m max_size=256m use_temp_path=off;
-fastcgi_cache_key "$scheme$request_method$host$request_uri";
-NGINX
-}
-
-# WebSocket upgrade map, shared by every proxied vhost. Without it a
-# `proxy_set_header Connection $connection_upgrade` in a site config makes
-# nginx fail to start, so this has to exist before any proxy vhost is written.
-configure_proxy_upgrade_map() {
-  cat >/etc/nginx/conf.d/00-snpanel-upgrade-map.conf <<'NGINX'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-NGINX
+  # `snpanel-install nginx-conf` writes both this and the WebSocket upgrade
+  # map, which `configure_proxy_upgrade_map` used to write - that function is
+  # gone rather than left empty. Both files have golden fixtures.
+  #
+  # The map is not optional: without it a `proxy_set_header Connection
+  # $connection_upgrade` in any site config makes nginx refuse to start.
+  "$(phase_runner)" nginx-conf \
+    || fail "Could not write the shared nginx configuration"
 }
 
 migrate_nginx_wordpress_csp_worker_src() {
@@ -772,7 +751,7 @@ harden_existing_panel_users() {
 install_panel_runtime() {
   local env_file="$APP_DIR/backend/.env"
   [[ -f "$env_file" ]] || return 0
-  local panel_port panel_url server_ip sshd_config sshd_backup
+  local panel_port panel_url server_ip
   panel_port="$(env_get PANEL_PORT)"
   panel_port="${panel_port:-2222}"
   server_ip="$(detect_server_ip)"
@@ -823,35 +802,16 @@ install_panel_runtime() {
   install -d -o snpanel -g snpanel -m 0750 /home/admin/snpanel_backups/da
   install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel/da-import
   install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel/import-stage
-  if command -v sshd >/dev/null 2>&1; then
-    sshd_config="/etc/ssh/sshd_config"
-    sshd_backup="${sshd_config}.snpanel.bak"
-    install -d -o root -g root -m 0755 /run/sshd
-    rm -f /etc/ssh/sshd_config.d/99-snpanel-sftp.conf 2>/dev/null || true
-    touch "$sshd_config"
-    cp "$sshd_config" "$sshd_backup"
-    sed -i '/^# BEGIN SNPANEL SFTP USERS$/,/^# END SNPANEL SFTP USERS$/d' "$sshd_config"
-    cat >>"$sshd_config" <<'SSHD'
-# BEGIN SNPANEL SFTP USERS
-# Allow SNPanel Linux users to log in with SFTP using their panel password.
-# SSH shells are intentionally disabled; /home/%u is a root-owned chroot.
-Match Group snpanel-sftp
-    PasswordAuthentication yes
-    ChrootDirectory /home/%u
-    ForceCommand internal-sftp -d /
-    PermitTTY no
-    X11Forwarding no
-    AllowTcpForwarding no
-    PermitTunnel no
-# END SNPANEL SFTP USERS
-SSHD
-    if sshd -t; then
-      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-    else
-      cp "$sshd_backup" "$sshd_config"
-      echo "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block"
-    fi
-  fi
+  # `snpanel-install sftp-access`, the third copy of this edit to go. The
+  # splice, the `sshd -t` and the rollback are `runtime::apply_sftp_block`,
+  # shared with `install.sh` and `snpanel fix-permissions`.
+  #
+  # A warning here and fatal in the installer, which is the difference that
+  # has always been between them: an update has other work to finish, and
+  # losing the SFTP block is a feature not working while stopping leaves the
+  # box half-updated.
+  "$(phase_runner)" sftp-access || \
+    echo "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block"
 
   mkdir -p /etc/systemd/system/snpanel-api.service.d
   cat >/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf <<SERVICE
@@ -1214,6 +1174,28 @@ if [[ -z "${SNPANEL_UPDATE_STAGE2:-}" && -f "$SOURCE_DIR/installer/update.sh" ]]
     exec /bin/bash "$stage2_copy"
 fi
 
+# --- The Rust binaries ------------------------------------------------------
+#
+# Fetched here rather than where they are installed, which is several hundred
+# lines further down. Everything between the two that writes a managed file
+# does it through `snpanel-install`, and a phase cannot run a binary that has
+# not been fetched yet - the same ordering `install.sh` got wrong once and now
+# has a test for.
+#
+# Only the fetch moves. Installing them stays where it was: replacing the
+# panel's own binary is a restart, and doing it earlier would move that
+# restart into the middle of the migrations.
+#
+# Failure is tolerated, as it always has been. `phase_runner` falls back to
+# the copy already on the box, and an update that cannot reach the release
+# still refreshes everything that does not come from one.
+if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
+  RUST_SOURCE_ROOT="$SOURCE_DIR"
+  # shellcheck source=lib/rust-binaries.sh
+  source "$SOURCE_DIR/installer/lib/rust-binaries.sh"
+  fetch_rust_binaries || log "No Rust binaries for this release; using the installed ones"
+fi
+
 # --- Sync code into APP_DIR -------------------------------------------------
 log "Syncing source to $APP_DIR"
 mkdir -p "$APP_DIR"
@@ -1260,7 +1242,6 @@ update_progress 25 "syncing" "Syncing source into ${APP_DIR}"
 install_panel_runtime
 log "Configuring Nginx FastCGI cache"
 configure_fastcgi_cache
-configure_proxy_upgrade_map
 ensure_terminal_tools
 # A box updated from a version that had one still carries it. Nothing runs
 # out of it any more, and leaving several hundred megabytes of dead Python on
@@ -1283,28 +1264,24 @@ fi
 # whether that cutover has been done, and the arrangement below already
 # threads that needle for the bash fallback. Replacing the privileged binary
 # on the same pass is a separate change with its own failure modes.
-if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
-  RUST_SOURCE_ROOT="$SOURCE_DIR"
-  # shellcheck source=lib/rust-binaries.sh
-  source "$SOURCE_DIR/installer/lib/rust-binaries.sh"
-  if fetch_rust_binaries; then
-    if [[ -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
-      log "Refreshing /usr/local/bin/snpanel-api-rust"
-      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
-        /usr/local/bin/snpanel-api-rust
-    fi
-    if [[ -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
-      install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
-        /usr/local/sbin/snpanel-install
-    fi
-    if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
-      # The binary takes the `snpanel` name; the two older names follow it.
-      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
-      ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
-      ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
-    fi
-  else
-    log "No Rust binaries to refresh; leaving the installed ones alone"
+# The binaries were fetched much earlier, so the phases between here and
+# there could run. This is where they are put on the box, which for the panel
+# is a restart.
+if [[ -n "${RUST_BIN_DIR:-}" ]]; then
+  if [[ -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
+    log "Refreshing /usr/local/bin/snpanel-api-rust"
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
+      /usr/local/bin/snpanel-api-rust
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
+    install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
+      /usr/local/sbin/snpanel-install
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
+    # The binary takes the `snpanel` name; the two older names follow it.
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
   fi
   [[ -n "${RUST_BIN_TMP:-}" ]] && rm -rf -- "$RUST_BIN_TMP"
   RUST_BIN_TMP=""

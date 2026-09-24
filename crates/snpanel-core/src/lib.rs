@@ -18,6 +18,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod permissions;
+pub mod phpmyadmin;
 pub mod pyunicode;
 pub mod types;
 

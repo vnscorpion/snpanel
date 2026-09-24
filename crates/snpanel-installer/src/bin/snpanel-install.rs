@@ -19,6 +19,7 @@
 
 use std::process::ExitCode;
 
+use snpanel_core::phpmyadmin;
 use snpanel_installer::backend_env;
 use snpanel_installer::nginx_conf;
 use snpanel_installer::php;
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
         Some("waf-default-rules") => run(phase_waf_default_rules()),
         Some("sftp-access") => run(phase_sftp_access()),
         Some("tools-vhost") => run(phase_tools_vhost()),
+        Some("phpmyadmin-signon") => run(phase_phpmyadmin_signon()),
         Some("backend-env") => run(phase_backend_env()),
         Some("migrate-csp") => run(phase_migrate_csp()),
         Some("php-ini") => run(phase_php_ini(args.get(1))),
@@ -68,6 +70,7 @@ fn help() {
     println!("  snpanel-install waf-default-rules  the rules every site gets");
     println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
     println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on");
+    println!("  snpanel-install phpmyadmin-signon  point the sign-on shim at the panel");
     println!("  snpanel-install backend-env      the panel's .env, then seed the database");
     println!("  snpanel-install migrate-csp      add worker-src to existing vhosts");
     println!("  snpanel-install php-ini <path>   the panel's seven php.ini settings");
@@ -486,6 +489,84 @@ fn phase_tools_vhost() -> Result<(), String> {
         ssl,
     });
     write_conf(tools_vhost::TOOLS_CONF_PATH, &body)
+}
+
+/// Source: the three `sed -i -E` calls at the end of `update.sh`'s
+/// `write_tools_nginx_config`.
+///
+/// phpMyAdmin comes from the distribution's package, so SNPanel does not own
+/// these two files; it drops a single-sign-on shim into them at install time
+/// and afterwards has to keep three values following the panel. The
+/// substitutions are `snpanel_core::phpmyadmin`, checked against GNU `sed`'s
+/// own output row by row.
+///
+/// This is an update-only phase. `install.sh` writes both files from scratch
+/// with placeholders it then fills, so it has nothing to patch; `update.sh`
+/// finds whatever the last install left.
+///
+/// Every one of the three ends `|| true` in the bash, and so does every one
+/// here: phpMyAdmin is optional, and a box that refused to finish updating
+/// because a database tool is not installed would be the wrong trade. A file
+/// that is not there is not an error, and neither is one this does not
+/// recognise.
+///
+/// The scheme follows a certificate that is **named in `.env` and present on
+/// disk**, which is the same test `tools-vhost` makes - the vhost and the
+/// cookie have to agree about whether this box is HTTPS, or phpMyAdmin sets a
+/// `secure` cookie that the browser then will not send back.
+fn phase_phpmyadmin_signon() -> Result<(), String> {
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+
+    let root = env_opt("PHPMYADMIN_ROOT")
+        .unwrap_or_else(|| platform.phpmyadmin_root().to_string_lossy().into_owned());
+    // The bash hard-codes Debian's `/etc/phpmyadmin` here. `install.sh` has
+    // always had the platform's in `PHPMYADMIN_CONF_DIR`, so it is taken from
+    // the environment and falls back to what the bash had.
+    let conf_dir = env_opt("PHPMYADMIN_CONF_DIR").unwrap_or_else(|| "/etc/phpmyadmin".to_string());
+
+    let shim = std::path::Path::new(&root).join("snpanel-signon.php");
+    let conf = std::path::Path::new(&conf_dir)
+        .join("conf.d")
+        .join("snpanel-signon.php");
+
+    let port = env_opt("PANEL_PORT").unwrap_or_else(|| "2222".to_string());
+    let cert = env_opt("PANEL_SSL_CERT").filter(|p| std::path::Path::new(p).is_file());
+    let key = env_opt("PANEL_SSL_KEY").filter(|p| std::path::Path::new(p).is_file());
+    let secure = cert.is_some() && key.is_some();
+    let scheme = if secure { "https" } else { "http" };
+    // `host="${panel_domain:-$server_ip}"`, and the substitution is skipped
+    // when both are empty rather than writing `https:///phpmyadmin/`.
+    let host = env_opt("PANEL_DOMAIN").or_else(|| env_opt("SERVER_IP"));
+
+    edit_in_place(&shim, |text| {
+        phpmyadmin::rewrite_sso_url(text, scheme, &port)
+    });
+    for path in [&conf, &shim] {
+        edit_in_place(path, |text| phpmyadmin::rewrite_secure_flag(text, secure));
+    }
+    if let Some(host) = host.as_deref() {
+        edit_in_place(&conf, |text| {
+            phpmyadmin::rewrite_absolute_uri(text, scheme, host)
+        });
+    }
+    Ok(())
+}
+
+/// Read, rewrite, write back only if it changed - and stay quiet about all
+/// three going wrong, which is what `sed -i ... || true` does.
+///
+/// Not writing an unchanged file matters more than it looks: `update.sh` runs
+/// this on every update, and a write that changes nothing still moves the
+/// mtime, which is the signal an administrator uses to see what an update
+/// touched.
+fn edit_in_place(path: &std::path::Path, rewrite: impl Fn(&str) -> String) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let rewritten = rewrite(&text);
+    if rewritten != text {
+        let _ = std::fs::write(path, rewritten);
+    }
 }
 
 /// Source: `setup_backend`.
@@ -1026,6 +1107,69 @@ mod tests {
                 "{pair:?} is not one of the accounts platform.sh sets: {pairs:?}"
             );
         }
+    }
+
+    /// A phase `install.sh` can call but `--help` does not mention is a phase
+    /// nobody finds, and one in the help that no arm answers is a line that
+    /// tells an operator to run something that exits 1. Both have happened in
+    /// this project already - `snpanel firewall reopen` asked for a verb no
+    /// mapping ever had, and nothing said so until it was run.
+    ///
+    /// This reads its own source, because the dispatch is a `match` on string
+    /// literals and the help is a list of `println!`s; nothing else connects
+    /// them.
+    #[test]
+    fn every_phase_is_in_the_help_and_every_help_line_is_a_phase() {
+        let source = include_str!("snpanel-install.rs");
+
+        let mut dispatched: Vec<&str> = Vec::new();
+        for line in source.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("Some(\"") else {
+                continue;
+            };
+            let Some((name, tail)) = rest.split_once('"') else {
+                continue;
+            };
+            // `Some("--help") | Some("-h") | None` is the one arm that is not
+            // a phase.
+            let tail = tail.trim_start().trim_start_matches(')').trim_start();
+            if tail.starts_with("=>") && !name.starts_with('-') {
+                dispatched.push(name);
+            }
+        }
+
+        let mut documented: Vec<&str> = Vec::new();
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("println!(\"  snpanel-install ") else {
+                continue;
+            };
+            if let Some(name) = rest.split_whitespace().next() {
+                documented.push(name);
+            }
+        }
+
+        assert!(
+            !dispatched.is_empty() && !documented.is_empty(),
+            "the scanner found nothing, so it is not reading this file any more"
+        );
+        for name in &dispatched {
+            assert!(
+                documented.contains(name),
+                "`snpanel-install {name}` runs but `--help` never mentions it"
+            );
+        }
+        for name in &documented {
+            assert!(
+                dispatched.contains(name),
+                "`--help` offers `snpanel-install {name}`, which no arm answers"
+            );
+        }
+        assert_eq!(
+            dispatched.len(),
+            documented.len(),
+            "a phase is listed twice: {dispatched:?} against {documented:?}"
+        );
     }
 
     /// Every writer of the malware scheduler names the *platform's* ClamAV
