@@ -25,8 +25,8 @@ pub const PHASES: &[&str] = &[
     "install_base_packages",
     "install_nodejs",
     "install_php",
+    "require_rust_binaries",
     "configure_fastcgi_cache",
-    "configure_proxy_upgrade_map",
     "install_waf_engine",
     "install_wp_cli",
     "copy_sources",
@@ -59,6 +59,22 @@ pub const PHASES: &[&str] = &[
 /// and a working panel. Everything else in the list is load-bearing, and a
 /// second entry here should have to argue for itself.
 pub const TOLERATED_FAILURES: &[&str] = &["install_waf_engine"];
+
+/// The phases that run `snpanel-install`.
+///
+/// They need `require_rust_binaries` to have run, and nothing in the shell
+/// enforces that - `main` is a flat list of calls. See
+/// `the_binaries_are_fetched_before_any_phase_uses_them`.
+///
+/// `install_waf_engine` is here because it calls
+/// `write_http_flood_nginx_conf`, which runs the binary; the helper function
+/// is not a phase of its own.
+pub const USES_THE_INSTALLER_BINARY: &[&str] = &[
+    "configure_fastcgi_cache",
+    "install_waf_engine",
+    "setup_systemd",
+    "configure_log_limits",
+];
 
 /// Where a phase sits in the sequence.
 pub fn position(phase: &str) -> Option<usize> {
@@ -247,5 +263,78 @@ mod tests {
     #[should_panic(expected = "is not a phase")]
     fn an_ordering_claim_about_a_phase_that_does_not_exist_is_an_error() {
         runs_before("setup_panel_user", "setup_something_that_went_away");
+    }
+
+    /// **The binaries are on disk before the first phase that runs one.**
+    ///
+    /// This is the dependency the move to `snpanel-install` created, and it
+    /// was wrong the first time. `install_privileged_helper` used to be what
+    /// fetched them, and it runs fourteen phases in - so the first phase
+    /// rewritten to call the binary, `configure_fastcgi_cache`, ran with
+    /// `RUST_BIN_DIR` empty and invoked `/snpanel-install`. The install would
+    /// have stopped at the fifth log line with a "command not found".
+    ///
+    /// Nothing in the shell says this. `main` is a flat list of calls, and a
+    /// phase moved one line too early reads exactly like one moved one line
+    /// too late.
+    #[test]
+    fn the_binaries_are_fetched_before_any_phase_uses_them() {
+        for phase in USES_THE_INSTALLER_BINARY {
+            assert!(
+                runs_before("require_rust_binaries", phase),
+                "{phase} runs before the binaries are fetched"
+            );
+        }
+    }
+
+    /// And the list above is the phases that actually call it.
+    ///
+    /// Read out of the shell rather than kept by hand: a phase rewritten to
+    /// call `snpanel-install` and not added here would be exactly the bug
+    /// this pair of tests exists for.
+    #[test]
+    fn every_phase_that_calls_the_binary_is_listed() {
+        let shell = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/install.sh"),
+        )
+        .expect("install.sh");
+
+        let mut calling = Vec::new();
+        let mut current: Option<String> = None;
+        for line in shell.lines() {
+            if let Some(name) = line.strip_suffix("() {") {
+                if !name.starts_with(char::is_whitespace) {
+                    current = Some(name.to_string());
+                }
+            }
+            // The *invocation*, not a mention: `require_rust_binaries` names
+            // the binary in an `-x` test, which is a check that it is there
+            // rather than a use of it.
+            if line
+                .trim_start()
+                .starts_with("\"${RUST_BIN_DIR}/snpanel-install\"")
+            {
+                if let Some(ref fname) = current {
+                    if !calling.contains(fname) {
+                        calling.push(fname.clone());
+                    }
+                }
+            }
+        }
+
+        // Only the ones that are phases; `install_waf_engine` reaches the
+        // binary through `write_http_flood_nginx_conf`, which is not one.
+        let phases_calling: Vec<&String> =
+            calling.iter().filter(|f| position(f).is_some()).collect();
+        assert!(
+            !phases_calling.is_empty(),
+            "the scan found no phase calling the binary: {calling:?}"
+        );
+        for phase in phases_calling {
+            assert!(
+                USES_THE_INSTALLER_BINARY.contains(&phase.as_str()),
+                "{phase} calls snpanel-install and is not in USES_THE_INSTALLER_BINARY"
+            );
+        }
     }
 }

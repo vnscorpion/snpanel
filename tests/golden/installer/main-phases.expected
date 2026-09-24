@@ -3,8 +3,8 @@ ask_panel_url
 install_base_packages
 install_nodejs
 install_php
+require_rust_binaries
 configure_fastcgi_cache
-configure_proxy_upgrade_map
 install_waf_engine
 install_wp_cli
 copy_sources

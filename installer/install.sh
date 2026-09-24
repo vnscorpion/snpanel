@@ -686,25 +686,22 @@ install_php() {
 }
 
 configure_fastcgi_cache() {
-  install -d -o "$WEB_USER" -g "$WEB_GROUP" -m 0755 /var/cache/nginx/snpanel-fastcgi
-  find /var/cache/nginx/snpanel-fastcgi -mindepth 1 -delete
-  cat >/etc/nginx/conf.d/00-snpanel-fastcgi-cache.conf <<'NGINX'
-fastcgi_cache_path /var/cache/nginx/snpanel-fastcgi levels=1:2 keys_zone=SNPANEL_FASTCGI:32m inactive=30m max_size=256m use_temp_path=off;
-fastcgi_cache_key "$scheme$request_method$host$request_uri";
-NGINX
+  # `snpanel-install nginx-conf` writes both this and the WebSocket upgrade
+  # map, which `configure_proxy_upgrade_map` used to write - that function is
+  # gone rather than left empty, because a function that does nothing is a
+  # thing for the next reader to work out. Both files have golden fixtures in
+  # `tests/golden/installer`.
+  #
+  # The map is not optional: without it a `proxy_set_header Connection
+  # $connection_upgrade` in any site config makes nginx refuse to start, so it
+  # has to exist before the first proxy vhost is written.
+  "${RUST_BIN_DIR}/snpanel-install" nginx-conf \
+    || fail "Could not write the shared nginx configuration"
 }
 
 # WebSocket upgrade map, shared by every proxied vhost. Without it a
 # `proxy_set_header Connection $connection_upgrade` in a site config makes
 # nginx fail to start, so this has to exist before any proxy vhost is written.
-configure_proxy_upgrade_map() {
-  cat >/etc/nginx/conf.d/00-snpanel-upgrade-map.conf <<'NGINX'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-NGINX
-}
 
 write_modsec_base_conf() {
   install -d -o root -g root -m 0755 /etc/nginx/modsec /etc/nginx/modsec/sites
@@ -727,24 +724,12 @@ write_modsec_main_conf() {
 }
 
 write_http_flood_nginx_conf() {
-  install -d -o root -g root -m 0755 /etc/nginx/snpanel /etc/nginx/conf.d
-  if [[ ! -f /etc/nginx/snpanel/http-flood-zones.conf ]]; then
-    cat >/etc/nginx/snpanel/http-flood-zones.conf <<'CONF'
-# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
-map $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {
-    default $binary_remote_addr;
-    1 "";
-}
-limit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;
-CONF
-  fi
-  cat >/etc/nginx/conf.d/00-snpanel-http-flood.conf <<'CONF'
-# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
-include /etc/nginx/snpanel/http-flood-zones.conf;
-CONF
-  rm -f /etc/nginx/conf.d/snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-server.conf 2>/dev/null || true
-  chown root:root /etc/nginx/conf.d/00-snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-zones.conf
-  chmod 0644 /etc/nginx/conf.d/00-snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-zones.conf
+  # `snpanel-install http-flood`. The zones file is written only when absent,
+  # because `limit_conn_zone` allocates shared memory and rewriting it under a
+  # running nginx resets the counters an operator is relying on during an
+  # attack.
+  "${RUST_BIN_DIR}/snpanel-install" http-flood \
+    || fail "Could not write the HTTP flood protection config"
 }
 
 write_waf_default_rules() {
@@ -1026,13 +1011,27 @@ install_rust_helper() {
     || log "WARNING: snpanel-helper.socket did not start; the panel will use sudo"
 }
 
-install_privileged_helper() {
+# The binaries have to be on disk before the first phase that runs one, and
+# that is no longer `install_privileged_helper`: `configure_fastcgi_cache` and
+# the WAF step both call `snpanel-install` and both run earlier in `main()`.
+# Fetching from inside the helper phase left `RUST_BIN_DIR` empty for them.
+#
+# Idempotent: `fetch_rust_binaries` prefers a built tree and otherwise
+# downloads once, and a second call with `RUST_BIN_DIR` already set returns
+# it unchanged.
+require_rust_binaries() {
+  [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel-install" ]] && return 0
   fetch_rust_binaries || true
   # The panel *is* the Rust binary now, so this is no longer a nice-to-have.
-  # There is no Python left to fall back to.
+  # There is no Python left to fall back to, and the installer itself is one
+  # of them.
   [[ -n "$RUST_BIN_DIR" ]] || fail \
     "No Rust binaries for this release. The panel is built from them, so the \
 install cannot continue; publish the release archive or build the tree first."
+}
+
+install_privileged_helper() {
+  require_rust_binaries
   # The `fail` above already refused an empty RUST_BIN_DIR, so there is no
   # second branch here any more. The one it had installed the bash helper
   # under the binary's name, which cannot work now that the panel calls verbs
@@ -1700,9 +1699,13 @@ main() {
   log "Installing PHP ${PHP_VERSIONS}"
   install_php
 
+  # Before the first phase that runs one. Everything from here on that writes
+  # a managed file does it through `snpanel-install`.
+  log "Fetching the Rust binaries"
+  require_rust_binaries
+
   log "Configuring Nginx FastCGI cache"
   configure_fastcgi_cache
-  configure_proxy_upgrade_map
 
   log "Configuring WAF engine and HTTP flood protection"
   if ! install_waf_engine; then

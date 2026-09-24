@@ -2189,25 +2189,19 @@ mod tests {
     }
 
     /// The upgrade map is what nginx needs before any proxied vhost will
-    /// load, and two files write it: this one and `install.sh`.
+    /// load, and two places write it: this one, and the installer.
     ///
-    /// It used to be compared against the bash helper's heredoc. The
-    /// installer is the other writer and still exists, so the comparison
-    /// moves there - which is the pairing that matters anyway, because a box
-    /// gets the map from whichever of the two ran last.
+    /// Compared against the golden fixture rather than against either writer.
+    /// It was the bash helper's heredoc, then `install.sh`'s, and the
+    /// installer's copy has since moved into `snpanel-install nginx-conf` -
+    /// three homes in three commits, while the bytes did not change once. The
+    /// fixture is the recording of those bytes, taken from the shell running
+    /// on a real Debian 13, so it is the thing that does not move.
     #[test]
     fn the_upgrade_map_matches_the_installers() {
-        const INSTALL: &str = include_str!("../../../../installer/install.sh");
-        let open = "map $http_upgrade $connection_upgrade {\n";
-        let start = INSTALL
-            .find(open)
-            .expect("install.sh no longer writes the upgrade map");
-        let end = INSTALL[start..]
-            .find("\n}\n")
-            .expect("the map block never closes")
-            + start
-            + "\n}\n".len();
-        assert_eq!(UPGRADE_MAP_BODY, &INSTALL[start..end]);
+        const RECORDED: &str =
+            include_str!("../../../../tests/golden/installer/00-snpanel-upgrade-map.conf.expected");
+        assert_eq!(UPGRADE_MAP_BODY, RECORDED);
     }
 
     /// A non-empty file is left alone; an empty one is not.

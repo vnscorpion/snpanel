@@ -19,6 +19,7 @@
 
 use std::process::ExitCode;
 
+use snpanel_installer::nginx_conf;
 use snpanel_installer::systemd_units::{self, UnitSettings};
 
 fn main() -> ExitCode {
@@ -26,6 +27,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("systemd-units") => run(phase_systemd_units()),
         Some("log-limits") => run(phase_log_limits()),
+        Some("nginx-conf") => run(phase_nginx_conf()),
+        Some("http-flood") => run(phase_http_flood()),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -41,7 +44,9 @@ fn main() -> ExitCode {
 fn help() {
     println!("snpanel-install - one phase of a SNPanel install\n");
     println!("  snpanel-install systemd-units    write and enable the panel's units");
-    println!("  snpanel-install log-limits       cap the journal and rotate btmp\n");
+    println!("  snpanel-install log-limits       cap the journal and rotate btmp");
+    println!("  snpanel-install nginx-conf       the fastcgi cache and the upgrade map");
+    println!("  snpanel-install http-flood       the shared flood-protection zones\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -239,6 +244,80 @@ fn phase_log_limits() -> Result<(), String> {
     Ok(())
 }
 
+/// Source: `configure_fastcgi_cache` and `configure_proxy_upgrade_map`.
+///
+/// Two files the shell writes next to each other in `main()`. Both are
+/// `conf.d` includes that every vhost depends on, and the upgrade map is the
+/// one with teeth: without it a `proxy_set_header Connection
+/// $connection_upgrade` in any site config makes nginx refuse to start, so it
+/// has to exist before the first proxy vhost is written.
+fn phase_nginx_conf() -> Result<(), String> {
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+
+    // The cache directory belongs to the web account, which is `www-data` on
+    // Debian and `nginx` on the RHEL family.
+    install_dir(
+        nginx_conf::FASTCGI_CACHE_DIR,
+        platform.web_user(),
+        platform.web_group(),
+        0o755,
+    );
+    // `find ... -mindepth 1 -delete`: entries left by an older cache
+    // configuration are keyed differently and will never be hit again, so
+    // they are dead bytes on the disk until something clears them.
+    clear_directory(nginx_conf::FASTCGI_CACHE_DIR);
+
+    write_conf(
+        nginx_conf::FASTCGI_CACHE_PATH,
+        &nginx_conf::fastcgi_cache_conf(),
+    )?;
+    write_conf(
+        nginx_conf::UPGRADE_MAP_PATH,
+        &nginx_conf::upgrade_map_conf(),
+    )
+}
+
+/// Source: `write_http_flood_nginx_conf`.
+///
+/// The zones file is written **only when it is absent**, and that is the one
+/// thing to get right here: `limit_conn_zone` allocates shared memory, and
+/// rewriting it under a running nginx is how the counters an operator is
+/// relying on during an attack get reset. The include that points at it is
+/// rewritten every time, because it is one line and carries no state.
+fn phase_http_flood() -> Result<(), String> {
+    for dir in ["/etc/nginx/snpanel", "/etc/nginx/conf.d"] {
+        install_dir(dir, "root", "root", 0o755);
+    }
+
+    if !std::path::Path::new(nginx_conf::HTTP_FLOOD_ZONES_PATH).exists() {
+        write_conf(
+            nginx_conf::HTTP_FLOOD_ZONES_PATH,
+            &nginx_conf::http_flood_zones_conf(),
+        )?;
+    }
+    write_conf(
+        nginx_conf::HTTP_FLOOD_INCLUDE_PATH,
+        &nginx_conf::http_flood_include_conf(),
+    )?;
+
+    // Two files an older release wrote. The server-level one in particular
+    // would now be included twice.
+    for stale in [
+        "/etc/nginx/conf.d/snpanel-http-flood.conf",
+        "/etc/nginx/snpanel/http-flood-server.conf",
+    ] {
+        let _ = std::fs::remove_file(stale);
+    }
+
+    for path in [
+        nginx_conf::HTTP_FLOOD_INCLUDE_PATH,
+        nginx_conf::HTTP_FLOOD_ZONES_PATH,
+    ] {
+        set_root_owned_0644(path);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 
 fn env_opt(key: &str) -> Option<String> {
@@ -274,6 +353,51 @@ fn install_dir(path: &str, owner: &str, group: &str, mode: u32) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// Write an nginx include, creating its directory first.
+///
+/// Fatal, unlike the log drop-ins: nginx will not start without a file a
+/// vhost includes, so a box that gets here without one has no web server.
+fn write_conf(path: &str, body: &str) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, body).map_err(|e| format!("writing {path}: {e}"))
+}
+
+/// `find <dir> -mindepth 1 -delete` - the contents, not the directory.
+fn clear_directory(dir: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+}
+
+/// `chown root:root` and `chmod 0644`.
+///
+/// nginx reads these as root and never writes them; group-writable would let
+/// anything in the `snpanel` group rewrite what every vhost includes.
+fn set_root_owned_0644(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::process::Command::new("chown")
+        .args(["root:root", path])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o644);
+        let _ = std::fs::set_permissions(path, perms);
+    }
 }
 
 fn user_exists(name: &str) -> bool {
