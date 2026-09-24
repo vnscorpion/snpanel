@@ -297,7 +297,7 @@ snpanel/
 |   `-- snpanel-api/              the HTTP front door
 |-- xtask/                      build and verification tasks
 |-- installer/
-|   |-- files/                   sudoers, the helper's socket units, snpanelctl
+|   |-- files/                   sudoers, the helper's socket units
 |   |-- install.sh               Full first-time install
 |   |-- rescue-firewall.sh       Emergency firewall reset (locked-out recovery)
 |   `-- update.sh                Pull from GitHub and redeploy

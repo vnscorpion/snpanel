@@ -3211,3 +3211,117 @@ gate is the sudoers file now, and the autotune step keys on the installed
 binary, which is the file whose logic actually decides the numbers.
 
 Shell goes from 10 files to 9, and from 475 KB to 238 KB.
+
+## The rescue menu is gone too
+
+`installer/files/snpanelctl` — 726 lines — is deleted. `/usr/local/sbin/snpanel`
+is the Rust binary, and `snpanelctl` and `snpanel-cli` are symlinks to it.
+
+### What the measurement found this time
+
+The `snpanel` CLI already implemented seven of the fifteen subcommands and
+handed the other eight back to the bash. Folding in the two the rescue menu
+dispatched separately, 30 of the script's 37 functions and 506 of its 726
+lines were reachable from those eight; the seven functions that were not are
+exactly the ones the CLI already served, which is the check that the split
+was where it looked.
+
+### The crate that nothing was using
+
+`snpanel-installer` is thirteen thousand lines of Rust with 415 tests and, at
+the start of this work, **no consumer**: no binary depended on it, so CI built
+and tested it and no machine had ever run a line of it.
+
+Its own doc says why it is shaped that way. Each phase is split into the part
+that *decides* what a file should contain — a pure function with a golden
+fixture taken from the bash running on a real Debian 13 — and the part that
+*writes* it, a few lines of `std::fs`. Every module in it is a deciding half.
+Nothing writes.
+
+So most of this stage was not porting. `ctl::passwords` and `ctl::panel_url`
+were already written and already tested; what they had never had was a
+caller. `snpanel-cli` takes the dependency, which costs nothing — the crate
+needs only `snpanel-core`, `snpanel-osabi` and `serde_json`, all of which the
+CLI already had.
+
+This is also the root of a gap recorded earlier: `nginx-module-guard-install.sh`
+was "ported, but nothing installs either". Same cause.
+
+### Two bugs the work found
+
+**`snpanel firewall reopen` had never worked.** It asked the helper for
+`firewall-reopen`, a verb no mapping has ever had and no `case` arm of the
+bash helper answered either, so it printed "unknown command" and exited 1
+from whichever helper was installed. The test added when the bash helper was
+deleted reads the panel's call sites and does not read the CLI's, which is
+the gap that let it through; the CLI has the same test now. Both `reopen` and
+`repair-firewall` run the same function.
+
+**`snpanel update --tag v1.2.3` installed the latest release.** The bash
+dispatches `update|--update) run_panel_update ;;` with no `shift`, and
+`run_panel_update` has no `"$@"`, so the arguments never arrived — it asked
+"Update SNPanel to the latest vX.Y.Z release now?" and then did that. Both
+flags have been on this CLI's `--help` the whole time. Reproducing the bash
+would mean shipping a flag that does not do what the program says, so they
+are passed through and the confirmation names the target.
+
+### And one the port introduced, then fixed
+
+Pointing `install-panel-ssl` at the helper verb lost `env_set SSL_EMAIL`: the
+verb wrote six other keys and not that one, which nothing noticed while the
+rescue menu kept its own copy. The address is where Let's Encrypt sends the
+expiry warning. The verb records it now, for the panel's settings page as
+well.
+
+Found by running the new CLI against the demo container rather than by
+reading it — the same way three socket-only bugs were found earlier.
+
+### C37, with a guard this time
+
+Both password paths hand a secret across a user switch. `/proc/<pid>/cmdline`
+is mode 444 and on this box every customer's PHP can read it, while
+`/proc/<pid>/environ` is 400, so the password travels in the child's
+environment and root's hash on `chpasswd`'s stdin.
+
+`the_secret_never_reaches_a_command_line` builds the command and reads its
+argv back. The obvious refactor of either path is to pass the secret along as
+one more `.arg()`, and nothing else in the program would notice; that
+mutation fails this test by name and nothing else.
+
+### APP_DIR arrives by another route
+
+`install.sh` takes `APP_DIR` from the environment, and the bash menu learned
+it at install time because the installer rewrote the script's own `APP_DIR=`
+line with `sed`. A binary cannot be rewritten that way, so `snpanel` reads it
+from the environment with the same default. A box that never set one sees no
+difference.
+
+### A test that would have hung CI
+
+The first version of the terminal test called `read_secret`. `cargo test`
+inherits a stdin nobody is writing to, so it blocked the whole suite until
+the runner was killed — it passed once locally and would have hung every job.
+It checks what can be checked without reading: `EchoOff::new` on a descriptor
+that is not a terminal returns `None` rather than failing, which is why
+`read_secret` works in a pipeline at all.
+
+### The shell count was wrong
+
+The commit that deleted the bash helper said 9 files and 238 KB. That
+measured `installer/` and missed `da_import_install.sh` (47 KB) and the root
+`install.sh`. The real figure was about 258 KB, and is about 231 KB now.
+
+Neither of the two that were missed breaks: the root file is a 38-line
+bootstrap that fetches the real installer, and `da_import_install.sh` already
+pointed at `/usr/local/sbin/snpanel` rather than at anything in the
+repository — and makes the same `snpanelctl` symlink this now does.
+
+### Verified on the container
+
+All three names resolve to one program. `firewall reopen` works where it
+used to refuse itself. The menu prints and stops without a terminal rather
+than blocking. `APP_DIR=/nonexistent` reaches the path in the error.
+`fix-permissions` refreshed both sites, left `sshd -t` valid and exactly one
+`Match Group snpanel-sftp` block — sshd reads a second as a duplicate and
+refuses to start, so an append without a remove would break SSH on the second
+run, not the first. Panel and site both answered 200 afterwards.
