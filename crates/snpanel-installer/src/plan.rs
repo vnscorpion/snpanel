@@ -72,6 +72,7 @@ pub const TOLERATED_FAILURES: &[&str] = &["install_waf_engine"];
 pub const USES_THE_INSTALLER_BINARY: &[&str] = &[
     "configure_fastcgi_cache",
     "install_waf_engine",
+    "setup_sftp_access",
     "setup_systemd",
     "configure_log_limits",
 ];

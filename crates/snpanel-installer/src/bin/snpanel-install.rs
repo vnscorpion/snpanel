@@ -19,8 +19,10 @@
 
 use std::process::ExitCode;
 
+use snpanel_installer::backend_env;
 use snpanel_installer::nginx_conf;
 use snpanel_installer::systemd_units::{self, UnitSettings};
+use snpanel_installer::update::runtime;
 
 /// Source: the `install -d` in `write_modsec_base_conf`.
 const MODSEC_DIR: &str = "/etc/nginx/modsec";
@@ -35,6 +37,7 @@ fn main() -> ExitCode {
         Some("http-flood") => run(phase_http_flood()),
         Some("modsec-conf") => run(phase_modsec_conf()),
         Some("waf-default-rules") => run(phase_waf_default_rules()),
+        Some("sftp-access") => run(phase_sftp_access()),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -54,7 +57,8 @@ fn help() {
     println!("  snpanel-install nginx-conf       the fastcgi cache and the upgrade map");
     println!("  snpanel-install http-flood       the shared flood-protection zones");
     println!("  snpanel-install modsec-conf      the ModSecurity include chain");
-    println!("  snpanel-install waf-default-rules  the rules every site gets\n");
+    println!("  snpanel-install waf-default-rules  the rules every site gets");
+    println!("  snpanel-install sftp-access      the sshd block SFTP logins match\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -377,6 +381,45 @@ fn phase_modsec_conf() -> Result<(), String> {
         nginx_conf::MODSEC_MAIN_PATH,
         &nginx_conf::modsec_main_conf(),
     )
+}
+
+/// Source: `setup_sftp_access`.
+///
+/// **Fatal when `sshd -t` refuses the result**, which is the one thing that
+/// differs from the same edit made by `snpanel fix-permissions`: an installer
+/// that cannot finish configuring a box must not report it as installed,
+/// while a repair has other repairs to make and prefers losing the SFTP block
+/// to stopping half-way. Both go through `runtime::apply_sftp_block`, so
+/// there is one copy of the rollback - and the rollback is the only thing
+/// between a bad edit and a remote box with no SSH at its next restart.
+fn phase_sftp_access() -> Result<(), String> {
+    // The group an SFTP login is matched on. Without it the block matches
+    // nothing and the feature is silently off.
+    if !group_exists("snpanel-sftp") {
+        let _ = std::process::Command::new("groupadd")
+            .args(["--system", "snpanel-sftp"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
+    let existing = std::fs::read_to_string(runtime::SSHD_CONFIG).unwrap_or_default();
+    let updated = backend_env::sshd_config_with_sftp(&existing);
+    match runtime::apply_sftp_block(&updated)? {
+        runtime::SshdOutcome::Reload => Ok(()),
+        runtime::SshdOutcome::Rollback => {
+            Err("Invalid SSHD configuration for SNPanel SFTP users".to_string())
+        }
+    }
+}
+
+fn group_exists(name: &str) -> bool {
+    std::process::Command::new("getent")
+        .args(["group", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 // ---------------------------------------------------------------------------

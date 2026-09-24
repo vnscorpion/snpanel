@@ -890,33 +890,15 @@ MYCNF
 }
 
 setup_sftp_access() {
-  local sshd_config="/etc/ssh/sshd_config" backup
-  getent group snpanel-sftp >/dev/null || groupadd --system snpanel-sftp
-  install -d -o root -g root -m 0755 /run/sshd
-  rm -f /etc/ssh/sshd_config.d/99-snpanel-sftp.conf 2>/dev/null || true
-  touch "$sshd_config"
-  backup="${sshd_config}.snpanel.bak"
-  cp "$sshd_config" "$backup"
-  sed -i '/^# BEGIN SNPANEL SFTP USERS$/,/^# END SNPANEL SFTP USERS$/d' "$sshd_config"
-  cat >>"$sshd_config" <<'SSHD'
-# BEGIN SNPANEL SFTP USERS
-# Allow SNPanel Linux users to log in with SFTP using their panel password.
-# SSH shells are intentionally disabled; /home/%u is a root-owned chroot.
-Match Group snpanel-sftp
-    PasswordAuthentication yes
-    ChrootDirectory /home/%u
-    ForceCommand internal-sftp -d /
-    PermitTTY no
-    X11Forwarding no
-    AllowTcpForwarding no
-    PermitTunnel no
-# END SNPANEL SFTP USERS
-SSHD
-  if ! sshd -t; then
-    cp "$backup" "$sshd_config"
-    fail "Invalid SSHD configuration for SNPanel SFTP users"
-  fi
-  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  # `snpanel-install sftp-access`. The block is
+  # `snpanel_installer::backend_env::sftp_block`, with a fixture; the splice,
+  # the `sshd -t` and the rollback are `runtime::apply_sftp_block`, shared
+  # with `snpanel fix-permissions` so there is one copy of the rollback.
+  #
+  # Fatal here and a warning there: an installer that cannot finish
+  # configuring a box must not report it as installed.
+  "${RUST_BIN_DIR}/snpanel-install" sftp-access \
+    || fail "Invalid SSHD configuration for SNPanel SFTP users"
 }
 
 # Does this sudo still have the `requiretty` setting? Asked by handing visudo a

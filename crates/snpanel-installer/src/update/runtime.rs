@@ -143,6 +143,80 @@ pub fn sshd_outcome(config_is_valid: bool) -> SshdOutcome {
     }
 }
 
+/// Splice the SFTP block into `sshd_config`, validate, and reload or roll
+/// back.
+///
+/// **A writing half in the library, which this crate otherwise keeps out of
+/// it.** The rule here is that a phase decides and its caller writes, and it
+/// holds while there is one caller. This has two: `snpanel-install
+/// sftp-access` during an install, and `snpanel fix-permissions` when an
+/// operator repairs a box. Two copies of an edit to `sshd_config` is two
+/// chances to get the rollback wrong, and the rollback is the only thing
+/// standing between a bad edit and a remote box with no SSH.
+///
+/// The callers differ in exactly one way, and it is what they do with the
+/// answer rather than anything in here. The installer treats
+/// [`SshdOutcome::Rollback`] as fatal, because a box it cannot finish
+/// configuring should not be reported as installed. The repair path prints a
+/// warning and carries on - it has other repairs to make, and losing the SFTP
+/// block is a feature not working while stopping leaves the box half-fixed.
+pub fn apply_sftp_block(block: &str) -> Result<SshdOutcome, String> {
+    // sshd refuses to start without it, and a box whose `/run/sshd` went with
+    // a reboot has no SSH after the next restart.
+    let _ = std::fs::create_dir_all("/run/sshd");
+
+    // An older release wrote its copy of the block as a drop-in. Two `Match
+    // Group snpanel-sftp` blocks is a duplicate sshd will not start on.
+    let _ = std::fs::remove_file(SUPERSEDED_DROPIN);
+
+    // `touch`: a box with no `sshd_config` at all still gets the block, and
+    // the backup below needs something to copy.
+    if !std::path::Path::new(SSHD_CONFIG).exists() {
+        std::fs::write(SSHD_CONFIG, "").map_err(|e| format!("creating {SSHD_CONFIG}: {e}"))?;
+    }
+    std::fs::copy(SSHD_CONFIG, SSHD_BACKUP)
+        .map_err(|e| format!("backing up {SSHD_CONFIG}: {e}"))?;
+
+    std::fs::write(SSHD_CONFIG, block).map_err(|e| {
+        // Put it back before reporting: a half-written sshd_config is worse
+        // than the one that was there.
+        let _ = std::fs::copy(SSHD_BACKUP, SSHD_CONFIG);
+        format!("writing {SSHD_CONFIG}: {e}")
+    })?;
+
+    let valid = std::process::Command::new("sshd")
+        .arg("-t")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+
+    match sshd_outcome(valid) {
+        SshdOutcome::Reload => {
+            // `ssh` on Debian, `sshd` on the RHEL family. The shell tries
+            // both and shrugs, because a reload that did not happen is a
+            // block that takes effect at the next restart.
+            for unit in ["ssh", "sshd"] {
+                let reloaded = std::process::Command::new("systemctl")
+                    .args(["reload", unit])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if reloaded {
+                    break;
+                }
+            }
+            Ok(SshdOutcome::Reload)
+        }
+        SshdOutcome::Rollback => {
+            std::fs::copy(SSHD_BACKUP, SSHD_CONFIG)
+                .map_err(|e| format!("restoring {SSHD_CONFIG}: {e}"))?;
+            Ok(SshdOutcome::Rollback)
+        }
+    }
+}
+
 pub const SSHD_INVALID: &str =
     "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block";
 

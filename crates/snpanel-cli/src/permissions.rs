@@ -99,58 +99,28 @@ fn add_to_sites_group() {
 }
 
 /// Source: the `sshd` block of `fix_permissions`.
+///
+/// The edit itself is `runtime::apply_sftp_block`, shared with
+/// `snpanel-install sftp-access`: two copies of an edit to `sshd_config` is
+/// two chances to get the rollback wrong.
+///
+/// The difference between the two callers is here, and only here. The
+/// installer treats an invalid result as fatal; this does not. An operator
+/// running `fix-permissions` has other repairs waiting, and losing the SFTP
+/// block is a feature not working while stopping leaves the box half-fixed.
 fn repair_sshd_sftp() {
     if which("sshd").is_none() {
         return;
     }
-    // sshd refuses to start without it, and a box whose `/run/sshd` went with
-    // a reboot has no SSH after the next restart.
-    let _ = std::fs::create_dir_all("/run/sshd");
-
-    // An older release wrote its copy of the block as a drop-in. Two `Match
-    // Group snpanel-sftp` blocks is a duplicate sshd will not start on.
-    let _ = std::fs::remove_file(runtime::SUPERSEDED_DROPIN);
-
     let existing = std::fs::read_to_string(runtime::SSHD_CONFIG).unwrap_or_default();
-    if std::fs::copy(runtime::SSHD_CONFIG, runtime::SSHD_BACKUP).is_err() {
-        // No backup means no rollback, and this edit is not worth making
-        // without one.
-        println!(
-            "WARNING: could not back up {}; skipped the SFTP block",
-            runtime::SSHD_CONFIG
-        );
-        return;
-    }
     let updated = backend_env::sshd_config_with_sftp(&existing);
-    if std::fs::write(runtime::SSHD_CONFIG, &updated).is_err() {
-        let _ = std::fs::copy(runtime::SSHD_BACKUP, runtime::SSHD_CONFIG);
-        return;
-    }
-
-    let valid = Command::new("sshd")
-        .arg("-t")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    match runtime::sshd_outcome(valid) {
-        runtime::SshdOutcome::Reload => {
-            // `ssh` on Debian, `sshd` on the RHEL family.
-            for unit in ["ssh", "sshd"] {
-                let ok = Command::new("systemctl")
-                    .args(["reload", unit])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success());
-                if ok {
-                    break;
-                }
-            }
-        }
-        runtime::SshdOutcome::Rollback => {
-            let _ = std::fs::copy(runtime::SSHD_BACKUP, runtime::SSHD_CONFIG);
+    match runtime::apply_sftp_block(&updated) {
+        Ok(runtime::SshdOutcome::Reload) => {}
+        Ok(runtime::SshdOutcome::Rollback) => {
             println!("WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block");
+        }
+        Err(e) => {
+            println!("WARNING: could not apply the SFTP block ({e})");
         }
     }
 }
