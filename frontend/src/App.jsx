@@ -1,9 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
 import {
   API,
-  CodeEditor,
   DEFAULT_SERVICE_NAMES,
   EMPTY_SITE_APP_DRAFT,
   HTTP_FLOOD_DEFAULTS,
@@ -33,28 +32,32 @@ import './brand.css';
 import './file-manager.css';
 import './theme.css';
 import { PanelContext } from './lib/panel-context.jsx';
+// Loaded on demand. Every page but the Dashboard - the one each session lands
+// on - and the code editor, which pulls in ace and is only ever shown in the
+// standalone editor window.
+const CodeEditor = lazy(() => import('./components/CodeEditor.jsx'));
 import DashboardPage from './pages/Dashboard.jsx';
-import AddonMissingPage from './pages/AddonMissing.jsx';
-import AddonsPage from './pages/Addons.jsx';
-import ApplicationsPage from './pages/Applications.jsx';
-import WebsitesPage from './pages/Websites.jsx';
-import SslPage from './pages/Ssl.jsx';
-import DatabasesPage from './pages/Databases.jsx';
-import CronPage from './pages/Cron.jsx';
-import FilesPage from './pages/Files.jsx';
-import BackupsPage from './pages/Backups.jsx';
-import ServicesPage from './pages/Services.jsx';
-import PhpConfigPage from './pages/PhpConfig.jsx';
-import FirewallPage from './pages/Firewall.jsx';
-import WafPage from './pages/Waf.jsx';
-import WafSitePage from './pages/WafSite.jsx';
-import WafAccessLogsPage from './pages/WafAccessLogs.jsx';
-import UpdatesPage from './pages/Updates.jsx';
-import SecurityPage from './pages/Security.jsx';
-import MalwarePage from './pages/Malware.jsx';
-import PanelSettingsPage from './pages/PanelSettings.jsx';
-import ApiTokensPage from './pages/ApiTokens.jsx';
-import UsersPage from './pages/Users.jsx';
+const AddonMissingPage = lazy(() => import('./pages/AddonMissing.jsx'));
+const AddonsPage = lazy(() => import('./pages/Addons.jsx'));
+const ApplicationsPage = lazy(() => import('./pages/Applications.jsx'));
+const WebsitesPage = lazy(() => import('./pages/Websites.jsx'));
+const SslPage = lazy(() => import('./pages/Ssl.jsx'));
+const DatabasesPage = lazy(() => import('./pages/Databases.jsx'));
+const CronPage = lazy(() => import('./pages/Cron.jsx'));
+const FilesPage = lazy(() => import('./pages/Files.jsx'));
+const BackupsPage = lazy(() => import('./pages/Backups.jsx'));
+const ServicesPage = lazy(() => import('./pages/Services.jsx'));
+const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
+const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
+const WafPage = lazy(() => import('./pages/Waf.jsx'));
+const WafSitePage = lazy(() => import('./pages/WafSite.jsx'));
+const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
+const UpdatesPage = lazy(() => import('./pages/Updates.jsx'));
+const SecurityPage = lazy(() => import('./pages/Security.jsx'));
+const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
+const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
+const ApiTokensPage = lazy(() => import('./pages/ApiTokens.jsx'));
+const UsersPage = lazy(() => import('./pages/Users.jsx'));
 
 function App() {
   // Auth is now cookie-based (HttpOnly snpanel_session). The SPA does not see
@@ -3607,13 +3610,15 @@ function App() {
       {loading && <div className="loading">{loading}</div>}
       {renderNotifications()}
       <section className="standalone-editor-body">
-        <CodeEditor
-          value={fileContent}
-          mode={editorMode}
-          disabled={!selectedWebsiteId}
-          onChange={setFileContent}
-          onCursorChange={setEditorCursor}
-        />
+        <Suspense fallback={<div className="loading">Loading editor…</div>}>
+          <CodeEditor
+            value={fileContent}
+            mode={editorMode}
+            disabled={!selectedWebsiteId}
+            onChange={setFileContent}
+            onCursorChange={setEditorCursor}
+          />
+        </Suspense>
       </section>
     </main>;
   }
@@ -4182,7 +4187,7 @@ function App() {
           </div>
         </section>
         <div className="content-body">
-          {<PanelContext.Provider value={panelContext()}>{renderPage()}</PanelContext.Provider>}
+          {<PanelContext.Provider value={panelContext()}><Suspense fallback={<div className="loading">Loading…</div>}>{renderPage()}</Suspense></PanelContext.Provider>}
           {loading && <div className="loading"><span></span>{loading}</div>}
         </div>
       </div>

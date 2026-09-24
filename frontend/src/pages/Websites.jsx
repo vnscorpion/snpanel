@@ -1,5 +1,8 @@
 import { Copy, Dices, FileText, FolderOpen, Globe, KeyRound, Lock, Plus, RefreshCw, RotateCcw, Save, Search, Settings as SettingsIcon, TerminalIcon, Trash2, X } from 'lucide-react';
-import { Terminal } from '../components/Terminal';
+import { lazy, Suspense } from 'react';
+// xterm.js is most of this page's weight and only the terminal panel uses
+// it, so it is fetched when that panel is opened rather than with the page.
+const Terminal = lazy(() => import('../components/Terminal').then((m) => ({ default: m.Terminal })));
 import { API, NGINX_REWRITE_MODES, SITE_APP_KIND_LABELS, WEBSITE_MODES, WordPressIcon, isProxiedAppType } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 
@@ -239,7 +242,9 @@ export default function WebsitesPage() {
         <button className="secondary-light" onClick={() => setTerminalViewer(null)}><X size={14}/> Close</button>
       </div>
       <div style={{ height: '500px', marginTop: '8px' }}>
-        <Terminal websiteId={terminalViewer.id} apiBase={API} />
+        <Suspense fallback={<div className="loading">Loading terminal…</div>}>
+          <Terminal websiteId={terminalViewer.id} apiBase={API} />
+        </Suspense>
       </div>
     </section>;
   }
