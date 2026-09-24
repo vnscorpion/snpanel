@@ -1171,217 +1171,18 @@ wait_for_backend() {
 }
 
 setup_systemd() {
-  cat >/etc/systemd/system/snpanel-api.service <<SERVICE
-[Unit]
-Description=SNPanel API
-After=network.target mariadb.service
-
-[Service]
-Type=exec
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:${PANEL_PORT} --env ${APP_DIR}/backend/.env
-Restart=always
-RestartSec=3
-
-# Hardening. These settings must not block the sudo helper; privileged work is
-# restricted by /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel.
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT} /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-ProtectProc=invisible
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=false
-LockPersonality=true
-MemoryDenyWriteExecute=false
-SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=~
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel /var/lib/snpanel/geoip
-  cat >/etc/systemd/system/snpanel-backup-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel scheduled backup runner
-After=network.target mariadb.service
-
-[Service]
-Type=oneshot
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env ${APP_DIR}/backend/.env
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT} /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-backup-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Run SNPanel scheduled backups every minute
-
-[Timer]
-OnBootSec=90s
-OnUnitActiveSec=60s
-AccuracySec=15s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel weekly malware scan runner
-After=network.target ${CLAMAV_SERVICE}
-
-[Service]
-Type=oneshot
-# The runner blocks until the scan it starts finishes (a whole-server scan can
-# take hours). Without this, systemd's 90s default start timeout kills it and
-# the scan lands in 'interrupted'.
-TimeoutStartSec=infinity
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env ${APP_DIR}/backend/.env
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT:-/var/backups/snpanel} /tmp /var/lib/snpanel
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Ask every quarter of an hour whether the weekly malware scan is due
-
-[Timer]
-# Often enough that a server asleep at the appointed hour still scans when it
-# comes back, while the runner itself refuses to start twice in one window.
-OnBootSec=5min
-OnUnitActiveSec=15min
-AccuracySec=1min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  # snpanel-helper refuses to run unless SUDO_USER names the panel account, so
-  # this unit sets it. The sibling boot units (firewall, blocklist) do the same:
-  # the helper then runs as root here with no real sudo in front of it.
-  cat >/etc/systemd/system/snpanel-autotune.service <<'SERVICE'
-[Unit]
-Description=Auto tune SNPanel PHP-FPM pools and MariaDB for this VPS
-After=network-online.target mariadb.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper php-fpm-retune
-ExecStart=/usr/local/sbin/snpanel-helper mariadb-retune
-RemainAfterExit=no
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  # Keep the clock honest. TOTP logins reject every code once it drifts past
-  # ~30s, and many budget VPS hosts block outbound UDP 123 so systemd-timesyncd
-  # never converges - snpanel-helper time-sync then falls back to an HTTPS Date
-  # header.
-  timedatectl set-ntp true >/dev/null 2>&1 || true
-  # Timezone is the operator's call - only touched when PANEL_TIMEZONE is set.
-  if [[ -n "$PANEL_TIMEZONE" ]]; then
-    if timedatectl set-timezone "$PANEL_TIMEZONE" >/dev/null 2>&1; then
-      log "Server timezone set to ${PANEL_TIMEZONE}"
-    else
-      log "WARNING: PANEL_TIMEZONE='${PANEL_TIMEZONE}' is not a valid zone; timezone left unchanged"
-    fi
-  fi
-  cat >/etc/systemd/system/snpanel-timesync.service <<'SERVICE'
-[Unit]
-Description=Correct the SNPanel server clock when NTP cannot reach the network
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper time-sync
-RemainAfterExit=no
-SERVICE
-  cat >/etc/systemd/system/snpanel-timesync.timer <<'SERVICE'
-[Unit]
-Description=Check the SNPanel server clock at boot and hourly
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=1h
-AccuracySec=30s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  systemctl daemon-reload
-  systemctl disable --now snpanel-auto-update.timer 2>/dev/null || true
-  rm -f /etc/systemd/system/snpanel-auto-update.service /etc/systemd/system/snpanel-auto-update.timer
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now snpanel-api
-  systemctl enable --now snpanel-backup-scheduler.timer
-  systemctl enable --now snpanel-malware-scheduler.timer
-  systemctl enable snpanel-autotune.service >/dev/null 2>&1 || true
-  systemctl start snpanel-autotune.service >/dev/null 2>&1 || true
-  systemctl enable snpanel-timesync.timer >/dev/null 2>&1 || true
-  if id -u snpanel >/dev/null 2>&1; then
-    # Start the clock unit only once the helper that answers `time-sync` is in
-    # place, so it never flashes up as a failed unit mid-install.
-    systemctl start snpanel-timesync.timer >/dev/null 2>&1 || true
-    systemctl start snpanel-timesync.service >/dev/null 2>&1 || true
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper certbot-auto-renew-install >/dev/null 2>&1 || true
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper firewall-blocklist-timer-install >/dev/null 2>&1 || true
-    # Certificates the panel can answer a handshake with, plus the renewal hook
-    # that keeps them fresh.
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper panel-sni-sync >/dev/null 2>&1 || true
-  fi
+  # The eight unit files, the reload and the enabling are
+  # `snpanel-install systemd-units`. The bodies live in
+  # `snpanel_installer::systemd_units`, where each one has a golden fixture
+  # recorded from this script running on a real Debian 13.
+  #
+  # Moving it fixes something the shell had drifted into: it wrote
+  # `After=network.target clamav-daemon` without the `.service` suffix, and
+  # systemd silently drops a dependency it cannot resolve - the malware
+  # scheduler was not waiting for ClamAV at all.
+  APP_DIR="$APP_DIR" BACKUP_ROOT="$BACKUP_ROOT" PANEL_PORT="$PANEL_PORT" \
+    "${RUST_BIN_DIR}/snpanel-install" systemd-units \
+    || fail "Could not install the panel's systemd units"
   wait_for_backend
 }
 
@@ -1874,44 +1675,11 @@ enable_ipv6_when_available() {
 }
 
 configure_log_limits() {
-  # systemd-journald ships with no size limit: it falls back to 10% of the
-  # filesystem, which on a 72G disk is 7.2G. Measured on a live server, the
-  # journal had reached 2.7G - 53 times the size of every nginx log put
-  # together - fed mostly by SSH password-guessing hitting sshd thousands of
-  # times an hour. nginx's own logs were never the problem; they rotate daily,
-  # keep 14 days and compress, and totalled 51M.
-  #
-  # A drop-in rather than an edit of journald.conf, so a distribution upgrade
-  # cannot quietly revert it.
-  mkdir -p /etc/systemd/journald.conf.d
-  cat >/etc/systemd/journald.conf.d/99-snpanel-size.conf <<'JOURNALD'
-# Managed by SNPanel.
-[Journal]
-SystemMaxUse=500M
-SystemKeepFree=1G
-MaxRetentionSec=2week
-JOURNALD
-  systemctl restart systemd-journald 2>/dev/null || true
-  journalctl --vacuum-size=500M >/dev/null 2>&1 || true
-
-  # btmp records every failed login and Ubuntu ships no rule for it. On the
-  # same server it had grown to 130M across two files, holding 62,000 failed
-  # SSH attempts. `su root root` is required because /var/log is root:syslog
-  # and group-writable, and logrotate refuses to act on a file in a directory
-  # it considers unsafe unless told whose identity to use.
-  cat >/etc/logrotate.d/btmp <<'BTMP'
-# Managed by SNPanel.
-/var/log/btmp {
-    su root root
-    missingok
-    weekly
-    create 0660 root utmp
-    rotate 4
-    compress
-    notifempty
-}
-BTMP
-  chmod 644 /etc/logrotate.d/btmp
+  # `snpanel-install log-limits`. Both files come from
+  # `snpanel_installer::systemd_units`, with fixtures; the vacuum and the
+  # journald restart are the acting half. Nothing here is fatal: a box whose
+  # journald will not restart keeps its old limits.
+  "${RUST_BIN_DIR}/snpanel-install" log-limits || true
 }
 
 main() {

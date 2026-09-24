@@ -54,12 +54,12 @@ jobs:
       - name: Build
         run: |
           cargo build --release --locked --target "$TARGET" \
-            -p snpanel-helper -p snpanel-api -p snpanel-cli
+            -p snpanel-helper -p snpanel-api -p snpanel-cli -p snpanel-installer
 
       - name: Check they are static
         run: |
           set -euo pipefail
-          for b in snpanel-helper snpanel-extract snpanel-api snpanel; do
+          for b in snpanel-helper snpanel-extract snpanel-api snpanel snpanel-install; do
             path="target/${TARGET}/release/${b}"
             file "$path"
             # A dynamically linked binary would work on the machine that built
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "dist/${ASSET}"
-          for b in snpanel-helper snpanel-extract snpanel-api snpanel; do
+          for b in snpanel-helper snpanel-extract snpanel-api snpanel snpanel-install; do
             install -m 0755 "target/${TARGET}/release/${b}" "dist/${ASSET}/${b}"
           done
           ( cd dist && tar czf "${ASSET}.tar.gz" "${ASSET}" && rm -rf "${ASSET}" )

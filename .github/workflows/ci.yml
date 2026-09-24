@@ -48,14 +48,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
           cargo build --release --locked --target x86_64-unknown-linux-musl \
-            -p snpanel-helper -p snpanel-api -p snpanel-cli
+            -p snpanel-helper -p snpanel-api -p snpanel-cli -p snpanel-installer
 
       - name: The installer sees them
         run: |
           ls -l target/x86_64-unknown-linux-musl/release/snpanel-helper \
                 target/x86_64-unknown-linux-musl/release/snpanel-api \
                 target/x86_64-unknown-linux-musl/release/snpanel \
-                target/x86_64-unknown-linux-musl/release/snpanel-extract
+                target/x86_64-unknown-linux-musl/release/snpanel-extract \
+                target/x86_64-unknown-linux-musl/release/snpanel-install
 
       - name: Run install.sh unattended
         # PANEL_URL supplies the hostname and port, so no prompt is reached;

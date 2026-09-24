@@ -24,7 +24,10 @@ SNPANEL_GITHUB="${SNPANEL_GITHUB:-https://github.com/vnscorpion/snpanel}"
 # Checked as a set before anything is installed: an archive missing one is a
 # broken release, and finding that out halfway through placing the others
 # leaves a box with a mismatched pair.
-RUST_REQUIRED_BINARIES=(snpanel-helper snpanel-extract snpanel-api snpanel)
+# `snpanel-install` is the installer's own phases. It is required rather than
+# optional because `install.sh` calls it for phases that have no shell left to
+# fall back to - an archive without it produces a box with no systemd units.
+RUST_REQUIRED_BINARIES=(snpanel-helper snpanel-extract snpanel-api snpanel snpanel-install)
 
 resolve_release_tag() {
   local tag="${SNPANEL_VERSION:-}"
