@@ -1,0 +1,52 @@
+/* The dashboard: a map of the panel, one tile per page, grouped.
+   See pages/Dashboard.jsx for what goes in which group.
+
+   Sized so the whole map and the server's figures fit a 1440x900 screen
+   without scrolling: a tile is one row high, icon beside its label, until the
+   space runs out and the icon moves above. */
+
+.dashboard{display:grid;gap:var(--space-4)}
+.dashboard .resource-grid{margin-bottom:0}
+
+/* A new account's one next step, above the map rather than instead of it. */
+.dash-first-run{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);background:var(--primary-light);border:1px solid var(--primary-border);border-radius:var(--radius-lg)}
+.dash-first-run p{flex:1;min-width:0;margin:0;color:var(--text);font-weight:600}
+.dash-first-run button{flex:none}
+.dash-first-run-icon{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:var(--radius-md);background:var(--surface);color:var(--primary-text);border:1px solid var(--primary-border)}
+
+/* The grid follows the width the dashboard actually has, not the window's:
+   the sidebar comes and goes. */
+.dash-groups{display:grid;gap:var(--space-3);container:dash / inline-size}
+.dash-group{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-3)}
+.dash-group-title{margin:0 0 var(--space-2) var(--space-1);font-size:var(--text-sm);line-height:var(--leading-tight);font-weight:700;color:var(--text-secondary)}
+.dash-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--space-2)}
+
+.dash-tile{display:flex;align-items:center;gap:var(--space-3);min-width:0;min-height:56px;padding:var(--space-2) var(--space-3) var(--space-2) var(--space-2);border:1px solid transparent;border-radius:var(--radius-md);color:var(--text);font-size:var(--text-base);font-weight:600;line-height:var(--leading-tight);text-decoration:none;transition:background-color .15s ease,border-color .15s ease}
+.dash-tile:hover{background:var(--surface-hover);border-color:var(--border);color:var(--text)}
+.dash-tile:focus-visible{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
+.dash-tile-icon{display:grid;place-items:center;flex:none;width:40px;height:40px;border-radius:var(--radius-md);background:var(--tone-bg);color:var(--tone-fg)}
+.dash-tile-label{min-width:0;overflow-wrap:anywhere}
+
+.dash-group[data-tone="blue"]{--tone-bg:var(--tint-blue-bg);--tone-fg:var(--tint-blue-fg)}
+.dash-group[data-tone="rose"]{--tone-bg:var(--tint-rose-bg);--tone-fg:var(--tint-rose-fg)}
+.dash-group[data-tone="teal"]{--tone-bg:var(--tint-teal-bg);--tone-fg:var(--tint-teal-fg)}
+.dash-group[data-tone="slate"]{--tone-bg:var(--tint-slate-bg);--tone-fg:var(--tint-slate-fg)}
+.dash-group[data-tone="violet"]{--tone-bg:var(--tint-violet-bg);--tone-fg:var(--tint-violet-fg)}
+
+/* Six tiles need about 900px to keep a label beside its icon. */
+@container dash (max-width:900px){
+  .dash-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@container dash (max-width:560px){
+  .dash-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-1)}
+  .dash-tile{flex-direction:column;justify-content:flex-start;gap:var(--space-2);padding:var(--space-3) var(--space-1);text-align:center;font-size:var(--text-sm)}
+}
+@container dash (max-width:280px){
+  .dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width:640px){
+  .dash-first-run{flex-wrap:wrap}
+  .dash-first-run p{flex-basis:calc(100% - 48px)}
+  .dash-first-run button{width:100%}
+}

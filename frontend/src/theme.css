@@ -155,6 +155,18 @@
   --editor-gutter-fg:#7d8a99;
   --editor-active-line:#eaf3fc;
   --editor-selection:#a9d0f0;
+  /* Category tints: the square behind a group's icons (the dashboard).
+     Icon on square is 4.8:1 or better in both themes. */
+  --tint-blue-bg:#e8f2fb;
+  --tint-blue-fg:#00579f;
+  --tint-rose-bg:#fdecef;
+  --tint-rose-fg:#be123c;
+  --tint-teal-bg:#e3f5f2;
+  --tint-teal-fg:#0f766e;
+  --tint-slate-bg:#eef2f7;
+  --tint-slate-fg:#475569;
+  --tint-violet-bg:#f1ecfe;
+  --tint-violet-fg:#6d28d9;
 }
 
 /* ============================ DARK ============================ */
@@ -236,6 +248,17 @@
   --editor-gutter-fg:#7c8a99;
   --editor-active-line:#16222e;
   --editor-selection:#1d4c7a;
+  /* Category tints */
+  --tint-blue-bg:#0e2a44;
+  --tint-blue-fg:#7fbdf2;
+  --tint-rose-bg:#3b1520;
+  --tint-rose-fg:#fda4af;
+  --tint-teal-bg:#0b2f2c;
+  --tint-teal-fg:#5eead4;
+  --tint-slate-bg:#222c37;
+  --tint-slate-fg:#cbd5e1;
+  --tint-violet-bg:#28204a;
+  --tint-violet-fg:#c4b5fd;
 }
 
 /* Follow the OS when no explicit choice is stored. */
@@ -316,6 +339,17 @@
     --editor-gutter-fg:#7c8a99;
     --editor-active-line:#16222e;
     --editor-selection:#1d4c7a;
+    /* Category tints */
+    --tint-blue-bg:#0e2a44;
+    --tint-blue-fg:#7fbdf2;
+    --tint-rose-bg:#3b1520;
+    --tint-rose-fg:#fda4af;
+    --tint-teal-bg:#0b2f2c;
+    --tint-teal-fg:#5eead4;
+    --tint-slate-bg:#222c37;
+    --tint-slate-fg:#cbd5e1;
+    --tint-violet-bg:#28204a;
+    --tint-violet-fg:#c4b5fd;
   }
 }
 
@@ -335,7 +369,7 @@ body{
 }
 h1,h2,h3,h4,h5,h6,button,input,select,textarea{font-family:inherit}
 /* Figures line up wherever numbers are compared down a column or read at a glance. */
-table,.badge,code,kbd,pre,.stat-value,.editor-chip{font-variant-numeric:tabular-nums}
+table,.badge,code,kbd,pre,.resource-card,.editor-chip{font-variant-numeric:tabular-nums}
 code,kbd,pre,samp{font-family:var(--font-mono)}
 ::selection{background:var(--primary);color:var(--primary-fg)}
 a{color:var(--primary-text)}

@@ -17,8 +17,8 @@ body{background:var(--bg);color:var(--text)}
 .sidebar button:hover:not(.active){background:var(--surface-alt);color:var(--brand-navy);border-color:var(--border)}
 .sidebar .sidebar-group-toggle.active{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
 .sidebar .sidebar-subnav button.active{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
-.section,.stat-card,.card,.site-card,.service-card,.backup-item,.info-box,.user-create-card{border-color:var(--border)}
-.section:hover,.stat-card:hover,.card:hover,.site-card:hover,.service-card:hover,.backup-item:hover{border-color:var(--border-hover)}
+.section,.card,.site-card,.service-card,.backup-item,.info-box,.user-create-card{border-color:var(--border)}
+.section:hover,.card:hover,.site-card:hover,.service-card:hover,.backup-item:hover{border-color:var(--border-hover)}
 h1,h2{color:var(--brand-navy)}
 .site-link{display:inline-flex;align-items:center;color:var(--brand-navy);font-weight:600;text-decoration:none}
 .site-link:hover{color:var(--primary);text-decoration:underline;text-underline-offset:3px}

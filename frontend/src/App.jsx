@@ -3384,7 +3384,7 @@ function App() {
   const settingsNavItems = [
     ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
     ...(isAdmin ? [['api-tokens', t('API Tokens'), KeyRound]] : []),
-    ['security', t('Security'), Shield],
+    ['security', t('Two-step verification'), Shield],
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
     ['waf', t('WAF'), Shield],
@@ -3827,6 +3827,7 @@ function App() {
       manualSslFiles,
       manualSslForm,
       moveSelectedFiles,
+      navItems,
       navigateToPage,
       newApiToken,
       newBackupSchedule,
