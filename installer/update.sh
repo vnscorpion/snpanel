@@ -880,7 +880,7 @@ ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env ${APP_DIR
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
-ReadWritePaths=/home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel ${APP_DIR} /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
+ReadWritePaths=${APP_DIR} /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
 PrivateTmp=true
 
 [Install]
@@ -906,9 +906,9 @@ After=network.target ${CLAMAV_SERVICE}
 
 [Service]
 Type=oneshot
-# The runner blocks until the scan it starts finishes (a whole-server scan
-# can take hours). Without this, systemd's 90s default start timeout kills it
-# and the scan lands in 'interrupted'.
+# The runner blocks until the scan it starts finishes (a whole-server scan can
+# take hours). Without this, systemd's 90s default start timeout kills it and
+# the scan lands in 'interrupted'.
 TimeoutStartSec=infinity
 User=snpanel
 Group=snpanel
