@@ -141,6 +141,27 @@ DEFAULT_SOURCE_DIR="/opt/snpanel-source"           # Dev/branch checkout dir onl
 # looked wrong from outside because Rust kept answering.
 RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 
+# Which `snpanel-install` to run a phase with.
+#
+# The one this update fetched wins: it is the release being installed, and a
+# phase should write what that release says. The one already on the box is the
+# fallback, and it is why `install.sh` puts it in /usr/local/sbin rather than
+# leaving it in the release directory - an update that cannot reach the
+# release still refreshes what it can, which is the tolerance this script has
+# always had for the other binaries.
+#
+# Printing nothing when there is neither is deliberate: the caller runs
+# `"$(phase_runner)"`, which then fails, and every call site treats that as a
+# warning rather than a stop. A box with no phase runner at all is one that
+# has never been installed.
+phase_runner() {
+  if [[ -n "${RUST_BIN_DIR:-}" && -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
+    printf '%s' "${RUST_BIN_DIR}/snpanel-install"
+  else
+    printf '%s' /usr/local/sbin/snpanel-install
+  fi
+}
+
 panel_unit() {
   if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then
     echo snpanel-rust
@@ -598,31 +619,15 @@ NGINX
 }
 
 migrate_nginx_wordpress_csp_worker_src() {
-  python3 - <<'PY'
-from pathlib import Path
-
-roots = [Path("/etc/nginx/conf.d"), Path("/etc/nginx/sites-enabled")]
-needle = "worker-src 'self' blob:;"
-anchor = "frame-src 'self' https: blob:;"
-
-for root in roots:
-    if not root.exists():
-        continue
-    for path in sorted(root.glob("*.conf")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            text = path.read_text(encoding="latin-1")
-        if "Content-Security-Policy" not in text or needle in text:
-            continue
-        if anchor in text:
-            new_text = text.replace(anchor, f"{anchor} {needle}")
-        else:
-            new_text = text.replace("object-src", f"{needle} object-src")
-        if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
-            print(f"Updated CSP worker-src in {path}")
-PY
+  # `snpanel-install migrate-csp`, which was embedded `python3` here. What to
+  # write is `snpanel_installer::update::migrations::csp`, pinned to a corpus
+  # taken from real policies - this edits vhosts an operator did not ask it to
+  # touch, so being nearly right is not good enough.
+  #
+  # Not fatal: a box whose editor still blocks workers is a box with a
+  # cosmetic fault, and stopping the update over it would be worse.
+  "$(phase_runner)" migrate-csp || \
+    echo "WARNING: could not migrate the Content-Security-Policy in existing vhosts"
 }
 
 # Cron lines written before the PHP pinning fix call a bare `php`, which
@@ -1287,6 +1292,10 @@ if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
       log "Refreshing /usr/local/bin/snpanel-api-rust"
       install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
         /usr/local/bin/snpanel-api-rust
+    fi
+    if [[ -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
+      install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
+        /usr/local/sbin/snpanel-install
     fi
     if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
       # The binary takes the `snpanel` name; the two older names follow it.

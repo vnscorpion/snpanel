@@ -42,6 +42,23 @@ pub fn helper_files() -> Vec<Installed> {
             owner: "root",
             group: "root",
         },
+        // The phase runner. On the box rather than only in the release
+        // directory, because `update.sh` runs phases before it has fetched
+        // anything and a box whose update cannot reach the release still has
+        // the previous one here.
+        //
+        // 0750 root:root: root-only, which is narrower than either of the
+        // other two. The helper is 0750 root:snpanel because the panel calls
+        // it; the extractor is 0755 because a customer's own account runs it.
+        // Nothing but the installer runs this, and everything it writes needs
+        // root anyway - so there is no account that should be able to start
+        // it and fail halfway.
+        Installed {
+            path: "/usr/local/sbin/snpanel-install",
+            mode: 0o750,
+            owner: "root",
+            group: "root",
+        },
     ]
 }
 
@@ -132,6 +149,15 @@ mod tests {
     /// The boundary. A helper any local user could execute would put every
     /// verb in it within reach of every account on the box — including the
     /// unprivileged ones the panel creates for customers.
+    ///
+    /// Three files, three different answers, and each is deliberate:
+    ///
+    /// * `snpanel-helper` is 0750 root:snpanel, because the panel calls it
+    ///   and nothing else may;
+    /// * `snpanel-extract` is 0755, because a customer's own account runs it
+    ///   — see the test below;
+    /// * `snpanel-install` is 0750 root:root, narrower than both. Nothing but
+    ///   the installer runs it, and everything it writes needs root anyway.
     #[test]
     fn the_helpers_are_not_executable_by_other_users() {
         for file in helper_files() {
@@ -144,11 +170,20 @@ mod tests {
                 "{} is reachable by other users",
                 file.path
             );
-            assert_eq!(file.group, "snpanel", "{}", file.path);
             assert_eq!(file.owner, "root", "{}", file.path);
-            // And the group can run it but not rewrite it.
-            assert_eq!(file.mode & 0o050, 0o050, "{}", file.path);
+            // Never group-writable: that is a privilege escalation for every
+            // member of the group.
             assert_eq!(file.mode & 0o020, 0, "{}", file.path);
+
+            if file.path.ends_with("snpanel-install") {
+                // Root-only. It has no caller that is not already root.
+                assert_eq!(file.group, "root", "{}", file.path);
+                assert_eq!(file.mode, 0o750, "{}", file.path);
+            } else {
+                // The panel's group can run it.
+                assert_eq!(file.group, "snpanel", "{}", file.path);
+                assert_eq!(file.mode & 0o050, 0o050, "{}", file.path);
+            }
         }
     }
 

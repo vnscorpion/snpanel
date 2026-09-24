@@ -938,6 +938,12 @@ install_rust_helper() {
     /usr/local/sbin/snpanel-helper
   install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-extract" \
     /usr/local/sbin/snpanel-extract
+  # The phase runner stays on the box rather than only in the release
+  # directory. `update.sh` runs phases before it has fetched anything, and a
+  # box whose update cannot reach the release still has the previous one
+  # here - which is the same tolerance the other binaries already get.
+  install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
+    /usr/local/sbin/snpanel-install
 
   # The socket, so the panel reaches the helper without a sudo fork per call.
   # `sudo` still works and is still what an administrator uses by hand.

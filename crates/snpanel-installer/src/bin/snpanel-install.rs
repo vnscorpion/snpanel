@@ -24,6 +24,7 @@ use snpanel_installer::nginx_conf;
 use snpanel_installer::php;
 use snpanel_installer::systemd_units::{self, UnitSettings};
 use snpanel_installer::tools_vhost;
+use snpanel_installer::update::migrations;
 use snpanel_installer::update::runtime;
 
 /// Source: the `install -d` in `write_modsec_base_conf`.
@@ -42,6 +43,7 @@ fn main() -> ExitCode {
         Some("sftp-access") => run(phase_sftp_access()),
         Some("tools-vhost") => run(phase_tools_vhost()),
         Some("backend-env") => run(phase_backend_env()),
+        Some("migrate-csp") => run(phase_migrate_csp()),
         Some("php-ini") => run(phase_php_ini(args.get(1))),
         Some("php-fpm-pool") => run(phase_php_fpm_pool(args.get(1), args.get(2))),
         Some("--help") | Some("-h") | None => {
@@ -67,6 +69,7 @@ fn help() {
     println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
     println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on");
     println!("  snpanel-install backend-env      the panel's .env, then seed the database");
+    println!("  snpanel-install migrate-csp      add worker-src to existing vhosts");
     println!("  snpanel-install php-ini <path>   the panel's seven php.ini settings");
     println!("  snpanel-install php-fpm-pool <path> <socket>");
     println!("                                   point a pool at the panel's socket\n");
@@ -671,6 +674,55 @@ fn phase_php_fpm_pool(path: Option<&String>, socket: Option<&String>) -> Result<
     let updated =
         backend_env::php_fpm_pool(&existing, platform.web_user(), platform.web_group(), socket);
     std::fs::write(path, updated).map_err(|e| format!("writing {path}: {e}"))
+}
+
+/// Source: `migrate_nginx_wordpress_csp_worker_src`, which was embedded
+/// `python3` in `update.sh`.
+///
+/// WordPress's block editor loads workers from `blob:` URLs. A policy written
+/// before that was known blocks them, and the symptom is an editor that will
+/// not open with the reason only in the browser console - so this edits
+/// vhosts an operator did not ask it to touch. The alternative is telling
+/// every customer to go and fix their own, which is why the decision of what
+/// to write is pinned in `migrations::csp` rather than made here.
+///
+/// A file that cannot be read as UTF-8 is read as Latin-1, as the Python did:
+/// a vhost with a stray byte in a comment is still a vhost, and skipping it
+/// would leave one site's editor broken for a reason nobody would connect to
+/// this.
+fn phase_migrate_csp() -> Result<(), String> {
+    for root in ["/etc/nginx/conf.d", "/etc/nginx/sites-enabled"] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut paths: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("conf"))
+            .collect();
+        // `sorted(root.glob("*.conf"))` - the order the messages come out in.
+        paths.sort();
+
+        for path in paths {
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let text = match String::from_utf8(bytes.clone()) {
+                Ok(text) => text,
+                // `except UnicodeDecodeError: read_text(encoding="latin-1")`.
+                // Every byte is a code point in Latin-1, so this cannot fail.
+                Err(_) => bytes.iter().map(|b| *b as char).collect(),
+            };
+            let updated = migrations::csp::migrate(&text);
+            if updated == text {
+                continue;
+            }
+            if std::fs::write(&path, &updated).is_ok() {
+                println!("Updated CSP worker-src in {}", path.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
