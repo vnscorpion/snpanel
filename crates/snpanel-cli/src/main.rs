@@ -9,6 +9,7 @@
 //! reimplementing privileged work - that is deliberate, and it is what lets
 //! this ship before Phase 2 exists.
 
+mod change_ip;
 mod cli;
 mod doctor;
 mod menu;

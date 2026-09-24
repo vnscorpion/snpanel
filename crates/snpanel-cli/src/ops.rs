@@ -110,7 +110,7 @@ pub fn status(env_path: Option<&Path>) -> Result<()> {
 /// use has to be discovered: naming the wrong one makes `status` report a
 /// serving panel as down, `logs` read an empty journal, and `restart` restart
 /// something that is deliberately stopped while reporting success.
-fn panel_units() -> Vec<&'static str> {
+pub(crate) fn panel_units() -> Vec<&'static str> {
     if unit_is_loaded("snpanel-rust") {
         vec!["snpanel-rust", "snpanel-upstream"]
     } else {
@@ -407,8 +407,6 @@ fn env_value(path: &Path, key: &str) -> Option<String> {
 /// Source: `/usr/local/sbin/snpanel-update`, which `install.sh` installs from
 /// `installer/update.sh`.
 const UPDATE_SCRIPT: &str = "/usr/local/sbin/snpanel-update";
-/// Source: `/usr/local/sbin/snpanel-change-ip`, installed from `change_IP.sh`.
-const CHANGE_IP_SCRIPT: &str = "/usr/local/sbin/snpanel-change-ip";
 
 /// Which version an update is aimed at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,14 +474,12 @@ pub fn run_update(target: UpdateTarget) -> Result<()> {
 /// Source: `change_panel_ip`. Two addresses, or none and it asks; anything
 /// else is a usage error rather than a guess, because this rewrites every
 /// file on the box that records an address.
+///
+/// The work itself was `/usr/local/sbin/snpanel-change-ip`, installed from
+/// `change_IP.sh` - a file that has never been in the repository, so no
+/// release has ever carried it and this subcommand has only ever reported
+/// the script as missing. It is [`crate::change_ip`] now.
 pub fn change_ip(addresses: &[String]) -> Result<()> {
-    if !is_executable(Path::new(CHANGE_IP_SCRIPT)) {
-        anyhow::bail!(
-            "{CHANGE_IP_SCRIPT} not found. Reinstall/update SNPanel or copy \
-             change_IP.sh to that path."
-        );
-    }
-
     let (old_ip, new_ip) = match addresses.len() {
         2 => (addresses[0].clone(), addresses[1].clone()),
         0 => {
@@ -507,14 +503,7 @@ pub fn change_ip(addresses: &[String]) -> Result<()> {
         _ => anyhow::bail!("usage: snpanel change-ip <old-ip> <new-ip>"),
     };
 
-    let status = Command::new(CHANGE_IP_SCRIPT)
-        .args([&old_ip, &new_ip])
-        .status()
-        .with_context(|| format!("running {CHANGE_IP_SCRIPT}"))?;
-    if !status.success() {
-        anyhow::bail!("{CHANGE_IP_SCRIPT} exited {:?}", status.code());
-    }
-    Ok(())
+    crate::change_ip::change_ip(&old_ip, &new_ip, &crate::app_dir())
 }
 
 /// Source: `detect_ip` - `hostname -I | awk '{print $1}'`, and an empty
@@ -820,36 +809,19 @@ mod tests {
     #[test]
     fn changing_the_ip_needs_two_addresses_or_none() {
         // One address is the shape that could mean either, and this rewrites
-        // every file on the box that records an address. The bash refuses it
-        // and so does this.
-        let err = change_ip(&["10.0.0.1".to_string()])
-            .unwrap_err()
-            .to_string();
-        // The missing-script check comes first on a machine without it; on
-        // one with it, the arity check does. Either way it must not run.
-        assert!(
-            err.contains("usage: snpanel change-ip") || err.contains(CHANGE_IP_SCRIPT),
-            "{err}"
-        );
-
-        let err3 = change_ip(&["a".into(), "b".into(), "c".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err3.contains("usage: snpanel change-ip") || err3.contains(CHANGE_IP_SCRIPT),
-            "{err3}"
-        );
-    }
-
-    #[test]
-    fn the_change_ip_script_is_named_when_it_is_missing() {
-        // `change_IP.sh` is not in the repository, so no release installs
-        // this path. The message has to say which file and where from, or the
-        // operator has nothing to act on.
-        let err = change_ip(&["10.0.0.1".into(), "10.0.0.2".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains(CHANGE_IP_SCRIPT), "{err}");
-        assert!(err.contains("change_IP.sh"), "{err}");
+        // every file on the box that records an address. The source refuses
+        // it and so does this.
+        //
+        // The arity is now the *only* thing that can refuse before the work
+        // starts. It used to share that with a check for
+        // `/usr/local/sbin/snpanel-change-ip`, a file no release ever
+        // installed - and the test for that message is gone with the script.
+        for args in [
+            vec!["10.0.0.1".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        ] {
+            let err = change_ip(&args).unwrap_err().to_string();
+            assert!(err.contains("usage: snpanel change-ip"), "{args:?}: {err}");
+        }
     }
 }

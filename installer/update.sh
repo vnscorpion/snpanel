@@ -1347,10 +1347,9 @@ if [[ -f "$SOURCE_DIR/installer/rescue-firewall.sh" ]]; then
   ln -sfn /usr/local/sbin/snpanel-rescue-firewall /usr/local/sbin/snpanel-rescue-ufw-blocklist
 fi
 
-if [[ -f "$SOURCE_DIR/change_IP.sh" ]]; then
-  log "Refreshing panel IP change command"
-  install -m 0755 -o root -g root "$SOURCE_DIR/change_IP.sh" /usr/local/sbin/snpanel-change-ip
-fi
+# The IP change command was a separate script refreshed here. It is
+# `snpanel change-ip`, and the binary carrying it is refreshed with the
+# others above.
 
 if [[ -f "$SOURCE_DIR/installer/update.sh" ]]; then
   log "Refreshing panel update command"

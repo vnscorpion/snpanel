@@ -993,9 +993,9 @@ install_privileged_helper() {
   visudo -c -f /etc/sudoers.d/snpanel >/dev/null
   install -m 0755 -o root -g root "${SCRIPT_DIR}/rescue-firewall.sh" /usr/local/sbin/snpanel-rescue-firewall
   ln -sfn /usr/local/sbin/snpanel-rescue-firewall /usr/local/sbin/snpanel-rescue-ufw-blocklist
-  if [[ -f "${PROJECT_ROOT}/change_IP.sh" ]]; then
-    install -m 0755 -o root -g root "${PROJECT_ROOT}/change_IP.sh" /usr/local/sbin/snpanel-change-ip
-  fi
+  # `change_IP.sh` used to be installed here as `snpanel-change-ip`. It was
+  # never in the repository, so the guard above was always false and no
+  # release ever installed it - `snpanel change-ip` does the work itself now.
 }
 
 install_panel_cli() {

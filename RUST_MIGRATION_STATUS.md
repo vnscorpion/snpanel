@@ -3311,10 +3311,10 @@ The commit that deleted the bash helper said 9 files and 238 KB. That
 measured `installer/` and missed `da_import_install.sh` (47 KB) and the root
 `install.sh`. The real figure was about 258 KB, and is about 231 KB now.
 
-Neither of the two that were missed breaks: the root file is a 38-line
+Neither of the two that were missed broke: the root file is a 38-line
 bootstrap that fetches the real installer, and `da_import_install.sh` already
 pointed at `/usr/local/sbin/snpanel` rather than at anything in the
-repository — and makes the same `snpanelctl` symlink this now does.
+repository. (`da_import_install.sh` has since been deleted — see below.)
 
 ### Verified on the container
 
@@ -3470,3 +3470,95 @@ Adding the value as one more `.arg()` fails a named test in each case.
 The admin password stays the shell's to generate, because the shell needs it
 afterwards for `/root/login.txt` and the summary. The `SECRET_KEY` does not,
 so the phase generates it and it never becomes a shell variable at all.
+
+## What is left of the shell, and what cannot leave
+
+Two files go here. One was dead and is deleted; one was never shipped and is
+now Rust. The branch drops from about 217 KB of shell to about 170 KB.
+
+### `da_import_install.sh` — 47 KB, and none of it could run
+
+It installs a standalone DirectAdmin importer as "menu option 13". Four
+things are true of it and any one of them is enough:
+
+* it refuses to start without `${APP_DIR}/backend/.venv/bin/python`, and the
+  virtualenv went with the Python backend;
+* what it installs is a Python program (`cat >"${IMPORTER}" <<'PYIMPORTER'`)
+  which calls that same interpreter;
+* the feature is 116 KB of Rust in `crates/snpanel-api/src/da_import.rs`,
+  served over `/maintenance/da-import/{upload,backups,scan,import,jobs}`;
+* the rescue menu has thirteen entries and `"13"` is in the list of choices
+  its test asserts are *invalid*, so the option it claims to add is one the
+  CLI refuses.
+
+Nothing references it. One commit has ever touched it — the initial import,
+before the port began.
+
+### `change_IP.sh` — never in the repository, so the command never worked
+
+`snpanel change-ip` ran `/usr/local/sbin/snpanel-change-ip`, installed from
+`change_IP.sh` by a guard in both installer scripts. That file has never been
+committed, so the guard was always false, no release ever installed the
+script, and the subcommand has only ever reported it missing.
+
+It is `crate::change_ip` now, which is what makes the command work rather than
+only exist. Porting it also removes the last `python3` the panel's own tooling
+shelled out to — the settings file and `/root/login.txt` were rewritten by
+two embedded Python heredocs.
+
+The part worth testing is the address boundary. The source replaces with
+`s/(?<![0-9.])\Qold\E(?![0-9.])/new/g`, and without the lookarounds changing
+`10.0.0.1` would also rewrite the `10.0.0.1` inside `10.0.0.10` and inside
+`110.0.0.1` — one address becoming two wrong ones, the second of which nobody
+notices until a firewall rule stops matching. Removing the boundary check
+fails a named test.
+
+**One measured divergence.** The source restarts `snpanel-api` and only that.
+On a box that cut over to `snpanel-rust` the unit is not loaded, so it
+restarts nothing and the panel serves the old address until somebody notices.
+That is the fourth time in this migration that code written before the
+cutover named the one unit it knew about, and the pattern is recorded here
+twice already — so this uses `panel_units()`, the same resolution the rest of
+the CLI uses.
+
+### The floor
+
+Three files cannot move, and the reasons are structural rather than
+technical:
+
+| file | bytes | why |
+| --- | ---: | --- |
+| `install.sh` (root) | 1,277 | `curl \| bash` has to fetch a script. A binary cannot be piped into a shell. |
+| `installer/lib/rust-binaries.sh` | 3,863 | It is what *fetches* the binaries. It cannot be one of them. |
+| `installer/rescue-firewall.sh` | 3,345 | Last-resort recovery for a box that is unreachable. Making it depend on the binaries it may be recovering from is the one thing it must not do. |
+
+That is **8.5 KB** — under 0.2% of the repository. Everything above it is
+convertible:
+
+* `installer/platform.sh` (11.9 KB) is a table `snpanel_osabi` already holds;
+  it can be printed for `eval` and disappears entirely when the two scripts
+  that source it do.
+* `installer/files/platform-check.sh` (12.3 KB) is a hand-run acceptance
+  check. Nothing installs it and no workflow runs it; it belongs with
+  `snpanel doctor`.
+* `installer/install.sh` and `installer/update.sh` (137 KB) continue phase by
+  phase.
+
+### Two things noticed on the way past
+
+`installer/files/platform-check.sh` sits in the directory whose contents get
+installed, and nothing installs it. It is run by hand, from a checkout.
+
+`installer/rescue-firewall.sh` rebuilds an **iptables + ipset** firewall and
+does not mention `nft` once, while the panel renders an nftables ruleset and
+reports `Backend nftables`. The two may interoperate through
+`iptables-nft` — the container's SNPanel chain does live in a table marked
+"managed by iptables-nft" — but an emergency recovery path that targets the
+backend the panel stopped using is worth someone confirming rather than
+assuming.
+
+### Go
+
+Not needed for any of this. The release pipeline builds Rust for one target
+and the crate holding the installer's logic already exists; a second
+toolchain would buy nothing and add a build to keep green.

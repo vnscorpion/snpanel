@@ -283,7 +283,7 @@ pub fn write_login_info(password: Option<&str>, env: &Path) -> Result<()> {
     write_0600(Path::new(LOGIN_FILE), &body)
 }
 
-fn write_0600(path: &Path, body: &str) -> Result<()> {
+pub(crate) fn write_0600(path: &Path, body: &str) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let dir = path.parent().unwrap_or(Path::new("/"));
