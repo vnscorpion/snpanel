@@ -6,6 +6,7 @@
 
 use std::process::ExitCode;
 
+mod acceptance;
 mod shadow;
 
 fn main() -> ExitCode {
@@ -13,6 +14,7 @@ fn main() -> ExitCode {
     let task = args.first().map(String::as_str).unwrap_or("help");
 
     let result = match task {
+        "acceptance" => acceptance::run_task(&args[1..]),
         "shadow-diff" => shadow::run(&args[1..]),
         "help" | "--help" | "-h" => {
             print_help();
@@ -37,6 +39,10 @@ fn main() -> ExitCode {
 fn print_help() {
     println!("cargo xtask <task>\n");
     println!("Tasks:");
+    println!("  acceptance                Did this installation come out right? Run as root");
+    println!("                            on the server, after install.sh. Creates one");
+    println!("                            throwaway website and removes it again.");
+    println!();
     println!("  shadow-diff --token T [--rust URL] [--python URL]");
     println!("                            Send the same requests to both implementations");
     println!("                            and report every difference (plan §9.3). Any");

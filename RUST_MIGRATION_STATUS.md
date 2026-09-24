@@ -3780,6 +3780,63 @@ is deleted, so it has been printing SKIP and returning - the job was diffing
 a directory nothing had regenerated. That path is out of the diff list now,
 with the reason written in the workflow.
 
+## The acceptance check becomes `cargo xtask acceptance`
+
+`installer/files/platform-check.sh` was 12.3 KB of bash that nothing installed
+and no workflow ran - a hand-run check, as root, on a server that has just
+been installed. It is the largest single file of shell that was free to move:
+everything else left is either one of the two installer scripts or part of the
+bootstrap that has to exist before any binary does.
+
+It did **not** go into `snpanel doctor`. It creates a website through the API
+and removes it again, and a diagnostic command should not write to a
+customer's box. `xtask` is where the hand-run tooling lives, next to
+`shadow-diff`.
+
+The reading is split from the doing: which PHP version is the default, which
+socket a vhost names, what the cookie jar's CSRF token is, whether the panel's
+WAF answer matches the machine - each is a function with tests. What is left
+is `Command` and `std::fs`, which no test can pin without a server. Like
+`shadow.rs`, it shells out to `curl` rather than taking an HTTP crate, so the
+dependency set does not move.
+
+### Verified by running both
+
+On the container, with a live panel: the bash and `cargo xtask acceptance`
+were run one after the other and their output diffed, the machine block and
+the three counts included. Byte-identical, with the throwaway domain
+normalised because it carries the process id on both sides.
+
+The first run was worth less than it looked - login was failing with a 401, so
+the whole website section was `SKIP` on both sides. Putting the admin password
+back in step with `/root/login.txt` and restoring `/etc/nginx/conf.d` to the
+`root:snpanel 2775` the installer sets got the end-to-end path running: site
+created through the API, vhost written, FPM socket under `/run/php`, the pool
+listening, `nginx -t` clean, the web user able to read a file the panel made,
+and `PHP runs through nginx: php-ok-8.4.25`.
+
+### Two deliberate divergences
+
+**The helper's WAF answer was being read off the wrong line.** The shell took
+`sed -n '2s/^ *//p'` from `snpanel-helper waf-status`, which was right when
+that verb printed a sentence. It prints JSON now, and the second line is
+`"crs_installed": false,` - whether the OWASP Core Rule Set is installed, not
+whether ModSecurity is. On the container, which has the engine and no rule
+set, the check reported the helper and itself as disagreeing when they did
+not. The Rust reads the `"installed"` field, matched on the whole key because
+`"crs_installed"` ends with it, and the box now reports 30 passed and 0
+failed - which is the truth.
+
+The script's own comment warned about this: "an earlier version of this check
+was a third independent copy of the question that went stale". It had gone
+stale again, in the other direction.
+
+**The pool-socket wait ran whatever `sed` had found.** A vhost that was never
+written - the failure directly above it - left `$sock` empty, and the loop
+still slept fifteen times before reporting "` did not appear within 15s`",
+with nothing before the space. Same number of checks in the Rust, no wait, and
+a reason that is true.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is
@@ -3847,16 +3904,10 @@ convertible:
 * `installer/platform.sh` (11.9 KB) is a table `snpanel_osabi` already holds;
   it can be printed for `eval` and disappears entirely when the two scripts
   that source it do.
-* `installer/files/platform-check.sh` (12.3 KB) is a hand-run acceptance
-  check. Nothing installs it and no workflow runs it; it belongs with
-  `snpanel doctor`.
 * `installer/install.sh` and `installer/update.sh` (137 KB) continue phase by
   phase.
 
-### Two things noticed on the way past
-
-`installer/files/platform-check.sh` sits in the directory whose contents get
-installed, and nothing installs it. It is run by hand, from a checkout.
+### One thing noticed on the way past
 
 `installer/rescue-firewall.sh` rebuilds an **iptables + ipset** firewall and
 does not mention `nft` once, while the panel renders an nftables ruleset and
