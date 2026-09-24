@@ -23,9 +23,9 @@ pub const PHASES: &[&str] = &[
     "validate_sources",
     "ask_panel_url",
     "install_base_packages",
+    "require_rust_binaries",
     "install_nodejs",
     "install_php",
-    "require_rust_binaries",
     "configure_fastcgi_cache",
     "install_waf_engine",
     "install_wp_cli",
@@ -70,6 +70,7 @@ pub const TOLERATED_FAILURES: &[&str] = &["install_waf_engine"];
 /// `write_http_flood_nginx_conf`, which runs the binary; the helper function
 /// is not a phase of its own.
 pub const USES_THE_INSTALLER_BINARY: &[&str] = &[
+    "install_php",
     "configure_fastcgi_cache",
     "install_waf_engine",
     "setup_sftp_access",

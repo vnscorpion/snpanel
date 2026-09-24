@@ -21,6 +21,7 @@ use std::process::ExitCode;
 
 use snpanel_installer::backend_env;
 use snpanel_installer::nginx_conf;
+use snpanel_installer::php;
 use snpanel_installer::systemd_units::{self, UnitSettings};
 use snpanel_installer::tools_vhost;
 use snpanel_installer::update::runtime;
@@ -41,6 +42,8 @@ fn main() -> ExitCode {
         Some("sftp-access") => run(phase_sftp_access()),
         Some("tools-vhost") => run(phase_tools_vhost()),
         Some("backend-env") => run(phase_backend_env()),
+        Some("php-ini") => run(phase_php_ini(args.get(1))),
+        Some("php-fpm-pool") => run(phase_php_fpm_pool(args.get(1), args.get(2))),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -63,7 +66,10 @@ fn help() {
     println!("  snpanel-install waf-default-rules  the rules every site gets");
     println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
     println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on");
-    println!("  snpanel-install backend-env      the panel's .env, then seed the database\n");
+    println!("  snpanel-install backend-env      the panel's .env, then seed the database");
+    println!("  snpanel-install php-ini <path>   the panel's seven php.ini settings");
+    println!("  snpanel-install php-fpm-pool <path> <socket>");
+    println!("                                   point a pool at the panel's socket\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -595,6 +601,68 @@ fn app_dir() -> String {
     env_opt("APP_DIR").unwrap_or_else(|| "/opt/snpanel".to_string())
 }
 
+/// Source: the seven `sed -e` expressions at the end of `install_php`'s loop.
+///
+/// A path rather than a version, because the shell already knows where the
+/// file is - `php_ini_path` differs between the Debian family and Remi's SCL
+/// layout, and that lookup is one the platform table would have to grow to
+/// answer.
+///
+/// The pattern is `^\s*;\?\s*<key>\s*=.*`, and the two load-bearing parts of
+/// it are in `php::php_ini`: a **commented** default is rewritten into a live
+/// setting, so a distribution shipping `;upload_max_filesize = 2M` ends up
+/// with the panel's value rather than PHP's compiled-in one; and whitespace
+/// is allowed before the semicolon as well as after.
+///
+/// A missing file is not an error: the shell guards with `[[ -f ]]` and
+/// carries on, because a PHP version whose package did not land is already
+/// being reported elsewhere.
+fn phase_php_ini(path: Option<&String>) -> Result<(), String> {
+    let Some(path) = path else {
+        return Err("usage: snpanel-install php-ini <path>".to_string());
+    };
+    if !std::path::Path::new(path).is_file() {
+        return Ok(());
+    }
+    let existing = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let updated = php::php_ini(&existing);
+    std::fs::write(path, updated).map_err(|e| format!("writing {path}: {e}"))
+}
+
+/// Source: `configure_php_fpm_pool`.
+///
+/// Points the distribution's own `www` pool at the web account and the
+/// panel's socket. Every one of the seven settings is rewritten whether or
+/// not it is commented out: `;listen.owner` in a stock file has to become a
+/// live `listen.owner`, not stay a comment.
+///
+/// `/run` is a tmpfs, so `/run/php` has to be recreated on every boot - which
+/// is what the tmpfiles rule is for, and why it is written here rather than
+/// left to the package.
+fn phase_php_fpm_pool(path: Option<&String>, socket: Option<&String>) -> Result<(), String> {
+    let (Some(path), Some(socket)) = (path, socket) else {
+        return Err("usage: snpanel-install php-fpm-pool <pool-path> <socket>".to_string());
+    };
+    if !std::path::Path::new(path).is_file() {
+        return Ok(());
+    }
+
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+
+    write_best_effort(backend_env::TMPFILES_PATH, &backend_env::php_run_tmpfiles());
+    let _ = std::process::Command::new("systemd-tmpfiles")
+        .args(["--create", backend_env::TMPFILES_PATH])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    install_dir("/run/php", "root", "root", 0o755);
+
+    let existing = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let updated =
+        backend_env::php_fpm_pool(&existing, platform.web_user(), platform.web_group(), socket);
+    std::fs::write(path, updated).map_err(|e| format!("writing {path}: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 
 fn env_opt(key: &str) -> Option<String> {
@@ -841,5 +909,56 @@ mod tests {
         // Two reads must differ. A `SECRET_KEY` that is the same on every box
         // is a session token minted on one that is valid on all of them.
         assert_ne!(key, random_hex(32).expect("/dev/urandom"));
+    }
+
+    /// The web account the pool phase uses is the one the shell would have
+    /// used.
+    ///
+    /// `configure_php_fpm_pool` passed `$WEB_USER` and `$WEB_GROUP`, set by
+    /// `installer/platform.sh`. The phase takes them from
+    /// `snpanel_osabi::Platform` instead, which is only safe while the two
+    /// agree - and if they stopped agreeing, PHP would listen on a socket
+    /// owned by one account while nginx connected as another, which reads as
+    /// a 502 and not as a configuration mistake.
+    #[test]
+    fn the_web_account_matches_the_shell() {
+        let shell = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/platform.sh"),
+        )
+        .expect("platform.sh");
+
+        // Every `WEB_USER=`/`WEB_GROUP=` the shell sets, in order.
+        let mut pairs = Vec::new();
+        let mut user: Option<String> = None;
+        for line in shell.lines().map(str::trim) {
+            if let Some(v) = line.strip_prefix("WEB_USER=") {
+                user = Some(v.trim_matches('"').to_string());
+            }
+            if let Some(v) = line.strip_prefix("WEB_GROUP=") {
+                if let Some(u) = user.take() {
+                    pairs.push((u, v.trim_matches('"').to_string()));
+                }
+            }
+        }
+        assert!(
+            pairs.len() >= 2,
+            "platform.sh sets {} web accounts; the scan is broken, not the code",
+            pairs.len()
+        );
+
+        let from_platform: Vec<(String, String)> = [
+            &snpanel_osabi::debian::Debian13 as &dyn snpanel_osabi::Platform,
+            &snpanel_osabi::rhel::AlmaLinux10,
+        ]
+        .iter()
+        .map(|p| (p.web_user().to_string(), p.web_group().to_string()))
+        .collect();
+
+        for pair in &from_platform {
+            assert!(
+                pairs.contains(pair),
+                "{pair:?} is not one of the accounts platform.sh sets: {pairs:?}"
+            );
+        }
     }
 }

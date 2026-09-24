@@ -549,27 +549,18 @@ setup_php_compat_shim() {
 # and its Python validation regex insists on that shape, so the pool is moved
 # to match and handed to the web user rather than the other way round.
 configure_php_fpm_pool() {
-  local version="$1" pool socket
-  pool="$(php_fpm_pool_dir "$version")/www.conf"
-  socket="$(php_fpm_socket "$version")"
-  [[ -f "$pool" ]] || return 0
-
-  # /run is a tmpfs, so the directory has to be recreated on every boot.
-  cat >/etc/tmpfiles.d/snpanel-php.conf <<'TMPFILES'
-d /run/php 0755 root root -
-TMPFILES
-  systemd-tmpfiles --create /etc/tmpfiles.d/snpanel-php.conf >/dev/null 2>&1 || true
-  install -d -o root -g root -m 0755 /run/php
-
-  sed -i -E \
-    -e "s#^;?[[:space:]]*user[[:space:]]*=.*#user = ${WEB_USER}#" \
-    -e "s#^;?[[:space:]]*group[[:space:]]*=.*#group = ${WEB_GROUP}#" \
-    -e "s#^;?[[:space:]]*listen[[:space:]]*=.*#listen = ${socket}#" \
-    -e "s#^;?[[:space:]]*listen\.owner[[:space:]]*=.*#listen.owner = ${WEB_USER}#" \
-    -e "s#^;?[[:space:]]*listen\.group[[:space:]]*=.*#listen.group = ${WEB_GROUP}#" \
-    -e "s#^;?[[:space:]]*listen\.mode[[:space:]]*=.*#listen.mode = 0660#" \
-    -e "s#^;?[[:space:]]*listen\.acl_users[[:space:]]*=.*#listen.acl_users = ${WEB_USER}#" \
-    "$pool"
+  local version="$1"
+  # `snpanel-install php-fpm-pool`. The seven settings, the tmpfiles rule for
+  # `/run/php` and the `/run/php` directory itself all move together: `/run`
+  # is a tmpfs, so that directory has to be recreated on every boot or the
+  # socket has nowhere to appear.
+  #
+  # The web account comes from the platform table on the Rust side rather
+  # than from `$WEB_USER` here - `platform.sh` and `snpanel_osabi` agree on
+  # `www-data` and `nginx`, which `the_web_account_matches_the_shell` pins.
+  "${RUST_BIN_DIR}/snpanel-install" php-fpm-pool \
+    "$(php_fpm_pool_dir "$version")/www.conf" "$(php_fpm_socket "$version")" \
+    || fail "Could not configure the PHP-FPM pool for PHP ${version}"
 }
 
 # Debian's PHP archive. There is no `add-apt-repository` here - the package
@@ -660,18 +651,12 @@ install_php() {
 
     install_ioncube_loader "$version"
 
-    ini_file="$(php_ini_path "$version")"
-    if [[ -f "$ini_file" ]]; then
-      sed -i \
-        -e 's/^\s*;\?\s*upload_max_filesize\s*=.*/upload_max_filesize = 1024M/' \
-        -e 's/^\s*;\?\s*post_max_size\s*=.*/post_max_size = 1024M/' \
-        -e 's/^\s*;\?\s*memory_limit\s*=.*/memory_limit = 1024M/' \
-        -e 's/^\s*;\?\s*max_execution_time\s*=.*/max_execution_time = 300/' \
-        -e 's/^\s*;\?\s*max_input_time\s*=.*/max_input_time = 600/' \
-        -e 's/^\s*;\?\s*max_input_vars\s*=.*/max_input_vars = 10000/' \
-        -e 's/^\s*;\?\s*max_file_uploads\s*=.*/max_file_uploads = 100/' \
-        "$ini_file"
-    fi
+    # `snpanel-install php-ini`. The seven settings and the pattern that
+    # finds them - which rewrites a *commented* default into a live setting -
+    # are `snpanel_installer::php`, with a fixture. A missing file is not an
+    # error there either.
+    "${RUST_BIN_DIR}/snpanel-install" php-ini "$(php_ini_path "$version")" \
+      || fail "Could not apply the panel's php.ini settings for PHP ${version}"
 
     systemctl enable --now "$(php_service "$version")"
   done
@@ -1564,16 +1549,18 @@ main() {
   log "Installing base packages"
   install_base_packages
 
+  # Before the first phase that runs one, and after the packages, because
+  # fetching a release needs curl. Everything from here on that writes a
+  # managed file does it through `snpanel-install` - `install_php` included,
+  # which is why this moved up from where it first landed.
+  log "Fetching the Rust binaries"
+  require_rust_binaries
+
   log "Installing Node.js"
   install_nodejs
 
   log "Installing PHP ${PHP_VERSIONS}"
   install_php
-
-  # Before the first phase that runs one. Everything from here on that writes
-  # a managed file does it through `snpanel-install`.
-  log "Fetching the Rust binaries"
-  require_rust_binaries
 
   log "Configuring Nginx FastCGI cache"
   configure_fastcgi_cache

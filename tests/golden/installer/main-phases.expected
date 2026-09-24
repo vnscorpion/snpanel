@@ -1,9 +1,9 @@
 validate_sources
 ask_panel_url
 install_base_packages
+require_rust_binaries
 install_nodejs
 install_php
-require_rust_binaries
 configure_fastcgi_cache
 install_waf_engine
 install_wp_cli
