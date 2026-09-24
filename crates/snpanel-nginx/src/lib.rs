@@ -34,11 +34,10 @@ pub use writer::{blocked_bots_in_vhost, plan_rewrite, vhost_path, VhostPlan};
 /// binary would otherwise render something neither side had tested. Compiling
 /// them in means the bytes this produces are the bytes the golden fixtures
 /// were diffed against.
-const WORDPRESS_TEMPLATE: &str =
-    include_str!("../../../backend/app/templates/nginx/wordpress.conf.j2");
-const PHP_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/php.conf.j2");
-const STATIC_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/static.conf.j2");
-const PROXY_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/proxy.conf.j2");
+const WORDPRESS_TEMPLATE: &str = include_str!("../templates/wordpress.conf.j2");
+const PHP_TEMPLATE: &str = include_str!("../templates/php.conf.j2");
+const STATIC_TEMPLATE: &str = include_str!("../templates/static.conf.j2");
+const PROXY_TEMPLATE: &str = include_str!("../templates/proxy.conf.j2");
 
 /// Source: `_write_placeholder_page`.
 ///
@@ -49,8 +48,7 @@ const PROXY_TEMPLATE: &str = include_str!("../../../backend/app/templates/nginx/
 /// no-op for every value that can reach it; it is here so that constraint
 /// stops being load-bearing.
 pub fn render_placeholder(domain: &str) -> Result<String, RenderError> {
-    const PLACEHOLDER_TEMPLATE: &str =
-        include_str!("../../../backend/app/templates/nginx/placeholder.html.j2");
+    const PLACEHOLDER_TEMPLATE: &str = include_str!("../templates/placeholder.html.j2");
 
     let mut environment = minijinja::Environment::new();
     environment.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);

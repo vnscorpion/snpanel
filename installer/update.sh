@@ -152,11 +152,6 @@ panel_unit() {
 restart_panel() {
   local unit
   unit="$(panel_unit)"
-  if [[ "$unit" == "snpanel-rust" ]]; then
-    # Python behind it reads the same .env and still serves the routes that
-    # are its, so it reloads first and Rust comes up to a ready upstream.
-    systemctl restart snpanel-upstream 2>/dev/null || true
-  fi
   systemctl restart "$unit"
 }
 
@@ -346,7 +341,9 @@ current_panel_version() {
     tr -d '[:space:]' <"$APP_DIR/VERSION"
     return 0
   fi
-  sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$APP_DIR/backend/app/core/version.py" 2>/dev/null | head -n 1
+  # Older boxes kept it in backend/app/core/version.py; that file is gone
+  # with the rest of the Python, and $APP_DIR/VERSION above is authoritative.
+  return 1
 }
 
 write_update_state() {
@@ -1219,12 +1216,10 @@ mkdir -p "$APP_DIR"
 if command -v rsync >/dev/null 2>&1; then
   # --filter='protect ...' keeps the destination file even when --delete
   # would otherwise remove it because the source side doesn't have it. We use
-  # this for runtime artefacts that the installer creates: .env, .venv,
+  # this for runtime artefacts that the installer creates: .env,
   # snpanel.db, .my.cnf.
   rsync -a --delete \
     --filter='protect /.env' \
-    --filter='protect /.venv' \
-    --filter='protect /.venv/**' \
     --filter='protect /snpanel.db' \
     --filter='protect /.my.cnf' \
     --exclude '__pycache__/' \
@@ -1262,16 +1257,12 @@ log "Configuring Nginx FastCGI cache"
 configure_fastcgi_cache
 configure_proxy_upgrade_map
 ensure_terminal_tools
-venv_needs_recreate=false
-if [[ ! -x "$APP_DIR/backend/.venv/bin/uvicorn" ]]; then
-  venv_needs_recreate=true
-elif ! head -n1 "$APP_DIR/backend/.venv/bin/uvicorn" 2>/dev/null | grep -Fq "$APP_DIR/backend/.venv"; then
-  venv_needs_recreate=true
-fi
-if [[ "$venv_needs_recreate" == "true" ]]; then
-  log "Recreating Python virtualenv (missing or stale path)"
+# A box updated from a version that had one still carries it. Nothing runs
+# out of it any more, and leaving several hundred megabytes of dead Python on
+# every machine to avoid one `rm` would be the wrong trade.
+if [[ -d "$APP_DIR/backend/.venv" ]]; then
+  log "Removing the Python virtualenv; the panel is the Rust binary now"
   rm -rf "$APP_DIR/backend/.venv"
-  python3 -m venv "$APP_DIR/backend/.venv"
 fi
 
 # --- Refresh helper + sudoers (idempotent) ---------------------------------
@@ -1461,46 +1452,18 @@ if id -u snpanel >/dev/null 2>&1; then
 fi
 
 # --- Backend ---------------------------------------------------------------
-log "Updating backend dependencies"
-update_progress 55 "backend" "Updating backend dependencies"
-cd "$APP_DIR/backend"
-if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
-fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
-# pip resolves the whole requirements file on every run even when nothing moved;
-# skip it unless requirements.txt changed or the venv was just rebuilt.
-if [[ "$venv_needs_recreate" == "true" ]] || step_inputs_changed backend-deps requirements.txt; then
-  pip install --upgrade pip
-  pip install -r requirements.txt
-  step_mark_done backend-deps requirements.txt
-else
-  log "Backend dependencies unchanged since last update; skipping pip install"
-fi
+# Nothing to install: the panel is a binary, refreshed above with the other
+# Rust binaries.
 
 log "Refreshing MariaDB grants"
 refresh_snpanel_mariadb_grants
 
 log "Running database migrations"
 update_progress 65 "backend" "Running database migrations"
-if id -u snpanel >/dev/null 2>&1; then
-  # Run migrations as the snpanel user so the SQLite file ownership stays correct.
-  sudo -u snpanel "$APP_DIR/backend/.venv/bin/python" -c \
-    "from app.core.database import run_migrations; run_migrations()"
-else
-  python -c "from app.core.database import run_migrations; run_migrations()"
-fi
-
-# Then this side's, which is where new schema changes go now.
-#
-# Both, in this order, because the schema has two owners with one handover
-# between them: Alembic owns revisions 0001-0031 and they are frozen, and
-# anything after is Rust's, recorded in its own table. Python first because
-# its revisions build the tables the Rust ones are written against.
-#
-# Python's half stays until a release publishes the binaries. Today none
-# does, so on a real box there is nothing here to run.
+# Alembic's revisions 0001-0031 are frozen and gone with the Python; a
+# database that has them is stamped at the head this build expects, and
+# anything after is Rust's, recorded in its own table. Run as the snpanel
+# user so the SQLite file keeps its ownership.
 if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
   runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
     "$RUST_API" --env "$APP_DIR/backend/.env" --migrate \
@@ -1512,8 +1475,7 @@ systemctl enable --now snpanel-malware-scheduler.timer >/dev/null 2>&1 || true
 
 SITE_REFRESH_INPUTS=(
   "$SOURCE_DIR/installer/files/snpanel-helper.sh"
-  "$SOURCE_DIR/backend/app/services"
-  "$SOURCE_DIR/backend/app/templates"
+  "${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 )
 if ! step_inputs_changed site-refresh "${SITE_REFRESH_INPUTS[@]}"; then
   log "Managed site config unchanged since last update; skipping the per-site refresh"
@@ -1525,63 +1487,6 @@ elif [[ -x "${RUST_API:-/usr/local/bin/snpanel-api-rust}" ]] && id -u snpanel >/
   runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
     "${RUST_API:-/usr/local/bin/snpanel-api-rust}" --env "$APP_DIR/backend/.env" --refresh-sites \
     || log "WARNING: the site refresh did not complete"
-elif id -u snpanel >/dev/null 2>&1; then
-  log "Refreshing managed site permissions"
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY'
-from app.core.database import SessionLocal
-from app.models.entities import Website
-from app.services import nginx, site_users, waf
-
-with SessionLocal() as db:
-    websites = db.query(Website).all()
-    try:
-        result = nginx.sync_http_flood_zones(websites)
-        if result.returncode != 0:
-            print(f"WARNING: could not refresh HTTP flood zones: {result.stderr or result.stdout}")
-    except Exception as exc:
-        print(f"WARNING: could not refresh HTTP flood zones: {exc}")
-    for website in websites:
-        try:
-            if website.linux_user:
-                runtime_php_version = website.php_version if (website.app_type or "wordpress") in {"wordpress", "php"} else None
-                site_users.ensure_site_runtime(website.domain, website.root_path, runtime_php_version, website.linux_user)
-                site_users.ensure_document_root(
-                    website.root_path,
-                    getattr(website, "document_root", "public_html") or "public_html",
-                    website.linux_user,
-                )
-            site_users.fix_site_permissions(website.root_path, website.linux_user)
-            result = waf.sync_website_rules(website)
-            if result.returncode != 0:
-                print(f"WARNING: could not refresh WAF rules for {website.domain}: {result.stderr or result.stdout}")
-            if getattr(website, "nginx_config_mode", "managed") != "managed":
-                website.nginx_config_mode = "managed"
-                db.commit()
-            app_type = website.app_type or "wordpress"
-            runtime_php_version = website.php_version if app_type in {"wordpress", "php"} else None
-            nginx.rewrite_vhost(
-                website.domain,
-                website.root_path,
-                app_type=app_type,
-                php_version=website.php_version,
-                custom_directives=website.nginx_custom or "",
-                php_fpm_socket_override=site_users.site_php_fpm_socket(website.linux_user, website.root_path, runtime_php_version),
-                waf_enabled=website.waf_enabled,
-                http_flood_enabled=website.http_flood_enabled,
-                http_flood_config=website.http_flood_config or "",
-                document_root=getattr(website, "document_root", "public_html") or "public_html",
-                rewrite_mode=getattr(website, "nginx_rewrite_mode", "none") or "none",
-            )
-        except Exception as exc:
-            print(f"WARNING: could not refresh permissions for {website.domain}: {exc}")
-    try:
-        result = nginx.sync_http_flood_zones(websites)
-        if result.returncode != 0:
-            print(f"WARNING: could not refresh HTTP flood zones: {result.stderr or result.stdout}")
-    except Exception as exc:
-        print(f"WARNING: could not refresh HTTP flood zones: {exc}")
-PY
-  step_mark_done site-refresh "${SITE_REFRESH_INPUTS[@]}"
 fi
 
 # Clear what deleted websites left on disk. A Let's Encrypt renewal config for a
@@ -1601,18 +1506,6 @@ if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
   runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
     "$RUST_API" --env "$APP_DIR/backend/.env" --clean-orphans \
     || log "WARNING: orphan cleanup did not complete"
-elif id -u snpanel >/dev/null 2>&1; then
-  log "Clearing orphaned certificates and configs"
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY' || log "WARNING: orphan cleanup did not complete"
-from app.core.database import SessionLocal
-from app.services import orphans
-
-with SessionLocal() as db:
-    try:
-        print("  " + orphans.describe(orphans.clean(db)))
-    except Exception as exc:
-        print(f"  WARNING: orphan cleanup skipped: {exc}")
-PY
 fi
 
 # journald ships with no size limit and falls back to 10% of the filesystem;

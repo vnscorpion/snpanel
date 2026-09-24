@@ -111,10 +111,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install the backend's own dependency set
+      # The six libraries `tests/fixtures/generate.py` imports, pinned at
+      # the versions `backend/requirements.txt` carried before the Python
+      # panel was removed. The point of this job is to compare Rust against
+      # what these exact releases produce, so "whatever is newest" would
+      # quietly change what is being compared.
+      - name: Install what the fixture generator imports
         run: |
           python -m venv .venv
-          .venv/bin/pip install -r backend/requirements.txt
+          .venv/bin/pip install \
+            cryptography==50.0.0 \
+            bcrypt==4.0.1 \
+            'passlib[bcrypt]==1.7.4' \
+            'python-jose[cryptography]==3.5.0' \
+            pyotp==2.9.0 \
+            jinja2==3.1.6
       - name: Regenerate and compare
         run: |
           .venv/bin/python tests/fixtures/generate.py

@@ -6,96 +6,13 @@ on:
   pull_request:
     branches: [main]
 
-# Two kinds of step below, and the distinction is the point of this file:
+# The installer is shell and the panel is Rust, so this file has two jobs:
+# shellcheck over the scripts, and an install that runs them for real.
 #
-#   Blocking  - must be green, and *can* be green today. A red one is a real
-#               regression introduced by the change under test.
-#   Reporting - `continue-on-error: true`. These flag pre-existing debt (581
-#               ruff findings, ~950 bandit findings) that predates the
-#               workflow. They stay visible in the job log without turning
-#               every run red.
-#
-# The previous version had no such split, so `ruff` failed at the first step
-# and *nothing after it ever ran* - including the tests. A gate that is always
-# red teaches people to ignore it, which is the same as having no gate.
+# The `backend` job went when the Python did. It ran pytest, ruff, bandit,
+# semgrep and pip-audit over `backend/app`, and there is no `backend/app`.
 
 jobs:
-  backend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          # The suite's own dependencies are declared, not assumed present.
-          pip install -r backend/requirements-dev.txt
-          pip install ruff bandit pip-audit semgrep
-
-      # --- Blocking -------------------------------------------------------
-
-      - name: Tests
-        # Was `pytest backend/tests -q || echo "No tests yet"`, which was wrong
-        # twice over: nearly all of backend/tests/ is gitignored, so the path
-        # is all but empty in a clean checkout, and `|| echo` swallowed the
-        # failure. CI reported green while running zero tests. Both paths run
-        # now - backend/app/tests is the bulk, and the one file force-added
-        # under backend/tests carries 19 tests CI has never executed.
-        run: pytest backend/app/tests backend/tests -q
-
-      - name: Compile-only sanity check
-        run: |
-          python -c "import py_compile, glob; [py_compile.compile(f, doraise=True) for f in glob.glob('backend/app/**/*.py', recursive=True)]"
-
-      - name: pip-audit
-        # Ignoring exactly the two advisories with no fixed version published.
-        # Anything else - including a new advisory against these same two
-        # packages - fails the build. Re-check when upstream ships a release:
-        #   PYSEC-2026-2858  paramiko  (no fixed version as of 2026-09-07)
-        #   PYSEC-2026-1325  ecdsa     (no fixed version; transitive)
-        run: |
-          pip-audit -r backend/requirements.txt --strict \
-            --ignore-vuln PYSEC-2026-2858 \
-            --ignore-vuln PYSEC-2026-1325
-
-      # --- Reporting ------------------------------------------------------
-
-      - name: Lint (ruff)
-        continue-on-error: true
-        run: ruff check backend/app
-
-      - name: Security scan (bandit)
-        continue-on-error: true
-        run: bandit -r backend/app -ll -q
-
-      - name: Semgrep
-        continue-on-error: true
-        run: semgrep --config=auto --error backend/app
-
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package.json
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm install
-
-      - name: Build
-        working-directory: frontend
-        run: npm run build
-
   shellcheck:
     runs-on: ubuntu-latest
     steps:

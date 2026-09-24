@@ -405,55 +405,6 @@ SSHD
     runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
       "$RUST_API" --env "$ENV_FILE" --refresh-sites-strict \
       || fail "Could not refresh the sites"
-  elif [[ -x "$APP_DIR/backend/.venv/bin/python" ]]; then
-    cd "$APP_DIR/backend"
-    runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY'
-from app.core.database import SessionLocal
-from app.models.entities import Website
-from app.services import nginx, site_users, waf
-
-db = SessionLocal()
-try:
-    websites = db.query(Website).all()
-    result = nginx.sync_http_flood_zones(websites)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout or "Unable to sync HTTP flood zones")
-    for website in websites:
-        if website.linux_user:
-            runtime_php_version = website.php_version if (website.app_type or "wordpress") in {"wordpress", "php"} else None
-            site_users.ensure_site_runtime(website.domain, website.root_path, runtime_php_version, website.linux_user)
-            site_users.ensure_document_root(
-                website.root_path,
-                getattr(website, "document_root", "public_html") or "public_html",
-                website.linux_user,
-            )
-        site_users.fix_site_permissions(website.root_path, website.linux_user)
-        app_type = website.app_type or "wordpress"
-        runtime_php_version = website.php_version if app_type in {"wordpress", "php"} else None
-        result = waf.sync_website_rules(website)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or result.stdout or "Unable to sync WAF rules")
-        if getattr(website, "nginx_config_mode", "managed") != "managed":
-            website.nginx_config_mode = "managed"
-            db.commit()
-        nginx.rewrite_vhost(
-            website.domain,
-            website.root_path,
-            app_type=app_type,
-            php_version=website.php_version,
-            custom_directives=website.nginx_custom or "",
-            php_fpm_socket_override=site_users.site_php_fpm_socket(website.linux_user, website.root_path, runtime_php_version),
-            waf_enabled=website.waf_enabled,
-            http_flood_enabled=website.http_flood_enabled,
-            http_flood_config=website.http_flood_config or "",
-            document_root=getattr(website, "document_root", "public_html") or "public_html",
-        )
-    result = nginx.sync_http_flood_zones(websites)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout or "Unable to sync HTTP flood zones")
-finally:
-    db.close()
-PY
   fi
   restart_panel
   refresh_tools_nginx
@@ -489,32 +440,6 @@ change_admin_password() {
       env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
       "$RUST_API" --env "$ENV_FILE" --set-admin-password \
       || { unset SNPANEL_NEW_ADMIN_PASSWORD; fail "Could not change the admin password"; }
-  else
-    if id -u snpanel >/dev/null 2>&1; then
-      runner=(runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-    else
-      runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-    fi
-    "${runner[@]}" - <<'PY'
-import os
-from app.core.database import SessionLocal
-from app.core.security import hash_password
-from app.models.entities import User
-from app.services import site_users
-
-password = os.environ["SNPANEL_NEW_ADMIN_PASSWORD"]
-db = SessionLocal()
-try:
-    user = db.query(User).filter(User.username == "admin").first()
-    if not user:
-        raise SystemExit("admin user not found")
-    site_users.set_panel_user_password(user.username, password)
-    user.hashed_password = hash_password(password)
-    user.token_version = (user.token_version or 0) + 1
-    db.commit()
-finally:
-    db.close()
-PY
   fi
   unset SNPANEL_NEW_ADMIN_PASSWORD
   write_login_info "$password"
@@ -581,29 +506,6 @@ sync_admin_root_password() {
       env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
       "$RUST_API" --env "$ENV_FILE" --set-admin-password-hash \
       || { unset SNPANEL_ROOT_PASSWORD_HASH; fail "Could not sync the admin password"; }
-  else
-    if id -u snpanel >/dev/null 2>&1; then
-      runner=(runuser --whitelist-environment=SNPANEL_ROOT_PASSWORD_HASH -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-    else
-      runner=(env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python")
-    fi
-    "${runner[@]}" - <<'PY'
-import os
-from app.core.database import SessionLocal
-from app.models.entities import User
-
-root_hash = os.environ["SNPANEL_ROOT_PASSWORD_HASH"]
-db = SessionLocal()
-try:
-    user = db.query(User).filter(User.username == "admin").first()
-    if not user:
-        raise SystemExit("admin user not found")
-    user.hashed_password = root_hash
-    user.token_version = (user.token_version or 0) + 1
-    db.commit()
-finally:
-    db.close()
-PY
   fi
   unset SNPANEL_ROOT_PASSWORD_HASH
   read -rsp "Root password to write to /root/login.txt (blank to skip): " login_password; echo

@@ -44,7 +44,7 @@ pub fn check(args: &[String]) -> Result<()> {
         bail!("the captured renders file is empty");
     }
 
-    let template_dir = repo.join("backend/app/templates/nginx");
+    let template_dir = repo.join("crates/snpanel-nginx/templates");
     let mut env = minijinja::Environment::new();
     env.set_loader(minijinja::path_loader(&template_dir));
     // Jinja2 is configured with autoescape=False in nginx.py: an nginx config
