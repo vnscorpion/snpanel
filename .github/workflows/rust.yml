@@ -35,15 +35,31 @@ jobs:
       - name: Install prerequisites (Debian family)
         if: startsWith(matrix.distro, 'ubuntu') || startsWith(matrix.distro, 'debian')
         run: |
-          apt-get update
           # python3 is needed by crates/snpanel-helper/tests/socket.rs, which
           # connects to the helper socket as an unprivileged user to check that
           # the peer-credential check refuses it. The AlmaLinux image ships
           # python3 already (dnf is written in it), so leaving it out here made
           # one matrix entry pass and the other two fail on a test that has
           # nothing to do with the distribution.
-          apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl pkg-config git nftables python3
+          #
+          # Retried, because this has failed twice on
+          #   E: Failed to fetch .../libexpat1_2.6.1-2ubuntu0.6_amd64.deb 404
+          # with `apt-get update` run immediately before it. That is a mirror
+          # serving an index for a `.deb` its pool does not have yet, which a
+          # fresh update against a different CDN node clears. Three attempts,
+          # then the job fails the way it always did - a retry loop that gave
+          # up quietly would be worse than the flake.
+          for attempt in 1 2 3; do
+            apt-get update
+            if apt-get install -y --no-install-recommends \
+                 build-essential ca-certificates curl pkg-config git nftables python3; then
+              exit 0
+            fi
+            echo "::warning::apt attempt ${attempt} failed; retrying"
+            sleep 10
+          done
+          echo "::error::apt failed three times"
+          exit 1
 
       - name: Create the panel's service account (Debian family)
         if: startsWith(matrix.distro, 'ubuntu') || startsWith(matrix.distro, 'debian')
