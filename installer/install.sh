@@ -1143,63 +1143,17 @@ setup_systemd() {
 }
 
 write_tools_nginx_config() {
-  local api_scheme="http" tools_scheme="http" pma_secure="false" ssl_block=""
-  if [[ -n "${PANEL_SSL_CERT:-}" && -n "${PANEL_SSL_KEY:-}" && -f "${PANEL_SSL_CERT}" && -f "${PANEL_SSL_KEY}" ]]; then
-    api_scheme="https"
-    tools_scheme="https"
-    pma_secure="true"
-    printf -v ssl_block '\n    listen 443 ssl http2 default_server;\n    ssl_certificate %s;\n    ssl_certificate_key %s;' "$PANEL_SSL_CERT" "$PANEL_SSL_KEY"
-  fi
-
-  cat >/etc/nginx/conf.d/00-snpanel-tools.conf <<NGINX
-server {
-    listen 80 default_server;${ssl_block}
-    server_name _;
-    client_max_body_size 1100M;
-
-    # Panel certificates are issued through this, so the panel no longer has to
-    # stop nginx to prove it owns its own hostname.
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/snpanel-acme;
-        default_type text/plain;
-        try_files \$uri =404;
-        access_log off;
-        auth_basic off;
-    }
-
-    location = /phpmyadmin {
-        return 301 /phpmyadmin/;
-    }
-
-    location /phpmyadmin/ {
-        alias ${PHPMYADMIN_ROOT}/;
-        index index.php;
-        try_files \$uri \$uri/ =404;
-    }
-
-    location ~ ^/phpmyadmin/(.+\.php)$ {
-        alias ${PHPMYADMIN_ROOT}/\$1;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME ${PHPMYADMIN_ROOT}/\$1;
-        fastcgi_param SCRIPT_NAME /phpmyadmin/\$1;
-        # Twig raises its deprecations as E_USER_DEPRECATED, which php.ini's
-        # E_ALL & ~E_DEPRECATED does not exclude, so Debian's pairing of
-        # phpMyAdmin 5.2 with Twig 3.21 shows the administrator a wall of
-        # notices about a library they cannot change. Silenced here and only
-        # here: a customer's own site may well want its deprecations.
-        fastcgi_param PHP_VALUE "error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED";
-        fastcgi_pass unix:/run/php/php${PHP_DEFAULT}-fpm.sock;
-        fastcgi_read_timeout 300;
-    }
-}
-NGINX
-
-  local host
-  host="${PANEL_DOMAIN:-$SERVER_IP}"
-  [[ -n "$host" ]] || host="$(detect_server_ip)"
-  sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${api_scheme}://127.0.0.1:${PANEL_PORT}/api/databases/phpmyadmin-sso/'#" ${PHPMYADMIN_ROOT}/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "s#('secure' => )(true|false)#\1${pma_secure}#" ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php ${PHPMYADMIN_ROOT}/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "/PmaAbsoluteUri/s#'https?://[^']+/phpmyadmin/'#'${tools_scheme}://${host}/phpmyadmin/'#" ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php 2>/dev/null || true
+  # `snpanel-install tools-vhost`. The block is
+  # `snpanel_installer::tools_vhost`, with a fixture for each of its two
+  # shapes - with a panel certificate and without.
+  #
+  # The certificate has to be on disk and not only named in `.env`: an
+  # `ssl_certificate` pointing at a file that is not there stops nginx from
+  # starting at all, which takes every site on the box with it.
+  PANEL_SSL_CERT="${PANEL_SSL_CERT:-}" PANEL_SSL_KEY="${PANEL_SSL_KEY:-}" \
+  PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" PHP_DEFAULT="$PHP_DEFAULT" \
+    "${RUST_BIN_DIR}/snpanel-install" tools-vhost \
+    || fail "Could not write the tools vhost"
 }
 
 

@@ -22,6 +22,7 @@ use std::process::ExitCode;
 use snpanel_installer::backend_env;
 use snpanel_installer::nginx_conf;
 use snpanel_installer::systemd_units::{self, UnitSettings};
+use snpanel_installer::tools_vhost;
 use snpanel_installer::update::runtime;
 
 /// Source: the `install -d` in `write_modsec_base_conf`.
@@ -38,6 +39,7 @@ fn main() -> ExitCode {
         Some("modsec-conf") => run(phase_modsec_conf()),
         Some("waf-default-rules") => run(phase_waf_default_rules()),
         Some("sftp-access") => run(phase_sftp_access()),
+        Some("tools-vhost") => run(phase_tools_vhost()),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -58,7 +60,8 @@ fn help() {
     println!("  snpanel-install http-flood       the shared flood-protection zones");
     println!("  snpanel-install modsec-conf      the ModSecurity include chain");
     println!("  snpanel-install waf-default-rules  the rules every site gets");
-    println!("  snpanel-install sftp-access      the sshd block SFTP logins match\n");
+    println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
+    println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -420,6 +423,48 @@ fn group_exists(name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+/// Source: `write_tools_nginx_config`.
+///
+/// The default server: the ACME challenge the panel's own certificate is
+/// issued through, and phpMyAdmin. Two shapes, chosen by whether the panel
+/// has a certificate - and by whether the files are **on disk**, not only
+/// named in `.env`, because an `ssl_certificate` pointing at a file that is
+/// not there stops nginx from starting at all.
+///
+/// This file has more writers than any other the installer touches, and the
+/// one that bit was the `PHP_VALUE` line: Twig raises its deprecations as
+/// `E_USER_DEPRECATED`, which `php.ini`'s `E_ALL & ~E_DEPRECATED` does not
+/// exclude, so Debian's pairing of phpMyAdmin 5.2 with Twig 3.21 shows the
+/// administrator a wall of notices about a library they cannot change. Four
+/// writers existed and two carried the suppression; a run of the one that did
+/// not put the notices back.
+fn phase_tools_vhost() -> Result<(), String> {
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+
+    let php_default = env_opt("PHP_DEFAULT").unwrap_or_else(|| platform.php_default().to_string());
+    let pma_root = env_opt("PHPMYADMIN_ROOT")
+        .unwrap_or_else(|| platform.phpmyadmin_root().to_string_lossy().into_owned());
+
+    // Both set **and** present. `.env` can name a certificate a restore did
+    // not bring back.
+    let cert = env_opt("PANEL_SSL_CERT").filter(|p| std::path::Path::new(p).is_file());
+    let key = env_opt("PANEL_SSL_KEY").filter(|p| std::path::Path::new(p).is_file());
+    let ssl = match (&cert, &key) {
+        (Some(c), Some(k)) => Some(tools_vhost::ToolsTls {
+            cert_path: c,
+            key_path: k,
+        }),
+        _ => None,
+    };
+
+    let body = tools_vhost::tools_vhost(&tools_vhost::ToolsVhost {
+        phpmyadmin_root: &pma_root,
+        php_default: &php_default,
+        ssl,
+    });
+    write_conf(tools_vhost::TOOLS_CONF_PATH, &body)
 }
 
 // ---------------------------------------------------------------------------

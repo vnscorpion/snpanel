@@ -247,21 +247,29 @@ mod tests {
     fn every_writer_of_the_tools_vhost_silences_twig() {
         const NEEDLE: &str = "~E_USER_DEPRECATED";
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // This module is one of the writers, and the one the others are
+        // converging on: `install.sh`'s copy is `snpanel-install
+        // tools-vhost` now, and the bash rescue menu's went with the script.
+        assert!(
+            tools_vhost(&debian_tools(None)).contains(NEEDLE),
+            "this module writes the phpMyAdmin location without {NEEDLE}"
+        );
+
+        // The two that still have their own copy.
         let mut checked = 0;
         for name in [
-            "installer/install.sh",
             "installer/update.sh",
-            "installer/files/snpanelctl",
             "crates/snpanel-helper/src/ops/panel.rs",
         ] {
-            let Ok(text) = std::fs::read_to_string(root.join(name)) else {
-                eprintln!("skipped: {name} is not there");
-                continue;
-            };
-            // Only the files that actually write the block have to carry it.
-            if !text.contains("^/phpmyadmin/(.+") {
-                continue;
-            }
+            let text =
+                std::fs::read_to_string(root.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(
+                text.contains("^/phpmyadmin/(.+"),
+                "{name} no longer writes the phpMyAdmin location - if its copy \
+                 moved, take it out of this list rather than leaving the list \
+                 checking a file that cannot fail it"
+            );
             assert!(
                 text.contains(NEEDLE),
                 "{name} writes the phpMyAdmin location without {NEEDLE}, so running \
@@ -269,14 +277,12 @@ mod tests {
             );
             checked += 1;
         }
-        // Four writers, until the bash helper became the fifth and then
-        // stopped existing. The count is asserted so a writer that stops
-        // being found leaves this test passing on fewer files than it thinks.
-        assert!(checked >= 3, "only {checked} writers were checked");
-        assert!(
-            tools_vhost(&debian_tools(None)).contains(NEEDLE),
-            "and this module has to agree with them"
-        );
+        // Asserted exactly, not as a floor. The previous version skipped a
+        // file it could not read and a file that had stopped writing the
+        // block, so a copy moving out left it passing on fewer writers than
+        // its name claims - which is how it came to be checking two while
+        // saying every.
+        assert_eq!(checked, 2);
     }
 
     #[test]
