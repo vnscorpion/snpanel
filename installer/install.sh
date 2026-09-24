@@ -1373,12 +1373,17 @@ INFO
   chmod 600 /root/login.txt
 }
 
+# `validate_sources` refuses to start without ${PROJECT_ROOT}/VERSION, so this
+# always has a file to read. The fallback under it used to be
+# backend/app/core/version.py, which went with the Python backend - a `sed`
+# over a file that cannot exist, whose empty output then became the stale
+# default in `write_update_state`.
 source_version() {
-  if [[ -f "${PROJECT_ROOT}/VERSION" ]]; then
-    tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION"
-    return 0
-  fi
-  sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "${PROJECT_ROOT}/backend/app/core/version.py" 2>/dev/null | head -n 1
+  # `return 0`, not 1: the caller is `version="$(source_version)"` under
+  # `set -e`, so a non-zero status here would abort the install at its
+  # second-to-last phase rather than fall through to the default below it.
+  [[ -f "${PROJECT_ROOT}/VERSION" ]] || return 0
+  tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION"
 }
 
 write_update_state() {

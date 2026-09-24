@@ -3669,6 +3669,33 @@ survives.
 
 `install.sh`: 1636 lines to 1545.
 
+### A deciding half that had drifted, and nothing to notice
+
+`finish::required_sources` is what `validate_sources` checks before an
+install writes anything. It listed five paths, one of them
+`backend/requirements.txt` - a file that went with the Python backend, that
+the shell stopped checking for, and that is not in the repository any more.
+Its test pinned the five, so the stale list had a passing test of its own.
+
+Nothing broke, because nothing calls it yet. That is the failure mode of a
+deciding half without a caller: it agrees with the copy of the shell it was
+written against, and the shell moves. Wiring this one up as a phase would
+have failed every install at its first step.
+
+`the_list_is_the_one_validate_sources_checks` now reads `validate_sources`
+out of `install.sh` and requires the two to have the same number of paths,
+and refuses the reappearance of `requirements.txt` by name.
+
+The same sweep found the last live reference to the deleted backend:
+`source_version`'s fallback was `sed` over
+`${PROJECT_ROOT}/backend/app/core/version.py`, whose empty output became a
+hard-coded `1.0.59` in the JSON the panel reads for its own version. It is
+unreachable - `validate_sources` will not start without `VERSION` - so the
+line is gone and the reason is written down instead. The `return 0` on the
+guard is deliberate: the caller is `version="$(source_version)"` under
+`set -e`, and a non-zero status there would abort the install at its
+second-to-last phase rather than fall through.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is

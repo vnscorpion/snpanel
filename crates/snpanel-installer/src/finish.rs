@@ -10,17 +10,22 @@ use std::time::Duration;
 
 /// What `validate_sources` insists on before anything is written.
 ///
-/// Five paths, checked up front rather than where each is used. An install
+/// Four paths, checked up front rather than where each is used. An install
 /// that dies twenty minutes in because the upload was missing
-/// `requirements.txt` has already configured nginx, PHP and MariaDB on a box
-/// it cannot finish — and the operator has to work out which of those to
-/// undo. Finding it in the first second costs nothing.
+/// `frontend/package.json` has already configured nginx, PHP and MariaDB on
+/// a box it cannot finish — and the operator has to work out which of those
+/// to undo. Finding it in the first second costs nothing.
+///
+/// It was five. `backend/requirements.txt` went with the Python backend: the
+/// shell stopped checking for it, the file is not in the repository any
+/// more, and this list kept asking for it. Nothing broke, because nothing
+/// called this - which is the failure mode a deciding half without a caller
+/// has, and why the test below reads the shell rather than a copy of it.
 pub fn required_sources(project_root: &Path, backend: &Path, frontend: &Path) -> Vec<Requirement> {
     vec![
         Requirement::Directory(backend.to_path_buf()),
         Requirement::Directory(frontend.to_path_buf()),
         Requirement::File(project_root.join("VERSION")),
-        Requirement::File(backend.join("requirements.txt")),
         Requirement::File(frontend.join("package.json")),
     ]
 }
@@ -174,12 +179,12 @@ mod tests {
             Path::new("/opt/snpanel-source/backend"),
             Path::new("/opt/snpanel-source/frontend"),
         );
-        assert_eq!(required.len(), 5);
+        assert_eq!(required.len(), 4);
         assert!(required.contains(&Requirement::Directory(PathBuf::from(
             "/opt/snpanel-source/backend"
         ))));
-        assert!(required.contains(&Requirement::File(PathBuf::from(
-            "/opt/snpanel-source/backend/requirements.txt"
+        assert!(required.contains(&Requirement::Directory(PathBuf::from(
+            "/opt/snpanel-source/frontend"
         ))));
         assert!(required.contains(&Requirement::File(PathBuf::from(
             "/opt/snpanel-source/frontend/package.json"
@@ -187,6 +192,65 @@ mod tests {
         assert!(required.contains(&Requirement::File(PathBuf::from(
             "/opt/snpanel-source/VERSION"
         ))));
+    }
+
+    /// And it is the *shell's* list, read from the shell.
+    ///
+    /// This list is a deciding half with no caller yet, so nothing at run
+    /// time would report it drifting - and it had: it went on requiring
+    /// `backend/requirements.txt` after the Python backend was deleted, the
+    /// shell stopped checking for it, and the file left the repository.
+    /// Wiring it up in that state would have failed every install at the
+    /// first phase.
+    #[test]
+    fn the_list_is_the_one_validate_sources_checks() {
+        let shell = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer/install.sh"),
+        )
+        .expect("install.sh");
+
+        let body = shell
+            .split_once("validate_sources() {")
+            .expect("install.sh has no validate_sources")
+            .1
+            .split_once("\n}")
+            .expect("validate_sources does not end")
+            .0;
+
+        // What the shell names, as it names it.
+        let mut shell_wants: Vec<&str> = Vec::new();
+        for (needle, what) in [
+            ("$BACKEND_SRC", "backend"),
+            ("$FRONTEND_SRC\"", "frontend"),
+            ("${PROJECT_ROOT}/VERSION", "VERSION"),
+            ("${FRONTEND_SRC}/package.json", "frontend/package.json"),
+        ] {
+            if body.contains(needle) {
+                shell_wants.push(what);
+            }
+        }
+        assert_eq!(
+            shell_wants.len(),
+            4,
+            "validate_sources no longer checks all four: found {shell_wants:?}"
+        );
+        assert!(
+            !body.contains("requirements.txt"),
+            "the shell checks requirements.txt again; put it back in required_sources"
+        );
+
+        let required = required_sources(
+            Path::new("/src"),
+            Path::new("/src/backend"),
+            Path::new("/src/frontend"),
+        );
+        assert_eq!(
+            required.len(),
+            shell_wants.len(),
+            "the shell checks {} paths and this list has {}",
+            shell_wants.len(),
+            required.len()
+        );
     }
 
     /// The usual cause is an incomplete upload, so the message says what to
