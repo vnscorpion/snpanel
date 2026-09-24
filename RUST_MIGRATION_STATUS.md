@@ -3638,6 +3638,37 @@ That is the second thing this batch found that would have stopped an update,
 and both were found the same way - by moving a block and having to explain
 every line in it.
 
+### phpMyAdmin's single sign-on, which the crate could already write
+
+`setup_phpmyadmin_sso` was 114 lines and the last large heredoc pair in
+`install.sh`. `snpanel_installer::phpmyadmin` has held both file bodies for
+some time, with four fixtures recorded from this very function - and, like
+the rest of the crate, no caller. The phase is the twenty lines of `std::fs`
+around them.
+
+Two things improve by moving rather than staying:
+
+**The blowfish secret stops being a shell variable.** It was
+`openssl rand -hex 32`, so it passed through a local, a heredoc and a
+subshell on its way into a file that is `0640` root and the web group. It is
+now read from `/dev/urandom` inside the phase and written straight out. It is
+what encrypts phpMyAdmin's session cookie; one place is the right number of
+places for it.
+
+**The shim is never on disk with a placeholder in it.** The shell wrote
+`__SNPANEL_API_BASE__` and `__SNPANEL_PMA_COOKIE_SECURE__` and then `sed`ed
+them, so between the `cat` and the `sed` the file nginx serves named neither
+the panel's port nor whether its cookie is `secure`. The phase takes both as
+arguments.
+
+Verified on the container by running the bash function and the phase side by
+side into two sandboxes, with both branches of `ENABLE_SSL`: the two files
+are byte-identical once the blowfish line is normalised, the secret is 64 hex
+characters on both sides, the modes and ownership match, and no placeholder
+survives.
+
+`install.sh`: 1636 lines to 1545.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is

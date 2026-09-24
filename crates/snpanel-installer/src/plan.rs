@@ -75,6 +75,7 @@ pub const USES_THE_INSTALLER_BINARY: &[&str] = &[
     "install_waf_engine",
     "setup_sftp_access",
     "setup_backend",
+    "setup_phpmyadmin_sso",
     "setup_systemd",
     "setup_nginx",
     "configure_log_limits",

@@ -1160,118 +1160,27 @@ setup_phpmyadmin_control_user() {
 }
 
 setup_phpmyadmin_sso() {
-  local blowfish_secret
-  blowfish_secret="$(openssl rand -hex 32)"
-  local pma_host pma_scheme pma_secure
-  pma_host="${PANEL_DOMAIN:-$SERVER_IP}"
-  [[ -n "$pma_host" ]] || pma_host="$(detect_server_ip)"
-  pma_scheme="http"
-  pma_secure="false"
-  if [[ "$ENABLE_SSL" == "yes" ]]; then
-    pma_scheme="https"
-    pma_secure="true"
-  fi
-
-  cat >${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php <<PHP
-<?php
-\$cfg['blowfish_secret'] = '${blowfish_secret}';
-\$i = 1;
-\$cfg['Servers'][\$i]['auth_type'] = 'signon';
-\$cfg['Servers'][\$i]['SignonSession'] = 'SNPanelPmaSignon';
-\$cfg['Servers'][\$i]['SignonCookieParams'] = [
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => ${pma_secure},
-    'httponly' => true,
-    'samesite' => 'Lax',
-];
-\$cfg['Servers'][\$i]['SignonURL'] = '/phpmyadmin/snpanel-signon.php';
-\$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
-\$cfg['Servers'][\$i]['only_db'] = '';
-\$cfg['SessionSavePath'] = '/var/lib/php/sessions';
-\$cfg['PmaAbsoluteUri'] = '${pma_scheme}://${pma_host}/phpmyadmin/';
-PHP
-
-  cat >${PHPMYADMIN_ROOT}/snpanel-signon.php <<'PHP'
-<?php
-declare(strict_types=1);
-
-session_save_path('/var/lib/php/sessions');
-ini_set('session.use_cookies', 'true');
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => __SNPANEL_PMA_COOKIE_SECURE__,
-    'httponly' => true,
-    'samesite' => 'Lax',
-]);
-session_name('SNPanelPmaSignon');
-if (!session_start()) {
-    http_response_code(500);
-    exit('Cannot start signon session');
-}
-
-$token = $_GET['snpanel_sso'] ?? '';
-if (!preg_match('/^[A-Za-z0-9_-]{20,}$/', $token)) {
-    http_response_code(403);
-    exit('Invalid token');
-}
-
-$apiUrl = '__SNPANEL_API_BASE__' . rawurlencode($token);
-$ch = curl_init($apiUrl);
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT => 5,
-    CURLOPT_SSL_VERIFYPEER => false,
-    CURLOPT_SSL_VERIFYHOST => false,
-    CURLOPT_HTTPHEADER => ['Accept: application/json'],
-]);
-$response = curl_exec($ch);
-$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
-
-if ($status !== 200 || !$response) {
-    http_response_code(403);
-    exit('Expired token');
-}
-
-$data = json_decode($response, true);
-if (!is_array($data) || empty($data['db_user']) || empty($data['db_password'])) {
-    http_response_code(403);
-    exit('Invalid signon data');
-}
-
-session_regenerate_id(true);
-$_SESSION = [];
-$_SESSION['PMA_single_signon_user'] = $data['db_user'];
-$_SESSION['PMA_single_signon_password'] = $data['db_password'];
-$_SESSION['PMA_single_signon_host'] = 'localhost';
-$_SESSION['PMA_single_signon_port'] = '';
-$_SESSION['PMA_single_signon_cfgupdate'] = [
-    'only_db' => $data['db_name'] ?? '',
-];
-$_SESSION['PMA_single_signon_HMAC_secret'] = bin2hex(random_bytes(16));
-session_write_close();
-
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
-header('Location: /phpmyadmin/index.php?server=1');
-exit;
-PHP
-
-  local api_scheme="http"
-  if [[ "$ENABLE_SSL" == "yes" ]]; then
-    api_scheme="https"
-  fi
-  sed -i "s#__SNPANEL_API_BASE__#${api_scheme}://127.0.0.1:${PANEL_PORT}/api/databases/phpmyadmin-sso/#" ${PHPMYADMIN_ROOT}/snpanel-signon.php
-  sed -i "s#__SNPANEL_PMA_COOKIE_SECURE__#${pma_secure}#" ${PHPMYADMIN_ROOT}/snpanel-signon.php
-
-  chown root:${WEB_GROUP} ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php
-  chmod 640 ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php
-  chmod 644 ${PHPMYADMIN_ROOT}/snpanel-signon.php
+  # `snpanel-install phpmyadmin-sso`. Both file bodies are
+  # `snpanel_installer::phpmyadmin`, which has had fixtures recorded from this
+  # function for some time and until now no caller.
+  #
+  # The blowfish secret goes with it. It was `openssl rand -hex 32` here, so
+  # it passed through a shell variable and a heredoc on its way to a file that
+  # is 0640; now it is read from /dev/urandom inside the phase and written
+  # straight out, and no other process ever sees it.
+  #
+  # The shim used to be written with `__SNPANEL_API_BASE__` and
+  # `__SNPANEL_PMA_COOKIE_SECURE__` placeholders and then `sed`ed. The phase
+  # takes both as values, so there is no window in which the served file
+  # names a placeholder.
+  #
+  # `SERVER_IP` is resolved here because this script already has
+  # `detect_server_ip`; the phase takes the answer.
+  PHPMYADMIN_CONF_DIR="$PHPMYADMIN_CONF_DIR" PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" \
+  PANEL_DOMAIN="${PANEL_DOMAIN:-}" SERVER_IP="${SERVER_IP:-$(detect_server_ip)}" \
+  ENABLE_SSL="$ENABLE_SSL" PANEL_PORT="$PANEL_PORT" WEB_GROUP="$WEB_GROUP" \
+    "${RUST_BIN_DIR}/snpanel-install" phpmyadmin-sso \
+    || fail "Could not write the phpMyAdmin single sign-on files"
 }
 
 # EL ships its default `server { listen 80 default_server; ... }` inside

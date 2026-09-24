@@ -19,10 +19,14 @@
 
 use std::process::ExitCode;
 
-use snpanel_core::phpmyadmin;
+// Two modules, one name. `signon_edits` rewrites the three values in the
+// files an earlier install left; `phpmyadmin` writes those files in the
+// first place.
+use snpanel_core::phpmyadmin as signon_edits;
 use snpanel_installer::backend_env;
 use snpanel_installer::nginx_conf;
 use snpanel_installer::php;
+use snpanel_installer::phpmyadmin;
 use snpanel_installer::systemd_units::{self, UnitSettings};
 use snpanel_installer::tools_vhost;
 use snpanel_installer::update::migrations;
@@ -45,6 +49,7 @@ fn main() -> ExitCode {
         Some("sftp-access") => run(phase_sftp_access()),
         Some("tools-vhost") => run(phase_tools_vhost()),
         Some("phpmyadmin-signon") => run(phase_phpmyadmin_signon()),
+        Some("phpmyadmin-sso") => run(phase_phpmyadmin_sso()),
         Some("backend-env") => run(phase_backend_env()),
         Some("migrate-csp") => run(phase_migrate_csp()),
         Some("php-ini") => run(phase_php_ini(args.get(1))),
@@ -73,6 +78,7 @@ fn help() {
     println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
     println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on");
     println!("  snpanel-install phpmyadmin-signon  point the sign-on shim at the panel");
+    println!("  snpanel-install phpmyadmin-sso   write the sign-on config and shim");
     println!("  snpanel-install backend-env      the panel's .env, then seed the database");
     println!("  snpanel-install migrate-csp      add worker-src to existing vhosts");
     println!("  snpanel-install php-ini <path>   the panel's seven php.ini settings");
@@ -601,14 +607,14 @@ fn phase_phpmyadmin_signon() -> Result<(), String> {
     let host = env_opt("PANEL_DOMAIN").or_else(|| env_opt("SERVER_IP"));
 
     edit_in_place(&shim, |text| {
-        phpmyadmin::rewrite_sso_url(text, scheme, &port)
+        signon_edits::rewrite_sso_url(text, scheme, &port)
     });
     for path in [&conf, &shim] {
-        edit_in_place(path, |text| phpmyadmin::rewrite_secure_flag(text, secure));
+        edit_in_place(path, |text| signon_edits::rewrite_secure_flag(text, secure));
     }
     if let Some(host) = host.as_deref() {
         edit_in_place(&conf, |text| {
-            phpmyadmin::rewrite_absolute_uri(text, scheme, host)
+            signon_edits::rewrite_absolute_uri(text, scheme, host)
         });
     }
     Ok(())
@@ -629,6 +635,86 @@ fn edit_in_place(path: &std::path::Path, rewrite: impl Fn(&str) -> String) {
     if rewritten != text {
         let _ = std::fs::write(path, rewritten);
     }
+}
+
+/// Source: `setup_phpmyadmin_sso` in `install.sh`.
+///
+/// The two files that let the panel put a customer into phpMyAdmin without
+/// handing them a database password to type. Both bodies are
+/// `snpanel_installer::phpmyadmin`, which has had fixtures recorded from this
+/// shell function for some time and no caller at all.
+///
+/// The shell wrote the shim with `__SNPANEL_API_BASE__` and
+/// `__SNPANEL_PMA_COOKIE_SECURE__` placeholders and then `sed`ed them. Here
+/// the values are arguments, so there is nothing to substitute afterwards and
+/// no window in which the file on disk names a placeholder.
+///
+/// **The blowfish secret is generated here and never becomes a shell
+/// variable.** `openssl rand -hex 32` in the bash put it in the function's
+/// environment and then in a heredoc; this reads `/dev/urandom` and writes
+/// it straight into the file. It is what encrypts phpMyAdmin's session
+/// cookie, so it belongs in exactly one place: a file that is `0640`
+/// root and the web group.
+///
+/// The other file is `0644` because nginx serves it, and it holds no secret -
+/// the token it posts is minted per request by the panel.
+///
+/// Rewriting it every run is deliberate and matches the shell: a new blowfish
+/// secret invalidates the sessions phpMyAdmin had open, which on an install
+/// is none and on a re-run is the right answer anyway.
+fn phase_phpmyadmin_sso() -> Result<(), String> {
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+
+    let root = env_opt("PHPMYADMIN_ROOT")
+        .unwrap_or_else(|| platform.phpmyadmin_root().to_string_lossy().into_owned());
+    let conf_dir = env_opt("PHPMYADMIN_CONF_DIR").unwrap_or_else(|| "/etc/phpmyadmin".to_string());
+    let paths = phpmyadmin::PhpMyAdminPaths {
+        conf_dir: &conf_dir,
+        root: &root,
+    };
+
+    // `pma_host="${PANEL_DOMAIN:-$SERVER_IP}"`, and the shell falls back to
+    // `detect_server_ip` when both are empty. That detection stays in the
+    // shell, which already has it; what arrives here is the answer.
+    let host = env_opt("PANEL_DOMAIN")
+        .or_else(|| env_opt("SERVER_IP"))
+        .unwrap_or_default();
+    let secure = env_opt("ENABLE_SSL").as_deref() == Some("yes");
+    let panel_port: u16 = env_opt("PANEL_PORT")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2222);
+    let web_group = env_opt("WEB_GROUP").unwrap_or_else(|| platform.web_group().to_string());
+
+    let config = paths.config_file();
+    write_conf(
+        &config,
+        &phpmyadmin::config_php(&random_hex(32)?, &host, secure),
+    )?;
+    set_owner_and_mode(&config, "root", &web_group, phpmyadmin::CONFIG_MODE)?;
+
+    let signon = paths.signon_file();
+    let api_base = phpmyadmin::api_base(secure, panel_port);
+    write_conf(&signon, &phpmyadmin::signon_php(&api_base, secure))?;
+    set_mode(&signon, phpmyadmin::SIGNON_MODE)?;
+    Ok(())
+}
+
+/// `chown <owner>:<group> <path>` then `chmod <mode> <path>`.
+///
+/// Fatal, both of them. A config file that kept the default mode would leave
+/// the blowfish secret world-readable, and one the web group cannot read is
+/// a phpMyAdmin that cannot start - neither is a state to continue an install
+/// in.
+fn set_owner_and_mode(path: &str, owner: &str, group: &str, mode: u32) -> Result<(), String> {
+    let status = std::process::Command::new("chown")
+        .arg(format!("{owner}:{group}"))
+        .arg(path)
+        .status()
+        .map_err(|e| format!("chown {path}: {e}"))?;
+    if !status.success() {
+        return Err(format!("chown {owner}:{group} {path} failed"));
+    }
+    set_mode(path, mode)
 }
 
 /// Source: `setup_backend`.
