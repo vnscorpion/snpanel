@@ -114,7 +114,7 @@ export default function FirewallPage() {
           <button type="button" className="secondary" disabled={busy} onClick={reloadFirewall}><RotateCw size={15} aria-hidden="true"/> {t('Reload rules')}</button>
           {state === 'off'
             ? <button type="button" disabled={busy} onClick={enableFirewall}><ShieldCheck size={15} aria-hidden="true"/> {t('Turn on')}</button>
-            : <button type="button" className="secondary fw-turn-off" disabled={busy || state === 'loading'} onClick={disableFirewall}><ShieldOff size={15} aria-hidden="true"/> {t('Turn off')}</button>}
+            : <button type="button" className="secondary danger-hover" disabled={busy || state === 'loading'} onClick={disableFirewall}><ShieldOff size={15} aria-hidden="true"/> {t('Turn off')}</button>}
         </div>
       </div>
       {protectedPorts.length > 0 && <p className="fw-ports">
@@ -153,9 +153,9 @@ export default function FirewallPage() {
       </form>
 
       {rules.length === 0
-        ? <p className="fw-empty">{t('No rules yet. Only the always-open ports accept connections.')}</p>
-        : <div className="fw-table-wrap">
-          <table className="fw-table">
+        ? <p className="empty-note fw-empty">{t('No rules yet. Only the always-open ports accept connections.')}</p>
+        : <div className="data-table-wrap">
+          <table className="data-table fw-table">
             <thead><tr>
               <th scope="col">#</th>
               <th scope="col">{t('Action')}</th>
@@ -167,10 +167,10 @@ export default function FirewallPage() {
               {rules.map((item) => <tr key={item.id}>
                 <td className="fw-id">{item.id}</td>
                 <td><span className={`badge ${item.action === 'DENY' ? 'bad' : 'ok'}`}>{item.action === 'DENY' ? t('Block') : t('Allow')}</span></td>
-                <td>{item.from === 'any' ? <span className="fw-any">{t('Anyone')}</span> : <code>{item.from}</code>}</td>
-                <td>{item.to === 'any' ? <span className="fw-any">{t('All ports')}</span> : <code>{item.to}</code>}</td>
-                <td className="fw-row-actions">
-                  <button type="button" className="secondary icon-button fw-delete" disabled={busy} onClick={() => deleteFirewallRule(item.id)}
+                <td>{item.from === 'any' ? <span className="data-table-muted">{t('Anyone')}</span> : <code>{item.from}</code>}</td>
+                <td>{item.to === 'any' ? <span className="data-table-muted">{t('All ports')}</span> : <code>{item.to}</code>}</td>
+                <td className="data-table-actions">
+                  <button type="button" className="secondary icon-button danger-hover" disabled={busy} onClick={() => deleteFirewallRule(item.id)}
                     aria-label={t('Delete rule #{number}', { number: item.id })} title={t('Delete rule #{number}', { number: item.id })}><Trash2 size={15} aria-hidden="true"/></button>
                 </td>
               </tr>)}
@@ -197,7 +197,7 @@ export default function FirewallPage() {
       {blocklist.urls.length > 0 && <ul className="fw-url-list">
         {blocklist.urls.map((url) => <li key={url}>
           <code title={url}>{url}</code>
-          <button type="button" className="secondary icon-button fw-delete" disabled={busy} onClick={() => deleteFirewallBlocklistUrl(url)}
+          <button type="button" className="secondary icon-button danger-hover" disabled={busy} onClick={() => deleteFirewallBlocklistUrl(url)}
             aria-label={t('Remove list {url}', { url })} title={t('Remove list {url}', { url })}><Trash2 size={15} aria-hidden="true"/></button>
         </li>)}
       </ul>}

@@ -115,6 +115,13 @@ try {
     `a blocked address appears in the table (${(await blockRow.textContent()).replace(/\s+/g, ' ').trim()})`);
 
   await page.screenshot({ path: `${OUT}/with-rules-light-en-1440.png`, fullPage: true });
+  // The table on a phone: it scrolls inside its frame, the page does not.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  const sidewaysWithRules = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  check(sidewaysWithRules <= 0, `with rules in the table, no sideways scroll at 390px (${sidewaysWithRules}px)`);
+  await page.screenshot({ path: `${OUT}/with-rules-light-en-390.png`, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
 
   for (const [row, what] of [[allowRow, 'the allowed port'], [blockRow, 'the blocked address']]) {
     const id = (await row.locator('.fw-id').textContent()).trim();

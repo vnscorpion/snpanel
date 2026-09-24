@@ -258,6 +258,9 @@ button:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
 .segmented-control button{background:transparent;color:var(--text-secondary);box-shadow:none;min-height:32px;padding:7px 12px}
 .segmented-control button:hover:not(:disabled){background:var(--surface);box-shadow:none}
 .segmented-control button.active{background:var(--primary);color:var(--primary-fg)}
+/* The rule above loses to the hover rule before it (0,3,1 against 0,2,1): the
+   selected tab turned white under the pointer, its white label with it. */
+.segmented-control button.active:hover:not(:disabled){background:var(--primary-hover);color:var(--primary-fg)}
 .log-output{min-height:360px;max-height:62vh;overflow:auto;background:var(--code-bg);color:var(--code-fg);border:1px solid var(--code-border);border-radius:var(--radius-md);padding:14px;font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .malware-scan-log{max-height:260px;overflow:auto;margin-top:10px;background:var(--code-bg);color:var(--code-fg);border:1px solid var(--code-border);border-radius:6px;padding:10px 12px;font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);line-height:1.6;white-space:pre-wrap;word-break:break-word}
 @media(max-width:700px){.log-toolbar{grid-template-columns:1fr}.segmented-control{width:100%;grid-template-columns:1fr 1fr}.log-toolbar select,.log-toolbar button{width:100%}.log-output{min-height:280px}}

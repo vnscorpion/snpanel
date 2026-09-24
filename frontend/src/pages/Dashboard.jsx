@@ -1,6 +1,6 @@
 import {
   Activity, Archive, Boxes, BrickWall, Bug, CalendarClock, Cpu, Database, FileCode2, Fingerprint,
-  FolderOpen, Globe, HardDrive, KeyRound, Lock, MemoryStick, Network, Plus, Puzzle, RefreshCw,
+  FolderOpen, Globe, HardDrive, Lock, MemoryStick, Network, Plus, Puzzle, RefreshCw,
   ScrollText, Settings, ShieldCheck, UserCog,
 } from 'lucide-react';
 import { routeForPage } from '../lib/panel.jsx';
@@ -57,7 +57,6 @@ const GROUPS = [
     tiles: [
       ['users', UserCog],
       ['settings', Settings],
-      ['api-tokens', KeyRound],
       ['addons', Puzzle],
     ],
   },

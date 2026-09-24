@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -57,7 +57,6 @@ const UpdatesPage = lazy(() => import('./pages/Updates.jsx'));
 const SecurityPage = lazy(() => import('./pages/Security.jsx'));
 const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
 const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
-const ApiTokensPage = lazy(() => import('./pages/ApiTokens.jsx'));
 const UsersPage = lazy(() => import('./pages/Users.jsx'));
 
 function App() {
@@ -749,7 +748,7 @@ function App() {
   }
 
   async function createApiToken() {
-    if (!newApiToken.name.trim()) { setError('Token name is required.'); return; }
+    if (!newApiToken.name.trim()) { setError(t('Token name is required.')); return; }
     const data = await request('/provisioning/v1/tokens', {
       method: 'POST',
       body: JSON.stringify({
@@ -757,10 +756,10 @@ function App() {
         scopes: 'provisioning:read,provisioning:write',
         allowed_ips: newApiToken.allowed_ips.trim(),
       }),
-    }, 'Creating API token...');
+    }, t('Creating the API token...'));
     if (data) {
       setCreatedApiToken(data.token || '');
-      setNotice('API token created. Copy it now; it will not be shown again. Paste it into WHMCS Server Access Hash.');
+      setNotice(t('API token created. Copy it now: it will not be shown again.'));
       setNewApiToken({ name: 'WHMCS', allowed_ips: '' });
       await loadApiTokens();
     }
@@ -777,20 +776,20 @@ function App() {
         input?.select();
         document.execCommand('copy');
       }
-      setNotice('API token copied. Paste it into WHMCS Server Access Hash.');
+      setNotice(t('API token copied. Paste it into the WHMCS server’s Access Hash field.'));
     } catch {
       const input = document.getElementById('created-api-token');
       input?.focus();
       input?.select();
-      setError('Copy failed. The token is selected; press Ctrl+C.');
+      setError(t('Could not copy. The token is selected: press Ctrl+C.'));
     }
   }
 
   async function revokeApiToken(token) {
-    if (!confirm(`Revoke API token ${token.name}? WHMCS using it will stop working.`)) return;
-    const data = await request(`/provisioning/v1/tokens/${token.id}`, { method: 'DELETE' }, `Revoking ${token.name}...`);
+    if (!confirm(t('Revoke the API token {name}? Anything using it, such as WHMCS, will stop working.', { name: token.name }))) return;
+    const data = await request(`/provisioning/v1/tokens/${token.id}`, { method: 'DELETE' }, t('Revoking {name}...', { name: token.name }));
     if (data) {
-      setNotice(`Revoked API token ${token.name}.`);
+      setNotice(t('Revoked the API token {name}.', { name: token.name }));
       await loadApiTokens();
     }
   }
@@ -3324,8 +3323,10 @@ function App() {
       if (isAdmin) { loadMalwareScanStatus(); loadMalwareScanJobs(); loadLatestMalwareScanJob(); }
       if (!websites.length) refreshAll();
     }
-    if (isAuthenticated && page === 'api-tokens' && currentUser?.role === 'admin') loadApiTokens();
-    if (isAuthenticated && page === 'settings') loadPanelSettings();
+    if (isAuthenticated && ['settings', 'api-tokens'].includes(page)) {
+      loadPanelSettings();
+      if (currentUser?.role === 'admin') loadApiTokens();
+    }
     if (isAuthenticated && page === 'backups' && currentUser?.role === 'admin') { loadUsers(); loadSftpTargets(); loadBackupSchedules(); loadRestoreBackups(); }
   }, [isAuthenticated, page, currentUser?.role]);
 
@@ -3376,7 +3377,6 @@ function App() {
 
   const settingsNavItems = [
     ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
-    ...(isAdmin ? [['api-tokens', t('API Tokens'), KeyRound]] : []),
     ['security', t('Two-step verification'), Shield],
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
@@ -3836,6 +3836,7 @@ function App() {
       osAutoUpdate,
       osUpdating,
       packages,
+      page,
       panelFaviconFile,
       panelLogoFile,
       panelSettings,
@@ -4067,8 +4068,8 @@ function App() {
     if (page === 'access-logs') return <WafAccessLogsPage />;
     if (page === 'updates') return <UpdatesPage />;
     if (page === 'services') return <ServicesPage />;
-    if (page === 'settings') return <PanelSettingsPage />;
-    if (page === 'api-tokens') return <ApiTokensPage />;
+    // One page for both addresses: the tokens are a tab of Panel settings.
+    if (page === 'settings' || page === 'api-tokens') return <PanelSettingsPage />;
     if (page === 'users') return <UsersPage />;
     return <DashboardPage />;
   }

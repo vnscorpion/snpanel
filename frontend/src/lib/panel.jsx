@@ -32,7 +32,7 @@ export function composeWebPorts(plan, wanted) {
 // Pages opened from inside another page instead of the sidebar. They have no
 // nav entry of their own, so without this the header falls back to the first
 // item and titles the page "Dashboard".
-export const NAV_PARENT_PAGE = { 'waf-site': 'waf' };
+export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'settings' };
 
 // 'waf-site' is reached from the WAF overview rather than the sidebar, but it
 // still belongs to Settings so the menu stays open and WAF stays highlighted.
