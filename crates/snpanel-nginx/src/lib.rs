@@ -2,9 +2,15 @@
 //!
 //! Contract C19: this must produce the same bytes as `app.services.nginx`.
 //! A vhost that differs by one line is a website that stops serving, and
-//! nobody notices until a customer reports it - so the templates are the ones
-//! the Python uses, rendered by minijinja, and the test walks the golden
+//! nobody notices until a customer reports it - so the test walks the golden
 //! fixtures the real Jinja2 produced.
+//!
+//! The bodies were the Python's own `.j2` templates for most of the port,
+//! rendered with minijinja, which is what made C19 hold while both sides
+//! existed. The Python is gone, so the other side of that contract is the
+//! fixtures, and the templates are `templates.rs` - generated from them, not
+//! retyped, and checked against the twenty renders captured from real Jinja2
+//! as well as thirty fixtures for the branches those twenty never took.
 //!
 //! What is ported here is the work *around* the template: choosing the server
 //! names, resolving the document root and the FPM socket, computing the flood
@@ -20,6 +26,7 @@ use snpanel_core::Domain;
 
 mod custom;
 mod edits;
+mod templates;
 mod writer;
 pub use custom::{CustomDirectives, CustomError};
 pub use edits::{
@@ -28,38 +35,19 @@ pub use edits::{
 };
 pub use writer::{blocked_bots_in_vhost, plan_rewrite, vhost_path, VhostPlan};
 
-/// The templates are compiled in rather than read at run time.
-///
-/// An installation that updated its Python templates without updating this
-/// binary would otherwise render something neither side had tested. Compiling
-/// them in means the bytes this produces are the bytes the golden fixtures
-/// were diffed against.
-const WORDPRESS_TEMPLATE: &str = include_str!("../templates/wordpress.conf.j2");
-const PHP_TEMPLATE: &str = include_str!("../templates/php.conf.j2");
-const STATIC_TEMPLATE: &str = include_str!("../templates/static.conf.j2");
-const PROXY_TEMPLATE: &str = include_str!("../templates/proxy.conf.j2");
-
 /// Source: `_write_placeholder_page`.
 ///
-/// **The one template the panel renders with autoescaping on.** The vhost
-/// templates cannot escape - escaping would corrupt the config, which is why
-/// `render_vhost` leaves it off - but this one is HTML. The only variable is
-/// a domain already constrained to `[a-z0-9-.]`, so today the escaping is a
-/// no-op for every value that can reach it; it is here so that constraint
-/// stops being load-bearing.
+/// **The one page the panel escapes.** The vhost bodies cannot be escaped -
+/// escaping would corrupt the config - but this one is HTML. The only
+/// variable is a domain already constrained to `[a-z0-9-.]`, so today the
+/// escaping is a no-op for every value that can reach it; it is there so that
+/// constraint stops being load-bearing.
+///
+/// Infallible now that there is no template to fail to compile. The
+/// `Result` stays because two callers match on it, and because a page that
+/// could not be produced is a case worth keeping expressible.
 pub fn render_placeholder(domain: &str) -> Result<String, RenderError> {
-    const PLACEHOLDER_TEMPLATE: &str = include_str!("../templates/placeholder.html.j2");
-
-    let mut environment = minijinja::Environment::new();
-    environment.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
-    environment
-        .add_template("placeholder", PLACEHOLDER_TEMPLATE)
-        .map_err(|e| RenderError::Template(e.to_string()))?;
-    environment
-        .get_template("placeholder")
-        .map_err(|e| RenderError::Template(e.to_string()))?
-        .render(minijinja::context! { domain => domain })
-        .map_err(|e| RenderError::Template(e.to_string()))
+    Ok(templates::placeholder(domain))
 }
 
 pub const ALLOWED_PHP_VERSIONS: &[&str] = &["5.6", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"];
@@ -578,11 +566,11 @@ pub fn render_vhost(input: &VhostInput<'_>, env: &VhostEnv) -> Result<String, Re
     let resolved_document_root = document_root_path(&resolved_root, &effective_root)?;
     let include_path = custom_include_path(&safe_domain)?;
 
-    let template_source = match input.app_type {
-        "wordpress" => WORDPRESS_TEMPLATE,
-        "php" => PHP_TEMPLATE,
-        "static" => STATIC_TEMPLATE,
-        "application" => PROXY_TEMPLATE,
+    let body: fn(&templates::Vars<'_>) -> String = match input.app_type {
+        "wordpress" => templates::wordpress,
+        "php" => templates::php,
+        "static" => templates::r#static,
+        "application" => templates::proxy,
         other => return invalid(format!("Unsupported app type: {other}")),
     };
     let socket = match input.php_fpm_socket_override {
@@ -590,37 +578,30 @@ pub fn render_vhost(input: &VhostInput<'_>, env: &VhostEnv) -> Result<String, Re
         None => php_fpm_socket(input.php_version, &env.default_php_version)?,
     };
 
-    let mut environment = minijinja::Environment::new();
-    environment
-        .add_template("vhost", template_source)
-        .map_err(|e| RenderError::Template(e.to_string()))?;
-    let template = environment
-        .get_template("vhost")
-        .map_err(|e| RenderError::Template(e.to_string()))?;
-
-    let context = minijinja::context! {
-        ipv6 => env.ipv6,
-        domain => safe_domain.clone(),
-        server_names => names.clone(),
-        root_path => resolved_root.to_string_lossy(),
-        document_root_path => resolved_document_root.to_string_lossy(),
-        php_fpm_socket => socket,
-        custom_include_path => include_path,
-        waf_enabled => input.waf_enabled && env.waf_engine,
-        waf_rules_file => waf_rules_file(&safe_domain)?,
-        http_flood_enabled => input.http_flood_enabled,
-        http_flood_zone => http_flood_zone_name(&safe_domain)?,
-        http_flood_burst => input.http_flood_config.access_limit_burst,
-        http_flood_connections => input.http_flood_config.connection_limit,
-        http_flood_challenge_block => http_flood_challenge_block(),
-        rewrite_mode => rewrite_mode.clone(),
-        app_port => app_port,
-        proxy_timeout => PROXY_TIMEOUT_SECONDS,
+    let vars = templates::Vars {
+        ipv6: env.ipv6,
+        domain: &safe_domain,
+        server_names: &names,
+        root_path: &resolved_root.to_string_lossy(),
+        document_root_path: &resolved_document_root.to_string_lossy(),
+        php_fpm_socket: &socket,
+        custom_include_path: &include_path,
+        waf_enabled: input.waf_enabled && env.waf_engine,
+        waf_rules_file: &waf_rules_file(&safe_domain)?,
+        http_flood_enabled: input.http_flood_enabled,
+        http_flood_zone: &http_flood_zone_name(&safe_domain)?,
+        http_flood_burst: input.http_flood_config.access_limit_burst,
+        http_flood_connections: input.http_flood_config.connection_limit,
+        http_flood_challenge_block: &http_flood_challenge_block(),
+        rewrite_mode: &rewrite_mode,
+        // Only the proxied body reads this, and `_check_app_port` above has
+        // already refused that type without one - so the default is a value
+        // no rendered vhost can contain.
+        app_port: app_port.unwrap_or(0),
+        proxy_timeout: PROXY_TIMEOUT_SECONDS,
     };
 
-    let rendered = template
-        .render(context)
-        .map_err(|e| RenderError::Template(e.to_string()))?;
+    let rendered = body(&vars);
 
     let rendered = carry_or_replace_bot_block(&rendered, input.blocked_bots)?;
     let rendered = if input.ssl_cert_path.is_some() || input.ssl_key_path.is_some() {

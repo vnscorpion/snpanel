@@ -3696,6 +3696,90 @@ guard is deliberate: the caller is `version="$(source_version)"` under
 `set -e`, and a non-zero status there would abort the install at its
 second-to-last phase rather than fall through.
 
+## The Jinja goes
+
+Five `.j2` files in `crates/snpanel-nginx/templates` - four vhost bodies and
+the placeholder page - were the last thing in the repository that was not
+Rust, JavaScript or shell. They were deliberate: they were *the Python's own
+templates*, rendered with minijinja, which is what made C19 hold while both
+implementations existed. The Python is gone, so the other side of that
+contract is the fixtures, and a template engine at run time was buying
+nothing.
+
+The whole conditional surface of the four vhost bodies turned out to be
+`ipv6`, `http_flood_enabled` with `http_flood_burst > 0` nested inside it,
+`waf_enabled`, and one four-way branch on `rewrite_mode` in the PHP one.
+Everything else is literal nginx, and the first twenty-six lines were
+identical in all four.
+
+### Generated, not retyped
+
+`templates.rs` was produced by a script that parses the tiny grammar these
+templates use - `{% if %}`/`{% elif %}`/`{% else %}`/`{% endif %}`,
+`{{ name }}` and one `| join(' ')` - and emits `out.push_str`. Anything it did
+not recognise was a hard error rather than a guess. Literal chunks come out as
+raw strings with their newlines intact, so the file can be read against the
+template it came from.
+
+Retyping was the risk worth avoiding. Jinja renders these with `trim_blocks`
+and `lstrip_blocks` both off, so a tag contributes nothing and every newline
+around one is literal text - a newline moved from one side of an `{% endif %}`
+to the other is a vhost that still parses and no longer matches what the box
+already has.
+
+### Three checks, in the order they were done
+
+1. **480 combinations**, every branch of all four templates, Rust against
+   minijinja rendering the same `.j2` - run while both existed. Identical.
+2. **The twenty captured Python renders.** `template_renders.json` holds
+   twenty renders from the *real* Jinja2 with the contexts Python computed
+   for them. These now drive the Rust directly, which is a stronger claim
+   than the `cargo xtask golden-nginx` it replaces: that compared minijinja
+   against Python, with the shipped code one step removed.
+3. **Thirty branch fixtures**, recorded and then checked against the
+   templates' own output before the templates were deleted. They exist
+   because of what the twenty do *not* cover: `ipv6` is false in all twenty
+   and `http_flood_burst` is above zero in all twenty, so neither of those
+   branches was ever captured from Python. `static` had one fixture and four
+   conditionals.
+
+Mutation-proved: changing `index index.php index.html` to `index.htm` in one
+body fails both fixture tests, each naming the case and the first differing
+line.
+
+### The escape, which was already different
+
+The placeholder page is the one thing rendered with autoescaping on. Measuring
+minijinja against Python's Jinja2 before removing it found three characters
+they disagree about:
+
+| character | Jinja2 | minijinja |
+| --- | --- | --- |
+| `'` | `&#39;` | `&#x27;` |
+| `"` | `&#34;` | `&quot;` |
+| `/` | *unescaped* | `&#x2f;` |
+
+The pages on a box were written by the Python, so Jinja2's table is the one
+the Rust reproduces. Nothing on a box changes either way: `Domain` holds
+`[a-z0-9-.]`, so no value that reaches the page can contain any of them -
+which is also why the difference went unnoticed for the whole of the port.
+The test that records it names minijinja's answer too, so it stays a decision
+rather than a discovery.
+
+### What went with them
+
+`minijinja` leaves the dependency tree - `snpanel-core` had declared it
+without a single use - and `memo-map` with it. `cargo xtask golden-nginx` and
+its module are deleted; three of its four tests were tests of its own diff
+helper, and the fourth is superseded.
+
+One thing this uncovered: the `fixtures` CI job regenerated
+`tests/golden/nginx` with real Jinja2 and required `git diff --exit-code`.
+`gen_nginx_golden` begins `from app.services import nginx`, and that backend
+is deleted, so it has been printing SKIP and returning - the job was diffing
+a directory nothing had regenerated. That path is out of the diff list now,
+with the reason written in the workflow.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is

@@ -22,4 +22,3 @@ jsonwebtoken.workspace = true
 totp-rs.workspace = true
 rand.workspace = true
 subtle.workspace = true
-minijinja.workspace = true

@@ -10,6 +10,5 @@ description = "Build and test automation for the SNPanel workspace."
 [dependencies]
 anyhow.workspace = true
 snpanel-core = { path = "../crates/snpanel-core" }
-minijinja.workspace = true
 serde.workspace = true
 serde_json.workspace = true

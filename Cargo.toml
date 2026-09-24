@@ -41,7 +41,6 @@ aes = "0.8"
 cbc = "0.1"
 bcrypt = "0.16"
 jsonwebtoken = "9"
-minijinja = "2"
 # `otpauth` gives the issuer/account constructor and the provisioning URI;
 # `gen_secret` gives Secret::generate_secret for new enrolments.
 totp-rs = { version = "5", features = ["otpauth", "gen_secret"] }
