@@ -563,6 +563,12 @@ server {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/\$1;
         fastcgi_param SCRIPT_NAME /phpmyadmin/\$1;
+        # Twig raises its deprecations as E_USER_DEPRECATED, which php.ini's
+        # `E_ALL & ~E_DEPRECATED` does not exclude, so Debian's pairing of
+        # phpMyAdmin 5.2 with Twig 3.21 shows the administrator a wall of
+        # notices about a library they cannot change. phpMyAdmin only: a
+        # customer's own site may well want its deprecations.
+        fastcgi_param PHP_VALUE "error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED";
         fastcgi_pass unix:/run/php/php${php_version}-fpm.sock;
         fastcgi_read_timeout 300;
     }

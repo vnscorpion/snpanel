@@ -227,6 +227,56 @@ mod tests {
     /// phpMyAdmin's path comes from the platform table: Debian lowercases the
     /// directory and EPEL keeps the project's own capitalisation, and a block
     /// pointing at the wrong one serves a 404 where the tool should be.
+    /// **Everything that writes this file silences Twig's deprecations.**
+    ///
+    /// Four things rewrite `00-snpanel-tools.conf`: `install.sh`,
+    /// `update.sh`, `snpanelctl`'s `refresh_tools_nginx` and the helper's
+    /// `panel` op. Whichever ran last decides, and two of them were missing
+    /// the line — so pointing the panel at a new domain, which runs
+    /// `set-panel-url` and `install-panel-ssl`, put a wall of notices back
+    /// in front of the administrator.
+    ///
+    /// The tests above compare this module against a recorded fixture,
+    /// which cannot see that. This reads the writers.
+    ///
+    /// Twig raises its deprecations as `E_USER_DEPRECATED`, which php.ini's
+    /// `E_ALL & ~E_DEPRECATED` does not exclude. It is scoped to phpMyAdmin
+    /// rather than set globally on purpose: a customer's own site may well
+    /// want its deprecations.
+    #[test]
+    fn every_writer_of_the_tools_vhost_silences_twig() {
+        const NEEDLE: &str = "~E_USER_DEPRECATED";
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0;
+        for name in [
+            "installer/install.sh",
+            "installer/update.sh",
+            "installer/files/snpanelctl",
+            "installer/files/snpanel-helper.sh",
+            "crates/snpanel-helper/src/ops/panel.rs",
+        ] {
+            let Ok(text) = std::fs::read_to_string(root.join(name)) else {
+                eprintln!("skipped: {name} is not there");
+                continue;
+            };
+            // Only the files that actually write the block have to carry it.
+            if !text.contains("^/phpmyadmin/(.+") {
+                continue;
+            }
+            assert!(
+                text.contains(NEEDLE),
+                "{name} writes the phpMyAdmin location without {NEEDLE}, so running \
+                 it puts Twig's deprecations back in front of the administrator"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 4, "only {checked} writers were checked");
+        assert!(
+            tools_vhost(&debian_tools(None)).contains(NEEDLE),
+            "and this module has to agree with them"
+        );
+    }
+
     #[test]
     fn the_phpmyadmin_path_is_the_platforms() {
         let el = tools_vhost(&ToolsVhost {

@@ -180,6 +180,7 @@ pub(crate) fn render_tools_nginx(config: &ToolsConfig) -> String {
          include fastcgi_params; \
          fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/$1; \
          fastcgi_param SCRIPT_NAME /phpmyadmin/$1; \
+         fastcgi_param PHP_VALUE \"error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED\"; \
          fastcgi_pass unix:/run/php/php{php}-fpm.sock; fastcgi_read_timeout 300; }}\n\
          }}\n"
     )
