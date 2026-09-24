@@ -164,12 +164,17 @@ pub(crate) fn is_executable(path: &str) -> bool {
 /// panel must not depend on the installer having run since the feature
 /// shipped: without it the first proxy vhost fails `nginx -t` and gets rolled
 /// back."
+/// The map itself. `install.sh` writes the same block, and
+/// `the_upgrade_map_matches_the_installers` compares the two: a box gets it
+/// from whichever of the pair ran last, so they have to agree.
+pub const UPGRADE_MAP_BODY: &str = "map $http_upgrade $connection_upgrade {\n\
+    \x20   default upgrade;\n\
+    \x20   ''      close;\n\
+    }\n";
+
 pub fn upgrade_map_ensure() -> HelperResponse {
     const TARGET: &str = "/etc/nginx/conf.d/00-snpanel-upgrade-map.conf";
-    const BODY: &str = "map $http_upgrade $connection_upgrade {\n\
-        \x20   default upgrade;\n\
-        \x20   ''      close;\n\
-        }\n";
+    const BODY: &str = UPGRADE_MAP_BODY;
 
     // `[[ -s "$target" ]] && return 0` - a *non-empty* file is left alone. An
     // empty one is rewritten, which is what recovers from a truncated write.
@@ -1914,24 +1919,21 @@ fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse>
 mod tests {
     use super::*;
 
-    /// The daemon config, against the bash's heredoc.
+    /// The daemon config says what it has to say, and is JSON.
     ///
-    /// The log rotation is the line that matters on a shared host: "an
-    /// unbounded container log fills the disk and takes every other site down
-    /// with it."
+    /// It used to be compared against the bash's heredoc; this file is now
+    /// the only place it is written. Being JSON is the part a heredoc could
+    /// never promise, and the log rotation is the line that matters on a
+    /// shared host: an unbounded container log fills the disk and takes every
+    /// other site down with it.
     #[test]
-    fn the_docker_daemon_config_is_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        let open = "<<'JSON'\n";
-        let start = BASH.find(open).expect("the heredoc opener") + open.len();
-        let end = BASH[start..].find("JSON\n").expect("the closer") + start;
-        assert_eq!(DOCKER_DAEMON_JSON, &BASH[start..end]);
-
-        // And it is JSON, which a heredoc cannot promise.
+    fn the_docker_daemon_config_rotates_logs_and_parses() {
         let parsed: serde_json::Value =
             serde_json::from_str(DOCKER_DAEMON_JSON).expect("daemon.json parses");
         assert_eq!(parsed["log-opts"]["max-size"], "10m");
         assert_eq!(parsed["no-new-privileges"], true);
+        // A rotation with no cap on the number of files is not a rotation.
+        assert!(parsed["log-opts"]["max-file"].is_string());
     }
 
     /// `/etc/os-release` parsing, including the quoting the file uses.
@@ -2077,42 +2079,51 @@ mod tests {
         assert_eq!(find_scan_id(""), None);
     }
 
-    /// The prune list is the bash's, read from the bash.
+    /// The prune list keeps the scan away from the pseudo-filesystems.
     ///
-    /// It is the difference between a scan that takes ten minutes and one that
-    /// takes hours reading `/proc` and a package cache.
+    /// It used to be read out of the bash. What it is for survives the bash:
+    /// the difference between a scan that takes ten minutes and one that
+    /// spends hours in `/proc` and a package cache.
     #[test]
-    fn the_scan_prune_list_is_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        let line = BASH
-            .lines()
-            .find(|l| l.starts_with("MALWARE_SCAN_PRUNE="))
-            .expect("MALWARE_SCAN_PRUNE is not in the bash helper");
-        let inside = line
-            .trim_start_matches("MALWARE_SCAN_PRUNE=(")
-            .trim_end_matches(')');
-        let want: Vec<&str> = inside.split_whitespace().collect();
-        assert_eq!(SCAN_PRUNE, want.as_slice());
+    fn the_scan_prune_list_covers_the_pseudo_filesystems() {
+        for required in ["/proc", "/sys", "/dev"] {
+            assert!(
+                SCAN_PRUNE.contains(&required),
+                "{required} is not pruned; the scan will read it"
+            );
+        }
+        // Every entry is an absolute path: `find -path` takes them literally,
+        // and a relative one silently prunes nothing.
+        for entry in SCAN_PRUNE {
+            assert!(entry.starts_with('/'), "{entry} is not absolute");
+        }
     }
 
-    /// Both update paths, read out of the bash helper rather than asserted.
+    /// The update script is where the installer puts it.
     ///
-    /// I had written `/opt/snpanel-src/...` - this session's tooling path -
-    /// where the helper ships `/usr/local/sbin/snpanel-update`. The verb would
-    /// have refused with "missing ..." on every box and never said why.
+    /// Read out of `install.sh` rather than asserted, and out of `install.sh`
+    /// rather than the bash helper it used to come from: the installer is the
+    /// thing that actually writes the file, which makes it the better of the
+    /// two to compare against.
+    ///
+    /// The mistake this exists for was real. `/opt/snpanel-src/...` - this
+    /// session's own tooling path - went in where the box ships
+    /// `/usr/local/sbin/snpanel-update`, and the verb would have refused with
+    /// "missing ..." on every machine without ever saying why.
     #[test]
-    fn the_update_paths_are_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        let value_of = |key: &str| -> String {
-            BASH.lines()
-                .find_map(|l| l.strip_prefix(key))
-                .unwrap_or_else(|| panic!("{key} is not in the bash helper"))
-                .trim()
-                .trim_matches('"')
-                .to_string()
-        };
-        assert_eq!(UPDATE_SCRIPT, value_of("UPDATE_SCRIPT="));
-        assert_eq!(SOURCE_DIR, value_of("SOURCE_DIR="));
+    fn the_update_script_is_where_the_installer_puts_it() {
+        const INSTALL: &str = include_str!("../../../../installer/install.sh");
+        assert!(
+            INSTALL.contains(UPDATE_SCRIPT),
+            "install.sh does not install anything at {UPDATE_SCRIPT}"
+        );
+        // The source directory is the updater's, and `update.sh` is the file
+        // that decides it.
+        const UPDATE: &str = include_str!("../../../../installer/update.sh");
+        assert!(
+            UPDATE.contains(SOURCE_DIR),
+            "update.sh does not name {SOURCE_DIR}"
+        );
     }
 
     /// The Node major is a directory name and half a URL, so it is checked
@@ -2177,21 +2188,26 @@ mod tests {
         }
     }
 
-    /// The upgrade map's body is what nginx needs before any proxied vhost
-    /// will load, so it is compared against the bash's heredoc rather than
-    /// described.
+    /// The upgrade map is what nginx needs before any proxied vhost will
+    /// load, and two files write it: this one and `install.sh`.
+    ///
+    /// It used to be compared against the bash helper's heredoc. The
+    /// installer is the other writer and still exists, so the comparison
+    /// moves there - which is the pairing that matters anyway, because a box
+    /// gets the map from whichever of the two ran last.
     #[test]
-    fn the_upgrade_map_is_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        let open = "<<'NGINX'\n";
-        let start = BASH.find(open).expect("the heredoc opener") + open.len();
-        let end = BASH[start..].find("NGINX\n").expect("the closer") + start;
-        let want = &BASH[start..end];
-        const BODY: &str = "map $http_upgrade $connection_upgrade {\n\
-            \x20   default upgrade;\n\
-            \x20   ''      close;\n\
-            }\n";
-        assert_eq!(BODY, want);
+    fn the_upgrade_map_matches_the_installers() {
+        const INSTALL: &str = include_str!("../../../../installer/install.sh");
+        let open = "map $http_upgrade $connection_upgrade {\n";
+        let start = INSTALL
+            .find(open)
+            .expect("install.sh no longer writes the upgrade map");
+        let end = INSTALL[start..]
+            .find("\n}\n")
+            .expect("the map block never closes")
+            + start
+            + "\n}\n".len();
+        assert_eq!(UPGRADE_MAP_BODY, &INSTALL[start..end]);
     }
 
     /// A non-empty file is left alone; an empty one is not.

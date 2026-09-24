@@ -983,32 +983,21 @@ fn uid_gid_of(user: &PanelUsername) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    /// Every hardening directive the bash writes must appear in ours.
+    /// The hardening directives the shell's unit template carried.
     ///
-    /// Taken from the helper script rather than typed here, so a directive
-    /// added there and forgotten here fails this test instead of silently
-    /// weakening one of the two.
+    /// Extracted from the `write_node_app_unit` heredoc - every line that was
+    /// a directive with no interpolation in it - and frozen here when that
+    /// script was deleted. The test compared against the script so a
+    /// directive added there and forgotten here would fail rather than
+    /// silently weaken one of the two units; with one writer left, the list
+    /// is what keeps a directive from being dropped by accident.
+    ///
+    /// These are a sandbox. `ProtectSystem=strict` and `ProtectHome` are what
+    /// stop a tenant's Node process reading another tenant's site.
+    const SHELL_HARDENING: &str = include_str!("node-unit-directives.txt");
+
     #[test]
     fn the_node_unit_keeps_every_hardening_directive() {
-        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../installer/files/snpanel-helper.sh");
-        let source = std::fs::read_to_string(&helper).expect("the helper must be readable");
-        // Only the heredoc body. Taking the whole function pulls in the
-        // shell's own assignments, which are not unit directives - the first
-        // version of this test failed on `bin_dir="$(...)"`.
-        let fn_start = source
-            .find("write_node_app_unit() {")
-            .expect("write_node_app_unit");
-        let doc_start = source[fn_start..]
-            .find("<<UNIT\n")
-            .map(|i| fn_start + i + "<<UNIT\n".len())
-            .expect("the heredoc starts");
-        let doc_end = source[doc_start..]
-            .find("\nUNIT\n")
-            .map(|i| doc_start + i)
-            .expect("the heredoc ends");
-        let template = &source[doc_start..doc_end];
-
         let body = node_unit_body(
             &AppName::parse("my-app").unwrap(),
             &PanelUsername::parse("bp_site").unwrap(),
@@ -1021,16 +1010,9 @@ mod tests {
             "snpanel-app-bp_site-my-app",
         );
 
-        // Directives with no interpolation, so they can be compared literally.
         let mut checked = 0;
-        for line in template.lines().map(str::trim) {
-            let is_directive = line.contains('=')
-                && !line.contains("${")
-                && !line.starts_with('#')
-                && !line.starts_with("local ")
-                && !line.starts_with("exec_start")
-                && !line.contains("|| deny");
-            if !is_directive {
+        for line in SHELL_HARDENING.lines().map(str::trim) {
+            if line.is_empty() {
                 continue;
             }
             assert!(
@@ -1039,10 +1021,9 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(
-            checked >= 20,
-            "only {checked} directives compared; the extractor has stopped matching"
-        );
+        // A fixture that stopped loading would make this pass by comparing
+        // nothing at all.
+        assert_eq!(checked, 27, "the fixture lost directives");
     }
 
     /// The node application cannot be handed a public interface.

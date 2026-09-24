@@ -956,91 +956,34 @@ pub fn pools_retune() -> HelperResponse {
 
 #[cfg(test)]
 mod tests {
-    /// The ported tuning must equal the shell's, across every tier.
+    /// What the shell's own pool arithmetic produced, across every tier.
     ///
-    /// Driven by extracting the arithmetic from the helper and running it
-    /// with fixed inputs, because the bash reads RAM and CPU from the machine
-    /// and one machine only ever exercises one tier.
+    /// Columns: total MB, CPUs, pools, then `max_children`,
+    /// `process_idle_timeout`, `max_requests`, `request_terminate_timeout`.
+    ///
+    /// This used to run the bash at test time, by lifting
+    /// `positive_int_or_default`, `php_fpm_reserved_memory_mb` and
+    /// `calculate_php_fpm_pool_tuning` out of the helper and driving them
+    /// with stubbed machine facts. The helper is gone; the numbers it
+    /// produced are not, so they are frozen here rather than lost. The grid
+    /// keeps every case the old test had and adds the tier boundaries either
+    /// side of each one.
+    const SHELL_TUNING: &str = include_str!("php-pool-tuning.tsv");
+
+    /// The ported tuning still equals the shell's, across every tier.
+    ///
+    /// One machine only ever exercises one tier, which is why this is a table
+    /// and not a run.
     #[test]
     fn the_tuning_matches_the_shell_across_every_tier() {
-        use std::process::Command;
-
-        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../installer/files/snpanel-helper.sh");
-        let Ok(source) = std::fs::read_to_string(&helper) else {
-            panic!("the helper script must be readable to compare against");
-        };
-
-        // The three functions the calculation needs, lifted out with their
-        // dependencies. Extracted rather than sourced: the helper refuses to
-        // run without root and a panel installation.
-        let mut extracted = String::new();
-        for name in [
-            "positive_int_or_default",
-            "php_fpm_reserved_memory_mb",
-            "calculate_php_fpm_pool_tuning",
-        ] {
-            let start = source
-                .find(&format!("\n{name}() {{"))
-                .unwrap_or_else(|| panic!("{name} not found in the helper"));
-            let end = source[start..]
-                .find("\n}\n")
-                .unwrap_or_else(|| panic!("{name} has no end"));
-            extracted.push_str(&source[start..start + end + 3]);
-        }
-
-        // Stubs for the three values the real functions read from the
-        // machine, so the inputs can be chosen.
-        let harness = r#"
-php_fpm_total_memory_mb() { printf '%s\n' "$T"; }
-php_fpm_cpu_count() { printf '%s\n' "$C"; }
-php_fpm_pool_count() { printf '%s\n' "$P"; }
-php_fpm_tuning_value() { printf '%s\n' "$2"; }
-PHP_FPM_DEFAULT_WORKER_MB=128
-PHP_FPM_DEFAULT_REQUEST_TERMINATE_TIMEOUT=300
-calculate_php_fpm_pool_tuning ""
-printf '%s %s %s %s\n' "$PHP_FPM_MAX_CHILDREN" "$PHP_FPM_PROCESS_IDLE_TIMEOUT" \
-  "$PHP_FPM_MAX_REQUESTS" "$PHP_FPM_REQUEST_TERMINATE_TIMEOUT"
-"#;
-
-        let cases: &[(u64, u64, u64)] = &[
-            (512, 1, 1),
-            (1024, 1, 1),
-            (1024, 2, 4),
-            (2048, 2, 1),
-            (2048, 4, 9),
-            (4096, 4, 1),
-            (4096, 8, 16),
-            (8192, 8, 1),
-            (8192, 16, 25),
-            (16384, 16, 1),
-            (16384, 32, 100),
-            (65536, 64, 400),
-        ];
-
-        for &(total_mb, cpus, pools) in cases {
-            let out = Command::new("bash")
-                .arg("-c")
-                .arg(format!("{extracted}\n{harness}"))
-                .env("T", total_mb.to_string())
-                .env("C", cpus.to_string())
-                .env("P", pools.to_string())
-                .output()
-                .expect("bash must be available to compare against");
-            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let got: Vec<u64> = line
-                .split_whitespace()
-                .map(|v| {
-                    v.parse().unwrap_or_else(|_| {
-                        panic!(
-                            "bad shell output {line:?}: {}",
-                            String::from_utf8_lossy(&out.stderr)
-                        )
-                    })
-                })
+        let mut rows = 0;
+        for line in SHELL_TUNING.lines().filter(|l| !l.trim().is_empty()) {
+            let f: Vec<u64> = line
+                .split('\t')
+                .map(|v| v.parse().expect("a number"))
                 .collect();
-            assert_eq!(got.len(), 4, "shell produced {line:?}");
-
+            assert_eq!(f.len(), 7, "malformed row: {line:?}");
+            let (total_mb, cpus, pools) = (f[0], f[1], f[2]);
             let mine = pool_tuning(total_mb, cpus, pools, PoolTuningOverrides::default());
             assert_eq!(
                 (
@@ -1049,10 +992,14 @@ printf '%s %s %s %s\n' "$PHP_FPM_MAX_CHILDREN" "$PHP_FPM_PROCESS_IDLE_TIMEOUT" \
                     mine.max_requests,
                     mine.request_terminate_timeout
                 ),
-                (got[0], got[1], got[2], got[3]),
+                (f[3], f[4], f[5], f[6]),
                 "tuning differs for {total_mb} MB, {cpus} CPUs, {pools} pools"
             );
+            rows += 1;
         }
+        // A fixture that stopped loading would make this pass by checking
+        // nothing, which is the failure mode a golden test has.
+        assert_eq!(rows, 20, "the fixture lost rows");
     }
 
     /// An override is clamped, not obeyed blindly, and not refused.

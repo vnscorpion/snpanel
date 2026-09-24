@@ -159,8 +159,11 @@ pub async fn privileged_timed(
     // Plan §4.2: the socket first, sudo behind it.
     //
     // The three outcomes are deliberately not alike. A verb the mapping does
-    // not know falls through to sudo, which reaches the bash helper - that is
-    // the cutover. A transport fault falls through too, because a helper that
+    // not know falls through to sudo. That used to reach the bash helper and
+    // was the cutover mechanism; with the script gone, sudo reaches the same
+    // binary and it reports the verb as unknown - the same answer, by a
+    // longer road, and the road is kept because it is also what carries the
+    // second case. A transport fault falls through too, because a helper that
     // is not listening is an operational problem and a customer should not
     // see an error for it. But a verb the mapping *knows* and refuses does
     // not fall through: an argument rejected here must not get a second
@@ -714,10 +717,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_helper_with_no_arm_for_the_verb_lets_the_bash_have_it() {
-        // The one answer that falls through. It is produced only by the
+    async fn a_helper_with_no_arm_for_the_verb_does_not_end_the_call() {
+        // The one answer that falls through. It is produced only by a
         // dispatch catch-all, after the request has been parsed and accepted,
-        // so it carries no decision about the caller.
+        // so it carries no decision about the caller. The helper in this tree
+        // never sends it - `dispatch` is exhaustive - but one from the
+        // previous release, mid-update, still can.
         let env = Env::new("notimpl");
         fake_helper(
             env.socket(),
@@ -726,8 +731,8 @@ mod tests {
         .await;
 
         let result = privileged(false, "nginx-test", &[], None, None).await;
-        // It did not return the helper's answer: it went on to the sudo path,
-        // which has no sudo to run here and says so.
+        // It did not return that answer: it went on to the sudo path, which
+        // has no sudo to run here and says so.
         assert!(!result.stderr.contains("still served by"), "{result:?}");
     }
 
@@ -748,4 +753,167 @@ mod tests {
         assert_eq!(result.returncode, 2, "{result:?}");
         assert!(result.stderr.contains("not the panel user"), "{result:?}");
     }
+
+    /// The second argument of the second argument: what the panel names when
+    /// it asks the helper for something.
+    ///
+    /// Returns the verb literals, and how many call sites compute the verb
+    /// instead of spelling it.
+    fn helper_verbs_the_panel_asks_for() -> (std::collections::BTreeSet<String>, usize) {
+        fn second_arg(text: &str, open: usize) -> Option<String> {
+            let b = text.as_bytes();
+            let (mut depth, mut i) = (0usize, open);
+            let (mut args, mut cur) = (Vec::new(), String::new());
+            while i < b.len() {
+                match b[i] {
+                    b'(' | b'[' | b'{' => {
+                        depth += 1;
+                        if depth == 1 {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    b')' | b']' | b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            args.push(std::mem::take(&mut cur));
+                            break;
+                        }
+                    }
+                    b'"' => {
+                        // Skip the whole literal so a comma inside one does
+                        // not split the argument list.
+                        let mut j = i + 1;
+                        while j < b.len() && !(b[j] == b'"' && b[j - 1] != b'\\') {
+                            j += 1;
+                        }
+                        cur.push_str(&text[i..=j.min(b.len() - 1)]);
+                        i = j + 1;
+                        continue;
+                    }
+                    b',' if depth == 1 => {
+                        args.push(std::mem::take(&mut cur));
+                        i += 1;
+                        continue;
+                    }
+                    _ => {}
+                }
+                cur.push(b[i] as char);
+                i += 1;
+            }
+            args.get(1).map(|a| a.trim().to_string())
+        }
+
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("a source directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                    // This file *defines* `privileged`; its own tests call it
+                    // with fixture verbs, which are not what the panel asks
+                    // the helper for.
+                    && path.file_name().and_then(|n| n.to_str()) != Some("shell.rs")
+                {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        files.sort();
+
+        let mut verbs = std::collections::BTreeSet::new();
+        let mut computed = 0;
+        for path in files {
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            let mut from = 0;
+            while let Some(hit) = text[from..].find("privileged") {
+                let at = from + hit;
+                from = at + "privileged".len();
+                // `privileged(`, `privileged_timed(` - and not `privileged_x`.
+                let tail = &text[at..];
+                let open = if let Some(rest) = tail.strip_prefix("privileged_timed") {
+                    if rest.starts_with('(') { at + "privileged_timed".len() } else { continue }
+                } else if tail[..text.len().min(at + 11) - at].starts_with("privileged(") {
+                    at + "privileged".len()
+                } else {
+                    continue;
+                };
+                let Some(arg) = second_arg(&text, open) else {
+                    continue;
+                };
+                let literal = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"'));
+                match literal {
+                    Some(v)
+                        if !v.is_empty()
+                            && v.bytes()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') =>
+                    {
+                        verbs.insert(v.to_string());
+                    }
+                    // A verb chosen at runtime, from a variable or a `match`.
+                    // Those cannot be checked from the source; the count is
+                    // asserted so a new one is noticed rather than missed.
+                    _ => computed += 1,
+                }
+            }
+        }
+        (verbs, computed)
+    }
+
+    /// Every verb the panel names is one the helper answers.
+    ///
+    /// While the bash helper existed this did not need saying: a name the
+    /// Rust mapping did not know fell through to a script that did. The
+    /// fallthrough is gone, so a verb the panel asks for and the mapping does
+    /// not have is an error the operator sees, and nothing else catches it -
+    /// these names are strings, not enum variants, so the compiler does not
+    /// either.
+    #[test]
+    fn every_verb_the_panel_asks_for_is_one_the_helper_answers() {
+        let (verbs, computed) = helper_verbs_the_panel_asks_for();
+        assert!(verbs.len() > 80, "the scan found only {}", verbs.len());
+
+        let mut unknown = Vec::new();
+        for verb in &verbs {
+            // `from_argv` matches on `(name, arity)`, so a known name with
+            // the wrong count of arguments also reads as unmapped. The arity
+            // is usually built at runtime, so any arity that maps proves the
+            // name is one the helper knows.
+            let known = (0..=8).any(|n| {
+                let argv: Vec<String> = std::iter::once(verb.clone())
+                    .chain((0..n).map(|i| format!("arg{i}")))
+                    .collect();
+                !matches!(
+                    snpanel_ipc::HelperRequest::from_argv(&argv, Vec::new),
+                    Err(ref e) if e.is_unmapped()
+                )
+            });
+            if !known {
+                unknown.push(verb.clone());
+            }
+        }
+        // Two names nothing has ever answered - not the bash either, which
+        // had no arm for them. Both call sites discard the result, so today
+        // they are no-ops that log a refusal, and removing the bash does not
+        // change that. They are listed rather than silently tolerated: the
+        // work each one names is either happening somewhere else or is not
+        // happening, and that is worth someone deciding rather than
+        // inheriting.
+        const ANSWERED_BY_NOTHING: &[&str] = &["nginx-vhost-delete", "wordpress-vhost-delete"];
+        unknown.retain(|v| !ANSWERED_BY_NOTHING.contains(&v.as_str()));
+        assert!(unknown.is_empty(), "the helper answers none of: {unknown:?}");
+
+        assert_eq!(
+            computed, 8,
+            "the number of call sites that choose a verb at runtime changed; \
+             each one is a name this test cannot check"
+        );
+    }
+
 }

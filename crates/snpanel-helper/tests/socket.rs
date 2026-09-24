@@ -127,34 +127,35 @@ fn socket_path(name: &str) -> PathBuf {
 /// need a real installation: with no bash helper present the message has to
 /// name both the operation and the missing fallback, rather than failing
 /// vaguely.
+/// An operation nothing answers is reported the way the bash reported one.
+///
+/// This test used to name `site-runtime-ensure` and check that the helper
+/// said which bash script it had looked for and not found. Both halves had
+/// rotted: `site-runtime-ensure` was ported at some point and stopped
+/// reaching that path at all, and the bash it looked for is now deleted. So
+/// it named a verb that *was* served and asserted about a branch it never
+/// entered - which reads as coverage and is not.
+///
+/// The verb below cannot be ported by accident, and the message is the
+/// bash's own, because a caller that matched on it keeps working.
 #[test]
-fn an_unported_operation_reports_the_missing_bash_fallback() {
+fn an_unknown_operation_is_reported_as_unknown() {
     if !is_root() {
         skip("the CLI path requires root");
         return;
     }
-    // `site-runtime-ensure` is deliberately not ported; on a machine with no
-    // /usr/local/sbin/snpanel-helper.sh the helper must say exactly that.
     let out = Command::new(helper_binary())
-        .arg("site-runtime-ensure")
-        .arg("bp_site")
+        .arg("no-such-operation-exists")
         .output()
         .expect("helper runs");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if std::path::Path::new("/usr/local/sbin/snpanel-helper.sh").exists() {
-        eprintln!("skipped: a real bash helper is installed here");
-        return;
-    }
     assert!(
-        stderr.contains("site-runtime-ensure"),
+        stderr.contains("unknown command: no-such-operation-exists"),
         "must name the operation: {stderr}"
     );
-    assert!(
-        stderr.contains("snpanel-helper.sh"),
-        "must name the fallback it looked for: {stderr}"
-    );
-    assert!(!out.status.success());
+    // `deny` exits 1, and so does this.
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
 }
 
 #[test]

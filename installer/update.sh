@@ -1298,26 +1298,15 @@ if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
   RUST_BIN_TMP=""
 fi
 
-if [[ -f "$SOURCE_DIR/installer/files/snpanel-helper.sh" ]]; then
-  log "Refreshing /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel"
+# Gated on the sudoers file, not on the bash helper this used to refresh.
+# That script is deleted; gating on it would have skipped this whole block -
+# the sudoers refresh, the retune and the clock - silently, on every update.
+if [[ -f "$SOURCE_DIR/installer/files/snpanel-sudoers" ]]; then
+  log "Refreshing /etc/sudoers.d/snpanel and the machine tuning"
   update_progress 40 "runtime" "Refreshing panel helper and runtime"
   if id -u snpanel >/dev/null 2>&1; then
-    # Where the bash helper goes depends on whether the Rust cutover has
-    # been done. After it, /usr/local/sbin/snpanel-helper is the Rust binary
-    # and the bash one lives beside it as the fallback the binary execs.
-    #
-    # Writing the bash over the live path here would silently revert the
-    # cutover on every update - the same shape as the API cutover calling
-    # `start` and never `enable`, which a reboot undid and nobody noticed for
-    # 71 restarts. The axis is different and the failure is identical: a
-    # change that survives until the next routine thing happens.
-    helper_target=/usr/local/sbin/snpanel-helper
-    if [[ -f /usr/local/sbin/snpanel-helper.sh ]]; then
-      helper_target=/usr/local/sbin/snpanel-helper.sh
-      log "  the Rust helper is in place; refreshing the bash fallback instead"
-    fi
-    install -m 0750 -o root -g snpanel "$SOURCE_DIR/installer/files/snpanel-helper.sh" "$helper_target"
-    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" "$helper_target"
+    # The helper itself was refreshed with the other binaries above; what is
+    # left here is the sudoers file that decides who may call it.
     install -m 0440 -o root -g root  "$SOURCE_DIR/installer/files/snpanel-sudoers"   /etc/sudoers.d/snpanel
     visudo -c -f /etc/sudoers.d/snpanel >/dev/null
     sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper wp --info >/dev/null
@@ -1325,12 +1314,15 @@ if [[ -f "$SOURCE_DIR/installer/files/snpanel-helper.sh" ]]; then
     # RAM/CPU; neither moves between two updates of the same release. Skip the
     # pair (and the autotune unit, which just runs the same two) when the
     # helper is unchanged. `snpanel-autotune.service` stays enabled for boot.
-    if step_inputs_changed autotune "$SOURCE_DIR/installer/files/snpanel-helper.sh"; then
-      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper php-fpm-retune >/dev/null || \
+    #
+    # The input is the installed binary now rather than the bash script: it is
+    # the file whose logic decides the numbers.
+    if step_inputs_changed autotune /usr/local/sbin/snpanel-helper; then
+      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper php-pools-retune >/dev/null || \
         echo "  (warning: could not retune existing PHP-FPM pools; site refresh will retry later)"
       sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper mariadb-retune >/dev/null || \
         echo "  (warning: could not retune MariaDB; update will continue with existing settings)"
-      step_mark_done autotune "$SOURCE_DIR/installer/files/snpanel-helper.sh"
+      step_mark_done autotune /usr/local/sbin/snpanel-helper
     else
       echo "  (PHP-FPM and MariaDB tuning unchanged for this release; skipping the retune)"
     fi
@@ -1474,7 +1466,8 @@ systemctl enable --now snpanel-backup-scheduler.timer >/dev/null 2>&1 || true
 systemctl enable --now snpanel-malware-scheduler.timer >/dev/null 2>&1 || true
 
 SITE_REFRESH_INPUTS=(
-  "$SOURCE_DIR/installer/files/snpanel-helper.sh"
+  # Was the bash helper; the binary that renders a vhost is the input now.
+  "/usr/local/sbin/snpanel-helper"
   "${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 )
 if ! step_inputs_changed site-refresh "${SITE_REFRESH_INPUTS[@]}"; then

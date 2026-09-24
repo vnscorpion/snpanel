@@ -1,19 +1,25 @@
 # /etc/sudoers.d/snpanel
 # Installed by installer/install.sh as root:root mode 0440.
 # Grants the 'snpanel' system user the right to run a single root-owned
-# helper script with no password. The helper does its own validation.
+# helper with no password. The helper does its own validation.
 #
 # Threat model:
 # - The wildcard "*" lets snpanel pass any args to snpanel-helper. That is
-#   safe because the helper enforces the security boundary itself: it runs
-#   under `set -euo pipefail`, validates every argv with anchored regexes,
-#   resolves user-supplied paths with `readlink -m`, and downgrades to
-#   www-data / panel Linux users via `runuser` whenever it touches
-#   site files.
-# - The helper script must remain root-owned mode 0755 (no group write).
-#   `installer/install.sh` enforces those perms; do not loosen them.
-# - Adding a new subcommand requires editing only snpanel-helper.sh; this
-#   sudoers file does not need to enumerate subcommands.
+#   safe because the helper enforces the security boundary itself: it parses
+#   every argv into a typed request before acting, refuses a verb it does not
+#   know, resolves user-supplied paths before using them, and drops to
+#   www-data / the site's own Linux user whenever it touches site files.
+# - This grant is also the whole of *who* may call it over sudo. The helper
+#   checks that it is running as root and nothing more, so a machine that
+#   widens this file widens the panel's privilege boundary with it. (The
+#   socket transport is separate and checks SO_PEERCRED for itself.)
+# - The helper must remain root-owned mode 0750, group snpanel, no group
+#   write. `installer/install.sh` enforces those perms; do not loosen them.
+# - Adding a new subcommand requires editing only the helper; this sudoers
+#   file does not need to enumerate subcommands.
+#
+# This described a bash script until the helper became a single binary. The
+# path did not change, which is why this grant did not have to.
 
 Defaults:snpanel !requiretty
 Defaults:snpanel env_reset

@@ -941,31 +941,28 @@ mod tests {
     /// So those two loaded, were counted, showed the WAF as enabled, and
     /// matched nothing - on every box the installer had set up.
     ///
-    /// The two are compared with nothing stripped. The trailing-quote
-    /// difference `DEFAULT_RULES` documents is with a **third** copy -
-    /// `backend/app/services/waf.py`, which builds the per-site catalogue and
-    /// writes a different file. That copy already used `phase:1` for both
-    /// rules, so the installer was the only one of the three that was wrong.
+    /// The copies are compared with nothing stripped. The trailing-quote
+    /// difference `DEFAULT_RULES` documents was with a **third** copy, the
+    /// Python service that built the per-site catalogue: it already used
+    /// `phase:1` for both rules, so the installer was the only one of the
+    /// three that was wrong. That copy and the bash helper's are both gone
+    /// now, and `install.sh` is the last writer outside this file.
     #[test]
     fn the_installers_copy_of_the_rules_matches_this_one() {
-        // Both shell copies. The Python guard reads a third - `waf.DEFAULT_RULES`
-        // - and the installer's was outside it, which is how it kept two dead
-        // rules for the whole time that guard was green.
         const OPEN: &str = "cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'\n";
+        const LABEL: &str = "installer/install.sh";
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for label in ["installer/install.sh", "installer/files/snpanel-helper.sh"] {
-            let text = std::fs::read_to_string(root.join(label))
-                .unwrap_or_else(|e| panic!("{label}: {e}"));
-            let start = text
-                .find(OPEN)
-                .unwrap_or_else(|| panic!("{label}: no rule heredoc"))
-                + OPEN.len();
-            let end = text[start..]
-                .find("\nRULES\n")
-                .unwrap_or_else(|| panic!("{label}: the heredoc never closes"))
-                + start;
-            compare_rules(label, &text[start..end]);
-        }
+        let text =
+            std::fs::read_to_string(root.join(LABEL)).unwrap_or_else(|e| panic!("{LABEL}: {e}"));
+        let start = text
+            .find(OPEN)
+            .unwrap_or_else(|| panic!("{LABEL}: no rule heredoc"))
+            + OPEN.len();
+        let end = text[start..]
+            .find("\nRULES\n")
+            .unwrap_or_else(|| panic!("{LABEL}: the heredoc never closes"))
+            + start;
+        compare_rules(LABEL, &text[start..end]);
     }
 
     /// One shell copy of the rule set against `DEFAULT_RULES`.

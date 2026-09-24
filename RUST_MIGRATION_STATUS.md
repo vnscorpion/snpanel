@@ -3097,3 +3097,117 @@ Stated so they are not discovered instead:
 * SELinux is not exercised. The test container does not run it, so no claim is
   made either way — this is the one item on this page that has been reasoned
   about rather than measured, and it needs a real VM.
+
+## The bash helper is gone
+
+`installer/files/snpanel-helper.sh` — 5,993 lines, 237 KB — is deleted, and so
+is the `exec` that reached it. `/usr/local/sbin/snpanel-helper` is one binary
+with no script behind it, and a verb it does not know is reported the way the
+bash reported one: `unknown command: <verb>`, exit 1.
+
+### What it actually took
+
+The measurement said six verbs and 941 lines. Both numbers were wrong, in
+opposite directions, and the correction is the useful part of this entry.
+
+The first measurement sized what each verb *pulls in* from the bash. That
+counts the bash file and says nothing about whether an arm already exists on
+the Rust side. The second asked the question that decides it — for which names
+does `from_argv` return `Unmapped` — but split every `a|b)` case label into
+separate names, so `firewall-status|ufw-status)` read as one ported verb and
+one unported one, though they label the same arm.
+
+Folding the aliases back: 127 arms, 113 fully mapped, 6 missing only an alias,
+8 with no arm at all, 3 of those called by nothing. `php-fpm-retune` turned out
+to have been ported already under the name `php-pools-retune`;
+`firewall-blocklist-timer-install` was `write_timer`, which had been running on
+every `blocklist-add` since the blocklist port. Four verbs actually needed
+writing: `certbot-auto-renew-install`, `certbot-renew-soon`, `mariadb-retune`
+and `firewall-migrate`.
+
+`firewall-migrate` is **not** `firewall-migrate-nft`, which is what the names
+suggest. The nft one moves a box the panel already manages between backends.
+This one is the box that arrived with UFW enforcing: it reads the rules out of
+UFW before disabling it, decides from what was enforcing before whether to come
+up enabled, strips the nginx geo-map, and applies last. Getting that order
+wrong is how a box reached over a non-standard SSH port becomes a box nobody
+can reach.
+
+### Two bugs the port found
+
+**A rule silently dropped during migration.** The bash read `ufw status
+numbered` through 35 lines of embedded `python3` — the last `python3` the
+helper ran. Its regex has an optional direction group that backtracks, so
+`ALLOW    INTERNAL` is a rule whose source is `INTERNAL` and not the direction
+`IN` followed by `TERNAL`. A reader that does not backtrack drops the rule,
+during a migration, on exactly the hand-written rule an operator cares about.
+The test compares against that parser's own output, and a mutation proved it:
+removing the backtracking fails two named tests.
+
+**A panic where the bash merely tuned conservatively.** MariaDB's buffer pool
+has a 128 MB floor and a 60%-of-RAM ceiling. Below 214 MB of RAM the ceiling is
+*under* the floor. The bash applies them in sequence and ships the ceiling — 76
+M on a 128 MB box. `u64::clamp(128, 76)` panics. 70 rows of the bash's own
+arithmetic matched on the first run, so this was found by extending the grid
+down to 64 MB rather than by the grid that existed.
+
+### One divergence kept on purpose
+
+`MARIADB_TUNING_CONF` is a hard-coded Debian path. On the RHEL family MariaDB
+reads `/etc/my.cnf.d`, so the file has always landed where nothing reads it and
+the tuning has never applied there. Writing it to the right directory would
+start applying tuning to EL boxes that have run for years without it — a change
+in behaviour, and not this port's to make. It is on the constant's doc comment.
+
+### What replaced the tests that read the script
+
+Twelve tests pinned Rust behaviour against the bash's text. They existed
+because a writer and a reader can drift apart while each looks right on its
+own. With one writer left, that class of bug is gone and the tests would have
+pinned against a file nobody runs. Each was decided separately:
+
+* **Frozen.** The two arithmetic comparisons — PHP-FPM pool tuning and the Node
+  unit's hardening directives — ran the bash at test time. The bash is gone;
+  the numbers and the 27 directives it produced are not, so they are fixtures
+  now (`php-pool-tuning.tsv`, `node-unit-directives.txt`).
+* **Re-pointed.** Three compared against a copy that also lives in
+  `install.sh` or `update.sh` — the WAF default rules, the WebSocket upgrade
+  map, the update script's path. Those files are the real other writer, which
+  makes them the better half of the pair anyway.
+* **Reduced to what survives.** The blocklist paths, the renewal hooks, the
+  Docker daemon config and the malware prune list keep the property that made
+  them worth pinning — the hooks refuse to act without `RENEWED_LINEAGE`, the
+  daemon config is JSON that rotates logs — and drop the byte comparison.
+* **Deleted.** The verb-coverage test, whose own doc said "when the bash
+  helper is deleted in Stage G, so is this test."
+
+Two of them had already stopped testing their subject.
+`an_unported_operation_reports_the_missing_bash_fallback` named
+`site-runtime-ensure`, which was ported at some point and stopped reaching that
+branch; the test asserted about a path it never entered. The `--help` counts
+were recounted from two files and now come from the one that decides them.
+
+And one new test is stronger than what it replaces.
+`every_verb_the_panel_asks_for_is_one_the_helper_answers` reads every
+`shell::privileged(…, "<verb>", …)` in the API and puts the name through
+`from_argv`. While the bash existed, a name the Rust did not know fell through
+to a script that did; now it is an error the operator sees, and nothing else
+catches it, because these names are strings and not enum variants.
+
+It found two on its first run: `nginx-vhost-delete` and
+`wordpress-vhost-delete`. Neither is answered by anything — the bash had no arm
+for them either — and both call sites discard the result, so today they are
+no-ops that log a refusal. Deleting the bash does not change that. They are
+listed in the test rather than tolerated silently: the work each one names is
+either happening somewhere else or is not happening, and that is worth
+someone deciding rather than inheriting.
+
+### Where the deletion nearly went wrong
+
+`update.sh` gated the whole helper-refresh block on the bash file existing.
+Deleting the file would have skipped the block — the sudoers refresh, the
+PHP-FPM and MariaDB retune, and the clock sync — silently, on every update. The
+gate is the sudoers file now, and the autotune step keys on the installed
+binary, which is the file whose logic actually decides the numbers.
+
+Shell goes from 10 files to 9, and from 475 KB to 238 KB.

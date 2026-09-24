@@ -17,12 +17,16 @@
 //! The allow-list is what the frontend uses for completion and for the help
 //! panel.
 //!
-//! **This list mirrors the case statement in `snpanel-helper.sh terminal-exec`,
-//! and the two are kept in sync deliberately.** The panel's copy is advisory -
-//! it tells the user what will work - while the helper's copy is the one that
+//! **This list mirrors the helper's own allow-list for `terminal-exec`, and
+//! the two are kept in sync deliberately.** The panel's copy is advisory - it
+//! tells the user what will work - while the helper's copy is the one that
 //! actually refuses. A name in this list that the helper does not accept is a
 //! confusing error; a name the helper accepts that is missing here is worse,
-//! because the allowlist stops looking like the whole story.
+//! because the allow-list stops looking like the whole story.
+//!
+//! The helper's copy was a `case` statement in `snpanel-helper.sh` until that
+//! script was deleted; it is `ops::terminal` now, and the pairing is the
+//! same.
 
 use std::path::{Path, PathBuf};
 

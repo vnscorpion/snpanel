@@ -1004,14 +1004,9 @@ else
 fi
 
 install_rust_helper() {
-  # The bash helper stays, at the name the Rust one `exec`s for a verb it does
-  # not answer. Doing
-  # it here means a fresh box is never in the state the cutover exists to move
-  # it out of.
-  install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" \
-    /usr/local/sbin/snpanel-helper.sh
-  sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" \
-    /usr/local/sbin/snpanel-helper.sh
+  # One helper. The bash script that used to be installed beside this, at the
+  # name the binary `exec`d for a verb it did not answer, is gone: every verb
+  # is answered here.
   install -m 0750 -o root -g snpanel "${RUST_BIN_DIR}/snpanel-helper" \
     /usr/local/sbin/snpanel-helper
   install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-extract" \
@@ -1038,15 +1033,11 @@ install_privileged_helper() {
   [[ -n "$RUST_BIN_DIR" ]] || fail \
     "No Rust binaries for this release. The panel is built from them, so the \
 install cannot continue; publish the release archive or build the tree first."
-  if [[ -n "$RUST_BIN_DIR" ]]; then
-    install_rust_helper
-  else
-    # No binaries available: what this script did before, unchanged. An
-    # install that cannot reach the release must still produce a working
-    # panel.
-    install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
-    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
-  fi
+  # The `fail` above already refused an empty RUST_BIN_DIR, so there is no
+  # second branch here any more. The one it had installed the bash helper
+  # under the binary's name, which cannot work now that the panel calls verbs
+  # only the binary answers.
+  install_rust_helper
   install -m 0755 -o root -g root "${SCRIPT_DIR}/update.sh" /usr/local/sbin/snpanel-update
   install -m 0440 -o root -g root "${SCRIPT_DIR}/files/snpanel-sudoers" /etc/sudoers.d/snpanel
   # `requiretty` was removed in sudo 1.9.17. Ubuntu 26.04's build rejects the

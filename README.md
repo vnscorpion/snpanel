@@ -279,33 +279,26 @@ open in incognito.
 
 ```
 snpanel/
-|-- backend/                    FastAPI application
-|   |-- app/
-|   |   |-- api/                  HTTP routes
-|   |   |-- core/                 config, db, security, permissions, secrets
-|   |   |-- models/               SQLAlchemy entities
-|   |   |-- schemas/              Pydantic v2 schemas
-|   |   |-- services/             nginx, mariadb, wp, firewall, backup, etc.
-|   |   |-- templates/nginx/      Jinja2 vhost templates
-|   |   |-- main.py
-|   |   `-- seed.py               Seeds the first admin user
-|   |-- tests/                   pytest smoke tests for validators
-|   `-- requirements.txt
+|-- backend/                    The panel's runtime directory on a box: `.env`
+|                               and the SQLite database. No code lives here
+|                               any more - the FastAPI application it is named
+|                               after was deleted when the port finished.
 |-- frontend/                   React + Vite SPA
 |   `-- src/
-|-- crates/                     The Rust rewrite
+|-- crates/                     The panel
 |   |-- snpanel-core/             config, crypto (bcrypt, Fernet, JWT, TOTP), roles
 |   |-- snpanel-osabi/            per-distro differences, nftables rendering
 |   |-- snpanel-ipc/              the helper protocol
-|   |-- snpanel-db/               the shared SQLite database
+|   |-- snpanel-db/               the schema, and the queries over it
 |   |-- snpanel-helper/           the privileged operations, behind SO_PEERCRED
+|   |-- snpanel-nginx/            the vhost templates and their renderer
+|   |-- snpanel-installer/        what install.sh and update.sh call into
 |   |-- snpanel-cli/              the `snpanel` command
-|   `-- snpanel-api/              the HTTP front door, and the strangler proxy
-|-- xtask/                      build and verification tasks, incl. shadow-diff
+|   `-- snpanel-api/              the HTTP front door
+|-- xtask/                      build and verification tasks
 |-- installer/
-|   |-- files/                   snpanel-helper.sh, sudoers, systemd units,
-|   |                            the API cutover and its two check scripts
-|   |-- install.sh               Full first-time install (Python side)
+|   |-- files/                   sudoers, the helper's socket units, snpanelctl
+|   |-- install.sh               Full first-time install
 |   |-- rescue-firewall.sh       Emergency firewall reset (locked-out recovery)
 |   `-- update.sh                Pull from GitHub and redeploy
 |-- RUST_MIGRATION_STATUS.md    What has moved to Rust, and what has not

@@ -19,20 +19,13 @@ pub struct Installed {
     pub group: &'static str,
 }
 
-/// The two helpers, the extractor, and the unit files.
+/// The helper, the extractor, and the unit files.
 ///
-/// `snpanel-helper.sh` stays beside the Rust `snpanel-helper` at the name
-/// the Rust one `exec`s for a verb it does not answer yet. Installing both
-/// here means a fresh box is never in the state the cutover script exists to
-/// move it out of.
+/// `snpanel-helper.sh` used to be installed beside the binary, at the name
+/// the binary `exec`d for a verb it did not answer yet. Every verb is
+/// answered, so the script is not shipped and the fallthrough is gone.
 pub fn helper_files() -> Vec<Installed> {
     vec![
-        Installed {
-            path: "/usr/local/sbin/snpanel-helper.sh",
-            mode: 0o750,
-            owner: "root",
-            group: "snpanel",
-        },
         Installed {
             path: "/usr/local/sbin/snpanel-helper",
             mode: 0o750,

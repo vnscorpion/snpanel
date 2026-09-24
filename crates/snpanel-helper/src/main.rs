@@ -60,21 +60,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// How many of the bash helper's verbs this binary answers, and how many
-/// there are.
+/// How many operations this binary answers.
 ///
-/// Printed by `--help`, which is what an operator reads during a cutover to
-/// decide what has moved. It is checked against both files by
-/// `the_help_text_counts_are_the_measured_ones`, because the previous figure
-/// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 145;
-const BASH_VERBS: usize = 147;
+/// Printed by `--help`. Checked against the mapping by
+/// `the_help_text_count_is_the_measured_one`, because the previous figure was
+/// hardcoded and went twenty-four verbs stale without anything noticing.
+const ANSWERED_VERBS: usize = 141;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
     println!("  snpanel-helper --serve            listen on {SOCKET_PATH}");
     println!("  snpanel-helper <op> [args...]     run one operation directly\n");
-    println!("Operations answered by Rust ({ANSWERED_VERBS} of the bash helper's {BASH_VERBS}):");
+    println!("Operations ({ANSWERED_VERBS} of them):");
     for line in [
         "  firewall-*      apply, flush, status, list, migrate-nft, allow-ip,",
         "                  deny-ip, allow-port, panel-allow-port, delete,",
@@ -111,8 +108,8 @@ fn print_help(sink: audit::Sink) {
     ] {
         println!("{line}");
     }
-    println!("\nAny other operation is passed through to snpanel-helper.sh,");
-    println!("so the panel can call this binary for everything.");
+    println!("\nAnything else is an unknown command: this binary is the whole");
+    println!("helper, and there is no script behind it any more.");
     println!(
         "\nAudit trail: {}",
         match sink {
@@ -342,13 +339,13 @@ fn cli(args: &[String]) -> ExitCode {
     // The mapping itself lives in the protocol crate, because the API needs
     // the identical one to build a request for the socket. Plan §4.3.
     //
-    // An unmapped verb is handed to the bash helper - that fallthrough is the
-    // cutover mechanism. A *mapped* verb with arguments this refuses is not:
-    // it is reported, because an argument rejected here must not get a second
-    // hearing from an implementation that may parse it more loosely.
+    // An unmapped verb used to be handed to the bash helper - that
+    // fallthrough was the cutover mechanism, and it is gone with the script.
+    // The message is the bash's own, because a caller that matched on it
+    // keeps working: `deny "unknown command: $cmd"`, exit 1.
     let request = match HelperRequest::from_argv(args, read_stdin_bytes) {
         Ok(request) => request,
-        Err(e) if e.is_unmapped() => return delegate_to_bash(args),
+        Err(e) if e.is_unmapped() => return fail(&format!("unknown command: {}", args[0])),
         Err(e) => return fail(&e.to_string()),
     };
 
@@ -387,48 +384,6 @@ fn cli(args: &[String]) -> ExitCode {
     }
 }
 
-/// The bash helper, kept alongside for operations not yet ported.
-const BASH_HELPER: &str = "/usr/local/sbin/snpanel-helper.sh";
-
-/// Hand an unported operation to the bash helper.
-///
-/// This is the mechanism that lets the panel be switched to the Rust helper
-/// today rather than after the last of 111 subcommands is done: the panel
-/// calls one path, Rust answers what it has ported, and everything else
-/// reaches exactly the code that was serving it yesterday.
-///
-/// `exec` rather than spawn-and-wait, for three reasons that all matter here:
-///
-/// - the environment carries through, including `SUDO_USER`, which the bash
-///   helper checks as its own authorisation;
-/// - stdin, stdout and stderr are the same file descriptors, so an operation
-///   that reads a password or a crontab from stdin still works, and output is
-///   not buffered or mangled;
-/// - the exit status is the bash helper's own, with no wrapper to translate
-///   it wrongly.
-fn delegate_to_bash(args: &[String]) -> ExitCode {
-    use std::os::unix::process::CommandExt;
-
-    if !std::path::Path::new(BASH_HELPER).exists() {
-        eprintln!(
-            "snpanel-helper: '{}' is not implemented in the Rust helper, and \
-             {BASH_HELPER} is not installed to fall back to",
-            args[0]
-        );
-        return ExitCode::from(CANNOT_SERVE_EXIT_CODE);
-    }
-
-    tracing::info!(
-        op = args[0].as_str(),
-        "not ported yet; delegating to the bash helper"
-    );
-
-    // On success this never returns: the process becomes the bash helper.
-    let err = std::process::Command::new(BASH_HELPER).args(args).exec();
-    eprintln!("snpanel-helper: cannot exec {BASH_HELPER}: {err}");
-    ExitCode::from(REFUSED_EXIT_CODE)
-}
-
 /// The same, for content that is not necessarily UTF-8 - a site file can be
 /// an image or an archive.
 fn read_stdin_bytes() -> Vec<u8> {
@@ -448,16 +403,17 @@ fn read_stdin_bytes() -> Vec<u8> {
 ///
 /// Measured against the installed helper rather than read again:
 /// `ssl-cert-info 'not a domain'` exits 1, `ipv6-status extra-arg` exits 1,
-/// an unknown verb exits 1, and only `SUDO_USER=nobody` exits 2.
+/// and an unknown verb exits 1.
+///
+/// 2 is no longer produced by anything. It belonged to the bash's own
+/// `SUDO_USER` guard and to the "no script to fall back to" path, and both
+/// went with the script - the `snpanel` user's right to run this at all is
+/// `/etc/sudoers.d/snpanel`, which refuses before the binary starts.
 ///
 /// It matters from here rather than before because `terminal-exec` passes a
 /// command's own status through: a helper that reported refusals as 2 would
 /// make every command that legitimately exits 2 indistinguishable from one.
 pub(crate) const REFUSED_EXIT_CODE: u8 = 1;
-
-/// The helper cannot serve this call at all - the bash's `SUDO_USER` guard
-/// exits 2 for the same class of thing.
-const CANNOT_SERVE_EXIT_CODE: u8 = 2;
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("snpanel-helper: {message}");
@@ -502,9 +458,6 @@ mod tests {
         assert_eq!(socket_returncode(&refused), 1);
         // And what the CLI reports, which is the constant below.
         assert_eq!(REFUSED_EXIT_CODE, 1);
-        // 2 is reserved for "you may not call me at all", which is what the
-        // bash's `SUDO_USER` guard means and is a different answer.
-        assert_ne!(REFUSED_EXIT_CODE, CANNOT_SERVE_EXIT_CODE);
 
         let fine = HelperResponse::ok();
         assert_eq!(socket_returncode(&fine), 0);
@@ -516,68 +469,57 @@ mod tests {
         response.exit_status()
     }
 
-    /// The two numbers in `--help` are the measured ones.
+    /// The number in `--help` is the measured one.
     ///
-    /// They were hardcoded, and by the time Stage B started they were wrong by
-    /// twenty-four verbs - at exactly the moment an operator reads them to
-    /// decide what has moved. Recounted here from the two files that decide
-    /// it: the bash helper's `case` labels, and the mapping's match arms.
+    /// It was hardcoded once, and by the time Stage B started it was wrong by
+    /// twenty-four verbs - at exactly the moment an operator reads it to
+    /// decide what this answers. It used to be recounted from two files, the
+    /// bash helper's `case` labels and the mapping's match arms; the bash is
+    /// gone, so the mapping is the only file that decides it.
     ///
-    /// Counting the mapping's *arms* rather than its quoted strings matters.
-    /// An arm holds argument literals too - "0640", "tcp", "start" - and
-    /// counting those gave 92, which is not a number of verbs at all. Only a
-    /// string that is also a `case` label in the bash counts.
+    /// The pattern is `("verb", <arity>)` and the arity is what makes it
+    /// precise. An arm holds argument literals too - "0640", "tcp", "start" -
+    /// and counting every quoted string gave 92, which is not a number of
+    /// verbs at all.
     #[test]
-    fn the_help_text_counts_are_the_measured_ones() {
-        const BASH: &str = include_str!("../../../installer/files/snpanel-helper.sh");
+    fn the_help_text_count_is_the_measured_one() {
         const MAPPING: &str = include_str!("../../../crates/snpanel-ipc/src/argv.rs");
 
-        // `  <verb>)` at the top level of the helper's case statement - and
-        // `  <verb>|<alias>|<alias>)`, which is how a third of them are
-        // written. Matching only the first form counted a subset of the
-        // helper and called it the whole.
-        let verbs: Vec<&str> = BASH
-            .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("  ")?;
-                let arm = rest.strip_suffix(')')?;
-                let names: Vec<&str> = arm.split('|').collect();
-                let ok = !names.is_empty()
-                    && names.iter().all(|name| {
-                        !name.is_empty()
-                            && name.starts_with(|c: char| c.is_ascii_lowercase())
-                            && name
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    });
-                ok.then_some(names)
-            })
-            .flatten()
-            .collect();
-
-        let mapping = match MAPPING.find("pub fn from_argv") {
+        let body = match MAPPING.find("pub fn from_argv") {
             Some(at) => &MAPPING[at..],
             None => panic!("from_argv is not in the mapping any more"),
         };
-        let mapping = match mapping.find("#[cfg(test)]") {
-            Some(at) => &mapping[..at],
-            None => mapping,
+        let body = match body.find("#[cfg(test)]") {
+            Some(at) => &body[..at],
+            None => body,
         };
 
-        let answered = verbs
-            .iter()
-            .filter(|v| mapping.contains(&format!("(\"{v}\"")))
-            .count();
+        let mut verbs = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(at) = rest.find('"') {
+            rest = &rest[at + 1..];
+            let Some(close) = rest.find('"') else { break };
+            let name = &rest[..close];
+            let after = rest[close + 1..].trim_start();
+            // A tuple pattern: the name, a comma, then the argument count.
+            let is_arm = after.starts_with(',')
+                && after[1..].trim_start().starts_with(|c: char| c.is_ascii_digit());
+            let is_verb = !name.is_empty()
+                && name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if is_arm && is_verb {
+                verbs.insert(name);
+            }
+            rest = &rest[close + 1..];
+        }
 
         assert_eq!(
             verbs.len(),
-            BASH_VERBS,
-            "the bash helper has {} verbs, --help says {BASH_VERBS}",
+            ANSWERED_VERBS,
+            "the mapping answers {} verbs, --help says {ANSWERED_VERBS}",
             verbs.len()
-        );
-        assert_eq!(
-            answered, ANSWERED_VERBS,
-            "the mapping answers {answered} of them, --help says {ANSWERED_VERBS}"
         );
     }
 }

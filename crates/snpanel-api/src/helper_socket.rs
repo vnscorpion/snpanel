@@ -173,12 +173,18 @@ pub async fn call_at(
 /// is worth being precise about why that is not a hole in the rule that a
 /// refusal is never retried.
 ///
-/// `NotImplemented` is produced in exactly one place: the catch-all of the
-/// dispatch table, reached when a request's enum variant has no arm. By then
-/// the request has already been parsed and every value in it accepted. The
-/// helper is not deciding about the call; it is saying which implementation
-/// serves it, and today that is still `snpanel-helper.sh`. Nothing a caller
-/// can put in a request turns a `NotAuthorised` or a `BadRequest` into this.
+/// `NotImplemented` was produced in exactly one place: the catch-all of the
+/// dispatch table, reached when a request's enum variant had no arm. By then
+/// the request had already been parsed and every value in it accepted - the
+/// helper was not deciding about the call, only saying which implementation
+/// served it, and that was `snpanel-helper.sh`. Nothing a caller can put in a
+/// request turns a `NotAuthorised` or a `BadRequest` into this.
+///
+/// The current helper never sends it: `dispatch` is exhaustive and the script
+/// it fell through to is gone. This stays for the window an update opens, in
+/// which a new panel can be talking to a helper binary from the previous
+/// release - and if that one has no arm, its answer must still not be read as
+/// a refusal.
 pub fn not_implemented(response: &HelperResponse) -> bool {
     matches!(&response.error, Some(e) if e.kind == HelperErrorKind::NotImplemented)
 }

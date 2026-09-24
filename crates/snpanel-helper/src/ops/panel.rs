@@ -989,42 +989,34 @@ mod tests {
         }
     }
 
-    /// The renewal hooks are the bash's, byte for byte.
+    /// The renewal hooks refuse to act on their own.
     ///
-    /// They run as root when certbot renews, so what they contain matters
-    /// more than most of this file. Compared against the heredocs rather than
-    /// summarised.
+    /// They used to be compared against the bash's heredocs byte for byte.
+    /// This file writes them now, so what is left is the property that made
+    /// them worth pinning: they run **as root** when certbot renews, and a
+    /// hook that acts without `RENEWED_LINEAGE` copies whatever happens to be
+    /// in the live directory over the panel's certificate.
     #[test]
-    fn the_renewal_hooks_match_the_bash_heredocs() {
-        let helper = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../installer/files/snpanel-helper.sh"),
-        )
-        .expect("the bash helper");
-
-        for (marker, ours) in [
-            (
-                "cat >/etc/letsencrypt/renewal-hooks/deploy/snpanel-sni-certs <<'HOOK'\n",
-                SNI_HOOK,
-            ),
-            (
-                "cat >/etc/letsencrypt/renewal-hooks/deploy/snpanel-panel-cert <<'HOOK'\n",
-                PANEL_CERT_HOOK,
-            ),
-        ] {
-            let start = helper.find(marker).expect("the heredoc") + marker.len();
-            let end = helper[start..].find("\nHOOK\n").expect("its end") + start;
-            let theirs = format!("{}\n", &helper[start..end]);
-            assert_eq!(ours, theirs, "hook at {marker}");
-        }
-
-        // Both are scripts, and both refuse to act without RENEWED_LINEAGE -
-        // certbot sets it, and a hook run by hand without it must do nothing
-        // rather than copy whatever happens to be in the live directory.
+    fn the_renewal_hooks_do_nothing_without_a_lineage() {
         for hook in [SNI_HOOK, PANEL_CERT_HOOK] {
             assert!(hook.starts_with("#!/usr/bin/env bash\n"));
-            assert!(hook.contains("RENEWED_LINEAGE"));
+            // Without `set -e` a failed `install` is a hook that carries on
+            // and reports success.
             assert!(hook.contains("set -euo pipefail"));
+            // Named at least twice: once to read it, once to check it.
+            assert!(
+                hook.matches("RENEWED_LINEAGE").count() >= 2,
+                "the hook uses RENEWED_LINEAGE without checking it"
+            );
+            // The certificate pair is installed group-readable by the panel
+            // and by nothing else. 0644 here is the panel's private key on a
+            // shared host.
+            for line in hook.lines().filter(|l| l.contains("privkey.pem")) {
+                if line.trim_start().starts_with("install ") {
+                    assert!(line.contains("-m 0640"), "{line}");
+                    assert!(line.contains("-g snpanel"), "{line}");
+                }
+            }
         }
     }
 

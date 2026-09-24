@@ -252,7 +252,6 @@ mod tests {
             "installer/install.sh",
             "installer/update.sh",
             "installer/files/snpanelctl",
-            "installer/files/snpanel-helper.sh",
             "crates/snpanel-helper/src/ops/panel.rs",
         ] {
             let Ok(text) = std::fs::read_to_string(root.join(name)) else {
@@ -270,7 +269,10 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 4, "only {checked} writers were checked");
+        // Four writers, until the bash helper became the fifth and then
+        // stopped existing. The count is asserted so a writer that stops
+        // being found leaves this test passing on fewer files than it thinks.
+        assert!(checked >= 3, "only {checked} writers were checked");
         assert!(
             tools_vhost(&debian_tools(None)).contains(NEEDLE),
             "and this module has to agree with them"

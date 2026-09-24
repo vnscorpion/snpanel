@@ -778,84 +778,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The URL file path, like the work file, comes from the bash helper.
+    /// The three paths the blocklist uses, and the units that refresh it.
+    ///
+    /// These were compared against the bash helper, which wrote the same
+    /// files: the bug they guard is that a writer and a reader drift apart
+    /// while each looks right on its own, and `firewall-apply` reading a path
+    /// nothing writes reports success with no blocklist in the ruleset.
+    ///
+    /// With the bash gone there is one writer and one reader and the drift
+    /// cannot happen, so what is left is the part an operator depends on: the
+    /// units fire, and they name a directory that exists.
     #[test]
-    fn the_blocklist_url_path_is_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        let mut data_dir = None;
-        let mut urls = None;
-        for line in BASH.lines() {
-            if let Some(rest) = line.strip_prefix("SNPANEL_DATA_DIR=") {
-                data_dir = Some(rest.trim().trim_matches('"').to_string());
-            }
-            if let Some(rest) = line.strip_prefix("FIREWALL_BLOCKLIST_URLS=") {
-                urls = Some(rest.trim().trim_matches('"').to_string());
-            }
-        }
-        let expected = urls
-            .expect("FIREWALL_BLOCKLIST_URLS is not in the bash helper")
-            .replace(
-                "${SNPANEL_DATA_DIR}",
-                &data_dir.expect("SNPANEL_DATA_DIR is not in the bash helper"),
+    fn the_blocklist_files_live_under_the_data_directory() {
+        for path in [BLOCKLIST_URLS, BLOCKLIST_WORK] {
+            assert!(
+                path.starts_with("/var/lib/snpanel/"),
+                "{path} is outside the data directory"
             );
-        assert_eq!(BLOCKLIST_URLS, expected);
+        }
+        assert_ne!(BLOCKLIST_URLS, BLOCKLIST_WORK);
     }
 
-    /// The units the timer writer installs, against the bash's own heredocs.
-    ///
-    /// A timer that never fires is a blocklist that goes stale without
-    /// anybody noticing, so the schedule is compared rather than described.
+    /// The schedule is compared rather than described: a timer that never
+    /// fires is a blocklist that goes stale without anybody noticing.
     #[test]
-    fn the_blocklist_units_match_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-        // A heredoc's body includes the newline that ends its last line; the
-        // terminator sits on the line after. So the body runs up to - and not
-        // past - the start of the terminator line.
-        let between = |open: &str, close: &str| -> String {
-            let start = BASH.find(open).expect("the heredoc opener") + open.len();
-            let end = BASH[start..].find(close).expect("the heredoc closer") + start;
-            BASH[start..end].to_string()
-        };
-        assert_eq!(SERVICE_UNIT, between("<<'SERVICE'\n", "SERVICE\n"));
-        assert_eq!(TIMER_UNIT, between("<<'TIMER'\n", "TIMER\n"));
-        // The two facts an operator depends on.
+    fn the_blocklist_units_say_when_and_what() {
         assert!(TIMER_UNIT.contains("OnCalendar=*-*-* 01:00:00"));
+        assert!(TIMER_UNIT.contains("[Install]\nWantedBy=timers.target"));
+        assert!(TIMER_UNIT.contains("Persistent=true"));
         assert!(SERVICE_UNIT
             .contains("ExecStart=/usr/local/sbin/snpanel-helper firewall-blocklist-run"));
-    }
-
-    /// The blocklist path is the bash helper's, read from the bash helper.
-    ///
-    /// Not asserted as a string literal: the point of the bug this guards
-    /// against is that two files drifted apart while both looked right on
-    /// their own. So this takes the bash's `FIREWALL_BLOCKLIST_WORK` out of
-    /// the shipped script and compares.
-    ///
-    /// The failure it prevents is silent. `firewall-apply` reading a path
-    /// nothing writes reports success and rebuilds the ruleset with no
-    /// blocklist in it, and the operator sees a firewall that is up.
-    #[test]
-    fn the_blocklist_path_is_the_bash_helpers() {
-        const BASH: &str = include_str!("../../../../installer/files/snpanel-helper.sh");
-
-        let mut data_dir = None;
-        let mut work = None;
-        for line in BASH.lines() {
-            if let Some(rest) = line.strip_prefix("SNPANEL_DATA_DIR=") {
-                data_dir = Some(rest.trim().trim_matches('"').to_string());
-            }
-            if let Some(rest) = line.strip_prefix("FIREWALL_BLOCKLIST_WORK=") {
-                work = Some(rest.trim().trim_matches('"').to_string());
-            }
-        }
-        let data_dir = data_dir.expect("SNPANEL_DATA_DIR is not in the bash helper");
-        let work = work.expect("FIREWALL_BLOCKLIST_WORK is not in the bash helper");
-        let expected = work.replace("${SNPANEL_DATA_DIR}", &data_dir);
-
-        assert_eq!(
-            BLOCKLIST_WORK, expected,
-            "the helper reads {BLOCKLIST_WORK}; the bash writes {expected}"
-        );
+        // The helper refuses a call it cannot attribute, and a timer has no
+        // sudo to set this.
+        assert!(SERVICE_UNIT.contains("Environment=SUDO_USER=snpanel"));
     }
 
     #[test]

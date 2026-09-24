@@ -124,14 +124,11 @@ mod tests {
     #[test]
     fn the_same_contents_under_different_paths_fingerprint_alike() {
         let from_release = files(&[
-            (
-                "/tmp/snpanel-release/files/snpanel-helper.sh",
-                "#!/bin/sh\n",
-            ),
+            ("/tmp/snpanel-release/files/snpanel-helper", "#!/bin/sh\n"),
             ("/tmp/snpanel-release/files/snpanelctl", "menu\n"),
         ]);
         let installed = files(&[
-            ("/usr/local/sbin/snpanel-helper.sh", "#!/bin/sh\n"),
+            ("/usr/local/sbin/snpanel-helper", "#!/bin/sh\n"),
             ("/usr/local/sbin/snpanel", "menu\n"),
         ]);
         assert_eq!(print(&from_release), print(&installed));
