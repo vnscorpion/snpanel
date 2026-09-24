@@ -805,7 +805,10 @@ mod tests {
         }
 
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).expect("a source directory").flatten() {
+            for entry in std::fs::read_dir(dir)
+                .expect("a source directory")
+                .flatten()
+            {
                 let path = entry.path();
                 if path.is_dir() {
                     walk(&path, out);
@@ -838,7 +841,11 @@ mod tests {
                 // `privileged(`, `privileged_timed(` - and not `privileged_x`.
                 let tail = &text[at..];
                 let open = if let Some(rest) = tail.strip_prefix("privileged_timed") {
-                    if rest.starts_with('(') { at + "privileged_timed".len() } else { continue }
+                    if rest.starts_with('(') {
+                        at + "privileged_timed".len()
+                    } else {
+                        continue;
+                    }
                 } else if tail[..text.len().min(at + 11) - at].starts_with("privileged(") {
                     at + "privileged".len()
                 } else {
@@ -851,8 +858,9 @@ mod tests {
                 match literal {
                     Some(v)
                         if !v.is_empty()
-                            && v.bytes()
-                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') =>
+                            && v.bytes().all(|c| {
+                                c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'
+                            }) =>
                     {
                         verbs.insert(v.to_string());
                     }
@@ -907,7 +915,10 @@ mod tests {
         // inheriting.
         const ANSWERED_BY_NOTHING: &[&str] = &["nginx-vhost-delete", "wordpress-vhost-delete"];
         unknown.retain(|v| !ANSWERED_BY_NOTHING.contains(&v.as_str()));
-        assert!(unknown.is_empty(), "the helper answers none of: {unknown:?}");
+        assert!(
+            unknown.is_empty(),
+            "the helper answers none of: {unknown:?}"
+        );
 
         assert_eq!(
             computed, 8,
@@ -915,5 +926,4 @@ mod tests {
              each one is a name this test cannot check"
         );
     }
-
 }

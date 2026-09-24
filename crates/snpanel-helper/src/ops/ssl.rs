@@ -583,7 +583,6 @@ fn set_owner_mode(path: &str, mode: u32) -> Result<(), HelperResponse> {
     Ok(())
 }
 
-
 // ---------------------------------------------------------------------------
 // the nightly renewal
 // ---------------------------------------------------------------------------
@@ -762,7 +761,12 @@ fn lineages() -> Vec<String> {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|name| !NOT_A_LINEAGE.contains(&name.as_str()))
-        .filter(|name| Path::new(LETSENCRYPT_LIVE).join(name).join("cert.pem").is_file())
+        .filter(|name| {
+            Path::new(LETSENCRYPT_LIVE)
+                .join(name)
+                .join("cert.pem")
+                .is_file()
+        })
         .collect();
     // A glob expands in sorted order; `read_dir` does not, and the summary
     // line names certificates in the order they were walked.
@@ -1219,5 +1223,4 @@ mod tests {
             assert!(part.trim_end().ends_with("|| true"), "{part:?}");
         }
     }
-
 }

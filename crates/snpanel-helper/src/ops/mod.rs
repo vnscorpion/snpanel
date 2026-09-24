@@ -518,10 +518,8 @@ mod tests {
                 // arguments are everything before the first backslash or
                 // quote.
                 let end = args.find(['\\', '"']).unwrap_or(args.len());
-                let argv: Vec<String> = args[..end]
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect();
+                let argv: Vec<String> =
+                    args[..end].split_whitespace().map(str::to_string).collect();
                 if argv.is_empty() {
                     continue;
                 }
@@ -540,5 +538,4 @@ mod tests {
         // test finding them would leave it passing while checking nothing.
         assert_eq!(checked, 2, "expected to check two ExecStart lines");
     }
-
 }

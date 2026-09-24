@@ -280,9 +280,9 @@ impl HelperRequest {
             // `[[ $# -le 1 ]]`, and the default is the 10 the unit passes.
             ("certbot-renew-soon", 0) => HelperRequest::CertbotRenewSoon { days: 10 },
             ("certbot-renew-soon", 1) => HelperRequest::CertbotRenewSoon {
-                days: rest[0]
-                    .parse()
-                    .map_err(|_| InvocationError::invalid("usage: certbot-renew-soon [1-30 days]"))?,
+                days: rest[0].parse().map_err(|_| {
+                    InvocationError::invalid("usage: certbot-renew-soon [1-30 days]")
+                })?,
             },
 
             ("firewall-allow-ip", 1) | ("ufw-allow-ip", 1) => match IpOrCidr::parse(&rest[0]) {
@@ -649,9 +649,7 @@ impl HelperRequest {
             | ("ufw-blocklist-status", 0) => HelperRequest::FirewallBlocklistStatus,
             ("firewall-blocklist-timer-install", 0)
             | ("nginx-blocklist-timer-install", 0)
-            | ("ufw-blocklist-timer-install", 0) => {
-                HelperRequest::FirewallBlocklistTimerInstall
-            }
+            | ("ufw-blocklist-timer-install", 0) => HelperRequest::FirewallBlocklistTimerInstall,
             ("firewall-blocklist-add", 1)
             | ("nginx-blocklist-add", 1)
             | ("ufw-blocklist-add", 1)

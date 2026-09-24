@@ -102,7 +102,12 @@ fn split_line(line: &str) -> Option<(String, &str, &str, String)> {
             if source.is_empty() {
                 continue;
             }
-            return Some((body[..i].trim().to_string(), action, dir, source.to_string()));
+            return Some((
+                body[..i].trim().to_string(),
+                action,
+                dir,
+                source.to_string(),
+            ));
         }
     }
     None
@@ -314,7 +319,15 @@ fn purge_ufw(out: &mut String) {
 /// takes the websites down.
 fn purge_nginx_blocklist() {
     let _ = exec::run(&[
-        "install", "-d", "-o", "root", "-g", "root", "-m", "0755", NGINX_SNPANEL_DIR,
+        "install",
+        "-d",
+        "-o",
+        "root",
+        "-g",
+        "root",
+        "-m",
+        "0755",
+        NGINX_SNPANEL_DIR,
     ]);
     let _ = std::fs::write(BLOCKLIST_SERVER_CONF, EMPTY_SERVER_CONF);
     let _ = exec::run(&["chown", "root:root", BLOCKLIST_SERVER_CONF]);
@@ -575,8 +588,9 @@ deny\tINTERNAL\t25\ttcp
 
     #[test]
     fn a_comment_is_not_part_of_the_source() {
-        let rules =
-            parse_status("[ 2] 2222/tcp  ALLOW IN    Anywhere                   # snpanel:PanelZone\n");
+        let rules = parse_status(
+            "[ 2] 2222/tcp  ALLOW IN    Anywhere                   # snpanel:PanelZone\n",
+        );
         assert_eq!(rules.len(), 1);
         // "Anywhere" becomes the empty source, and the comment goes with it.
         assert_eq!(rules[0].source, "");
@@ -594,10 +608,7 @@ deny\tINTERNAL\t25\ttcp
     #[test]
     fn the_include_stripper_takes_whole_lines() {
         let before = "server {\n    include /etc/nginx/snpanel/ip-blocklist-server.conf;\n    listen 80;\n}\n";
-        assert_eq!(
-            strip_include_lines(before),
-            "server {\n    listen 80;\n}\n"
-        );
+        assert_eq!(strip_include_lines(before), "server {\n    listen 80;\n}\n");
     }
 
     #[test]

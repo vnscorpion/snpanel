@@ -503,7 +503,9 @@ mod tests {
             let after = rest[close + 1..].trim_start();
             // A tuple pattern: the name, a comma, then the argument count.
             let is_arm = after.starts_with(',')
-                && after[1..].trim_start().starts_with(|c: char| c.is_ascii_digit());
+                && after[1..]
+                    .trim_start()
+                    .starts_with(|c: char| c.is_ascii_digit());
             let is_verb = !name.is_empty()
                 && name.starts_with(|c: char| c.is_ascii_lowercase())
                 && name

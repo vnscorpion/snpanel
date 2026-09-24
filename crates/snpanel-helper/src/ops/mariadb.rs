@@ -129,15 +129,50 @@ struct Tier {
 
 fn tier(total_mb: u64) -> Tier {
     if total_mb <= 1024 {
-        Tier { buffer_percent: 22, max_connections: 35, thread_cache: 16, table_open_cache: 512, tmp_mb: 32, packet_mb: 64 }
+        Tier {
+            buffer_percent: 22,
+            max_connections: 35,
+            thread_cache: 16,
+            table_open_cache: 512,
+            tmp_mb: 32,
+            packet_mb: 64,
+        }
     } else if total_mb <= 2048 {
-        Tier { buffer_percent: 25, max_connections: 50, thread_cache: 24, table_open_cache: 512, tmp_mb: 48, packet_mb: 64 }
+        Tier {
+            buffer_percent: 25,
+            max_connections: 50,
+            thread_cache: 24,
+            table_open_cache: 512,
+            tmp_mb: 48,
+            packet_mb: 64,
+        }
     } else if total_mb <= 4096 {
-        Tier { buffer_percent: 28, max_connections: 80, thread_cache: 32, table_open_cache: 1024, tmp_mb: 64, packet_mb: 96 }
+        Tier {
+            buffer_percent: 28,
+            max_connections: 80,
+            thread_cache: 32,
+            table_open_cache: 1024,
+            tmp_mb: 64,
+            packet_mb: 96,
+        }
     } else if total_mb <= 8192 {
-        Tier { buffer_percent: 32, max_connections: 120, thread_cache: 48, table_open_cache: 1024, tmp_mb: 96, packet_mb: 128 }
+        Tier {
+            buffer_percent: 32,
+            max_connections: 120,
+            thread_cache: 48,
+            table_open_cache: 1024,
+            tmp_mb: 96,
+            packet_mb: 128,
+        }
     } else {
-        Tier { buffer_percent: 36, max_connections: 180, thread_cache: 64, table_open_cache: 2048, tmp_mb: 128, packet_mb: 128 }
+        Tier {
+            buffer_percent: 36,
+            max_connections: 180,
+            thread_cache: 64,
+            table_open_cache: 2048,
+            tmp_mb: 128,
+            packet_mb: 128,
+        }
     }
 }
 
@@ -165,16 +200,16 @@ pub fn calculate(total_mb: u64, cpu_count: u64, o: &Overrides) -> Tuning {
         total_mb * 60 / 100,
     );
 
-    let max_connections = positive_int_or_default(
-        o.max_connections.as_deref(),
-        t.max_connections,
-        20,
-        1000,
-    );
+    let max_connections =
+        positive_int_or_default(o.max_connections.as_deref(), t.max_connections, 20, 1000);
     let thread_cache =
         positive_int_or_default(o.thread_cache_size.as_deref(), t.thread_cache, 8, 256);
-    let table_open_cache =
-        positive_int_or_default(o.table_open_cache.as_deref(), t.table_open_cache, 256, 65535);
+    let table_open_cache = positive_int_or_default(
+        o.table_open_cache.as_deref(),
+        t.table_open_cache,
+        256,
+        65535,
+    );
 
     // The bash passes `64` as the default of this second call rather than the
     // tier value. It is unreachable - `megabytes` has already returned a
@@ -197,12 +232,8 @@ pub fn calculate(total_mb: u64, cpu_count: u64, o: &Overrides) -> Tuning {
     // Every open table costs two descriptors, every connection one, and 512
     // is the headroom for everything that is not a table or a client.
     let files_default = table_open_cache * 2 + max_connections + 512;
-    let open_files_limit = positive_int_or_default(
-        o.open_files_limit.as_deref(),
-        files_default,
-        2048,
-        200_000,
-    );
+    let open_files_limit =
+        positive_int_or_default(o.open_files_limit.as_deref(), files_default, 2048, 200_000);
 
     Tuning {
         buffer_pool_mb: buffer_mb,
@@ -297,7 +328,17 @@ fn ensure_slow_log() {
         "mysql"
     };
     let owner = format!("mysql:{group}");
-    let _ = exec::run(&["install", "-d", "-o", "mysql", "-g", group, "-m", "0750", SLOW_LOG_DIR]);
+    let _ = exec::run(&[
+        "install",
+        "-d",
+        "-o",
+        "mysql",
+        "-g",
+        group,
+        "-m",
+        "0750",
+        SLOW_LOG_DIR,
+    ]);
     // `touch` - an existing log keeps its contents.
     if !std::path::Path::new(SLOW_LOG_FILE).exists() {
         let _ = std::fs::write(SLOW_LOG_FILE, b"");
@@ -438,8 +479,6 @@ mod tests {
         // nothing, which is the failure mode a golden test has.
         assert_eq!(rows, 90, "the fixture lost rows");
     }
-
-
 
     #[test]
     fn a_machine_too_small_for_the_floor_gets_the_ceiling() {
