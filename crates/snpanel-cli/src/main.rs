@@ -22,7 +22,7 @@ use clap::Parser;
 use cli::{Cli, Command, FirewallCommand};
 
 /// Where the installer puts the panel's environment file.
-const ENV_PATH: &str = "/opt/snpanel/backend/.env";
+pub(crate) const ENV_PATH: &str = "/opt/snpanel/backend/.env";
 
 /// Restore the default SIGPIPE disposition.
 ///
@@ -93,36 +93,38 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 ops::firewall_migrate_nft(dry_run, env_path.as_deref())?;
                 Ok(ExitCode::SUCCESS)
             }
-            FirewallCommand::Reopen => ops::delegate_to_helper(&["firewall-reopen"]),
+            FirewallCommand::Reopen => {
+                ops::repair_firewall(env_path.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
             FirewallCommand::Rescue => ops::delegate_to_helper(&["firewall-flush"]),
         },
 
         // Phase 1 ships these by delegating to the existing helper, which is
         // still the bash one until Phase 2 lands. The command surface is what
         // moves now; the privileged implementation moves next.
-        Command::RepairFirewall => ops::delegate_to_snpanelctl(&["repair-firewall"]),
+        Command::RepairFirewall => {
+            ops::repair_firewall(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Update {
             release,
             tag,
             branch,
         } => {
-            let mut args = vec!["update".to_string()];
-            if let Some(t) = tag {
-                args.push("--tag".into());
-                args.push(t);
-            } else if let Some(b) = branch {
-                args.push("--branch".into());
-                args.push(b);
-            } else if release {
-                args.push("--release".into());
-            }
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            ops::delegate_to_snpanelctl(&refs)
+            // `--release` is also the default: the bash only ever did that.
+            let _ = release;
+            let target = match (tag, branch) {
+                (Some(t), _) => ops::UpdateTarget::Tag(t),
+                (_, Some(b)) => ops::UpdateTarget::Branch(b),
+                _ => ops::UpdateTarget::Release,
+            };
+            ops::run_update(target)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::ChangeIp { addresses } => {
-            let mut args = vec!["change-ip"];
-            args.extend(addresses.iter().map(String::as_str));
-            ops::delegate_to_snpanelctl(&args)
+            ops::change_ip(&addresses)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::SetPanelUrl => ops::delegate_to_snpanelctl(&["set-panel-url"]),
         Command::InstallPanelSsl => ops::delegate_to_snpanelctl(&["install-panel-ssl"]),

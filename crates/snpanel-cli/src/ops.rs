@@ -9,6 +9,8 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result};
+
+use crate::ENV_PATH;
 use snpanel_core::config::Settings;
 use snpanel_osabi::firewall::{
     rules::{FirewallRuleset, FirewallState},
@@ -316,6 +318,243 @@ pub fn restart() -> Result<()> {
     Ok(())
 }
 
+/// Source: `DEFAULT_PANEL_PORT` in `snpanelctl`.
+const DEFAULT_PANEL_PORT: &str = "2222";
+
+/// `snpanel repair-firewall`, and `snpanel firewall reopen`.
+///
+/// Source: `repair_firewall` in `snpanelctl`.
+///
+/// The two names ran different code and only one of them worked. `firewall
+/// reopen` asked the helper for `firewall-reopen`, a verb no helper has ever
+/// had - not this one, and not the bash it replaced - so it printed "unknown
+/// command" and exited 1. They are the same function now, because "reopen the
+/// ports" is what an operator locked out of the panel is looking for, under
+/// whichever name they reach for first.
+///
+/// What it does is narrower than it sounds. SSH, the panel port and
+/// 80/443/465/587 are *protected* ports: the helper derives them from `sshd`
+/// and `.env` every time it renders the chain, so rebuilding the chain is
+/// what reopens them. The explicit `firewall-allow-port` calls below are for
+/// the non-standard SSH ports, which a rule has to name.
+pub fn repair_firewall(env_path: Option<&Path>) -> Result<()> {
+    // `ensure_env_file`: without it there is no panel to reopen a port for,
+    // and the ports this would rebuild from are unknown.
+    let Some(env) = env_path else {
+        anyhow::bail!("{ENV_PATH} not found. Run the installer first.");
+    };
+
+    // Read and validate, then do nothing with it. The bash does the same: a
+    // panel port that is not a port means the `.env` is corrupt, and finding
+    // that out here - before rebuilding the firewall from it - is the point.
+    let panel_port = env_value(env, "PANEL_PORT")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_PANEL_PORT.to_string());
+    if panel_port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
+        anyhow::bail!("Invalid panel port in {}: {panel_port}", env.display());
+    }
+
+    // Port 22 is protected and needs no rule; any other port an operator
+    // reaches this box on does.
+    for port in sshd_ports().into_iter().filter(|p| *p != 22) {
+        let _ = helper(&["firewall-allow-port", &port.to_string(), "tcp"]);
+    }
+
+    if helper(&["firewall-apply"]).is_err() {
+        println!("(could not reach the helper to rebuild the chain)");
+    }
+    let _ = firewall_status();
+
+    println!();
+    println!("Firewall rescue rules refreshed.");
+    println!("If the server is still unreachable, run: snpanel-rescue-firewall");
+    Ok(())
+}
+
+/// Run one helper verb the way `run_firewall_helper` does: as `snpanel`, with
+/// its output swallowed, and never fatal to the caller.
+///
+/// The bash ends every one of these with `|| true`. The caller here may be an
+/// operator who has just locked themselves out, and a helper that is missing
+/// or refuses one port must not stop the rebuild that reopens the rest.
+fn helper(args: &[&str]) -> Result<()> {
+    if !Path::new(HELPER).exists() {
+        anyhow::bail!("{HELPER} is not installed");
+    }
+    let status = Command::new(HELPER)
+        .args(args)
+        .env("SUDO_USER", "snpanel")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("running {HELPER}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("{HELPER} {} exited {:?}", args[0], status.code())
+    }
+}
+
+/// Source: `env_get` - the **first** match, and everything after the first
+/// `=`.
+fn env_value(path: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let prefix = format!("{key}=");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&prefix))
+        .map(str::to_string)
+}
+
+/// Source: `/usr/local/sbin/snpanel-update`, which `install.sh` installs from
+/// `installer/update.sh`.
+const UPDATE_SCRIPT: &str = "/usr/local/sbin/snpanel-update";
+/// Source: `/usr/local/sbin/snpanel-change-ip`, installed from `change_IP.sh`.
+const CHANGE_IP_SCRIPT: &str = "/usr/local/sbin/snpanel-change-ip";
+
+/// Which version an update is aimed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateTarget {
+    /// The latest tagged release - what the bash always did.
+    Release,
+    Tag(String),
+    Branch(String),
+}
+
+impl UpdateTarget {
+    /// The flag handed to `snpanel-update`.
+    fn args(&self) -> Vec<String> {
+        match self {
+            Self::Release => vec!["--release".into()],
+            Self::Tag(t) => vec!["--tag".into(), t.clone()],
+            Self::Branch(b) => vec!["--branch".into(), b.clone()],
+        }
+    }
+
+    /// What the confirmation asks, so it names what will actually happen.
+    fn question(&self) -> String {
+        match self {
+            Self::Release => "Update SNPanel to the latest vX.Y.Z release now?".into(),
+            Self::Tag(t) => format!("Update SNPanel to {t} now?"),
+            Self::Branch(b) => format!("Update SNPanel to the head of {b} now?"),
+        }
+    }
+}
+
+/// `snpanel update [--release|--tag T|--branch B]`.
+///
+/// Source: `run_panel_update`.
+///
+/// **A measured divergence, and the reason for it.** The bash dispatches
+/// `update|--update) run_panel_update ;;` with no `shift` and no `"$@"`, so
+/// `run_panel_update` never saw an argument: `snpanel update --tag v1.2.3`
+/// asked about "the latest vX.Y.Z release", and then installed it. Both flags
+/// have been on this CLI's own `--help` the whole time, documented as
+/// "Update to a specific tag" and "Update to the head of a branch". Carrying
+/// the bash's behaviour across would mean shipping a flag that does not do
+/// what the program says it does, so they are passed through, and the
+/// question names the target.
+pub fn run_update(target: UpdateTarget) -> Result<()> {
+    if !is_executable(Path::new(UPDATE_SCRIPT)) {
+        anyhow::bail!("{UPDATE_SCRIPT} not found");
+    }
+    if !confirm(&target.question())? {
+        println!("Canceled.");
+        return Ok(());
+    }
+    let args = target.args();
+    let status = Command::new(UPDATE_SCRIPT)
+        .args(&args)
+        .status()
+        .with_context(|| format!("running {UPDATE_SCRIPT}"))?;
+    if !status.success() {
+        anyhow::bail!("{UPDATE_SCRIPT} exited {:?}", status.code());
+    }
+    Ok(())
+}
+
+/// `snpanel change-ip [<old> <new>]`.
+///
+/// Source: `change_panel_ip`. Two addresses, or none and it asks; anything
+/// else is a usage error rather than a guess, because this rewrites every
+/// file on the box that records an address.
+pub fn change_ip(addresses: &[String]) -> Result<()> {
+    if !is_executable(Path::new(CHANGE_IP_SCRIPT)) {
+        anyhow::bail!(
+            "{CHANGE_IP_SCRIPT} not found. Reinstall/update SNPanel or copy \
+             change_IP.sh to that path."
+        );
+    }
+
+    let (old_ip, new_ip) = match addresses.len() {
+        2 => (addresses[0].clone(), addresses[1].clone()),
+        0 => {
+            let old = ask("Old IP: ")?;
+            // The address this box answers on is the one it is usually being
+            // changed *to*, so it is offered as the default.
+            let current = detect_ip();
+            let new = match current.as_deref().filter(|c| !c.is_empty()) {
+                Some(c) => {
+                    let typed = ask(&format!("New IP [{c}]: "))?;
+                    if typed.is_empty() {
+                        c.to_string()
+                    } else {
+                        typed
+                    }
+                }
+                None => ask("New IP: ")?,
+            };
+            (old, new)
+        }
+        _ => anyhow::bail!("usage: snpanel change-ip <old-ip> <new-ip>"),
+    };
+
+    let status = Command::new(CHANGE_IP_SCRIPT)
+        .args([&old_ip, &new_ip])
+        .status()
+        .with_context(|| format!("running {CHANGE_IP_SCRIPT}"))?;
+    if !status.success() {
+        anyhow::bail!("{CHANGE_IP_SCRIPT} exited {:?}", status.code());
+    }
+    Ok(())
+}
+
+/// Source: `detect_ip` - `hostname -I | awk '{print $1}'`, and an empty
+/// answer rather than an error.
+fn detect_ip() -> Option<String> {
+    let out = Command::new("hostname").arg("-I").output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
+/// Source: `read -rp "... [y/N]: "` and `case y|Y|yes|YES`.
+///
+/// Anything else is no, including EOF: a confirmation that defaults to yes
+/// when nobody answered is not a confirmation.
+fn confirm(question: &str) -> Result<bool> {
+    let answer = ask(&format!("{question} [y/N]: "))?;
+    Ok(matches!(answer.as_str(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn ask(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line)? == 0 {
+        return Ok(String::new());
+    }
+    Ok(line.trim().to_string())
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// Hand off to the bash implementation that still owns this operation.
 pub fn delegate_to_snpanelctl(args: &[&str]) -> Result<ExitCode> {
     delegate(SNPANELCTL, args)
@@ -379,5 +618,238 @@ mod tests {
     #[test]
     fn firewall_status_runs_with_no_rules_file() {
         assert!(firewall_status().is_ok());
+    }
+
+    /// Every verb this CLI hands to the helper is one the helper answers.
+    ///
+    /// The panel has the same test over its own call sites. This one exists
+    /// because that one does not read this crate, and the gap was not
+    /// theoretical: `firewall reopen` asked for `firewall-reopen`, which no
+    /// mapping has ever had and which was not an arm of the bash helper
+    /// either. The command printed "unknown command" from whichever helper
+    /// was installed, and nothing said so.
+    ///
+    /// These names are strings, not enum variants, so the compiler does not
+    /// catch them and the bash no longer does.
+    #[test]
+    fn every_verb_the_cli_hands_the_helper_is_one_it_answers() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir)
+                .expect("a source directory")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                    // This file *defines* `delegate_to_helper`; the calls are
+                    // in `main.rs`.
+                    && path.file_name().and_then(|n| n.to_str()) != Some("ops.rs")
+                {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        files.sort();
+
+        let mut verbs = std::collections::BTreeSet::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("a source file");
+            let mut from = 0;
+            // `delegate_to_helper(&["verb", "arg", ...])`
+            while let Some(hit) = text[from..].find("delegate_to_helper(&[") {
+                let at = from + hit + "delegate_to_helper(&[".len();
+                from = at;
+                let Some(end) = text[at..].find(']') else {
+                    break;
+                };
+                let args: Vec<String> = text[at..at + end]
+                    .split(',')
+                    .map(|a| a.trim().trim_matches('"').to_string())
+                    .filter(|a| !a.is_empty())
+                    .collect();
+                if let Some(verb) = args.first().filter(|v| {
+                    !v.is_empty()
+                        && v.bytes()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                }) {
+                    verbs.insert(verb.clone());
+                }
+            }
+        }
+
+        assert!(!verbs.is_empty(), "the scan found no verbs at all");
+        let mut unknown = Vec::new();
+        for verb in &verbs {
+            // `from_argv` matches on `(name, arity)`, so any arity that maps
+            // proves the name is one the helper knows.
+            let known = (0..=8).any(|n| {
+                let argv: Vec<String> = std::iter::once(verb.clone())
+                    .chain((0..n).map(|i| format!("arg{i}")))
+                    .collect();
+                !matches!(
+                    snpanel_ipc::HelperRequest::from_argv(&argv, Vec::new),
+                    Err(ref e) if e.is_unmapped()
+                )
+            });
+            if !known {
+                unknown.push(verb.clone());
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "the helper answers none of: {unknown:?}"
+        );
+    }
+
+    #[test]
+    fn repairing_without_an_env_file_says_what_is_missing() {
+        // `ensure_env_file`. The operator running this is usually locked out
+        // of the panel already; "not found. Run the installer first." is the
+        // difference between that and a box that was never installed.
+        let err = repair_firewall(None).unwrap_err().to_string();
+        assert!(err.contains(ENV_PATH), "{err}");
+        assert!(err.contains("installer"), "{err}");
+    }
+
+    #[test]
+    fn a_corrupt_panel_port_stops_the_rebuild() {
+        // The port is read and then unused - the chain is rebuilt from the
+        // helper's own view of `.env`. Checking it here is what turns a
+        // corrupt file into a message instead of a firewall rebuilt from a
+        // file nobody has read.
+        let dir = std::env::temp_dir().join(format!("repairfw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let env = dir.join(".env");
+
+        for bad in [
+            "PANEL_PORT=not-a-port\n",
+            "PANEL_PORT=0\n",
+            "PANEL_PORT=99999\n",
+        ] {
+            std::fs::write(&env, bad).expect("write");
+            let err = repair_firewall(Some(&env)).unwrap_err().to_string();
+            assert!(err.contains("Invalid panel port"), "{bad:?} gave {err}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_panel_port_falls_back_rather_than_failing() {
+        // `env_get` returning nothing is a `.env` written before the key
+        // existed, not a corrupt one. The bash defaults and carries on.
+        let dir = std::env::temp_dir().join(format!("repairfw-dflt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let env = dir.join(".env");
+        std::fs::write(&env, "SOMETHING_ELSE=1\n").expect("write");
+
+        // It gets past the validation; whether the helper is reachable from a
+        // test machine is not what this asserts.
+        let out = repair_firewall(Some(&env));
+        assert!(
+            out.is_ok(),
+            "a .env with no PANEL_PORT should use the default: {out:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_first_panel_port_wins() {
+        // `awk '$1 == key { ...; exit }'` - the first match. The panel's own
+        // loader takes the *last*, which is why `env_set` rewrites every copy
+        // of a key rather than appending one.
+        let dir = std::env::temp_dir().join(format!("repairfw-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the dir");
+        let env = dir.join(".env");
+        std::fs::write(&env, "PANEL_PORT=2222\nPANEL_PORT=not-a-port\n").expect("write");
+
+        assert_eq!(env_value(&env, "PANEL_PORT").as_deref(), Some("2222"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_target_reaches_the_script_as_its_own_flag() {
+        // The bash dropped these. `snpanel update --tag v1.2.3` asked about
+        // "the latest vX.Y.Z release" and then installed it, because
+        // `update|--update) run_panel_update ;;` has no `shift` and
+        // `run_panel_update` has no `"$@"`.
+        assert_eq!(UpdateTarget::Release.args(), vec!["--release"]);
+        assert_eq!(
+            UpdateTarget::Tag("v1.2.3".into()).args(),
+            vec!["--tag", "v1.2.3"]
+        );
+        assert_eq!(
+            UpdateTarget::Branch("main".into()).args(),
+            vec!["--branch", "main"]
+        );
+    }
+
+    #[test]
+    fn the_question_names_what_will_happen() {
+        // A prompt that says "release" before installing a branch is how an
+        // operator confirms something they did not mean.
+        assert!(UpdateTarget::Release.question().contains("release"));
+        assert!(UpdateTarget::Tag("v9.9.9".into())
+            .question()
+            .contains("v9.9.9"));
+        let branch = UpdateTarget::Branch("hotfix".into()).question();
+        assert!(branch.contains("hotfix"), "{branch}");
+        assert!(branch.contains("head"), "{branch}");
+    }
+
+    #[test]
+    fn updating_without_the_script_says_so() {
+        // Every box that installed from a release has it; one that copied the
+        // binaries by hand may not.
+        let err = run_update(UpdateTarget::Release).unwrap_err().to_string();
+        assert!(err.contains(UPDATE_SCRIPT), "{err}");
+    }
+
+    #[test]
+    fn changing_the_ip_needs_two_addresses_or_none() {
+        // One address is the shape that could mean either, and this rewrites
+        // every file on the box that records an address. The bash refuses it
+        // and so does this.
+        let err = change_ip(&["10.0.0.1".to_string()])
+            .unwrap_err()
+            .to_string();
+        // The missing-script check comes first on a machine without it; on
+        // one with it, the arity check does. Either way it must not run.
+        assert!(
+            err.contains("usage: snpanel change-ip") || err.contains(CHANGE_IP_SCRIPT),
+            "{err}"
+        );
+
+        let err3 = change_ip(&["a".into(), "b".into(), "c".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err3.contains("usage: snpanel change-ip") || err3.contains(CHANGE_IP_SCRIPT),
+            "{err3}"
+        );
+    }
+
+    #[test]
+    fn the_change_ip_script_is_named_when_it_is_missing() {
+        // `change_IP.sh` is not in the repository, so no release installs
+        // this path. The message has to say which file and where from, or the
+        // operator has nothing to act on.
+        let err = change_ip(&["10.0.0.1".into(), "10.0.0.2".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(CHANGE_IP_SCRIPT), "{err}");
+        assert!(err.contains("change_IP.sh"), "{err}");
     }
 }
