@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// decide what has moved. It is checked against both files by
 /// `the_help_text_counts_are_the_measured_ones`, because the previous figure
 /// was hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 131;
+const ANSWERED_VERBS: usize = 145;
 const BASH_VERBS: usize = 147;
 
 fn print_help(sink: audit::Sink) {

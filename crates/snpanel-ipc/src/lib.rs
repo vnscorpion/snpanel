@@ -512,6 +512,24 @@ pub enum HelperRequest {
     CertbotRenew {
         domain: Option<Domain>,
     },
+
+    /// `certbot-auto-renew-install` - the nightly renewal units.
+    ///
+    /// Installer-time. `CertbotRenewSoon` writes the same units on every run,
+    /// so this exists for the box that has not had a nightly run yet.
+    CertbotAutoRenewInstall,
+
+    /// `certbot-renew-soon [days]` - renew every lineage that expires inside
+    /// the window, then refresh the panel's own copy.
+    ///
+    /// What `snpanel-ssl-auto-renew.timer` runs. Distinct from `CertbotRenew`:
+    /// certbot's own schedule renews at 30 days and knows nothing about the
+    /// copy of the panel certificate under `/etc/snpanel`.
+    CertbotRenewSoon {
+        /// 1-30; the bash refuses anything else. `u32` rather than a parsed
+        /// type because the range is the whole of the validation.
+        days: u32,
+    },
     CertbotDelete {
         domain: Domain,
     },
@@ -669,6 +687,12 @@ pub enum HelperRequest {
     FirewallStatus,
     /// One-way migration from the iptables/ipset backend (plan §6.3).
     FirewallMigrateNft,
+
+    /// `firewall-migrate` - the one-way move off UFW and the nginx geo-map.
+    ///
+    /// Installer-time and not the same operation as `FirewallMigrateNft`:
+    /// this one reads rules *out of UFW* before disabling it.
+    FirewallMigrateUfw,
 
     // --- selinux (no-op off the RHEL family) ---
     SelinuxRestoreSite {
@@ -889,6 +913,13 @@ pub enum HelperRequest {
     /// `php-pools-retune` - rewrite every site pool against the machine as
     /// it is now.
     PhpPoolsRetune,
+
+    /// `mariadb-retune` - size MariaDB to the machine and restart it.
+    ///
+    /// What `snpanel-autotune.service` runs beside `PhpPoolsRetune`. It
+    /// restarts the database, so it is installer-time only: the panel has no
+    /// button for it and must not grow one by accident.
+    MariadbRetune,
     /// `php-tune-write` - the auto-tuner's `95-snpanel-tune.ini`.
     ///
     /// The file is on stdin because it is generated from the machine's RAM and
@@ -970,6 +1001,14 @@ pub enum HelperRequest {
 
     /// `firewall-blocklist-status` - the URLs, the loaded sets and the timer.
     FirewallBlocklistStatus,
+
+    /// `firewall-blocklist-timer-install` - write `snpanel-blocklist.service`
+    /// and its timer, and enable them.
+    ///
+    /// Installer-time only. `firewall-blocklist-add` writes the same units as
+    /// a side effect, so a box with a URL configured has them already; this is
+    /// for the box that has none yet and for replacing the nginx-era pair.
+    FirewallBlocklistTimerInstall,
 
     /// `firewall-blocklist-add` / `firewall-blocklist-delete` - the list of
     /// URLs the nightly refresh downloads from.
@@ -1067,6 +1106,8 @@ impl HelperRequest {
             Self::NginxCustomDelete { .. } => "nginx-custom-delete",
             Self::CertbotIssue { .. } => "certbot-issue",
             Self::CertbotRenew { .. } => "certbot-renew",
+            Self::CertbotAutoRenewInstall => "certbot-auto-renew-install",
+            Self::CertbotRenewSoon { .. } => "certbot-renew-soon",
             Self::CertbotDelete { .. } => "certbot-delete",
             Self::SiteRuntimeEnsure { .. } => "site-runtime-ensure",
             Self::SiteRuntimeMove { .. } => "site-runtime-move",
@@ -1091,6 +1132,7 @@ impl HelperRequest {
             Self::FirewallFlush => "firewall-flush",
             Self::FirewallStatus => "firewall-status",
             Self::FirewallMigrateNft => "firewall-migrate-nft",
+            Self::FirewallMigrateUfw => "firewall-migrate",
             Self::SelinuxRestoreSite { .. } => "selinux-restore-site",
             Self::SelinuxPortAdd { .. } => "selinux-port-add",
             Self::FirewallAllowIp { .. } => "firewall-allow-ip",
@@ -1147,6 +1189,7 @@ impl HelperRequest {
             Self::NginxUpgradeMapEnsure => "nginx-upgrade-map-ensure",
             Self::UpdatesPanelRun => "updates-panel-run",
             Self::PhpPoolsRetune => "php-pools-retune",
+            Self::MariadbRetune => "mariadb-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
             Self::PhpInstall { .. } => "php-install",
             Self::OrphanCleanup { clean, .. } => {
@@ -1163,6 +1206,7 @@ impl HelperRequest {
             Self::WafInstall => "waf-install",
             Self::FirewallBlocklistRun => "firewall-blocklist-run",
             Self::FirewallBlocklistStatus => "firewall-blocklist-status",
+            Self::FirewallBlocklistTimerInstall => "firewall-blocklist-timer-install",
             Self::FirewallBlocklistUrl { add, .. } => {
                 if *add {
                     "firewall-blocklist-add"

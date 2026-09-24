@@ -473,6 +473,29 @@ fn install_panel_pair(from_dir: &Path) -> Result<(), HelperResponse> {
     Ok(())
 }
 
+/// Source: `copy_panel_live_certificate`.
+///
+/// Every branch of the bash is a `return 0`, not an error: the nightly renew
+/// calls this on every box, including the ones reached by IP and the ones
+/// whose panel domain has no certificate. A failure here must not turn a
+/// renewal that worked into a failed unit.
+pub(crate) fn copy_panel_live_certificate(domain: &str) {
+    if domain.is_empty() {
+        return;
+    }
+    let dir = Path::new(LIVE_DIR).join(domain);
+    if !dir.join("fullchain.pem").is_file() || !dir.join("privkey.pem").is_file() {
+        return;
+    }
+    if install_panel_pair(&dir).is_err() {
+        return;
+    }
+    // `[[ -f "$ENV_FILE" ]]` - the copy still happens on a box without it.
+    if Path::new(ENV_FILE).exists() {
+        let _ = env_set_all(&[("PANEL_SSL_CERT", PANEL_CERT), ("PANEL_SSL_KEY", PANEL_KEY)]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // the verbs
 // ---------------------------------------------------------------------------

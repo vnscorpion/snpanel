@@ -576,7 +576,7 @@ pub fn ensure_site_pool(
 /// Source: `php_fpm_total_memory_mb`. A machine that will not say falls back
 /// to 1024, which puts the tuning in its most conservative tier rather than
 /// its most generous.
-fn total_memory_mb() -> u64 {
+pub(super) fn total_memory_mb() -> u64 {
     std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|text| {
@@ -590,7 +590,7 @@ fn total_memory_mb() -> u64 {
 }
 
 /// Source: `php_fpm_cpu_count`. One, if the machine will not say.
-fn cpu_count() -> u64 {
+pub(super) fn cpu_count() -> u64 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u64)
         .unwrap_or(1)

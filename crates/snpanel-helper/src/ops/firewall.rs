@@ -414,6 +414,17 @@ fn write_timer() {
     let _ = exec::run(&["systemctl", "enable", "--now", "snpanel-blocklist.timer"]);
 }
 
+/// `firewall-blocklist-timer-install`.
+///
+/// Source: the bash arm, which is `firewall_blocklist_write_timer` and a
+/// line of output. `write_timer` already ran on every `blocklist_add`; the
+/// installer calls this so a box that has never added a URL still gets the
+/// units, and so an upgrade replaces the nginx-era pair.
+pub fn blocklist_timer_install() -> HelperResponse {
+    write_timer();
+    HelperResponse::with_stdout("IP blocklist timer installed\n".to_string())
+}
+
 /// `firewall-blocklist-add`.
 pub fn blocklist_add(url: &str) -> HelperResponse {
     if !valid_url(url) {

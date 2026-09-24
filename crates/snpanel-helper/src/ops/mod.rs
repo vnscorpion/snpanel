@@ -15,7 +15,9 @@
 //! without parsing English out of stderr.
 
 pub mod firewall;
+pub mod fwmigrate;
 pub mod fwrules;
+pub mod mariadb;
 pub mod misc;
 pub mod nginx;
 pub mod orphans;
@@ -165,6 +167,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::FirewallStatus => {
             firewall::status(&firewall::load_ruleset(ctx.panel_port, &ctx.ssh_ports))
         }
+        HelperRequest::FirewallMigrateUfw => fwmigrate::migrate(ctx),
         HelperRequest::FirewallMigrateNft => {
             // Migration is an apply: the ruleset is rebuilt from rules.tsv,
             // never read back out of iptables, so there is nothing else to do.
@@ -319,6 +322,8 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             email,
         } => ssl::certbot_issue(domain, aliases, email.as_ref()),
         HelperRequest::CertbotRenew { domain } => ssl::certbot_renew(domain.as_ref()),
+        HelperRequest::CertbotAutoRenewInstall => ssl::auto_renew_install(),
+        HelperRequest::CertbotRenewSoon { days } => ssl::renew_soon(*days),
         HelperRequest::CertbotDelete { domain } => ssl::certbot_delete(domain),
         HelperRequest::SslCertInfo { domain } => ssl::cert_info(domain),
         HelperRequest::PanelSslSelfsigned { host, port } => ssl::panel_selfsigned(host, *port),
@@ -352,6 +357,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
+        HelperRequest::MariadbRetune => mariadb::retune(),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,
@@ -409,6 +415,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::FirewallBlocklistStatus => {
             firewall::blocklist_status(&firewall::load_ruleset(ctx.panel_port, &ctx.ssh_ports))
         }
+        HelperRequest::FirewallBlocklistTimerInstall => firewall::blocklist_timer_install(),
         HelperRequest::FirewallBlocklistUrl { url, add } => {
             if *add {
                 firewall::blocklist_add(url)
@@ -509,33 +516,20 @@ mod tests {
         /// apiece, most of it the same lines.
         const UNPORTED_WITH_CALLERS: &[&str] = &[];
 
-        /// Verbs no caller reaches: aliases kept for a running API process,
-        /// and installer-time operations the panel never invokes.
+        /// Verbs no caller reaches.
         ///
-        /// The `ufw-*` and `*-blocklist-timer-install` names are the first
-        /// kind - the bash keeps them "so an API process that has not been
-        /// restarted yet keeps working during an update", and the Rust
-        /// mapping answers their current names. They cost nothing today and
-        /// they are a Stage G question, not a Stage D one: when the bash goes,
-        /// either the aliases go with it or they need arms here.
-        const UNPORTED_UNCALLED: &[&str] = &[
-            "certbot-auto-renew-install",
-            "certbot-renew-soon",
-            "firewall-blocklist-timer-install",
-            "firewall-migrate",
-            "maldet-report",
-            "mariadb-retune",
-            "nginx-blocklist-timer-install",
-            "php-fpm-retune",
-            "ufw-allow-port",
-            "ufw-blocklist-timer-install",
-            "ufw-disable",
-            "ufw-enable",
-            "ufw-list",
-            "ufw-panel-allow-port",
-            "ufw-status",
-            "waf-crs-install",
-        ];
+        /// This was sixteen names and is now two. Fourteen of them were the
+        /// installer-time verbs and the `ufw-*` compatibility aliases, and
+        /// the note here said they were "a Stage G question, not a Stage D
+        /// one: when the bash goes, either the aliases go with it or they
+        /// need arms here". They have arms here now, which is what lets the
+        /// bash go.
+        ///
+        /// The two left are answered by nothing and called by nothing:
+        /// `maldet-report` prints a scan report the panel reads out of the
+        /// database instead, and `waf-crs-install` was superseded by
+        /// `waf-install`. They go with the file rather than being ported.
+        const UNPORTED_UNCALLED: &[&str] = &["maldet-report", "waf-crs-install"];
 
         let bash = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -622,4 +616,63 @@ mod tests {
             "ported, but still listed as unported: {stale:?}"
         );
     }
+
+    /// Every verb a systemd unit this crate writes asks for must be one the
+    /// binary answers.
+    ///
+    /// This mattered less while the bash was there to catch a name the Rust
+    /// did not map. With the bash gone, a unit naming a verb that no longer
+    /// exists is a timer that fails silently every night - certificates that
+    /// stop renewing, blocklists that stop refreshing - and nothing reports
+    /// it but the journal.
+    #[test]
+    fn every_unit_execstart_names_a_verb_the_binary_answers() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ops");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("src/ops").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            for line in text.lines() {
+                // The unit bodies are Rust string literals, so the line ends
+                // in `\n";` or `\n\` - take what is between the binary and
+                // the first of those.
+                // Only a real unit line, not a test asserting about one.
+                let Some(rest) = line.trim_start().strip_prefix("ExecStart=") else {
+                    continue;
+                };
+                let Some(args) = rest.split("snpanel-helper ").nth(1) else {
+                    continue;
+                };
+                // Anything after the verb is its arguments; the escape at the
+                // end of the literal is not.
+                // The literal ends in `\n";` or `\n\`; the verb and its
+                // arguments are everything before the first backslash or
+                // quote.
+                let end = args.find(['\\', '"']).unwrap_or(args.len());
+                let argv: Vec<String> = args[..end]
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                if argv.is_empty() {
+                    continue;
+                }
+                let parsed = snpanel_ipc::HelperRequest::from_argv(&argv, Vec::new);
+                assert!(
+                    parsed.is_ok(),
+                    "{}: unit asks for `{}`, which the mapping refuses: {:?}",
+                    path.display(),
+                    argv.join(" "),
+                    parsed.err(),
+                );
+                checked += 1;
+            }
+        }
+        // Two units carry an ExecStart today. A refactor that stopped this
+        // test finding them would leave it passing while checking nothing.
+        assert_eq!(checked, 2, "expected to check two ExecStart lines");
+    }
+
 }

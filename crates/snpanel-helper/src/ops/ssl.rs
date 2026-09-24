@@ -583,6 +583,193 @@ fn set_owner_mode(path: &str, mode: u32) -> Result<(), HelperResponse> {
     Ok(())
 }
 
+
+// ---------------------------------------------------------------------------
+// the nightly renewal
+// ---------------------------------------------------------------------------
+
+const AUTO_RENEW_SERVICE: &str = "/etc/systemd/system/snpanel-ssl-auto-renew.service";
+const AUTO_RENEW_TIMER: &str = "/etc/systemd/system/snpanel-ssl-auto-renew.timer";
+
+const AUTO_RENEW_SERVICE_UNIT: &str = "[Unit]\n\
+Description=Renew SNPanel SSL certificates that expire within 10 days\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+Environment=SUDO_USER=snpanel\n\
+ExecStart=/usr/local/sbin/snpanel-helper certbot-renew-soon 10\n";
+
+const AUTO_RENEW_TIMER_UNIT: &str = "[Unit]\n\
+Description=Check SNPanel SSL certificates daily\n\
+\n\
+[Timer]\n\
+OnCalendar=*-*-* 01:30:00\n\
+Persistent=true\n\
+\n\
+[Install]\n\
+WantedBy=timers.target\n";
+
+/// Source: `write_ssl_auto_renew_timer`.
+///
+/// The bash writes unconditionally and reloads every time. This compares
+/// first for the same reason the blocklist timer does - `renew_soon` calls it
+/// on every nightly run, and a `daemon-reload` a day is noise in the journal
+/// for a file that has not changed since it was installed.
+///
+/// `systemctl` failing is not an error: the bash ends the enable with
+/// `|| true`, so a container without systemd still gets the unit files.
+fn write_auto_renew_timer() {
+    let mut changed = false;
+    for (path, body) in [
+        (AUTO_RENEW_SERVICE, AUTO_RENEW_SERVICE_UNIT),
+        (AUTO_RENEW_TIMER, AUTO_RENEW_TIMER_UNIT),
+    ] {
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        if current != body && std::fs::write(path, body).is_ok() {
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = exec::run(&["systemctl", "daemon-reload"]);
+    }
+    let _ = exec::run(&[
+        "systemctl",
+        "enable",
+        "--now",
+        "snpanel-ssl-auto-renew.timer",
+    ]);
+}
+
+/// `certbot-auto-renew-install`.
+pub fn auto_renew_install() -> HelperResponse {
+    write_auto_renew_timer();
+    HelperResponse::with_stdout("SSL auto-renew timer installed\n".to_string())
+}
+
+/// Source: `renew_ssl_soon` - the `days` guard, `[1-30]`.
+///
+/// The window is bounded on both sides. Below 1 the check would renew
+/// nothing; above 30 every certificate on the box looks due on every run, and
+/// Let's Encrypt rate-limits five duplicate certificates a week.
+const RENEW_SOON_MIN_DAYS: u32 = 1;
+const RENEW_SOON_MAX_DAYS: u32 = 30;
+
+/// The names under `/etc/letsencrypt/live` that are not lineages.
+///
+/// Source: `[[ "$cert_name" == "README" ]] && continue`. Certbot writes a
+/// `README` in that directory explaining not to edit the symlinks.
+const NOT_A_LINEAGE: &[&str] = &["README"];
+
+/// Source: the `--deploy-hook` of `renew_ssl_soon`.
+///
+/// Reloading nginx is what makes the new certificate serve; restarting the
+/// panel is what makes it serve its own. Both end in `|| true` because a
+/// renewal that succeeded must not be reported as failed by the thing that
+/// picks it up.
+const DEPLOY_HOOK: &str = "systemctl reload nginx || true; systemctl restart snpanel-api || true";
+
+/// `certbot-renew-soon [days]`.
+///
+/// Walks every lineage and renews the ones that expire inside the window.
+/// This is not `certbot renew`: certbot's own schedule renews at 30 days, and
+/// the panel's certificate has to be copied out of `/etc/letsencrypt`
+/// afterwards, which certbot has no way to know about.
+pub fn renew_soon(days: u32) -> HelperResponse {
+    if !(RENEW_SOON_MIN_DAYS..=RENEW_SOON_MAX_DAYS).contains(&days) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "usage: certbot-renew-soon [1-30 days]".to_string(),
+        );
+    }
+    // Installing the timer is part of the run, not only of the install verb:
+    // the bash does it here so a box whose units were removed gets them back
+    // on the next nightly run.
+    write_auto_renew_timer();
+
+    if !super::runtime::have("certbot") {
+        // Exit 0. "certbot is not installed" is an answer, not a failure.
+        return HelperResponse::with_stdout("certbot is not installed\n".to_string());
+    }
+
+    let seconds = u64::from(days) * 86_400;
+    let mut out = String::new();
+    let (mut checked, mut renewed) = (0u32, 0u32);
+
+    for name in lineages() {
+        checked += 1;
+        let cert = format!("{LETSENCRYPT_LIVE}/{name}/cert.pem");
+        let checkend = seconds.to_string();
+        let still_valid = exec::run(&[
+            "openssl",
+            "x509",
+            "-checkend",
+            &checkend,
+            "-noout",
+            "-in",
+            &cert,
+        ])
+        .is_ok_and(|o| o.ok());
+        if still_valid {
+            continue;
+        }
+        out.push_str(&format!("Renewing certificate: {name}\n"));
+        let ok = exec::run(&[
+            "certbot",
+            "renew",
+            "--cert-name",
+            &name,
+            "--quiet",
+            "--force-renewal",
+            "--deploy-hook",
+            DEPLOY_HOOK,
+        ])
+        .is_ok_and(|o| o.ok());
+        if ok {
+            renewed += 1;
+        } else {
+            // `>&2` in the bash: a lineage that would not renew is a warning,
+            // and the run carries on to the others.
+            out.push_str(&format!("WARNING: could not renew {name}\n"));
+        }
+    }
+
+    let env = std::fs::read_to_string(super::panel::ENV_FILE).unwrap_or_default();
+    let panel_domain = super::panel::env_get(&env, "PANEL_DOMAIN").unwrap_or_default();
+    super::panel::copy_panel_live_certificate(&panel_domain);
+
+    if renewed > 0 {
+        let _ = exec::run(&["systemctl", "reload", "nginx"]);
+        let _ = exec::run(&["systemctl", "restart", "snpanel-api"]);
+    }
+    out.push_str(&format!(
+        "SSL auto-renew checked {checked} certificate(s); renewed {renewed} certificate(s) within {days} day(s).\n"
+    ));
+    HelperResponse::with_stdout(out)
+}
+
+/// Every lineage under `/etc/letsencrypt/live` that has a `cert.pem`.
+///
+/// Source: `for cert in /etc/letsencrypt/live/*/cert.pem` under `nullglob` -
+/// a missing or empty directory means the loop body never runs, which is why
+/// every failure here is an empty list rather than an error.
+fn lineages() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(LETSENCRYPT_LIVE) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| !NOT_A_LINEAGE.contains(&name.as_str()))
+        .filter(|name| Path::new(LETSENCRYPT_LIVE).join(name).join("cert.pem").is_file())
+        .collect();
+    // A glob expands in sorted order; `read_dir` does not, and the summary
+    // line names certificates in the order they were walked.
+    names.sort();
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,4 +1168,56 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    // --- the nightly renewal ---------------------------------------------
+
+    #[test]
+    fn the_renewal_window_is_bounded_at_both_ends() {
+        // Source: `[[ "$days" =~ ^[0-9]+$ && "$days" -ge 1 && "$days" -le 30 ]]`.
+        assert_eq!(RENEW_SOON_MIN_DAYS, 1);
+        assert_eq!(RENEW_SOON_MAX_DAYS, 30);
+        // The unit this installs passes 10, which has to be inside it or the
+        // nightly run refuses itself.
+        assert!((RENEW_SOON_MIN_DAYS..=RENEW_SOON_MAX_DAYS).contains(&10));
+    }
+
+    #[test]
+    fn the_timer_asks_for_the_days_the_unit_passes() {
+        // The service's ExecStart and the description have to agree: an
+        // operator reads "within 10 days" and gets whatever the argument is.
+        assert!(AUTO_RENEW_SERVICE_UNIT.contains("certbot-renew-soon 10"));
+        assert!(AUTO_RENEW_SERVICE_UNIT.contains("expire within 10 days"));
+    }
+
+    #[test]
+    fn the_units_carry_sudo_user_and_an_install_section() {
+        // `Environment=SUDO_USER=snpanel`: the helper refuses an invocation
+        // it cannot attribute, and a timer has no sudo to set it.
+        assert!(AUTO_RENEW_SERVICE_UNIT.contains("Environment=SUDO_USER=snpanel"));
+        // Without `[Install]` the `enable` is a no-op and the timer silently
+        // never runs - which is a certificate that expires in sixty days.
+        assert!(AUTO_RENEW_TIMER_UNIT.contains("[Install]\nWantedBy=timers.target"));
+        assert!(AUTO_RENEW_TIMER_UNIT.contains("Persistent=true"));
+    }
+
+    #[test]
+    fn the_readme_certbot_writes_is_not_a_lineage() {
+        // certbot leaves a README beside the lineages. Treating it as one
+        // sends `openssl x509 -checkend` at a file that is not a
+        // certificate, and the failure reads as "expiring".
+        assert!(NOT_A_LINEAGE.contains(&"README"));
+    }
+
+    #[test]
+    fn the_deploy_hook_cannot_fail_the_renewal() {
+        // Both halves end in `|| true`. certbot treats a failing deploy hook
+        // as a failed renewal, so a box whose nginx is stopped would report
+        // a renewal that in fact succeeded as an error, every night.
+        let parts: Vec<&str> = DEPLOY_HOOK.split(';').collect();
+        assert_eq!(parts.len(), 2, "{DEPLOY_HOOK:?}");
+        for part in parts {
+            assert!(part.trim_end().ends_with("|| true"), "{part:?}");
+        }
+    }
+
 }

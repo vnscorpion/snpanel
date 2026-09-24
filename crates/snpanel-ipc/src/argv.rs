@@ -233,8 +233,9 @@ impl HelperRequest {
                 HelperRequest::FirewallApply
             }
             ("firewall-flush", 0) => HelperRequest::FirewallFlush,
-            ("firewall-status", 0) => HelperRequest::FirewallStatus,
+            ("firewall-status", 0) | ("ufw-status", 0) => HelperRequest::FirewallStatus,
             ("firewall-migrate-nft", 0) => HelperRequest::FirewallMigrateNft,
+            ("firewall-migrate", 0) => HelperRequest::FirewallMigrateUfw,
 
             ("systemctl", 2) => {
                 let service = match ServiceName::parse(&rest[0]) {
@@ -256,9 +257,9 @@ impl HelperRequest {
                 HelperRequest::ServiceControl { service, action }
             }
 
-            ("firewall-enable", 0) => HelperRequest::FirewallEnable,
-            ("firewall-disable", 0) => HelperRequest::FirewallDisable,
-            ("firewall-list", 0) => HelperRequest::FirewallList,
+            ("firewall-enable", 0) | ("ufw-enable", 0) => HelperRequest::FirewallEnable,
+            ("firewall-disable", 0) | ("ufw-disable", 0) => HelperRequest::FirewallDisable,
+            ("firewall-list", 0) | ("ufw-list", 0) => HelperRequest::FirewallList,
             ("ipv6-status", 0) => HelperRequest::Ipv6Status,
             ("ipv6-enable", 0) => HelperRequest::Ipv6Enable,
             ("ipv6-disable", 0) => HelperRequest::Ipv6Disable,
@@ -275,6 +276,14 @@ impl HelperRequest {
             ("panel-ssl-domains", 0) => HelperRequest::PanelSslDomains,
             ("panel-sni-sync", 0) => HelperRequest::PanelSniSync,
             ("certbot-renew", 0) => HelperRequest::CertbotRenew { domain: None },
+            ("certbot-auto-renew-install", 0) => HelperRequest::CertbotAutoRenewInstall,
+            // `[[ $# -le 1 ]]`, and the default is the 10 the unit passes.
+            ("certbot-renew-soon", 0) => HelperRequest::CertbotRenewSoon { days: 10 },
+            ("certbot-renew-soon", 1) => HelperRequest::CertbotRenewSoon {
+                days: rest[0]
+                    .parse()
+                    .map_err(|_| InvocationError::invalid("usage: certbot-renew-soon [1-30 days]"))?,
+            },
 
             ("firewall-allow-ip", 1) | ("ufw-allow-ip", 1) => match IpOrCidr::parse(&rest[0]) {
                 Ok(ip) => HelperRequest::FirewallAllowIp {
@@ -292,7 +301,10 @@ impl HelperRequest {
                 },
                 Err(e) => return Err(InvocationError::invalid(e.to_string())),
             },
-            ("firewall-allow-port", 1) | ("firewall-allow-port", 2) => {
+            ("firewall-allow-port", 1)
+            | ("firewall-allow-port", 2)
+            | ("ufw-allow-port", 1)
+            | ("ufw-allow-port", 2) => {
                 let port = match Port::parse(&rest[0]) {
                     Ok(p) => p,
                     Err(e) => return Err(InvocationError::invalid(e.to_string())),
@@ -308,10 +320,12 @@ impl HelperRequest {
                 };
                 HelperRequest::FirewallAllowPort { port, protocol }
             }
-            ("firewall-panel-allow-port", 1) => match Port::parse(&rest[0]) {
-                Ok(port) => HelperRequest::FirewallPanelAllowPort { port },
-                Err(e) => return Err(InvocationError::invalid(e.to_string())),
-            },
+            ("firewall-panel-allow-port", 1) | ("ufw-panel-allow-port", 1) => {
+                match Port::parse(&rest[0]) {
+                    Ok(port) => HelperRequest::FirewallPanelAllowPort { port },
+                    Err(e) => return Err(InvocationError::invalid(e.to_string())),
+                }
+            }
             ("firewall-delete", 1) | ("ufw-delete", 1) => match rest[0].parse::<u32>() {
                 Ok(id) => HelperRequest::FirewallDelete { id },
                 Err(_) => {
@@ -493,7 +507,10 @@ impl HelperRequest {
             ("maldet-update-sigs", 0) => HelperRequest::MaldetUpdateSigs,
             ("nginx-upgrade-map-ensure", 0) => HelperRequest::NginxUpgradeMapEnsure,
             ("updates-panel-run", 0) => HelperRequest::UpdatesPanelRun,
-            ("php-pools-retune", 0) => HelperRequest::PhpPoolsRetune,
+            // `php-fpm-retune` is what `snpanel-autotune.service` has always
+            // called; `php-pools-retune` is the name this port gave it.
+            ("php-pools-retune", 0) | ("php-fpm-retune", 0) => HelperRequest::PhpPoolsRetune,
+            ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
             ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
                 version: php_or_none(&rest[0])?
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
@@ -630,6 +647,11 @@ impl HelperRequest {
             ("firewall-blocklist-status", 0)
             | ("nginx-blocklist-status", 0)
             | ("ufw-blocklist-status", 0) => HelperRequest::FirewallBlocklistStatus,
+            ("firewall-blocklist-timer-install", 0)
+            | ("nginx-blocklist-timer-install", 0)
+            | ("ufw-blocklist-timer-install", 0) => {
+                HelperRequest::FirewallBlocklistTimerInstall
+            }
             ("firewall-blocklist-add", 1)
             | ("nginx-blocklist-add", 1)
             | ("ufw-blocklist-add", 1)
