@@ -93,13 +93,23 @@ fn run(result: Result<(), String>) -> ExitCode {
 /// directories, write, reload, drop the units a previous release left
 /// behind, and enable.
 ///
-/// **One measured difference.** The shell writes
-/// `After=network.target clamav-daemon` in the malware scheduler, without the
-/// `.service` suffix, and systemd silently drops a dependency it cannot
-/// resolve - `systemctl show -p After` on a unit written that way does not
-/// list ClamAV at all. The crate's `clamav_unit_name` adds the suffix, so
-/// the weekly scan waits for the daemon it scans with. The fixture recorded
-/// from an earlier install.sh has the suffix too; the shell drifted.
+/// **On the ClamAV dependency, which an earlier commit got wrong.** That
+/// commit claimed `install.sh` wrote `After=network.target clamav-daemon`
+/// without the `.service` suffix and that systemd was therefore dropping the
+/// dependency. It was not: `installer/platform.sh` sets
+/// `CLAMAV_SERVICE="clamav-daemon.service"` with the suffix already in it, so
+/// `After=network.target ${CLAMAV_SERVICE}` expanded correctly on both
+/// families. The difference came from the substitution table in the
+/// throwaway drift-checking script, not from the shell.
+///
+/// What is true is the measurement underneath it: a unit written with a bare
+/// name *is* silently dropped - `systemctl show -p After` on one does not
+/// list the dependency at all - which is why `clamav_unit_name` exists, since
+/// `Platform::clamav_service` returns the bare name for its other caller,
+/// `systemctl is-active`.
+///
+/// The test below pins that this phase emits a resolvable name. It is worth
+/// keeping on its own terms; it is not evidence of a bug in the shell.
 ///
 /// Every `systemctl` here is best-effort except the two that decide whether
 /// the panel runs at all. An install that cannot enable the autotune unit is
@@ -848,11 +858,15 @@ mod tests {
 
     /// The malware scheduler waits for the daemon it scans with.
     ///
-    /// `install.sh` wrote `After=network.target clamav-daemon`, without the
-    /// suffix, and systemd drops a dependency it cannot resolve without
-    /// saying so - `systemctl show -p After` on a unit written that way does
-    /// not list ClamAV at all. Measured on the demo container before this
-    /// phase moved across.
+    /// systemd does not append `.service` in a dependency directive and does
+    /// not complain about a name it cannot resolve: measured on the demo
+    /// container, `systemctl show -p After` on a unit written with a bare
+    /// name does not list the dependency at all.
+    ///
+    /// That makes this worth pinning, because `Platform::clamav_service`
+    /// returns the **bare** name - its other caller hands it to `systemctl
+    /// is-active`, which takes either spelling. `clamav_unit_name` is what
+    /// bridges the two, and this is what notices if it stops being called.
     #[test]
     fn the_clamav_dependency_names_a_unit_systemd_can_resolve() {
         let settings = UnitSettings::for_platform(&snpanel_osabi::debian::Debian13);
@@ -960,5 +974,76 @@ mod tests {
                 "{pair:?} is not one of the accounts platform.sh sets: {pairs:?}"
             );
         }
+    }
+
+    /// Every writer of the malware scheduler names the *platform's* ClamAV
+    /// unit, with a suffix systemd can resolve.
+    ///
+    /// Three writers, and each got there differently, which is why this reads
+    /// all three rather than trusting one:
+    ///
+    /// * `installer/platform.sh` sets `CLAMAV_SERVICE` **with** the suffix,
+    ///   and `install.sh` interpolates it as-is;
+    /// * `snpanel_osabi::Platform::clamav_service` returns it **without**,
+    ///   because its other caller hands it to `systemctl is-active`, so
+    ///   `clamav_unit_name` adds one;
+    /// * `update.sh` hard-coded Debian's name until this commit, which on the
+    ///   RHEL family wrote a dependency on a unit that is not there.
+    ///
+    /// A bare name is not an error systemd reports. It is dropped, and
+    /// `systemctl show -p After` on such a unit lists nothing - so the weekly
+    /// scan would start without waiting for the daemon it scans with, and the
+    /// only sign would be a scan that found nothing.
+    #[test]
+    fn every_writer_names_the_platforms_clamav_unit() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+        // The shell's table, both families, suffix included.
+        let platform_sh =
+            std::fs::read_to_string(root.join("installer/platform.sh")).expect("platform.sh");
+        let shell_names: Vec<String> = platform_sh
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("CLAMAV_SERVICE="))
+            .map(|v| v.trim_matches('"').to_string())
+            .collect();
+        assert_eq!(shell_names.len(), 2, "{shell_names:?}");
+        for name in &shell_names {
+            assert!(name.ends_with(".service"), "platform.sh: {name}");
+        }
+
+        // The Rust table, which spells it the other way and bridges with
+        // `clamav_unit_name` - so what a unit ends up with must match.
+        for platform in [
+            &snpanel_osabi::debian::Debian13 as &dyn snpanel_osabi::Platform,
+            &snpanel_osabi::rhel::AlmaLinux10,
+        ] {
+            let settings = UnitSettings::for_platform(platform);
+            assert!(
+                settings.clamav_service.ends_with(".service"),
+                "{}",
+                settings.clamav_service
+            );
+            assert!(
+                shell_names.contains(&settings.clamav_service),
+                "{} is not one of the names platform.sh sets: {shell_names:?}",
+                settings.clamav_service
+            );
+        }
+
+        // And `update.sh`, which writes its own copy of the unit: the
+        // variable, not a name typed out.
+        let update_sh =
+            std::fs::read_to_string(root.join("installer/update.sh")).expect("update.sh");
+        let after = update_sh
+            .lines()
+            .find(|l| {
+                l.starts_with("After=network.target") && l.contains("lamav")
+                    || l.starts_with("After=network.target ${CLAMAV_SERVICE}")
+            })
+            .expect("update.sh no longer orders the scanner after ClamAV");
+        assert!(
+            after.contains("${CLAMAV_SERVICE}"),
+            "update.sh names a ClamAV unit rather than the platform's: {after}"
+        );
     }
 }

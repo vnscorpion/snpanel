@@ -3356,7 +3356,7 @@ not porting; the deciding halves were written and tested long ago. What was
 missing was the twenty lines of `std::fs` around each, and something to run
 them.
 
-### The method, and what it keeps finding
+### The method, and what it finds
 
 Two checks per phase, and both have earned their place.
 
@@ -3364,14 +3364,33 @@ Two checks per phase, and both have earned their place.
 fixture. If the shell has drifted since the fixture was recorded, the move
 would silently ship the drift.
 
-That found the one bug of the stage. `install.sh` wrote
-`After=network.target clamav-daemon` in the malware scheduler, without the
-`.service` suffix. systemd does not append it and does not complain about a
-name it cannot resolve — measured on the container, `systemctl show -p After`
-on a unit written that way does not list ClamAV at all. The weekly malware
-scan was not waiting for the daemon it scans with. The crate's
-`clamav_unit_name` had predicted it in a doc comment; the fixture, recorded
-from an earlier `install.sh`, has the suffix.
+It reported one difference, and **the report was wrong** — worth writing
+down, because the mistake is one this method invites.
+
+The check said `install.sh` wrote `After=network.target clamav-daemon` in the
+malware scheduler without the `.service` suffix, and that systemd was
+therefore dropping the dependency. `installer/platform.sh` sets
+`CLAMAV_SERVICE="clamav-daemon.service"` with the suffix already in it, so
+`After=network.target ${CLAMAV_SERVICE}` expanded correctly on both families
+and always had. What produced the difference was the substitution table in
+the throwaway script doing the checking, which mapped the variable to the
+bare name. The check compared the shell against a guess about the shell.
+
+The container evidence cited for it actually contradicted it: the installed
+unit read `After=network.target clamav-daemon.service`, which is what
+`install.sh` writes.
+
+Two things survive. The measurement underneath is real — a unit written with
+a bare name *is* silently dropped, and `systemctl show -p After` on one lists
+nothing — which is why `clamav_unit_name` exists at all, since
+`Platform::clamav_service` returns the bare name for its other caller. And
+`update.sh` really did have the bug, in the other direction: it hard-coded
+`clamav-daemon.service` rather than using `$CLAMAV_SERVICE`, so on the RHEL
+family it wrote a dependency on Debian's unit name. That is fixed.
+
+The lesson for the method: a drift check whose substitutions are guessed is a
+check against the guess. Three of the four values in that table were read out
+of the fixtures; this one was not.
 
 **After the move**: run the phase on the demo container and diff what it wrote
 against what the shell had left. Every phase so far has produced

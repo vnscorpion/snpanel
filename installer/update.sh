@@ -902,7 +902,7 @@ SERVICE
   cat >/etc/systemd/system/snpanel-malware-scheduler.service <<SERVICE
 [Unit]
 Description=SNPanel weekly malware scan runner
-After=network.target clamav-daemon.service
+After=network.target ${CLAMAV_SERVICE}
 
 [Service]
 Type=oneshot
