@@ -1,5 +1,6 @@
 import { Image, Lock, RefreshCw, Settings as SettingsIcon, Upload } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
+import { useT } from '../i18n/index.jsx';
 
 export default function PanelSettingsPage() {
   const {
@@ -21,6 +22,7 @@ export default function PanelSettingsPage() {
     toggleIpv6,
     uploadPanelAsset,
   } = usePanel();
+  const t = useT();
 
   function renderPanelSettings() {
     if (!isAdmin) return <section className="section"><h2>Settings</h2><p className="hint">No permission.</p></section>;
@@ -42,7 +44,7 @@ export default function PanelSettingsPage() {
             <div className="panel-net-value">
               {panelSettings.server_ipv4?.length > 0
                 ? panelSettings.server_ipv4.map(address => <span key={address} className="badge">{address}</span>)
-                : <span className="hint">Không đọc được địa chỉ IPv4 của máy chủ.</span>}
+                : <span className="hint">{t("Could not read the server's IPv4 address.")}</span>}
             </div>
           </div>
           <div className="panel-net-row">
@@ -50,14 +52,14 @@ export default function PanelSettingsPage() {
             <div className="panel-net-value">
               {panelSettings.ipv6?.addresses?.length > 0
                 ? panelSettings.ipv6.addresses.map(address => <span key={address} className="badge">{address}</span>)
-                : <span className="badge">Chưa có</span>}
+                : <span className="badge">{t('None')}</span>}
               <span className={`badge ${panelSettings.ipv6?.enabled ? 'ok' : ''}`}>
-                {panelSettings.ipv6?.enabled ? 'Đang bật' : 'Đang tắt'}
+                {panelSettings.ipv6?.enabled ? t('On') : t('Off')}
               </span>
             </div>
             {panelSettings.ipv6?.enabled
-              ? <button className="secondary-light" disabled={!!loading} onClick={() => toggleIpv6(false)}>Tắt IPv6</button>
-              : <button className="secondary-light" disabled={!!loading || !panelSettings.ipv6?.available} onClick={() => toggleIpv6(true)}>Bật IPv6</button>}
+              ? <button className="secondary-light" disabled={!!loading} onClick={() => toggleIpv6(false)}>{t('Turn off IPv6')}</button>
+              : <button className="secondary-light" disabled={!!loading || !panelSettings.ipv6?.available} onClick={() => toggleIpv6(true)}>{t('Turn on IPv6')}</button>}
           </div>
           <span className="hint">{panelSettings.ipv6?.detail}</span>
         </div>

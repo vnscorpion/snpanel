@@ -2,6 +2,7 @@
 // few small components the pages share. Moved here unchanged so the pages
 // can import them without importing App.jsx, which imports the pages.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { msg } from '../i18n/index.jsx';
 import { AlertCircle, Check, Moon, Sun, X } from 'lucide-react';
 
 export const API = import.meta.env.VITE_API_URL || '/api';
@@ -290,14 +291,15 @@ export function editorParamsFromLocation() {
 // like when a folder carries a special bit), so the dialog works on the same
 // representation.
 // Monday first, matching datetime.weekday() on the server.
-export const WEEKDAY_LABELS = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+// English, and translated where they are shown - a constant cannot call t().
+export const WEEKDAY_LABELS = [msg('Monday'), msg('Tuesday'), msg('Wednesday'), msg('Thursday'), msg('Friday'), msg('Saturday'), msg('Sunday')];
 export const MALWARE_SCHEDULES_DEFAULT = {
   websites: { enabled: false, weekday: 6, hour: 3, weekday_label: '', next_run_at: '', last_run_at: '', last_status: '' },
   server: { enabled: false, weekday: 6, hour: 4, weekday_label: '', next_run_at: '', last_run_at: '', last_status: '' },
 };
 export const MALWARE_SCHEDULE_LABELS = {
-  websites: 'Toàn bộ website',
-  server: 'Toàn bộ VPS',
+  websites: msg('All websites'),
+  server: msg('Entire server'),
 };
 // The malware scan schedule is stored and sent to the API as UTC weekday/hour
 // (matching datetime.weekday() on the server) - nobody running a Vietnamese

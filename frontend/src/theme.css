@@ -311,6 +311,9 @@ a:hover{color:var(--primary)}
 .theme-toggle:hover:not(:disabled){background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
 .theme-toggle:focus-visible{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
 .theme-toggle svg{width:16px;height:16px}
+/* The language switch shares the theme toggle's box and shows a two-letter code. */
+.locale-switch{font-size:12px;font-weight:700;letter-spacing:.04em}
+.login-toggles{display:flex;gap:8px;align-items:center}
 .login-card .theme-toggle,.login-page .theme-toggle{width:38px;height:38px;min-height:38px}
 .login-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .login-card-head .login-brand{flex:1;min-width:0}

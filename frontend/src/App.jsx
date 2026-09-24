@@ -32,6 +32,7 @@ import './brand.css';
 import './file-manager.css';
 import './theme.css';
 import { PanelContext } from './lib/panel-context.jsx';
+import { LocaleProvider, LocaleSwitch, useT } from './i18n/index.jsx';
 // Loaded on demand. Every page but the Dashboard - the one each session lands
 // on - and the code editor, which pulls in ace and is only ever shown in the
 // standalone editor window.
@@ -241,6 +242,7 @@ function App() {
   const panelUpdateInterval = useRef(null);
   const [osAutoUpdate, setOsAutoUpdate] = useState({ enabled: true, mode: 'security', auto_reboot: false });
   const noticeTimer = useRef(null);
+  const t = useT();
   // Which loadPanelSettings() call is the latest. See there.
   const panelSettingsRequest = useRef(0);
   const isAdmin = currentUser?.role === 'admin';
@@ -673,7 +675,7 @@ function App() {
         const urlError = new URLSearchParams(window.location.search).get('error');
         if (urlError) {
           const messages = {
-            account_suspended: 'Tài khoản đã bị khóa (suspended). Liên hệ quản trị viên.',
+            account_suspended: t('This account is suspended. Contact the administrator.'),
           };
           setError(messages[urlError] || urlError);
           window.history.replaceState({}, '', window.location.pathname);
@@ -1150,40 +1152,40 @@ function App() {
   }
 
   async function loadMalwareScanStatus() {
-    const data = await request('/malware/status', {}, 'Đang tải trạng thái quét...');
+    const data = await request('/malware/status', {}, t('Loading scanner status...'));
     if (data) setMalwareScanStatus(data);
   }
 
   async function toggleIpv6(enable) {
     const ipv6 = panelSettings.ipv6 || {};
     if (enable && !ipv6.available) {
-      setError(ipv6.detail || 'VPS của bạn không có IPv6 nên không thể dùng tính năng này.');
+      setError(ipv6.detail || t('This server has no IPv6 address, so this cannot be turned on.'));
       return;
     }
     if (!confirm(enable
-      ? 'Bật IPv6 cho toàn bộ website và panel?\n\nSNPanel sẽ thêm listen [::] vào cấu hình nginx của mọi website, kiểm tra bằng nginx -t và tự hoàn tác nếu có lỗi. Panel sẽ khởi động lại.'
-      : 'Tắt IPv6?\n\nWebsite và panel sẽ chỉ còn nhận kết nối IPv4. Nếu domain đang có bản ghi AAAA, khách đi bằng IPv6 sẽ không vào được.')) return;
+      ? t('Turn on IPv6 for every website and the panel?\n\nSNPanel adds listen [::] to every website\'s nginx configuration, checks it with nginx -t and undoes the change if that fails. The panel will restart.')
+      : t('Turn off IPv6?\n\nWebsites and the panel will only accept IPv4 connections. Visitors reaching a domain over IPv6 through an AAAA record will not get in.'))) return;
     const data = await request('/panel-settings/ipv6', {
       method: 'POST',
       body: JSON.stringify({ enabled: enable }),
-    }, enable ? 'Đang bật IPv6...' : 'Đang tắt IPv6...');
+    }, enable ? t('Turning on IPv6...') : t('Turning off IPv6...'));
     if (data) {
       setPanelSettings(data);
-      setNotice(data.message || (enable ? 'Đã bật IPv6.' : 'Đã tắt IPv6.'));
+      setNotice(data.message || (enable ? t('IPv6 is on.') : t('IPv6 is off.')));
     }
   }
 
   async function toggleMalwareScan(enable) {
     if (enable && !malwareScanStatus?.installed) {
-      if (!confirm('Trình quét chưa được cài trên máy chủ này. Panel sẽ cài đặt ngay bây giờ (mất khoảng 1-2 phút). Tiếp tục?')) return;
+      if (!confirm(t('The scanner is not installed on this server. The panel will install it now, which takes a minute or two. Continue?'))) return;
     }
     const data = await request('/malware/toggle', {
       method: 'POST',
       body: JSON.stringify({ enabled: enable }),
-    }, enable ? 'Đang bật trình quét...' : 'Đang tắt trình quét...');
+    }, enable ? t('Turning on the scanner...') : t('Turning off the scanner...'));
     if (data) {
       setPanelSettings(data);
-      setNotice(data.message || `Đã ${enable ? 'bật' : 'tắt'} trình quét.`);
+      setNotice(data.message || (enable ? t('The scanner is on.') : t('The scanner is off.')));
       await loadMalwareScanStatus();
     }
   }
@@ -1199,43 +1201,43 @@ function App() {
   async function saveMalwareSchedule() {
     const f = malwareSchedulesForm;
     if (f.server?.enabled && malwareScanStatus?.memory_warning) {
-      if (!confirm(`${malwareScanStatus.memory_warning}\n\nVẫn đặt lịch quét toàn bộ VPS?`)) return;
+      if (!confirm(`${malwareScanStatus.memory_warning}\n\n${t('Schedule the whole-server scan anyway?')}`)) return;
     }
     const body = {};
     for (const name of ['websites', 'server']) {
       const e = f[name] || {};
       body[name] = { enabled: !!e.enabled, weekday: Number(e.weekday ?? 6), hour: Number(e.hour ?? 3) };
     }
-    const data = await request('/malware/schedule', { method: 'PUT', body: JSON.stringify(body) }, 'Đang lưu lịch quét...');
+    const data = await request('/malware/schedule', { method: 'PUT', body: JSON.stringify(body) }, t('Saving the scan schedule...'));
     if (data) {
       setMalwareSchedules(data);
       setMalwareSchedulesForm(data);
-      const on = ['websites', 'server'].filter(n => data[n]?.enabled).map(n => MALWARE_SCHEDULE_LABELS[n]);
-      setNotice(on.length ? `Đã lưu lịch: ${on.join(', ')}.` : 'Đã tắt tất cả lịch quét.');
+      const on = ['websites', 'server'].filter(n => data[n]?.enabled).map(n => t(MALWARE_SCHEDULE_LABELS[n]));
+      setNotice(on.length ? t('Schedule saved: {list}.', { list: on.join(', ') }) : t('Every scan schedule is off.'));
     }
   }
 
   async function toggleMalwareRealtime(enabled) {
-    if (enabled && !confirm('Bật bảo vệ thời gian thực? Panel sẽ theo dõi và quét ngay tệp mới trong thư mục website. Nếu chưa cài, panel sẽ cài thêm (1-3 phút).')) return;
+    if (enabled && !confirm(t('Turn on real-time protection? The panel will watch website folders and scan new files as they appear. If it is not installed yet, the panel installs it first (1-3 minutes).'))) return;
     const data = await request('/malware/realtime', { method: 'POST', body: JSON.stringify({ enabled }) },
-      enabled ? 'Đang bật bảo vệ thời gian thực...' : 'Đang tắt...');
-    if (data) { setMalwareScanStatus(data); setNotice(enabled ? 'Đã bật bảo vệ thời gian thực (cấp 2).' : 'Đã tắt bảo vệ thời gian thực.'); }
+      enabled ? t('Turning on real-time protection...') : t('Turning off...'));
+    if (data) { setMalwareScanStatus(data); setNotice(enabled ? t('Real-time protection (level 2) is on.') : t('Real-time protection is off.')); }
   }
 
   async function installLmd() {
-    const data = await request('/malware/lmd/install', { method: 'POST' }, 'Đang cài đặt...');
-    if (data) { setMalwareScanStatus(data); setNotice('Đang cài đặt trình quét trong nền (1-3 phút). Bấm Refresh để cập nhật.'); }
+    const data = await request('/malware/lmd/install', { method: 'POST' }, t('Installing...'));
+    if (data) { setMalwareScanStatus(data); setNotice(t('Installing the scanner in the background (1-3 minutes). Press Refresh to see the result.')); }
   }
 
   async function updateMalwareSignatures() {
-    const data = await request('/malware/lmd/update-sigs', { method: 'POST' }, 'Đang cập nhật chữ ký...');
-    if (data) { setMalwareScanStatus(data); setNotice(data.message || 'Đã cập nhật chữ ký.'); }
+    const data = await request('/malware/lmd/update-sigs', { method: 'POST' }, t('Updating signatures...'));
+    if (data) { setMalwareScanStatus(data); setNotice(data.message || t('Signatures updated.')); }
   }
 
   async function runMalwareScan() {
     if (!scanTargetWebsiteId) return;
     if (scanTargetWebsiteId === 'server' && malwareScanStatus?.memory_warning) {
-      if (!confirm(`${malwareScanStatus.memory_warning}\n\nVẫn quét toàn bộ VPS?`)) return;
+      if (!confirm(`${malwareScanStatus.memory_warning}\n\n${t('Scan the whole server anyway?')}`)) return;
     }
     setScanResults(null);
     setScanJob(null);
@@ -1251,11 +1253,11 @@ function App() {
       const data = await request('/malware/run', {
         method: 'POST',
         body: JSON.stringify(body),
-      }, 'Đang bắt đầu quét...');
+      }, t('Starting the scan...'));
       if (data) {
         setScanJob(data);
         await loadMalwareScanJobs();
-        setNotice('Đã bắt đầu quét.');
+        setNotice(t('Scan started.'));
       }
     } finally {
       setScanLoading(false);
@@ -1270,11 +1272,11 @@ function App() {
       setScanJob(null);
       setScanResults(null);
       if (data.status === 'infected' || data.infected > 0) {
-        setNotice(`Phát hiện ${data.infected} mối đe doạ.`);
+        setNotice(t('{count} threat(s) found.', { count: data.infected }));
       } else if (['error', 'interrupted'].includes(data.status)) {
-        setError(data.error || data.message || 'Quét thất bại.');
+        setError(data.error || data.message || t('The scan failed.'));
       } else {
-        setNotice(`Quét xong: đã kiểm tra ${data.scanned || 0} tệp, không phát hiện mối đe doạ.`);
+        setNotice(t('Scan finished: {count} file(s) checked, no threats found.', { count: data.scanned || 0 }));
       }
       await loadMalwareScanJobs();
     } else {
@@ -1432,8 +1434,8 @@ function App() {
       // SSL page (Install / Renew SSL there already asks for every alias and
       // redirect), so nothing SSL-related is attempted or claimed here.
       setNotice(site.ssl_mode === 'letsencrypt' && !data.ssl_enabled
-        ? `Đã thêm ${label} ${cleanAlias}. Vào trang SSL, bấm "Install / Renew SSL" để cấp chứng chỉ cho domain này.`
-        : `Đã thêm ${label} ${cleanAlias}.`);
+        ? t('Added {kind} {domain}. To give it a certificate, open the SSL page and press "Install / Renew SSL".', { kind: label, domain: cleanAlias })
+        : t('Added {kind} {domain}.', { kind: label, domain: cleanAlias }));
       setAliasDrafts(prev => ({ ...prev, [site.id]: '' }));
       setNginxCustomEditing(prev => {
         if (!prev || prev.id !== site.id) return prev;
@@ -1548,13 +1550,13 @@ function App() {
   async function setAddonInstalled(slug, install) {
     const addon = addons.items.find(item => item.slug === slug);
     const label = addon?.name || slug;
-    if (!install && !confirm(`Gỡ addon ${label}?\n\nCác ứng dụng đang chạy sẽ được dừng. Thư mục, volume và dữ liệu trong panel giữ nguyên, cài lại là chạy tiếp.`)) return;
+    if (!install && !confirm(t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label }))) return;
     const data = await request(`/addons/${slug}/${install ? 'install' : 'uninstall'}`, { method: 'POST' },
-      install ? `Đang cài ${label}...` : `Đang gỡ ${label}...`);
+      install ? t('Installing {name}...', { name: label }) : t('Uninstalling {name}...', { name: label }));
     if (data) {
       setNotice(install
-        ? `Đã cài ${label}. ${data.next_step || ''}`.trim()
-        : `Đã gỡ ${label}.${data.stopped?.length ? ` Đã dừng ${data.stopped.length} ứng dụng.` : ''}`);
+        ? `${t('{name} installed.', { name: label })} ${data.next_step || ''}`.trim()
+        : `${t('{name} uninstalled.', { name: label })}${data.stopped?.length ? ` ${t('{count} application(s) stopped.', { count: data.stopped.length })}` : ''}`);
       await loadAddons();
       // The nav and the website mode picker both hang off this.
       if (install) await loadSiteApps();
@@ -1662,9 +1664,9 @@ function App() {
   }
 
   async function pruneDocker() {
-    const data = await request('/site-runtimes/docker-prune', { method: 'POST' }, 'Đang dọn layer Docker không dùng...');
+    const data = await request('/site-runtimes/docker-prune', { method: 'POST' }, t('Removing unused Docker layers...'));
     if (data) {
-      setNotice(data.message || 'Đã dọn.');
+      setNotice(data.message || t('Cleaned up.'));
       if (data.output) setSiteAppLog({ name: 'docker prune', log: data.output });
       await loadSiteRuntimes();
     }
@@ -2775,9 +2777,9 @@ function App() {
     const data = await request('/maintenance/php-opcache', {
       method: 'POST',
       body: JSON.stringify({ php_version: version, enabled: next }),
-    }, next ? `Đang bật OPcache cho PHP ${version}...` : `Đang tắt OPcache cho PHP ${version}...`);
+    }, next ? t('Turning on OPcache for PHP {version}...', { version }) : t('Turning off OPcache for PHP {version}...', { version }));
     if (data) {
-      setNotice(data.message || 'Đã đổi OPcache.');
+      setNotice(data.message || t('OPcache changed.'));
       await loadPhpTune(version);
     }
   }
@@ -2787,7 +2789,7 @@ function App() {
     const data = await request('/maintenance/php-tune', {
       method: 'POST',
       body: JSON.stringify({ php_version: version }),
-    }, 'Đang tối ưu PHP theo cấu hình máy...');
+    }, t('Tuning PHP for this server...'));
     if (data) {
       if (data.plan) setPhpTune(data.plan);
       setPhpTuneApplied(true);
@@ -4117,7 +4119,10 @@ function App() {
               <p className="hint">Manage websites, databases, backups, SSL, and services.</p>
             </div>
           </div>
-          <ThemeToggle theme={theme} onToggle={toggleTheme}/>
+          <div className="login-toggles">
+            <LocaleSwitch className="theme-toggle"/>
+            <ThemeToggle theme={theme} onToggle={toggleTheme}/>
+          </div>
         </div>
         <div className="login-form">
           <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Username" autoComplete="username" />
@@ -4181,6 +4186,7 @@ function App() {
           <div className="login logged-in">
             <div className="account-pill" title={accountLabel}><span>Logged in as</span><strong>{accountLabel}</strong></div>
             <div className="top-actions">
+              <LocaleSwitch className="theme-toggle"/>
               <ThemeToggle theme={theme} onToggle={toggleTheme}/>
               <button className="secondary compact-btn" onClick={logout} aria-label="Logout" title="Logout"><LogOut size={15}/><span className="btn-label">Logout</span></button>
             </div>
@@ -4196,4 +4202,4 @@ function App() {
   </main>;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<LocaleProvider><App /></LocaleProvider>);

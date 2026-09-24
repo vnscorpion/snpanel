@@ -1,6 +1,7 @@
 import { AlertCircle, Check, FileText, FolderOpen, Pencil, Play, Plus, RefreshCw, RotateCcw, Save, Server, Square, Trash2, X } from 'lucide-react';
 import { SITE_APP_KINDS, SITE_APP_KIND_LABELS, composeWebPorts } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
+import { useT } from '../i18n/index.jsx';
 
 export default function ApplicationsPage() {
   const {
@@ -37,6 +38,7 @@ export default function ApplicationsPage() {
     suggestSiteAppPort,
     updateSiteApp,
   } = usePanel();
+  const t = useT();
 
   function renderApplications() {
     const [portFrom, portTo] = siteApps.port_range || [21000, 21999];
@@ -63,11 +65,11 @@ export default function ApplicationsPage() {
           {isAdmin && <button className="mini secondary-light" disabled={!!loading} onClick={() => { const major = prompt('Install which Node major version?', '22'); if (major) installNodeMajor(major.trim()); }}>Add Node version</button>}
         </div>
         {isAdmin && dockerReady && siteRuntimes.docker?.disk?.length > 0 && <div className="site-runtime-strip">
-          <span>Đĩa Docker (toàn server, không tính vào quota khách):</span>
+          <span>{t("Docker disk (whole server, not counted against customers' quota):")}</span>
           {siteRuntimes.docker.disk.map(row => <span key={row.type}>
-            {row.type}: <strong>{row.size}</strong>{row.reclaimable && !row.reclaimable.startsWith('0B') ? <> · dọn được {row.reclaimable}</> : null}
+            {row.type}: <strong>{row.size}</strong>{row.reclaimable && !row.reclaimable.startsWith('0B') ? <> · {t('{size} reclaimable', { size: row.reclaimable })}</> : null}
           </span>)}
-          <button className="mini secondary-light" disabled={!!loading} onClick={pruneDocker}>Dọn layer không dùng</button>
+          <button className="mini secondary-light" disabled={!!loading} onClick={pruneDocker}>{t('Remove unused layers')}</button>
         </div>}
         {!atLimit && <div className="site-app-form">
           <label><span>Name</span>
@@ -129,24 +131,28 @@ export default function ApplicationsPage() {
                 placeholder={'services:\n  app:\n    image: myorg/app:1.0\n    ports: ["3000:3000"]\n  db:\n    image: postgres:16\n    volumes: ["pgdata:/var/lib/postgresql/data"]\nvolumes:\n  pgdata:'}
               />
             </label>
-            {composePlan?.services?.length > 0 && <label><span>Service phục vụ domain</span>
+            {composePlan?.services?.length > 0 && <label><span>{t('Service that serves the domain')}</span>
               <select value={siteAppDraft.web_service} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, web_service: e.target.value }))}>
-                <option value="">Tự chọn</option>
+                <option value="">{t('Automatic')}</option>
                 {composePlan.services.map(service => <option key={service.name} value={service.name}>{service.name}{service.container_port ? ` · :${service.container_port}` : ''}</option>)}
               </select>
             </label>}
-            {composeWebPorts(composePlan, siteAppDraft.web_service).length > 1 && <label><span>Cổng phục vụ domain</span>
+            {composeWebPorts(composePlan, siteAppDraft.web_service).length > 1 && <label><span>{t('Port that serves the domain')}</span>
               <select value={siteAppDraft.container_port} disabled={!!loading} onChange={e => { setSiteAppDraft(prev => ({ ...prev, container_port: e.target.value })); setComposePlan(null); }}>
                 {composeWebPorts(composePlan, siteAppDraft.web_service).map(port => <option key={port} value={port}>{port}</option>)}
               </select>
             </label>}
-            <label><span>CPU mỗi service</span>
+            <label><span>{t('CPU per service')}</span>
               <input value={siteAppDraft.cpu_limit} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, cpu_limit: e.target.value }))} placeholder="1" />
             </label>
-            <p className="compose-hint">File tham chiếu <code>{'${BIẾN}'}</code> thì khai giá trị ở ô <strong>.env</strong> bên dưới,
-              đúng như file <code>.env</code> nằm cạnh <code>docker-compose.yml</code>. Riêng địa chỉ công khai
-              (callback OAuth, webhook) dùng <code>{'${SNPANEL_URL}'}</code> / <code>{'${SNPANEL_DOMAIN}'}</code>:
-              ứng dụng chỉ thấy cổng nội bộ, panel sẽ điền domain của website trỏ vào nó.</p>
+            <p className="compose-hint">{t('Where the file refers to {variable}, give the value in the {env} box below, exactly as a {envFile} file next to {compose} would. For public addresses (OAuth callbacks, webhooks) use {url} / {domain}: the application only sees its internal port, and the panel fills in the domain of the website pointed at it.', {
+              variable: <code>{'${' + t('VARIABLE') + '}'}</code>,
+              env: <strong>.env</strong>,
+              envFile: <code>.env</code>,
+              compose: <code>docker-compose.yml</code>,
+              url: <code>{'${SNPANEL_URL}'}</code>,
+              domain: <code>{'${SNPANEL_DOMAIN}'}</code>,
+            })}</p>
           </>}
           {siteAppDraft.kind === 'docker' && <>
             <label><span>Image</span>
@@ -176,8 +182,8 @@ export default function ApplicationsPage() {
           </div>
           {composePlan && <div className={`compose-report ${composePlan.ok ? 'ok' : 'bad'}`}>
             {composePlan.ok
-              ? <p><Check size={14}/> Chạy được {composePlan.services.length} service. <strong>{composePlan.web_service}</strong> phục vụ domain.</p>
-              : <p><AlertCircle size={14}/> Còn {composePlan.issues.length} chỗ phải sửa trước khi import:</p>}
+              ? <p><Check size={14}/> {t('{count} service(s) will run. {web} serves the domain.', { count: composePlan.services.length, web: <strong>{composePlan.web_service}</strong> })}</p>
+              : <p><AlertCircle size={14}/> {t('{count} issue(s) to fix before importing:', { count: composePlan.issues.length })}</p>}
             {composePlan.issues.length > 0 && <ul>
               {composePlan.issues.map((issue, index) => <li key={index}>
                 {issue.service && <code>{issue.service}</code>} {issue.message}
@@ -189,8 +195,8 @@ export default function ApplicationsPage() {
             {composePlan.ok && <ul className="compose-services">
               {composePlan.services.map(service => <li key={service.name}>
                 <code>{service.name}</code> {service.image}
-                {service.web ? ' · phục vụ domain' : ' · chỉ nội bộ'}
-                {service.container_port ? ` · cổng ${service.container_port}` : ''}
+                {service.web ? ` · ${t('serves the domain')}` : ` · ${t('internal only')}`}
+                {service.container_port ? ` · ${t('port {port}', { port: service.container_port })}` : ''}
               </li>)}
             </ul>}
           </div>}
@@ -288,9 +294,11 @@ export default function ApplicationsPage() {
                     onChange={e => { setSiteAppEdit(prev => ({ ...prev, compose_source: e.target.value })); setSiteAppEditPlan(null); }}
                   />
                 </label>
-                <p className="compose-hint">Panel đọc lại file này rồi tự sinh file chạy thật. Biến <code>{'${BIẾN}'}</code> lấy
-                  từ ô .env; địa chỉ công khai dùng <code>{'${SNPANEL_URL}'}</code> / <code>{'${SNPANEL_DOMAIN}'}</code>
-                  {app.websites?.length > 0 ? ` (hiện là ${app.websites[0]})` : ' (cần trỏ một website vào ứng dụng trước)'}.</p>
+                <p className="compose-hint">{t('The panel reads this file back and generates the file that actually runs. {variable} comes from the .env box; for public addresses use {url} / {domain}', {
+                  variable: <code>{'${' + t('VARIABLE') + '}'}</code>,
+                  url: <code>{'${SNPANEL_URL}'}</code>,
+                  domain: <code>{'${SNPANEL_DOMAIN}'}</code>,
+                })}{app.websites?.length > 0 ? ` ${t('(currently {site})', { site: app.websites[0] })}` : ` ${t('(point a website at the application first)')}`}.</p>
                 <label className="site-app-env"><span>.env (KEY=value, one per line)</span>
                   <textarea
                     className="code-editor"
@@ -300,13 +308,13 @@ export default function ApplicationsPage() {
                     onChange={e => { setSiteAppEdit(prev => ({ ...prev, env: e.target.value })); setSiteAppEditPlan(null); }}
                   />
                 </label>
-                {siteAppEditPlan?.services?.length > 0 && <label><span>Service phục vụ domain</span>
+                {siteAppEditPlan?.services?.length > 0 && <label><span>{t('Service that serves the domain')}</span>
                   <select value={siteAppEdit.web_service} disabled={!!loading} onChange={e => setSiteAppEdit(prev => ({ ...prev, web_service: e.target.value }))}>
-                    <option value="">Tự chọn</option>
+                    <option value="">{t('Automatic')}</option>
                     {siteAppEditPlan.services.map(service => <option key={service.name} value={service.name}>{service.name}{service.container_port ? ` · :${service.container_port}` : ''}</option>)}
                   </select>
                 </label>}
-                {composeWebPorts(siteAppEditPlan, siteAppEdit.web_service).length > 1 && <label><span>Cổng phục vụ domain</span>
+                {composeWebPorts(siteAppEditPlan, siteAppEdit.web_service).length > 1 && <label><span>{t('Port that serves the domain')}</span>
                   <select value={siteAppEdit.container_port} disabled={!!loading} onChange={e => { setSiteAppEdit(prev => ({ ...prev, container_port: e.target.value })); setSiteAppEditPlan(null); }}>
                     {composeWebPorts(siteAppEditPlan, siteAppEdit.web_service).map(port => <option key={port} value={port}>{port}</option>)}
                   </select>
@@ -327,8 +335,8 @@ export default function ApplicationsPage() {
               </div>
               {siteAppEditPlan && <div className={`compose-report ${siteAppEditPlan.ok ? 'ok' : 'bad'}`}>
                 {siteAppEditPlan.ok
-                  ? <p><Check size={14}/> Chạy được {siteAppEditPlan.services.length} service. <strong>{siteAppEditPlan.web_service}</strong> phục vụ domain.</p>
-                  : <p><AlertCircle size={14}/> Còn {siteAppEditPlan.issues.length} chỗ phải sửa:</p>}
+                  ? <p><Check size={14}/> {t('{count} service(s) will run. {web} serves the domain.', { count: siteAppEditPlan.services.length, web: <strong>{siteAppEditPlan.web_service}</strong> })}</p>
+                  : <p><AlertCircle size={14}/> {t('{count} issue(s) to fix:', { count: siteAppEditPlan.issues.length })}</p>}
                 {siteAppEditPlan.issues.length > 0 && <ul>
                   {siteAppEditPlan.issues.map((issue, index) => <li key={index}>
                     {issue.service && <code>{issue.service}</code>} {issue.message}

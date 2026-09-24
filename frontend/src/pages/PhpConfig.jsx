@@ -1,6 +1,7 @@
 import { AlertCircle, Ban, Check, Cpu, Play, RotateCcw } from 'lucide-react';
 import { sortPhpVersions } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
+import { useT } from '../i18n/index.jsx';
 
 export default function PhpConfigPage() {
   const {
@@ -19,6 +20,7 @@ export default function PhpConfigPage() {
     toggleOpcache,
     updatePhpConfig,
   } = usePanel();
+  const t = useT();
 
   function renderPhpConfig() {
     if (!isAdmin) return <section className="section"><h2>PHP config</h2><p className="hint">You do not have permission to edit PHP config.</p></section>;
@@ -58,12 +60,12 @@ export default function PhpConfigPage() {
         <button className="secondary-light" disabled={!!loading} onClick={restorePhpDefaults}><RotateCcw size={14}/> Restore defaults</button>
         <button disabled={!!loading} onClick={updatePhpConfig}>Save</button>
         {phpTune && tuneChanges.length > 0 && <div className="php-tune-diff">
-          <strong><AlertCircle size={14}/> Auto tune PHP {phpTune.php_version} sẽ đổi {tuneChanges.length} thông số</strong>
-          <span>{tuneChanges.map(row => `${row.key} ${row.current || 'chưa đặt'} → ${row.value}`).join(', ')}.</span>
+          <strong><AlertCircle size={14}/> {t('Auto tune for PHP {version} will change {count} setting(s)', { version: phpTune.php_version, count: tuneChanges.length })}</strong>
+          <span>{tuneChanges.map(row => `${row.key} ${row.current || t('not set')} → ${row.value}`).join(', ')}.</span>
           <button className="mini" disabled={!!loading} onClick={applyPhpTune}>Auto tune PHP</button>
         </div>}
         {phpTune && tuneChanges.length === 0 && <div className="notice php-tune-diff">
-          <Check size={14}/> PHP {phpTune.php_version} đã khớp khuyến nghị auto tune cho máy này ({phpTune.facts.cpu_count} CPU, {phpTune.facts.total_memory_mb} MB RAM).
+          <Check size={14}/> {t('PHP {version} already matches the auto tune recommendation for this server ({cpus} CPU, {memory} MB RAM).', { version: phpTune.php_version, cpus: phpTune.facts.cpu_count, memory: phpTune.facts.total_memory_mb })}
         </div>}
       </div>
       {phpTune && <div className="php-tune" style={{ marginTop: 16 }}>
@@ -71,22 +73,21 @@ export default function PhpConfigPage() {
           <button disabled={!!loading} onClick={applyPhpTune}><Cpu size={14}/> Auto tune PHP</button>
           <button className="secondary-light" disabled={!!loading} onClick={toggleOpcache}>
             {phpTune.opcache_enabled
-              ? <><Ban size={14}/> Tắt OPcache (PHP {phpTune.php_version})</>
-              : <><Play size={14}/> Bật OPcache (PHP {phpTune.php_version})</>}
+              ? <><Ban size={14}/> {t('Turn off OPcache (PHP {version})', { version: phpTune.php_version })}</>
+              : <><Play size={14}/> {t('Turn on OPcache (PHP {version})', { version: phpTune.php_version })}</>}
           </button>
         </div>
         {phpTuneApplied && <div className="notice php-tune-result">
-          <strong><Check size={14}/> Đã tối ưu PHP {phpTune.php_version} xong.</strong>
+          <strong><Check size={14}/> {t('PHP {version} is tuned.', { version: phpTune.php_version })}</strong>
         </div>}
         {commonPools && <p className="hint">
-          Pool PHP-FPM: {commonPools.length}/{phpTune.pools.length} pool đang chạy pm.max_children={commonPools[0].max_children || '—'},
-          idle {commonPools[0].idle_timeout || '—'}, tối đa {commonPools[0].max_requests || '—'} request/tiến trình.
-          {poolOutliers.length > 0 && ` ${poolOutliers.length} pool khác đang chạy thông số khác:`}
+          {t('PHP-FPM pools: {running}/{total} running pm.max_children={children}, idle {idle}, at most {requests} requests per process.', { running: commonPools.length, total: phpTune.pools.length, children: commonPools[0].max_children || '—', idle: commonPools[0].idle_timeout || '—', requests: commonPools[0].max_requests || '—' })}
+          {poolOutliers.length > 0 && ` ${t('{count} other pool(s) run different settings:', { count: poolOutliers.length })}`}
         </p>}
         {poolOutliers.length > 0 && <ul className="php-tune-pool-outliers">
           {poolOutliers.map(p => <li key={p.pool}>
             <code>{p.pool}</code>
-            <span>pm.max_children={p.max_children || '—'}, idle {p.idle_timeout || '—'}, tối đa {p.max_requests || '—'} request</span>
+            <span>{t('pm.max_children={children}, idle {idle}, at most {requests} requests', { children: p.max_children || '—', idle: p.idle_timeout || '—', requests: p.max_requests || '—' })}</span>
           </li>)}
         </ul>}
       </div>}

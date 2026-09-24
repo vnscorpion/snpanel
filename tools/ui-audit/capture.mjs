@@ -25,6 +25,9 @@ import { chromium } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 
 export const BASE = process.env.PANEL_BASE || 'https://127.0.0.1:2222';
+// en or vi. Unset means whatever the panel picks for a browser that says
+// en-US, which is English.
+const LOCALE = process.env.LOCALE || '';
 const LOGIN_FILE = process.env.LOGIN_FILE || '/root/login.txt';
 
 export const ROUTES = {
@@ -77,9 +80,12 @@ export async function capture(out, themes) {
       ignoreHTTPSErrors: true,
       viewport: { width: 1440, height: 900 },
     });
-    await context.addInitScript((t) => {
-      try { localStorage.setItem('snpanel-theme', t); } catch {}
-    }, theme);
+    await context.addInitScript(([t, l]) => {
+      try {
+        localStorage.setItem('snpanel-theme', t);
+        if (l) localStorage.setItem('snpanel-locale', l);
+      } catch {}
+    }, [theme, LOCALE]);
 
     mkdirSync(`${out}/${theme}`, { recursive: true });
     mkdirSync(`${out}/aria`, { recursive: true });
