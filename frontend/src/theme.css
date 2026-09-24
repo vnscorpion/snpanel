@@ -371,6 +371,8 @@ h1,h2,h3,h4,h5,h6,button,input,select,textarea{font-family:inherit}
 /* Figures line up wherever numbers are compared down a column or read at a glance. */
 table,.badge,code,kbd,pre,.resource-card,.editor-chip{font-variant-numeric:tabular-nums}
 code,kbd,pre,samp{font-family:var(--font-mono)}
+/* Read by screen readers, not shown: a name for a column of icon buttons. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 ::selection{background:var(--primary);color:var(--primary-fg)}
 a{color:var(--primary-text)}
 a:hover{color:var(--primary)}

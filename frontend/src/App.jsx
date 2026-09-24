@@ -171,15 +171,8 @@ function App() {
   const [phpConfig, setPhpConfig] = useState({ php_version: '8.4', display_errors: 'Off', max_execution_time: 300, max_input_time: 600, max_input_vars: 10000, memory_limit: '1024M', post_max_size: '1024M', upload_max_filesize: '1024M' });
   const [phpVersions, setPhpVersions] = useState({ installed: ['8.4'], supported: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'] });
   const [firewallStatus, setFirewallStatus] = useState(null);
-  const [firewallPort, setFirewallPort] = useState('80');
-  const [firewallProtocol, setFirewallProtocol] = useState('tcp');
-  const [firewallAllowIp, setFirewallAllowIp] = useState('');
-  const [firewallAllowPort, setFirewallAllowPort] = useState('');
-  const [firewallAllowProtocol, setFirewallAllowProtocol] = useState('tcp');
-  const [firewallBlockIp, setFirewallBlockIp] = useState('');
-  const [firewallBlockPort, setFirewallBlockPort] = useState('');
-  const [firewallBlockProtocol, setFirewallBlockProtocol] = useState('tcp');
-  const [firewallDeleteNumber, setFirewallDeleteNumber] = useState('');
+  // The Firewall page's one form for adding a rule.
+  const [firewallRule, setFirewallRule] = useState({ action: 'allow', ip: '', port: '', protocol: 'tcp' });
   const [firewallBlocklists, setFirewallBlocklists] = useState(null);
   const [firewallBlocklistUrl, setFirewallBlocklistUrl] = useState('');
   const [wafRules, setWafRules] = useState({ status: null, default_rules: '', custom_rules: '' });
@@ -2837,80 +2830,80 @@ function App() {
   }
 
   async function loadFirewall() {
-    const data = await request('/firewall/status', {}, 'Loading firewall...');
+    const data = await request('/firewall/status', {}, t('Loading firewall...'));
     if (data) setFirewallStatus(data);
   }
 
-  async function runFirewallAction(path, options = {}, label = 'Updating firewall...') {
+  async function runFirewallAction(path, options = {}, label = t('Updating firewall...')) {
     const data = await request(path, options, label);
-    if (data) { setNotice((data.stdout || data.stderr || 'Firewall updated.').trim()); await loadFirewall(); }
+    if (data) { setNotice((data.stdout || data.stderr || t('Firewall updated.')).trim()); await loadFirewall(); }
+    return !!data;
   }
 
   async function enableFirewall() {
-    if (!confirm('Enable the firewall now? SSH, the panel port and 80/443/465/587 stay open automatically.')) return;
-    await runFirewallAction('/firewall/enable', { method: 'POST' }, 'Enabling firewall...');
+    if (!confirm(t('Turn the firewall on now? SSH, the panel port and the web and mail ports stay open.'))) return;
+    await runFirewallAction('/firewall/enable', { method: 'POST' }, t('Turning the firewall on...'));
   }
   async function disableFirewall() {
-    if (!confirm('Disable the firewall? Every port will be reachable again.')) return;
-    await runFirewallAction('/firewall/disable', { method: 'POST' }, 'Disabling firewall...');
+    if (!confirm(t('Turn the firewall off? Every port on this server will be reachable.'))) return;
+    await runFirewallAction('/firewall/disable', { method: 'POST' }, t('Turning the firewall off...'));
   }
-  async function reloadFirewall() { await runFirewallAction('/firewall/reload', { method: 'POST' }, 'Reloading firewall...'); }
-  async function openFirewallPort() { await runFirewallAction('/firewall/allow-port', { method: 'POST', body: JSON.stringify({ port: firewallPort, protocol: firewallProtocol }) }, 'Opening port...'); }
-  async function allowFirewallIp() { await runFirewallAction('/firewall/allow-ip', { method: 'POST', body: JSON.stringify({ ip: firewallAllowIp, port: firewallAllowPort || null, protocol: firewallAllowProtocol }) }, 'Allowing IP...'); }
-  async function blockFirewallIp() {
-    if (!confirm(`Block ${firewallBlockIp || 'this IP'}?`)) return;
-    await runFirewallAction('/firewall/block-ip', { method: 'POST', body: JSON.stringify({ ip: firewallBlockIp, port: firewallBlockPort || null, protocol: firewallBlockProtocol }) }, 'Blocking IP...');
-  }
-  async function deleteFirewallRule(numberOverride = firewallDeleteNumber) {
-    const ruleNumber = String(numberOverride || '').trim();
-    if (!ruleNumber) return;
-    if (!confirm(`Delete firewall rule #${ruleNumber}?`)) return;
-    await runFirewallAction(`/firewall/rules/${encodeURIComponent(ruleNumber)}`, { method: 'DELETE' }, 'Deleting rule...');
-    setFirewallDeleteNumber('');
+  async function reloadFirewall() { await runFirewallAction('/firewall/reload', { method: 'POST' }, t('Reloading the firewall rules...')); }
+
+  // One form for what were three - open a port, allow an address, block an
+  // address - sent to whichever endpoint its fields call for. Blocking needs
+  // an address: the helper refuses to deny a port to everyone.
+  async function addFirewallRule() {
+    const ip = firewallRule.ip.trim();
+    const port = firewallRule.port.trim();
+    const { action, protocol } = firewallRule;
+    let done = false;
+    if (action === 'block') {
+      if (!ip) return;
+      if (!confirm(t('Block {address}?', { address: port ? `${ip} (${port}/${protocol})` : ip }))) return;
+      done = await runFirewallAction('/firewall/block-ip', { method: 'POST', body: JSON.stringify({ ip, port: port || null, protocol }) }, t('Blocking...'));
+    } else if (ip) {
+      done = await runFirewallAction('/firewall/allow-ip', { method: 'POST', body: JSON.stringify({ ip, port: port || null, protocol }) }, t('Allowing...'));
+    } else if (port) {
+      done = await runFirewallAction('/firewall/allow-port', { method: 'POST', body: JSON.stringify({ port, protocol }) }, t('Opening the port...'));
+    }
+    if (done) setFirewallRule(prev => ({ ...prev, ip: '', port: '' }));
   }
 
-  function parseFirewallBlocklistUrls(text) {
-    const lines = String(text || '').split('\n');
-    const urls = [];
-    let inUrls = false;
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (line === 'URLs:') { inUrls = true; continue; }
-      if (line === 'Networks:' || line === 'Timer:') break;
-      if (inUrls && /^https?:\/\//i.test(line)) urls.push(line);
-    }
-    return urls;
+  async function deleteFirewallRule(number) {
+    if (!confirm(t('Delete firewall rule #{number}?', { number }))) return;
+    await runFirewallAction(`/firewall/rules/${encodeURIComponent(number)}`, { method: 'DELETE' }, t('Deleting the rule...'));
   }
 
   async function loadFirewallBlocklists() {
-    const data = await request('/firewall/blocklists', {}, 'Loading IP blocklists...');
+    const data = await request('/firewall/blocklists', {}, t('Loading IP blocklists...'));
     if (data) setFirewallBlocklists(data);
   }
 
   async function addFirewallBlocklistUrl() {
     const url = firewallBlocklistUrl.trim();
     if (!url) return;
-    const data = await request('/firewall/blocklists', { method: 'POST', body: JSON.stringify({ url }) }, 'Adding IP blocklist URL...');
+    const data = await request('/firewall/blocklists', { method: 'POST', body: JSON.stringify({ url }) }, t('Adding the blocklist...'));
     if (data) {
-      setNotice((data.stdout || data.stderr || 'IP blocklist URL added.').trim());
+      setNotice((data.stdout || data.stderr || t('Blocklist added.')).trim());
       setFirewallBlocklistUrl('');
       await loadFirewallBlocklists();
     }
   }
 
   async function deleteFirewallBlocklistUrl(url) {
-    if (!confirm(`Delete blocklist URL?\n${url}`)) return;
-    const data = await request('/firewall/blocklists/delete', { method: 'POST', body: JSON.stringify({ url }) }, 'Deleting IP blocklist URL...');
+    if (!confirm(t('Remove the blocklist {url}?', { url }))) return;
+    const data = await request('/firewall/blocklists/delete', { method: 'POST', body: JSON.stringify({ url }) }, t('Removing the blocklist...'));
     if (data) {
-      setNotice((data.stdout || data.stderr || 'IP blocklist URL removed.').trim());
+      setNotice((data.stdout || data.stderr || t('Blocklist removed.')).trim());
       await loadFirewallBlocklists();
     }
   }
 
   async function updateFirewallBlocklistsNow() {
-    const data = await request('/firewall/blocklists/update', { method: 'POST' }, 'Refreshing IP blocklists...');
+    const data = await request('/firewall/blocklists/update', { method: 'POST' }, t('Updating the blocklists...'));
     if (data) {
-      setNotice((data.stdout || data.stderr || 'IP blocklists refreshed.').trim());
+      setNotice((data.stdout || data.stderr || t('Blocklists updated.')).trim());
       await loadFirewall();
       await loadFirewallBlocklists();
     }
@@ -3636,6 +3629,7 @@ function App() {
       WebsiteSelect,
       addCron,
       addFirewallBlocklistUrl,
+      addFirewallRule,
       addGlobalBots,
       addWebsiteAlias,
       addons,
@@ -3643,7 +3637,6 @@ function App() {
       adminEmail,
       aliasDrafts,
       aliasModes,
-      allowFirewallIp,
       apiTokens,
       appVersion,
       applicationAddonInstalled,
@@ -3662,7 +3655,6 @@ function App() {
       backupSchedules,
       backupTab,
       backups,
-      blockFirewallIp,
       botBlocks,
       bulkBotOpen,
       bulkDeleteDaBackups,
@@ -3754,17 +3746,9 @@ function App() {
       fileListPath,
       fileTargetKey,
       files,
-      firewallAllowIp,
-      firewallAllowPort,
-      firewallAllowProtocol,
-      firewallBlockIp,
-      firewallBlockPort,
-      firewallBlockProtocol,
       firewallBlocklistUrl,
       firewallBlocklists,
-      firewallDeleteNumber,
-      firewallPort,
-      firewallProtocol,
+      firewallRule,
       firewallStatus,
       formatBytes,
       formatPercent,
@@ -3840,7 +3824,6 @@ function App() {
       openAppFileManager,
       openChmodDialog,
       openFileEditorTab,
-      openFirewallPort,
       openNginxCustom,
       openPhpMyAdmin,
       openSiteAppEdit,
@@ -3860,7 +3843,6 @@ function App() {
       panelUpdateLog,
       panelUpdating,
       parentFilePath,
-      parseFirewallBlocklistUrls,
       phpConfig,
       phpTune,
       phpTuneApplied,
@@ -3941,16 +3923,8 @@ function App() {
       setEditingPackageForm,
       setEditingUserForm,
       setError,
-      setFirewallAllowIp,
-      setFirewallAllowPort,
-      setFirewallAllowProtocol,
-      setFirewallBlockIp,
-      setFirewallBlockPort,
-      setFirewallBlockProtocol,
       setFirewallBlocklistUrl,
-      setFirewallDeleteNumber,
-      setFirewallPort,
-      setFirewallProtocol,
+      setFirewallRule,
       setGlobalBotFilter,
       setGlobalBotPaste,
       setGlobalBots,

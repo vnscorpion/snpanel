@@ -592,9 +592,6 @@ a:hover{color:var(--primary-hover)}
 .site-card>.actions{grid-template-columns:repeat(auto-fit,minmax(82px,1fr));justify-content:stretch}
 .site-card>.actions select,.site-card>.actions button{min-width:0}
 .inline-nginx-editor textarea,.waf-rule-panel textarea{width:100%;min-height:260px;resize:vertical}
-.firewall-blocklist-form{grid-template-columns:minmax(240px,1fr) max-content max-content}
-.firewall-blocklist-table{margin-top:10px}
-.firewall-rule span{min-width:0;word-break:break-all}
 .waf-rules-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
 .waf-rule-panel{display:grid;gap:10px;min-width:0}
 .waf-site-list{margin-top:4px}
@@ -609,7 +606,7 @@ a:hover{color:var(--primary-hover)}
 
 @media(max-width:950px){
   .site-stack,.waf-rules-grid{grid-template-columns:1fr}
-  .firewall-blocklist-form,.waf-website-selector{grid-template-columns:1fr}
+  .waf-website-selector{grid-template-columns:1fr}
 }
 @media(max-width:1150px){.create-site-row{grid-template-columns:1fr 1fr}}
 @media(max-width:950px){.create-site-row{grid-template-columns:1fr}}
@@ -799,9 +796,6 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .update-version-head{display:flex;justify-content:space-between;gap:10px;align-items:center}
 .update-version-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;color:var(--text-muted);font-size:var(--text-base)}
 .update-version-grid strong{color:var(--text)}
-.firewall-delete-inline{display:grid;grid-template-columns:minmax(140px,1fr) max-content;gap:10px;align-items:end;margin-top:8px;max-width:420px}
-.firewall-delete-inline label{display:grid;gap:6px;font-weight:600;color:var(--text-secondary)}
-.firewall-delete-inline span{font-weight:600;color:var(--text-muted);font-size:var(--text-base)}
 .loading{background:var(--primary-light);color:var(--primary-text);border:1px solid var(--primary-border);border-radius:var(--radius-lg);box-shadow:none}
 .error{background:var(--danger-bg);color:var(--danger-text);border:1px solid var(--danger-border);border-radius:var(--radius-lg)}
 .notice{background:var(--success-bg);color:var(--success-text);border:1px solid var(--success-border);border-radius:var(--radius-lg)}
@@ -905,7 +899,6 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
   .malware-daemon-warning,.malware-scan-head,.malware-scan-controls{display:grid;grid-template-columns:1fr}
   .malware-daemon-warning button,.malware-scan-head button,.malware-scan-controls button{width:100%}
   .scan-status-summary{grid-template-columns:1fr 1fr}
-  .firewall-delete-inline{grid-template-columns:1fr;max-width:none}
   .sftp-form textarea{grid-column:1}
   .actions{display:grid;grid-template-columns:1fr;align-items:stretch}
   .actions button,.actions .button-link,.actions .upload-button,.actions select{width:100%;max-width:none}

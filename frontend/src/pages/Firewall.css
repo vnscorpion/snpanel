@@ -1,0 +1,75 @@
+/* Firewall: its state first, then the rules with the one form that adds
+   them, then the blocklists, and the helper's own words folded away under
+   Technical details. See pages/Firewall.jsx. */
+
+.fw-page{display:grid;gap:var(--space-4)}
+.fw-page>.section{margin-bottom:0}
+
+/* ---- state ---- */
+.fw-status-head{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.fw-status-icon{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:var(--radius-lg);background:var(--fw-tone-bg);color:var(--fw-tone-fg)}
+.fw-status-text{flex:1 1 280px;min-width:0}
+.fw-status-text h2{margin:0;font-size:var(--text-lg)}
+.fw-status-text .hint{margin-top:2px}
+.fw-status-actions{display:flex;gap:var(--space-2);flex-wrap:wrap}
+.fw-status[data-state="on"]{--fw-tone-bg:var(--success-bg);--fw-tone-fg:var(--success-text)}
+.fw-status[data-state="idle"]{--fw-tone-bg:var(--warning-bg);--fw-tone-fg:var(--warning-text);border-color:var(--warning-border)}
+.fw-status[data-state="off"]{--fw-tone-bg:var(--danger-bg);--fw-tone-fg:var(--danger-text);border-color:var(--danger-border)}
+.fw-status[data-state="unknown"],.fw-status[data-state="loading"]{--fw-tone-bg:var(--surface-sunken);--fw-tone-fg:var(--text-secondary)}
+.fw-turn-off:hover:not(:disabled),.fw-delete:hover:not(:disabled){background:var(--danger-bg);color:var(--danger-text);border-color:var(--danger-border)}
+.fw-ports{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:var(--space-1) 0 0;padding-top:var(--space-3);border-top:1px solid var(--border);color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
+.fw-ports span{margin-right:var(--space-1)}
+.fw-ports code{padding:2px 8px;border-radius:var(--radius-full);background:var(--surface-sunken);border:1px solid var(--border);color:var(--text);font-size:var(--text-sm)}
+
+/* ---- section heads ---- */
+.fw-section-head h2{margin:0}
+.fw-section-head .hint{margin-top:2px}
+.fw-section-head-row{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
+.fw-section-head-row>div{flex:1 1 320px;min-width:0}
+
+/* ---- rules ---- */
+.fw-rule-form{display:grid;grid-template-columns:130px minmax(180px,1fr) 150px 110px auto;gap:var(--space-2);align-items:end}
+.fw-rule-form label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.fw-rule-form label span{font-size:var(--text-sm)}
+.fw-rule-form select:disabled{opacity:.55;cursor:not-allowed}
+.fw-empty{margin:0;padding:var(--space-4);text-align:center;color:var(--text-muted);background:var(--surface-alt);border:1px dashed var(--border);border-radius:var(--radius-md)}
+.fw-table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-md)}
+.fw-table{width:100%;border-collapse:collapse}
+.fw-table th{padding:8px 12px;background:var(--surface-alt);color:var(--text-secondary);font-size:var(--text-xs);font-weight:700;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.fw-table td{padding:6px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+.fw-table tr:last-child td{border-bottom:0}
+.fw-table code{font-size:var(--text-sm);color:var(--text)}
+.fw-id{width:48px;color:var(--text-muted);font-weight:600}
+.fw-any{color:var(--text-muted)}
+.fw-row-actions{width:52px;text-align:right}
+
+/* ---- blocklists ---- */
+.fw-url-form{display:flex;gap:var(--space-2)}
+.fw-url-form input{flex:1;min-width:0}
+.fw-url-form button{flex:none}
+.fw-url-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-md)}
+.fw-url-list li{display:flex;align-items:center;gap:var(--space-2);padding:6px 6px 6px 12px;border-bottom:1px solid var(--border)}
+.fw-url-list li:last-child{border-bottom:0}
+.fw-url-list code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm);color:var(--text)}
+.fw-blocklist-facts{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-5);margin:0;color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
+
+/* ---- technical details ---- */
+.fw-details{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.fw-details summary{cursor:pointer;padding:var(--space-3) var(--space-4);font-weight:600;color:var(--text-secondary);border-radius:var(--radius-lg)}
+.fw-details summary:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
+.fw-details[open] summary{border-bottom:1px solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0}
+.fw-details-body{padding:var(--space-3) var(--space-4) var(--space-4)}
+.fw-details-body h3{margin:var(--space-4) 0 var(--space-2);font-size:var(--text-sm);color:var(--text-secondary)}
+.fw-details-body h3:first-child{margin-top:0}
+.fw-details-body pre{max-height:320px;overflow:auto;white-space:pre;word-break:normal;padding:var(--space-3);background:var(--code-bg);color:var(--code-fg);border-radius:var(--radius-md);font-size:var(--text-xs);line-height:1.5}
+
+@media (max-width:900px){
+  .fw-rule-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fw-rule-form button{grid-column:1 / -1}
+}
+@media (max-width:520px){
+  .fw-rule-form{grid-template-columns:1fr}
+  .fw-url-form{flex-direction:column}
+  .fw-status-actions{width:100%}
+  .fw-status-actions>button:not(.icon-button){flex:1}
+}

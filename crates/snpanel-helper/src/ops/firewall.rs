@@ -162,6 +162,14 @@ pub fn flush() -> HelperResponse {
     )
 }
 
+/// Whether SNPanel's table is loaded with its input hook - the difference
+/// between a firewall that is configured and one that is enforcing.
+/// `firewall-status` prints it; `firewall-list` reports it.
+pub fn chain_active() -> bool {
+    let loaded = exec::run(&["nft", "list", "table", "inet", "snpanel"]);
+    matches!(&loaded, Ok(o) if o.ok() && o.stdout.contains("hook input"))
+}
+
 /// What is actually loaded right now, as text.
 ///
 /// The output format is the bash `firewall_status`'s, line for line, because
@@ -179,13 +187,7 @@ pub fn flush() -> HelperResponse {
 pub fn status(ruleset: &FirewallRuleset) -> HelperResponse {
     use std::fmt::Write;
 
-    let loaded = exec::run(&["nft", "list", "table", "inet", "snpanel"]);
-    let loaded_text = loaded
-        .as_ref()
-        .map(|o| o.stdout.clone())
-        .unwrap_or_default();
-    let table_present = matches!(&loaded, Ok(o) if o.ok());
-    let chain_active = table_present && loaded_text.contains("hook input");
+    let chain_active = chain_active();
 
     let mut out = String::with_capacity(1024);
     let state = match ruleset.state {
@@ -591,12 +593,15 @@ pub fn blocklist_run(panel_port: u16, ssh_ports: &[u16]) -> HelperResponse {
 
 /// `firewall-blocklist-status`.
 ///
-/// The section headers are a contract with the browser, not decoration:
-/// `parseFirewallBlocklistUrls` in `frontend/src/App.jsx` starts collecting at
-/// a line that is exactly `URLs:` and stops at one that is exactly `Networks:`
-/// or `Timer:`, keeping the lines between that begin with `http`. Renaming or
-/// dropping a header empties the URL table in the panel while the verb still
-/// looks like it answered.
+/// The section headers, and a few lines under them, are a contract with the
+/// browser, not decoration. `parseBlocklistStatus` in
+/// `frontend/src/pages/Firewall.jsx` treats a line like `URLs:` as a header,
+/// then reads the `http` lines under `URLs:` (the list of lists), the
+/// `snpanel-block4 N entries` and `snpanel-block6 N entries` lines under
+/// `Sets:` (the networks blocked), and the first line under `Timer:` when it
+/// is one lowercase word - `systemctl is-enabled`'s answer. Renaming a header
+/// or reshaping one of those lines empties that part of the page while the
+/// verb still looks like it answered.
 ///
 /// The engine line is the one deliberate difference, as in
 /// [`status`]: it really is nftables now, and saying "iptables + ipset"
@@ -1029,36 +1034,74 @@ mod tests {
         );
     }
 
-    /// The section headers `firewall-blocklist-status` writes are read by the
-    /// browser, not just displayed.
+    /// What `firewall-blocklist-status` writes is read by the browser, not
+    /// just displayed.
     ///
-    /// `parseFirewallBlocklistUrls` in `frontend/src/App.jsx` starts at a line
-    /// that is exactly `URLs:`, stops at one that is exactly `Networks:` or
-    /// `Timer:`, and keeps the lines between that begin with `http`. This is
-    /// that function, applied to what the verb writes.
+    /// `parseBlocklistStatus` in `frontend/src/pages/Firewall.jsx` takes a
+    /// line like `URLs:` for a header, and reads the `http` lines under
+    /// `URLs:`, the `snpanel-block4`/`snpanel-block6` sizes under `Sets:`, and
+    /// the first line under `Timer:` if it is one lowercase word. `parse` here
+    /// is that function; `urls` below is what it did before the page read the
+    /// other two.
     #[test]
     fn the_blocklist_status_headers_are_what_the_browser_parses() {
-        /// `parseFirewallBlocklistUrls`, in its effects.
-        fn parse(text: &str) -> Vec<String> {
-            let mut urls = Vec::new();
-            let mut in_urls = false;
+        struct Parsed {
+            urls: Vec<String>,
+            blocked: Option<u64>,
+            timer: Option<String>,
+        }
+
+        /// `parseBlocklistStatus`, in its effects.
+        fn parse_all(text: &str) -> Parsed {
+            let is_header = |line: &str| {
+                let Some(name) = line.strip_suffix(':') else {
+                    return false;
+                };
+                let mut chars = name.chars();
+                chars.next().is_some_and(|c| c.is_ascii_uppercase())
+                    && chars.all(|c| c.is_ascii_alphabetic() || c == ' ')
+            };
+            let mut out = Parsed {
+                urls: Vec::new(),
+                blocked: None,
+                timer: None,
+            };
+            let mut section = "";
             for raw in text.lines() {
                 let line = raw.trim();
-                if line == "URLs:" {
-                    in_urls = true;
+                if is_header(line) {
+                    section = &line[..line.len() - 1];
                     continue;
                 }
-                if line == "Networks:" || line == "Timer:" {
-                    break;
-                }
-                if in_urls
-                    && (line.to_ascii_lowercase().starts_with("http://")
-                        || line.to_ascii_lowercase().starts_with("https://"))
+                let lower = line.to_ascii_lowercase();
+                if section == "URLs"
+                    && (lower.starts_with("http://") || lower.starts_with("https://"))
                 {
-                    urls.push(line.to_string());
+                    out.urls.push(line.to_string());
+                }
+                if section == "Sets" {
+                    let count = ["snpanel-block4", "snpanel-block6"]
+                        .iter()
+                        .find_map(|set| line.strip_prefix(set))
+                        .filter(|rest| rest.starts_with(char::is_whitespace))
+                        .and_then(|rest| rest.trim_start().strip_suffix(" entries"))
+                        .and_then(|n| n.parse::<u64>().ok());
+                    if let Some(n) = count {
+                        out.blocked = Some(out.blocked.unwrap_or(0) + n);
+                    }
+                }
+                if section == "Timer"
+                    && out.timer.is_none()
+                    && !line.is_empty()
+                    && line.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                {
+                    out.timer = Some(line.to_string());
                 }
             }
-            urls
+            out
+        }
+        fn parse(text: &str) -> Vec<String> {
+            parse_all(text).urls
         }
 
         // The real formatter, not a sample written here: this test used to
@@ -1079,13 +1122,31 @@ mod tests {
             "page was:\n{page}"
         );
 
-        // The three headers the browser keys on, each on a line of its own.
-        for header in ["URLs:", "Networks:", "Timer:"] {
+        // The headers the browser keys on, each on a line of its own.
+        for header in ["URLs:", "Sets:", "Networks:", "Timer:"] {
             assert!(
                 page.lines().any(|l| l.trim() == header),
                 "{header} is missing from:\n{page}"
             );
         }
+
+        // The two facts under the list: networks blocked, and the timer.
+        let facts = parse_all(&page);
+        assert_eq!(facts.blocked, Some(3), "v4 3 + v6 0, from:\n{page}");
+        assert_eq!(facts.timer.as_deref(), Some("enabled"), "{page}");
+        let v6 = parse_all(&blocklist_status_lines(&[], 3, 4, &[], "disabled\n"));
+        assert_eq!(v6.blocked, Some(7));
+        assert_eq!(v6.timer.as_deref(), Some("disabled"));
+        // A timer unit that does not exist: is-enabled prints nothing, and
+        // the list-timers table must not be taken for its answer.
+        let no_unit = parse_all(&blocklist_status_lines(
+            &[],
+            0,
+            0,
+            &[],
+            "NEXT LEFT LAST PASSED UNIT ACTIVATES\n\n0 timers listed.\n",
+        ));
+        assert_eq!(no_unit.timer, None);
 
         // 50 shown, the rest counted - a list of two million must not be sent
         // to a browser in full to answer "is it loaded?".
@@ -1098,7 +1159,13 @@ mod tests {
         // every header must still be there for the parser to find.
         let empty = blocklist_status_lines(&[], 0, 0, &[], "");
         assert!(parse(&empty).is_empty());
-        for header in ["URLs:", "Networks:", "Timer:"] {
+        assert_eq!(
+            parse_all(&empty).blocked,
+            Some(0),
+            "zero is said, not left out"
+        );
+        assert_eq!(parse_all(&empty).timer, None);
+        for header in ["URLs:", "Sets:", "Networks:", "Timer:"] {
             assert!(
                 empty.lines().any(|l| l.trim() == header),
                 "{header}: {empty}"

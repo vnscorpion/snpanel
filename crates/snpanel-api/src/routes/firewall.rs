@@ -106,16 +106,19 @@ async fn status(State(state): State<AppState>, current: CurrentUser) -> Response
         ]),
     )
     .await;
+    let listing = listing(&state).await;
     let mut body = result.to_json();
-    body["rules"] = Value::Array(rules(&state).await);
+    body["rules"] = Value::Array(parse_rules(&listing));
+    // Not in the Python. What the page shows at a glance - on or off, whether
+    // that is actually in force, which ports can never be closed - taken from
+    // the same `firewall-list` call as the rules, so the page need not read
+    // it out of the status text, which is for people.
+    body["summary"] = parse_summary(&listing);
     axum::Json(body).into_response()
 }
 
-/// Source: `firewall.rules()` - the helper's structured list, or an empty one.
-///
-/// An unparsable answer is an empty list rather than an error: the status page
-/// must not break on a single bad line from a machine that is otherwise fine.
-async fn rules(state: &AppState) -> Vec<Value> {
+/// The helper's `firewall-list` answer, or nothing.
+async fn listing(state: &AppState) -> String {
     let result = shell::privileged(
         state.settings.command_dry_run,
         "firewall-list",
@@ -124,10 +127,50 @@ async fn rules(state: &AppState) -> Vec<Value> {
         Some(&["bash", "-lc", "echo '{\"rules\": []}'"]),
     )
     .await;
-    if !result.ok() {
-        return Vec::new();
+    if result.ok() {
+        result.stdout
+    } else {
+        String::new()
     }
-    parse_rules(&result.stdout)
+}
+
+/// Source: `firewall.rules()` - the helper's structured list, or an empty one.
+///
+/// An unparsable answer is an empty list rather than an error: the status page
+/// must not break on a single bad line from a machine that is otherwise fine.
+async fn rules(state: &AppState) -> Vec<Value> {
+    parse_rules(&listing(state).await)
+}
+
+/// `state`, `engine`, `chain_active` and `protected_ports` from the listing,
+/// each `null` (the ports an empty list) when the helper did not say it in
+/// the expected shape - the same forgiveness as [`parse_rules`], and for the
+/// same reason.
+fn parse_summary(output: &str) -> Value {
+    let data = serde_json::from_str::<Value>(output).unwrap_or(Value::Null);
+    let state = match data.get("state").and_then(Value::as_str) {
+        Some(s @ ("enabled" | "disabled")) => json!(s),
+        _ => Value::Null,
+    };
+    let engine = data
+        .get("engine")
+        .and_then(Value::as_str)
+        .map_or(Value::Null, |e| json!(e));
+    let chain_active = data
+        .get("chain_active")
+        .and_then(Value::as_bool)
+        .map_or(Value::Null, |b| json!(b));
+    let protected_ports: Vec<Value> = data
+        .get("protected_ports")
+        .and_then(Value::as_array)
+        .map(|ports| ports.iter().filter(|p| p.is_u64()).cloned().collect())
+        .unwrap_or_default();
+    json!({
+        "state": state,
+        "engine": engine,
+        "chain_active": chain_active,
+        "protected_ports": protected_ports,
+    })
 }
 
 /// Source: `parse_rules` - a bare list, or an object with a `rules` key.
@@ -567,6 +610,43 @@ mod tests {
         assert_eq!(parse_rules(r#"[{"id": 1}, {"id": 2}]"#).len(), 2);
         // Non-objects inside the list are dropped rather than passed through.
         assert_eq!(parse_rules(r#"[{"id": 1}, "junk", 7]"#).len(), 1);
+    }
+
+    #[test]
+    fn the_summary_survives_anything_the_helper_says() {
+        let nothing = json!({
+            "state": null, "engine": null, "chain_active": null, "protected_ports": [],
+        });
+        for junk in [
+            "",
+            "not json",
+            "null",
+            "[]",
+            r#"[{"id": 1}]"#,
+            r#"{"rules": []}"#,
+        ] {
+            assert_eq!(parse_summary(junk), nothing, "{junk:?}");
+        }
+        // Wrong types are dropped, not passed on.
+        assert_eq!(
+            parse_summary(
+                r#"{"state": "maybe", "engine": 5, "chain_active": "yes", "protected_ports": ["22", 80, -1]}"#
+            ),
+            json!({ "state": null, "engine": null, "chain_active": null, "protected_ports": [80] })
+        );
+        // What the helper actually says.
+        assert_eq!(
+            parse_summary(
+                r#"{"state": "enabled", "engine": "nftables", "chain_active": false,
+                    "rules": [], "protected_ports": [22, 80, 443, 465, 587, 2222]}"#
+            ),
+            json!({
+                "state": "enabled",
+                "engine": "nftables",
+                "chain_active": false,
+                "protected_ports": [22, 80, 443, 465, 587, 2222],
+            })
+        );
     }
 
     #[test]

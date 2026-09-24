@@ -1,135 +1,220 @@
-import { Plus, RefreshCw, Shield, Trash2 } from 'lucide-react';
+import { Plus, RefreshCw, RotateCw, ShieldAlert, ShieldCheck, ShieldOff, ShieldQuestion, Trash2 } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
+import { useT } from '../i18n/index.jsx';
+import './Firewall.css';
+
+// The blocklist status is text for people, with a few lines the page reads:
+// the URLs under "URLs:", the two set sizes under "Sets:", and the timer's
+// `systemctl is-enabled` answer, the first line under "Timer:". The helper's
+// `blocklist_status_lines` writes them, and its test
+// `the_blocklist_status_headers_are_what_the_browser_parses` holds them still.
+export function parseBlocklistStatus(text) {
+  const urls = [];
+  let section = '';
+  let blocked = null;
+  let timer = null;
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (/^[A-Z][A-Za-z ]*:$/.test(line)) { section = line.slice(0, -1); continue; }
+    if (section === 'URLs' && /^https?:\/\//i.test(line)) urls.push(line);
+    if (section === 'Sets') {
+      const count = /^snpanel-block[46]\s+(\d+) entries$/.exec(line);
+      if (count) blocked = (blocked || 0) + Number(count[1]);
+    }
+    // One lowercase word - "enabled", "disabled" - or nothing: a unit that
+    // does not exist leaves the list-timers table as the first line instead.
+    if (section === 'Timer' && timer === null && /^[a-z-]+$/.test(line)) timer = line;
+  }
+  return { urls, blocked, timer };
+}
+
+// On, off, on but not enforcing, or not known - from the summary the API
+// takes out of the helper's `firewall-list`.
+function firewallState(status) {
+  if (!status) return 'loading';
+  const { state, chain_active: chainActive } = status.summary || {};
+  if (state === 'disabled') return 'off';
+  if (state === 'enabled') return chainActive === false ? 'idle' : 'on';
+  return 'unknown';
+}
+
+const STATE_VIEW = {
+  loading: { Icon: ShieldQuestion },
+  on: { Icon: ShieldCheck },
+  idle: { Icon: ShieldAlert },
+  off: { Icon: ShieldOff },
+  unknown: { Icon: ShieldQuestion },
+};
 
 export default function FirewallPage() {
   const {
     addFirewallBlocklistUrl,
-    allowFirewallIp,
-    blockFirewallIp,
+    addFirewallRule,
     deleteFirewallBlocklistUrl,
     deleteFirewallRule,
     disableFirewall,
     enableFirewall,
-    firewallAllowIp,
-    firewallAllowPort,
-    firewallAllowProtocol,
-    firewallBlockIp,
-    firewallBlockPort,
-    firewallBlockProtocol,
     firewallBlocklistUrl,
     firewallBlocklists,
-    firewallDeleteNumber,
-    firewallPort,
-    firewallProtocol,
+    firewallRule,
     firewallStatus,
     isAdmin,
     loadFirewall,
     loadFirewallBlocklists,
     loading,
-    openFirewallPort,
-    parseFirewallBlocklistUrls,
     reloadFirewall,
-    setFirewallAllowIp,
-    setFirewallAllowPort,
-    setFirewallAllowProtocol,
-    setFirewallBlockIp,
-    setFirewallBlockPort,
-    setFirewallBlockProtocol,
     setFirewallBlocklistUrl,
-    setFirewallDeleteNumber,
-    setFirewallPort,
-    setFirewallProtocol,
+    setFirewallRule,
     updateFirewallBlocklistsNow,
   } = usePanel();
+  const t = useT();
 
-  function renderFirewall() {
-    if (!isAdmin) return <section className="section"><h2>Firewall</h2><p className="hint">No permission.</p></section>;
-    const firewallText = firewallStatus?.stdout || firewallStatus?.stderr || 'Click Refresh to load status.';
-    const blocklistText = firewallBlocklists?.stdout || firewallBlocklists?.stderr || 'No blocklist status loaded.';
-    const blocklistUrls = parseFirewallBlocklistUrls(blocklistText);
-    const allRules = firewallStatus?.rules || [];
-    const userRules = allRules.filter(rule => !rule.protected);
-    const panelRules = allRules.filter(rule => rule.protected);
-    return <>
-      <section className="section">
-        <div className="section-title">
-          <div><h2>Firewall (iptables + ipset)</h2><p className="hint">SSH, the panel port and 80/443/465/587 are always kept open.</p></div>
-        </div>
-        <div className="actions">
-          <button disabled={!!loading} onClick={loadFirewall}><RefreshCw size={14}/> Refresh</button>
-          <button disabled={!!loading} onClick={enableFirewall}><Shield size={14}/> Enable</button>
-          <button disabled={!!loading} onClick={disableFirewall}>Disable</button>
-          <button disabled={!!loading} onClick={reloadFirewall}>Reload</button>
-        </div>
-        {panelRules.length > 0 && <p className="hint">Protected ports: {panelRules.map(rule => rule.to).join(', ')}</p>}
-        {userRules.length > 0 && <div className="table firewall-rule-table">
-          {userRules.map(rule => <div className="firewall-rule" key={rule.id}>
-            <span>
-              <strong>#{rule.id}</strong>{' '}
-              <span className={rule.action === 'DENY' ? 'badge danger' : 'badge ok'}>{rule.action}</span>{' '}
-              {rule.to} from {rule.from}
-            </span>
-            <div className="firewall-rule-actions">
-              <button className="danger" disabled={!!loading} onClick={() => deleteFirewallRule(rule.id)}><Trash2 size={14}/> Delete</button>
-            </div>
-          </div>)}
-        </div>}
-        {userRules.length === 0 && <p className="hint">No custom rules yet. Only the protected ports are open.</p>}
-        <div className="info-box firewall-status">
-          <strong>Firewall status</strong>
-          <pre>{firewallText}</pre>
-          <div className="firewall-delete-inline">
-            <label><span>Delete rule #</span><input value={firewallDeleteNumber} onChange={e => setFirewallDeleteNumber(e.target.value)} placeholder="12" inputMode="numeric" /></label>
-            <button className="danger" disabled={!!loading || !firewallDeleteNumber} onClick={() => deleteFirewallRule()}>Delete</button>
-          </div>
-        </div>
-      </section>
-      <section className="section">
-        <h2>Open port</h2>
-        <div className="firewall-form">
-          <label><span>Port</span><input value={firewallPort} onChange={e => setFirewallPort(e.target.value)} placeholder="80" inputMode="numeric" /></label>
-          <label><span>Protocol</span><select value={firewallProtocol} onChange={e => setFirewallProtocol(e.target.value)}><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
-          <button disabled={!!loading || !firewallPort} onClick={openFirewallPort}>Open port</button>
-        </div>
-      </section>
-      <section className="section">
-        <h2>Allow IP</h2>
-        <div className="firewall-form">
-          <label><span>IP / CIDR</span><input value={firewallAllowIp} onChange={e => setFirewallAllowIp(e.target.value)} placeholder="1.2.3.4" /></label>
-          <label><span>Port (optional)</span><input value={firewallAllowPort} onChange={e => setFirewallAllowPort(e.target.value)} placeholder="22" inputMode="numeric" /></label>
-          <label><span>Protocol</span><select value={firewallAllowProtocol} onChange={e => setFirewallAllowProtocol(e.target.value)}><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
-          <button disabled={!!loading || !firewallAllowIp} onClick={allowFirewallIp}>Allow</button>
-        </div>
-      </section>
-      <section className="section">
-        <h2>Block IP</h2>
-        <div className="firewall-form">
-          <label><span>IP / CIDR</span><input value={firewallBlockIp} onChange={e => setFirewallBlockIp(e.target.value)} placeholder="5.6.7.8" /></label>
-          <label><span>Port (optional)</span><input value={firewallBlockPort} onChange={e => setFirewallBlockPort(e.target.value)} placeholder="All ports" inputMode="numeric" /></label>
-          <label><span>Protocol</span><select value={firewallBlockProtocol} onChange={e => setFirewallBlockProtocol(e.target.value)}><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
-          <button className="danger" disabled={!!loading || !firewallBlockIp} onClick={blockFirewallIp}>Block</button>
-        </div>
-      </section>
-      <section className="section">
-        <div className="section-title">
-          <div><h2>IP blocklist URLs</h2><p className="hint">TXT files are fetched daily at 01:00 into an ipset, so even million-entry lists cost one kernel lookup per packet.</p></div>
-          <button disabled={!!loading} onClick={loadFirewallBlocklists}><RefreshCw size={14}/> Refresh</button>
-        </div>
-        <div className="firewall-form firewall-blocklist-form">
-          <label><span>TXT URL</span><input value={firewallBlocklistUrl} onChange={e => setFirewallBlocklistUrl(e.target.value)} placeholder="https://example.com/blocklist.txt" /></label>
-          <button disabled={!!loading || !firewallBlocklistUrl.trim()} onClick={addFirewallBlocklistUrl}><Plus size={14}/> Add URL</button>
-          <button className="secondary-light" disabled={!!loading} onClick={updateFirewallBlocklistsNow}><RefreshCw size={14}/> Update now</button>
-        </div>
-        {blocklistUrls.length > 0 && <div className="table firewall-blocklist-table">
-          {blocklistUrls.map(url => <div className="firewall-rule" key={url}>
-            <span>{url}</span>
-            <div className="firewall-rule-actions"><button className="danger" disabled={!!loading} onClick={() => deleteFirewallBlocklistUrl(url)}><Trash2 size={14}/> Delete</button></div>
-          </div>)}
-        </div>}
-        <div className="info-box firewall-status"><strong>IP blocklist status</strong><pre>{blocklistText}</pre></div>
-      </section>
-    </>;
-  }
+  if (!isAdmin) return <section className="section"><h2>{t('Firewall')}</h2><p className="hint">{t('No permission.')}</p></section>;
 
-  return renderFirewall();
+  const busy = !!loading;
+  const state = firewallState(firewallStatus);
+  const { Icon: StateIcon } = STATE_VIEW[state];
+  const title = {
+    loading: t('Loading firewall status…'),
+    on: t('The firewall is on'),
+    idle: t('The firewall is on, but not enforcing'),
+    off: t('The firewall is off'),
+    unknown: t('The firewall did not report its state'),
+  }[state];
+  const hint = {
+    loading: '',
+    on: t('Connections are refused unless a rule below or an always-open port lets them in.'),
+    idle: t('Its rules are saved but not loaded, so nothing is being filtered. Reload the rules to load them.'),
+    off: t('Every port on this server can be reached.'),
+    unknown: t('What the helper said is under Technical details.'),
+  }[state];
+
+  const protectedPorts = firewallStatus?.summary?.protected_ports || [];
+  const rules = (firewallStatus?.rules || []).filter((rule) => !rule.protected);
+  const blocklist = parseBlocklistStatus(firewallBlocklists?.stdout);
+
+  const rule = firewallRule;
+  const blocking = rule.action === 'block';
+  const hasPort = rule.port.trim() !== '';
+  // Blocking needs an address: the helper will not deny a port to everyone.
+  const canAdd = blocking ? rule.ip.trim() !== '' : rule.ip.trim() !== '' || hasPort;
+  const change = (field) => (event) => setFirewallRule((prev) => ({ ...prev, [field]: event.target.value }));
+
+  return <div className="fw-page">
+    <section className="section fw-status" data-state={state}>
+      <div className="fw-status-head">
+        <span className="fw-status-icon"><StateIcon size={22} aria-hidden="true"/></span>
+        <div className="fw-status-text">
+          <h2>{title}</h2>
+          {hint && <p className="hint">{hint}</p>}
+        </div>
+        <div className="fw-status-actions">
+          <button type="button" className="secondary icon-button" disabled={busy} onClick={() => { loadFirewall(); loadFirewallBlocklists(); }}
+            aria-label={t('Refresh')} title={t('Refresh')}><RefreshCw size={16} aria-hidden="true"/></button>
+          <button type="button" className="secondary" disabled={busy} onClick={reloadFirewall}><RotateCw size={15} aria-hidden="true"/> {t('Reload rules')}</button>
+          {state === 'off'
+            ? <button type="button" disabled={busy} onClick={enableFirewall}><ShieldCheck size={15} aria-hidden="true"/> {t('Turn on')}</button>
+            : <button type="button" className="secondary fw-turn-off" disabled={busy || state === 'loading'} onClick={disableFirewall}><ShieldOff size={15} aria-hidden="true"/> {t('Turn off')}</button>}
+        </div>
+      </div>
+      {protectedPorts.length > 0 && <p className="fw-ports">
+        <span>{t('Always open')}</span>
+        {protectedPorts.map((port) => <code key={port}>{port}</code>)}
+      </p>}
+    </section>
+
+    <section className="section fw-rules">
+      <div className="fw-section-head">
+        <h2>{t('Rules')}</h2>
+        <p className="hint">{t('Allow or block an address, a port, or a port for one address.')}</p>
+      </div>
+      <form className="fw-rule-form" onSubmit={(event) => { event.preventDefault(); if (canAdd) addFirewallRule(); }}>
+        <label><span>{t('Action')}</span>
+          <select value={rule.action} onChange={change('action')}>
+            <option value="allow">{t('Allow')}</option>
+            <option value="block">{t('Block')}</option>
+          </select>
+        </label>
+        <label><span>{t('From address')}</span>
+          <input value={rule.ip} onChange={change('ip')} placeholder={blocking ? '203.0.113.7' : t('Anyone')} spellCheck="false" autoComplete="off" />
+        </label>
+        <label><span>{t('Port')}</span>
+          <input value={rule.port} onChange={change('port')} placeholder={t('All ports')} inputMode="numeric" autoComplete="off" />
+        </label>
+        <label><span>{t('Protocol')}</span>
+          <select value={rule.protocol} onChange={change('protocol')} disabled={!hasPort} title={hasPort ? undefined : t('Only for a rule with a port')}>
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
+        </label>
+        <button type="submit" className={blocking ? 'danger' : undefined} disabled={busy || !canAdd}>
+          <Plus size={15} aria-hidden="true"/> {blocking ? t('Add block') : t('Add allow')}
+        </button>
+      </form>
+
+      {rules.length === 0
+        ? <p className="fw-empty">{t('No rules yet. Only the always-open ports accept connections.')}</p>
+        : <div className="fw-table-wrap">
+          <table className="fw-table">
+            <thead><tr>
+              <th scope="col">#</th>
+              <th scope="col">{t('Action')}</th>
+              <th scope="col">{t('From address')}</th>
+              <th scope="col">{t('Port')}</th>
+              <th scope="col"><span className="sr-only">{t('Delete')}</span></th>
+            </tr></thead>
+            <tbody>
+              {rules.map((item) => <tr key={item.id}>
+                <td className="fw-id">{item.id}</td>
+                <td><span className={`badge ${item.action === 'DENY' ? 'bad' : 'ok'}`}>{item.action === 'DENY' ? t('Block') : t('Allow')}</span></td>
+                <td>{item.from === 'any' ? <span className="fw-any">{t('Anyone')}</span> : <code>{item.from}</code>}</td>
+                <td>{item.to === 'any' ? <span className="fw-any">{t('All ports')}</span> : <code>{item.to}</code>}</td>
+                <td className="fw-row-actions">
+                  <button type="button" className="secondary icon-button fw-delete" disabled={busy} onClick={() => deleteFirewallRule(item.id)}
+                    aria-label={t('Delete rule #{number}', { number: item.id })} title={t('Delete rule #{number}', { number: item.id })}><Trash2 size={15} aria-hidden="true"/></button>
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+    </section>
+
+    <section className="section fw-blocklists">
+      <div className="fw-section-head fw-section-head-row">
+        <div>
+          <h2>{t('IP blocklists')}</h2>
+          <p className="hint">{t('Lists of addresses to block, downloaded again every day at 01:00. A list of a million addresses still costs one lookup per packet.')}</p>
+        </div>
+        <button type="button" className="secondary" disabled={busy || blocklist.urls.length === 0} onClick={updateFirewallBlocklistsNow}>
+          <RefreshCw size={15} aria-hidden="true"/> {t('Update now')}
+        </button>
+      </div>
+      <form className="fw-url-form" onSubmit={(event) => { event.preventDefault(); if (firewallBlocklistUrl.trim()) addFirewallBlocklistUrl(); }}>
+        <input value={firewallBlocklistUrl} onChange={(event) => setFirewallBlocklistUrl(event.target.value)}
+          placeholder="https://example.com/blocklist.txt" aria-label={t('List URL')} spellCheck="false" autoComplete="off" />
+        <button type="submit" disabled={busy || !firewallBlocklistUrl.trim()}><Plus size={15} aria-hidden="true"/> {t('Add list')}</button>
+      </form>
+      {blocklist.urls.length > 0 && <ul className="fw-url-list">
+        {blocklist.urls.map((url) => <li key={url}>
+          <code title={url}>{url}</code>
+          <button type="button" className="secondary icon-button fw-delete" disabled={busy} onClick={() => deleteFirewallBlocklistUrl(url)}
+            aria-label={t('Remove list {url}', { url })} title={t('Remove list {url}', { url })}><Trash2 size={15} aria-hidden="true"/></button>
+        </li>)}
+      </ul>}
+      {firewallBlocklists && <p className="fw-blocklist-facts">
+        {blocklist.blocked !== null && <span>{t('{count} networks blocked', { count: blocklist.blocked.toLocaleString() })}</span>}
+        {blocklist.timer && <span>{blocklist.timer === 'enabled' ? t('Daily update: on') : t('Daily update: {state}', { state: blocklist.timer })}</span>}
+      </p>}
+    </section>
+
+    <details className="fw-details">
+      <summary>{t('Technical details')}</summary>
+      <div className="fw-details-body">
+        <h3>{t('Firewall status')}</h3>
+        <pre>{firewallStatus?.stdout || firewallStatus?.stderr || t('Not loaded yet.')}</pre>
+        <h3>{t('IP blocklist status')}</h3>
+        <pre>{firewallBlocklists?.stdout || firewallBlocklists?.stderr || t('Not loaded yet.')}</pre>
+      </div>
+    </details>
+  </div>;
 }
