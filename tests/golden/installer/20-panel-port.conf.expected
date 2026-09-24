@@ -1,0 +1,11 @@
+[Service]
+WorkingDirectory=/opt/snpanel/backend
+EnvironmentFile=
+EnvironmentFile=/opt/snpanel/backend/.env
+Environment=HOME=/opt/snpanel
+ExecStart=
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:2222 --env /opt/snpanel/backend/.env
+SupplementaryGroups=www-data snpanel-sites
+ProtectHome=false
+ReadWritePaths=
+ReadWritePaths=/opt/snpanel /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage

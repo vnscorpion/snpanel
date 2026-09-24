@@ -3550,6 +3550,62 @@ Its own guard - "the scanner found nothing, so it is not reading this file
 any more" - failed on the first run, because the scanner was looking for
 `=>` where the source has `) =>`.
 
+### The systemd block, and the bug that was waiting in it
+
+`update.sh` wrote eight files of its own: seven units and a drop-in. Seven of
+them turned out to be byte-identical to what the installer's phase already
+produces - checked on the container, with the block copied out of the script
+rather than retyped and the variables taken from `platform.sh` and the box's
+own `.env`, because a check whose substitutions are guessed is a check
+against the guess.
+
+It does not call `systemd-units`, though. That phase also writes
+`snpanel-api.service` and `enable --now`s it, and on a box that has cut over
+to `snpanel-rust` that starts a second panel on the port the first is
+listening on. So an update gets `update-units`, which writes the seven from
+the same `unit_files` - a test asserts the lists match and that the bodies
+are the same bytes - and the drop-in instead of the unit.
+
+**The eighth file would have failed every update.** Its heredoc said
+
+    ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:${PANEL_PORT} ...
+
+and `update.sh` never sets `PANEL_PORT`. The function two lines above has
+`panel_port`, lower case, read with `env_get`; the upper-case name is only
+ever a key in `.env`. Under `set -euo pipefail` that is not an empty string,
+it is `PANEL_PORT: unbound variable` and the run stops there, having written
+nothing - measured on the container, where the block aborts at its first
+heredoc and leaves an empty directory.
+
+It was reachable on every path. The panel starts an update through the helper,
+which runs `systemd-run` with nine `Environment=` properties, and
+`PANEL_PORT` is not one of them; `snpanel update` passes no environment at
+all. Only the API's own in-process call would have had it, from the unit's
+`EnvironmentFile`.
+
+It has never shipped. The release installed on a box still carries the older
+block, whose `ExecStart` named a wrapper script and needed no port - the line
+was introduced by the cutover work in this branch, and no release has been
+tagged since. What is on `main` now passes `$panel_port`.
+
+### The test that would have caught both
+
+Two phase calls were written by copying `install.sh`'s, where these names are
+shell variables, into `update.sh`, where they are only `.env` keys:
+`PANEL_SSL_CERT="${PANEL_SSL_CERT:-}"`, which has a default and so quietly
+wrote a tools vhost with no `listen 443 ssl`, and `PANEL_PORT="$PANEL_PORT"`,
+which has none and so would have stopped the update.
+
+`every_variable_a_phase_call_passes_is_one_the_script_sets` reads both
+scripts, and the two they source, and requires every name interpolated into a
+phase call to be one the script actually assigns. Getting it right took three
+passes, and the interesting one was the second: it passed while the bug was
+present, because it counted `PANEL_PORT=` in *another* phase call's
+environment prefix as an assignment. A `NAME=value command` prefix sets the
+name for that command only, so the scanner now takes assignments only from
+statements that stand alone - which is the distinction the test exists to
+make.
+
 ## What is left of the shell, and what cannot leave
 
 Two files go here. One was dead and is deleted; one was never shipped and is

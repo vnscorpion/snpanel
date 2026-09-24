@@ -144,6 +144,49 @@ WantedBy=multi-user.target
     )
 }
 
+/// Source: `update.sh`, `install_panel_runtime`.
+///
+/// The drop-in `update.sh` writes instead of replacing `snpanel-api.service`.
+///
+/// It is the same settings `api_service` puts in the unit, and on a box this
+/// installer wrote it changes nothing. It exists for the box it was written
+/// for: one whose `snpanel-api.service` predates the Rust cutover and still
+/// points `ExecStart` at the Python.
+///
+/// The empty `EnvironmentFile=`, `ExecStart=` and `ReadWritePaths=` lines
+/// before each value are how systemd is told to *replace* a list rather than
+/// add to it. Without them the old `ExecStart` would still be there and the
+/// unit would have two.
+///
+/// `update.sh` overrides rather than rewrites on purpose: it is updating a
+/// box whose unit it did not necessarily write, and `systemd-units` - which
+/// does rewrite it - also `enable --now`s `snpanel-api`, which on a box that
+/// has cut over to `snpanel-rust` would start a second panel on the same
+/// port. That is why this is its own function and its own phase.
+pub fn panel_port_dropin(settings: &UnitSettings) -> String {
+    let UnitSettings {
+        app_dir,
+        web_group,
+        panel_port,
+        ..
+    } = settings;
+    let read_write = settings.read_write_paths();
+    format!(
+        "[Service]
+WorkingDirectory={app_dir}/backend
+EnvironmentFile=
+EnvironmentFile={app_dir}/backend/.env
+Environment=HOME={app_dir}
+ExecStart=
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:{panel_port} --env {app_dir}/backend/.env
+SupplementaryGroups={web_group} snpanel-sites
+ProtectHome=false
+ReadWritePaths=
+ReadWritePaths={read_write}
+"
+    )
+}
+
 /// The timer runs `snpanel-api --run-backup-schedules`.
 ///
 /// It named the Python runner until the panel itself became the binary, and

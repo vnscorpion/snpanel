@@ -813,154 +813,31 @@ install_panel_runtime() {
   "$(phase_runner)" sftp-access || \
     echo "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block"
 
-  mkdir -p /etc/systemd/system/snpanel-api.service.d
-  cat >/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf <<SERVICE
-[Service]
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-ExecStart=
-ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:${PANEL_PORT} --env ${APP_DIR}/backend/.env
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-ProtectHome=false
-ReadWritePaths=
-ReadWritePaths=${APP_DIR} /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-SERVICE
-  cat >/etc/systemd/system/snpanel-backup-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel scheduled backup runner
-After=network.target mariadb.service
-
-[Service]
-Type=oneshot
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env ${APP_DIR}/backend/.env
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  cat >/etc/systemd/system/snpanel-backup-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Run SNPanel scheduled backups every minute
-
-[Timer]
-OnBootSec=90s
-OnUnitActiveSec=60s
-AccuracySec=15s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-  cat >/etc/systemd/system/snpanel-malware-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel weekly malware scan runner
-After=network.target ${CLAMAV_SERVICE}
-
-[Service]
-Type=oneshot
-# The runner blocks until the scan it starts finishes (a whole-server scan can
-# take hours). Without this, systemd's 90s default start timeout kills it and
-# the scan lands in 'interrupted'.
-TimeoutStartSec=infinity
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env ${APP_DIR}/backend/.env
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT:-/var/backups/snpanel} /tmp /var/lib/snpanel
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Ask every quarter of an hour whether the weekly malware scan is due
-
-[Timer]
-# Often enough that a server asleep at the appointed hour still scans when it
-# comes back, while the runner itself refuses to start twice in one window.
-OnBootSec=5min
-OnUnitActiveSec=15min
-AccuracySec=1min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  # snpanel-helper refuses to run unless SUDO_USER names the panel account, so
-  # this unit sets it. The sibling boot units (firewall, blocklist) do the same:
-  # the helper then runs as root here with no real sudo in front of it.
-  cat >/etc/systemd/system/snpanel-autotune.service <<'SERVICE'
-[Unit]
-Description=Auto tune SNPanel PHP-FPM pools and MariaDB for this VPS
-After=network-online.target mariadb.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper php-fpm-retune
-ExecStart=/usr/local/sbin/snpanel-helper mariadb-retune
-RemainAfterExit=no
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  systemctl daemon-reload
-  systemctl enable snpanel-autotune.service >/dev/null 2>&1 || true
-  # Keep the clock honest for TOTP: the snpanel-timesync timer steps the clock
-  # from an HTTPS Date header when UDP 123 is blocked. An update never changes
-  # the server timezone - that stays the operator's call (PANEL_TIMEZONE at
-  # install time, or `timedatectl set-timezone` by hand).
-  cat >/etc/systemd/system/snpanel-timesync.service <<'SERVICE'
-[Unit]
-Description=Correct the SNPanel server clock when NTP cannot reach the network
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper time-sync
-RemainAfterExit=no
-SERVICE
-  cat >/etc/systemd/system/snpanel-timesync.timer <<'SERVICE'
-[Unit]
-Description=Check the SNPanel server clock at boot and hourly
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=1h
-AccuracySec=30s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-  systemctl daemon-reload
-  systemctl enable snpanel-timesync.timer >/dev/null 2>&1 || true
+  # `snpanel-install update-units`: seven unit files and one drop-in.
+  #
+  # Not `systemd-units`, which is the install's phase. That one also writes
+  # `snpanel-api.service` and `enable --now`s it - and on a box that has cut
+  # over to `snpanel-rust` that starts a second panel on the port the first
+  # is already listening on. An update writes the drop-in instead, which is
+  # what this script has always done.
+  #
+  # The seven come from the installer's own `unit_files`, so the two lists
+  # cannot drift; a test asserts that and that the bodies are the same bytes.
+  # Verified on the container against this block before it was removed: all
+  # eight files identical.
+  #
+  # Both enables are inside the phase and neither is fatal, the same as the
+  # `|| true` that was on them here.
+  # `$panel_port`, not `$PANEL_PORT`. The heredoc this replaces interpolated
+  # the upper-case name, which this script never sets: under `set -u` that
+  # aborted the update at this line, having written nothing. It was reachable
+  # on every path - the helper starts the update with `systemd-run` and nine
+  # `Environment=` properties, and `PANEL_PORT` is not one of them - but it
+  # has never shipped: the release on a box still has the older block, whose
+  # `ExecStart` named a wrapper script and needed no port at all.
+  BACKUP_ROOT="${BACKUP_ROOT:-}" APP_DIR="$APP_DIR" PANEL_PORT="$panel_port" \
+    "$(phase_runner)" update-units \
+    || fail "Could not write the panel's systemd units"
   rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf 2>/dev/null || true
   rm -f /etc/nginx/sites-enabled/snpanel.conf /etc/nginx/sites-available/snpanel.conf 2>/dev/null || true
   write_tools_nginx_config

@@ -36,6 +36,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("systemd-units") => run(phase_systemd_units()),
+        Some("update-units") => run(phase_update_units()),
         Some("log-limits") => run(phase_log_limits()),
         Some("nginx-conf") => run(phase_nginx_conf()),
         Some("http-flood") => run(phase_http_flood()),
@@ -63,6 +64,7 @@ fn main() -> ExitCode {
 fn help() {
     println!("snpanel-install - one phase of a SNPanel install\n");
     println!("  snpanel-install systemd-units    write and enable the panel's units");
+    println!("  snpanel-install update-units     the units an update writes, without the API unit");
     println!("  snpanel-install log-limits       cap the journal and rotate btmp");
     println!("  snpanel-install nginx-conf       the fastcgi cache and the upgrade map");
     println!("  snpanel-install http-flood       the shared flood-protection zones");
@@ -192,6 +194,66 @@ fn phase_systemd_units() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Source: `update.sh`, the systemd block in `install_panel_runtime`.
+///
+/// Seven units and one drop-in - what an *update* writes, which is not what
+/// an install writes.
+///
+/// `systemd-units` is the install's phase and does more: it writes
+/// `snpanel-api.service` itself, removes the retired auto-update timer, and
+/// `enable --now`s `snpanel-api`. On a box that has cut over to
+/// `snpanel-rust` that last one starts a second panel on the port the first
+/// is already listening on. So an update gets its own phase rather than
+/// calling that one, and the seven units come from the same `unit_files` so
+/// the two cannot drift apart.
+///
+/// The enables are not fatal here. Both are `|| true` in the shell, unlike
+/// the installer's three, and the difference is the usual one: an update has
+/// a box that already works and other work left to do.
+fn phase_update_units() -> Result<(), String> {
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+    let mut settings = UnitSettings::for_platform(platform.as_ref());
+    if let Some(v) = env_opt("APP_DIR") {
+        settings.app_dir = v;
+    }
+    if let Some(v) = env_opt("BACKUP_ROOT") {
+        settings.backup_root = v;
+    }
+    if let Some(v) = env_opt("PANEL_PORT").and_then(|v| v.parse().ok()) {
+        settings.panel_port = v;
+    }
+
+    for (path, body) in update_unit_files(&settings) {
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("creating {dir:?}: {e}"))?;
+        }
+        std::fs::write(path, &body).map_err(|e| format!("writing {path}: {e}"))?;
+    }
+
+    systemctl(&["daemon-reload"]);
+    systemctl(&["enable", "snpanel-autotune.service"]);
+    systemctl(&["enable", "snpanel-timesync.timer"]);
+    Ok(())
+}
+
+/// What `update.sh` writes: every unit `unit_files` has except
+/// `snpanel-api.service`, plus the drop-in it writes in place of it.
+///
+/// Derived from `unit_files` rather than listed again. A unit added there is
+/// one an update starts writing too, which is what should happen - the one
+/// deliberate exception is named here and nowhere else.
+fn update_unit_files(settings: &UnitSettings) -> Vec<(&'static str, String)> {
+    const REPLACED_BY_THE_DROPIN: &str = "/etc/systemd/system/snpanel-api.service";
+    const DROPIN: &str = "/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf";
+
+    let mut files: Vec<(&'static str, String)> = unit_files(settings)
+        .into_iter()
+        .filter(|(path, _)| *path != REPLACED_BY_THE_DROPIN)
+        .collect();
+    files.push((DROPIN, systemd_units::panel_port_dropin(settings)));
+    files
 }
 
 /// Every unit the panel runs from, and where it goes.
@@ -922,6 +984,297 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/installer")
     }
 
+    /// Every variable a phase call interpolates is one the script sets.
+    ///
+    /// Both installer scripts run under `set -euo pipefail`, so a name the
+    /// script never assigns does not arrive empty - it aborts the run at that
+    /// line, having done nothing. And a phase call is the worst place for it:
+    /// the settings are on the command line, so the mistake is silent until
+    /// the update reaches it.
+    ///
+    /// Twice while moving these phases across, a call was written by copying
+    /// `install.sh`'s, where the name is a shell variable, into `update.sh`,
+    /// where the same name is only ever an `.env` key:
+    ///
+    /// * `PANEL_SSL_CERT="${PANEL_SSL_CERT:-}"` - which has a default, so it
+    ///   ran, and quietly wrote a tools vhost with no `listen 443 ssl`;
+    /// * `PANEL_PORT="$PANEL_PORT"` - which does not, so it would have
+    ///   aborted every update at the line that writes the panel's units.
+    ///
+    /// The first was caught by reading a diff and the second by running the
+    /// block on a container. This is so the third is caught here.
+    #[test]
+    fn every_variable_a_phase_call_passes_is_one_the_script_sets() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0;
+        for name in ["installer/update.sh", "installer/install.sh"] {
+            let path = root.join(name);
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            // Both scripts source these two, so a name set there is set by
+            // the time a phase call runs. `RUST_BIN_DIR` is
+            // `fetch_rust_binaries`'s, and `WEB_GROUP` is the platform
+            // table's.
+            let mut assigned = assigned_names(&text);
+            for sourced in ["installer/platform.sh", "installer/lib/rust-binaries.sh"] {
+                let p = root.join(sourced);
+                let t = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p:?}: {e}"));
+                assigned.extend(assigned_names(&t));
+            }
+            assert!(
+                assigned.contains("APP_DIR"),
+                "{name}: the assignment scanner found no APP_DIR, so it is not reading this script"
+            );
+
+            let mut calls = 0;
+            for block in phase_call_blocks(&text) {
+                calls += 1;
+                for var in interpolated_without_default(&block) {
+                    // A block that guards the name anywhere - `${NAME:-}` in
+                    // the `if` that decides whether to use it at all - has
+                    // already said what happens when it is unset.
+                    if block.contains(&format!("${{{var}:-")) {
+                        continue;
+                    }
+                    assert!(
+                        assigned.contains(var.as_str()),
+                        "{name}: a phase call passes ${var}, which this script never sets - \
+                         under `set -u` that aborts the run at this line:\n{block}"
+                    );
+                }
+            }
+            assert!(
+                calls > 0,
+                "{name}: no phase calls found, so this checks nothing"
+            );
+            checked += calls;
+        }
+        assert!(
+            checked >= 10,
+            "only {checked} phase calls across both scripts"
+        );
+    }
+
+    /// Every name the script assigns **for the rest of the run**: `NAME=`
+    /// as a statement of its own, and `local a b c`.
+    ///
+    /// Not `NAME=value some-command`, which sets it for that command only.
+    /// That distinction is the whole point: the phase calls themselves are
+    /// written that way, so counting them would have this test conclude that
+    /// `PANEL_PORT` is set because a different phase call passes it - which
+    /// is exactly the mistake it is here to catch, and did miss once.
+    fn assigned_names(text: &str) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for line in text.lines() {
+            let continued = line.trim_end().ends_with('\\');
+            let segments: Vec<&str> = line.split(';').collect();
+            let last = segments.len() - 1;
+            for (n, segment) in segments.iter().enumerate() {
+                let trimmed = segment.trim();
+                if let Some(rest) = trimmed.strip_prefix("local ") {
+                    for word in rest.split_whitespace() {
+                        let name = word.split('=').next().unwrap_or(word);
+                        if is_name(name) {
+                            out.insert(name.to_string());
+                        }
+                    }
+                    continue;
+                }
+                let (names, remainder) = leading_assignments(trimmed);
+                // A command follows, or the line runs on into one.
+                if !remainder.is_empty() || (n == last && continued) {
+                    continue;
+                }
+                out.extend(names);
+            }
+        }
+        out
+    }
+
+    /// The `NAME=...` tokens a segment starts with, and whatever follows
+    /// them.
+    fn leading_assignments(segment: &str) -> (Vec<String>, &str) {
+        let mut names = Vec::new();
+        let mut rest = segment;
+        loop {
+            let name_len = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = &rest[..name_len];
+            if name.is_empty() || !is_name(name) || !rest[name_len..].starts_with('=') {
+                return (names, rest.trim());
+            }
+            names.push(name.to_string());
+            // Step over the value, respecting one level of quoting.
+            let mut i = name_len + 1;
+            let bytes = rest.as_bytes();
+            let mut quote = None;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'"' | b'\'' if quote.is_none() => quote = Some(bytes[i]),
+                    c if Some(c) == quote => quote = None,
+                    b' ' | b'\t' if quote.is_none() => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            rest = rest[i..].trim_start();
+        }
+    }
+
+    /// `<needle>` then whitespace then a lower-case letter: the shape of a
+    /// phase name, and not of `]]` or `;`.
+    fn followed_by_a_verb(line: &str, needle: &str) -> bool {
+        let Some(i) = line.find(needle) else {
+            return false;
+        };
+        line[i + needle.len()..]
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_lowercase())
+    }
+
+    fn is_name(s: &str) -> bool {
+        !s.is_empty()
+            && !s.starts_with(|c: char| c.is_ascii_digit())
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    /// Each phase invocation, joined across its `\` continuations.
+    fn phase_call_blocks(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            // The invocation, not the mention. Both scripts also *test*
+            // this path - `[[ -x "${RUST_BIN_DIR}/snpanel-install" ]]` - so
+            // what follows the closing quote has to be a verb.
+            if !followed_by_a_verb(line, "phase_runner)\"")
+                && !followed_by_a_verb(line, "/snpanel-install\"")
+            {
+                continue;
+            }
+            // Walk back over the continuation lines that carry the settings.
+            let mut start = i;
+            while start > 0 && lines[start - 1].trim_end().ends_with('\\') {
+                start -= 1;
+            }
+            out.push(lines[start..=i].join("\n"));
+        }
+        out
+    }
+
+    /// `$NAME` and `${NAME}`, but not `${NAME:-...}` or `${NAME-...}`, which
+    /// carry their own default and cannot be unbound.
+    fn interpolated_without_default(block: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let bytes = block.as_bytes();
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            if bytes[i] != b'$' {
+                i += 1;
+                continue;
+            }
+            // `$(` is a command substitution, not a variable.
+            if bytes[i + 1] == b'(' {
+                i += 2;
+                continue;
+            }
+            let braced = bytes[i + 1] == b'{';
+            let mut j = i + 1 + usize::from(braced);
+            let start = j;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > start {
+                let name = &block[start..j];
+                let has_default = braced && j < bytes.len() && bytes[j] != b'}';
+                if !has_default {
+                    out.push(name.to_string());
+                }
+            }
+            i = j.max(i + 1);
+        }
+        out
+    }
+
+    /// The drop-in, against a copy recorded from `update.sh` writing it on a
+    /// Debian 13 box - not against a retyping of the heredoc.
+    #[test]
+    fn the_update_dropin_is_what_the_shell_wrote() {
+        let settings = UnitSettings {
+            app_dir: "/opt/snpanel".to_string(),
+            backup_root: "/var/backups/snpanel".to_string(),
+            web_group: "www-data".to_string(),
+            clamav_service: "clamav-daemon.service".to_string(),
+            panel_port: 2222,
+        };
+        let path = golden_dir().join("20-panel-port.conf.expected");
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        assert_eq!(systemd_units::panel_port_dropin(&settings), expected);
+    }
+
+    /// An update writes every unit an install does except the API unit, for
+    /// which it writes a drop-in instead.
+    ///
+    /// Asserted against `unit_files` rather than against a second list, so a
+    /// unit added to the install is one the update starts writing too. The
+    /// alternative - two lists - is how `update.sh` came to be writing its
+    /// own copy of seven unit files in the first place.
+    #[test]
+    fn an_update_writes_every_unit_but_the_api_one() {
+        let settings = UnitSettings::for_platform(&snpanel_osabi::debian::Debian13);
+        let install: Vec<&str> = unit_files(&settings).into_iter().map(|(p, _)| p).collect();
+        let update: Vec<&str> = update_unit_files(&settings)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+
+        assert!(
+            install.contains(&"/etc/systemd/system/snpanel-api.service"),
+            "the install stopped writing the API unit, so the exception below is stale"
+        );
+        assert!(
+            !update.contains(&"/etc/systemd/system/snpanel-api.service"),
+            "an update must not replace the API unit - `systemd-units` is the phase that does"
+        );
+        assert!(update.contains(&"/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf"));
+
+        for path in &install {
+            if *path == "/etc/systemd/system/snpanel-api.service" {
+                continue;
+            }
+            assert!(
+                update.contains(path),
+                "{path} is written by an install and not by an update"
+            );
+        }
+        assert_eq!(
+            update.len(),
+            install.len(),
+            "seven units and one drop-in: {update:?}"
+        );
+    }
+
+    /// The seven shared units are the *same bytes* on both paths, not merely
+    /// the same file names.
+    #[test]
+    fn the_shared_units_are_byte_for_byte_the_installers() {
+        let settings = UnitSettings::for_platform(&snpanel_osabi::debian::Debian13);
+        let install = unit_files(&settings);
+        let update = update_unit_files(&settings);
+        let mut shared = 0;
+        for (path, body) in &install {
+            if *path == "/etc/systemd/system/snpanel-api.service" {
+                continue;
+            }
+            let theirs = update
+                .iter()
+                .find(|(p, _)| p == path)
+                .unwrap_or_else(|| panic!("{path} missing from the update's list"));
+            assert_eq!(&theirs.1, body, "{path} differs between install and update");
+            shared += 1;
+        }
+        assert_eq!(shared, 7);
+    }
+
     /// Every unit the shell used to write is one this writes.
     ///
     /// The fixtures were recorded from `install.sh` writing these files, so
@@ -1226,20 +1579,31 @@ mod tests {
             );
         }
 
-        // And `update.sh`, which writes its own copy of the unit: the
-        // variable, not a name typed out.
+        // `update.sh` was the third writer and is not one any more: it
+        // calls `update-units`, so the unit above is the copy it gets.
+        //
+        // This test announced that itself. It failed the moment the block
+        // moved, saying "update.sh no longer orders the scanner after
+        // ClamAV" - which is the right way round: a writer leaving should
+        // fail a test that names it rather than quietly check one fewer
+        // file.
+        //
+        // What is asserted now is that it stayed gone. Counted, not scanned
+        // for a bad name: a loop over the `After=` lines of a script that
+        // has none passes without checking anything, which is the shape of
+        // test this project has had to take back out three times.
         let update_sh =
             std::fs::read_to_string(root.join("installer/update.sh")).expect("update.sh");
-        let after = update_sh
+        let ordering: Vec<&str> = update_sh
             .lines()
-            .find(|l| {
-                l.starts_with("After=network.target") && l.contains("lamav")
-                    || l.starts_with("After=network.target ${CLAMAV_SERVICE}")
-            })
-            .expect("update.sh no longer orders the scanner after ClamAV");
+            .map(str::trim)
+            .filter(|l| l.starts_with("After=") || l.starts_with("Requires="))
+            .collect();
         assert!(
-            after.contains("${CLAMAV_SERVICE}"),
-            "update.sh names a ClamAV unit rather than the platform's: {after}"
+            ordering.is_empty(),
+            "update.sh writes systemd unit ordering again: {ordering:?} - if a unit \
+             has come back here, it needs the platform's ${{CLAMAV_SERVICE}} and a \
+             line in this test, not a name typed into a heredoc"
         );
     }
 }
