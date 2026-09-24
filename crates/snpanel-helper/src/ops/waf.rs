@@ -52,6 +52,14 @@ impl CrsMode {
 }
 
 /// `waf-status`. Must answer on a box with no ModSecurity at all.
+///
+/// **On stdout.** The WAF page shows this verb's stdout
+/// (`wafRules.status.stdout`), and over the helper socket the API is handed
+/// `stdout` and never `data`. While this answered in `data`, the status box
+/// was empty on every box that talks to the helper over the socket - which
+/// is every fresh install - and said "Click Refresh to load WAF status." after
+/// a refresh. Pretty JSON and a newline is what the CLI printed from `data`,
+/// so the sudo path shows what it always showed.
 pub fn status() -> HelperResponse {
     let module_loaded = exec::run(&["nginx", "-V"])
         .map(|o| {
@@ -62,13 +70,17 @@ pub fn status() -> HelperResponse {
     let module_file = Path::new("/usr/lib/nginx/modules/ngx_http_modsecurity_module.so").exists()
         || Path::new("/usr/share/nginx/modules/ngx_http_modsecurity_module.so").exists();
 
-    HelperResponse::with_data(serde_json::json!({
+    let status = serde_json::json!({
         "installed": module_loaded || module_file,
         "rules_dir": WAF_DIR,
         "crs_installed": Path::new(CRS_DIR).exists(),
         "crs_mode": read_crs_mode().as_str(),
         "sites_with_rules": count_site_rules(),
-    }))
+    });
+    HelperResponse::with_stdout(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&status).unwrap_or_default()
+    ))
 }
 
 /// Source: `CRS_MODE_FILE=/etc/nginx/modsec/snpanel-crs-mode`.
@@ -600,7 +612,17 @@ mod tests {
         // so they must answer rather than fail.
         let r = status();
         assert!(r.ok);
-        assert!(r.data.unwrap()["installed"].is_boolean());
+        // The WAF page reads stdout; over the socket `data` never reaches it.
+        assert!(r.data.is_none(), "`data` is what the bug put it in");
+        let v: serde_json::Value =
+            serde_json::from_str(&r.stdout).expect("stdout is the status JSON");
+        assert!(v["installed"].is_boolean());
+        assert!(v["crs_installed"].is_boolean());
+        assert_eq!(
+            r.stdout,
+            format!("{}\n", serde_json::to_string_pretty(&v).unwrap()),
+            "what the CLI printed from `data`"
+        );
 
         // `clamav-status` answers in the bash's one-line form. No Python
         // reads it yet, but the one that does will be written against the
