@@ -211,9 +211,12 @@ def test_issuing_or_uploading_a_certificate_updates_the_store():
 def test_the_panel_is_started_through_the_sni_aware_entry_point():
     for script_path in (INSTALL_SCRIPT, UPDATE_SCRIPT):
         script = script_path.read_text(encoding="utf-8")
-        assert "/backend/.venv/bin/python -m app.serve" in script
+        assert "snpanel-api-rust --listen" in script
         # The old starter passed one certificate on the uvicorn command line,
-        # which is exactly what pinned the panel to a single hostname.
+        # which is exactly what pinned the panel to a single hostname. The
+        # Rust entry point reads the SNI store instead, so neither the
+        # uvicorn form nor a single certificate flag may come back.
         assert "args=(app.main:app" not in script
         assert "--ssl-certfile" not in script
+        assert "app.serve" not in script
         assert "/usr/local/sbin/snpanel-helper panel-sni-sync" in script

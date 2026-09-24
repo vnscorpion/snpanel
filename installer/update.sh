@@ -851,21 +851,6 @@ SSHD
     fi
   fi
 
-  cat >/usr/local/sbin/snpanel-api-start <<STARTER
-#!/usr/bin/env bash
-# app.serve builds the uvicorn server in Python: the same options the command
-# line used to take, plus one certificate per hostname. The panel is therefore
-# reachable on every domain on this machine that has a certificate, instead of
-# only on the one PANEL_DOMAIN names.
-#
-# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
-# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
-# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
-set -euo pipefail
-cd ${APP_DIR}/backend
-exec ${APP_DIR}/backend/.venv/bin/python -m app.serve
-STARTER
-  chmod 0755 /usr/local/sbin/snpanel-api-start
   mkdir -p /etc/systemd/system/snpanel-api.service.d
   cat >/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf <<SERVICE
 [Service]
@@ -874,7 +859,7 @@ EnvironmentFile=
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 ExecStart=
-ExecStart=/usr/local/sbin/snpanel-api-start
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:${PANEL_PORT} --env ${APP_DIR}/backend/.env
 SupplementaryGroups=${WEB_GROUP} snpanel-sites
 ProtectHome=false
 ReadWritePaths=
@@ -894,7 +879,7 @@ WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.backup_scheduler
+ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env ${APP_DIR}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
@@ -935,7 +920,7 @@ WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.malware_schedule
+ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env ${APP_DIR}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
