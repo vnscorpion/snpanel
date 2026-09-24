@@ -11,7 +11,7 @@ WorkingDirectory=/opt/snpanel/backend
 EnvironmentFile=/opt/snpanel/backend/.env
 Environment=HOME=/opt/snpanel
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/sbin/snpanel-api-start
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:2222 --env /opt/snpanel/backend/.env
 Restart=always
 RestartSec=3
 

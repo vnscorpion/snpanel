@@ -210,7 +210,6 @@ validate_sources() {
   need_dir "$BACKEND_SRC"
   need_dir "$FRONTEND_SRC"
   [[ -f "${PROJECT_ROOT}/VERSION" ]] || fail "Missing VERSION"
-  [[ -f "${BACKEND_SRC}/requirements.txt" ]] || fail "Missing backend/requirements.txt"
   [[ -f "${FRONTEND_SRC}/package.json" ]] || fail "Missing frontend/package.json"
 }
 
@@ -1034,6 +1033,11 @@ install_rust_helper() {
 
 install_privileged_helper() {
   fetch_rust_binaries || true
+  # The panel *is* the Rust binary now, so this is no longer a nice-to-have.
+  # There is no Python left to fall back to.
+  [[ -n "$RUST_BIN_DIR" ]] || fail \
+    "No Rust binaries for this release. The panel is built from them, so the \
+install cannot continue; publish the release archive or build the tree first."
   if [[ -n "$RUST_BIN_DIR" ]]; then
     install_rust_helper
   else
@@ -1098,10 +1102,6 @@ validate_privileged_helper() {
 
 setup_backend() {
   cd "${APP_DIR}/backend"
-  python3 -m venv .venv
-  source .venv/bin/activate
-  pip install --upgrade pip
-  pip install -r requirements.txt
 
   ADMIN_PASSWORD="${SNPANEL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '\n')}"
 
@@ -1151,21 +1151,13 @@ ENV
   # spelled out). --whitelist-environment is stated for intent and for the
   # day somebody adds --login, where it does become load-bearing.
   export SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
-  # Rust where it is installed - which, after install_panel_cli above, is
-  # every box whose release carried the binary. `--init-db` builds the schema
-  # from a dump captured out of Alembic and stamps it at the same revision,
-  # so the database it makes is one Python can pick up unchanged.
-  if [[ -x /usr/local/bin/snpanel-api-rust ]]; then
-    runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
-      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
-      /usr/local/bin/snpanel-api-rust --env "${APP_DIR}/backend/.env" --init-db
-  else
-    runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
-      env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
-      "${APP_DIR}/backend/.venv/bin/python" -m app.seed
-  fi
+  # `--init-db` builds the schema from a dump captured out of Alembic and
+  # stamps it at the same revision, so the database is one Alembic would
+  # recognise if it were ever pointed at it again.
+  runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
+    env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    /usr/local/bin/snpanel-api-rust --env "${APP_DIR}/backend/.env" --init-db
   unset SNPANEL_ADMIN_PASSWORD
-  deactivate || true
 }
 
 wait_for_backend() {
@@ -1180,22 +1172,6 @@ wait_for_backend() {
 }
 
 setup_systemd() {
-  cat >/usr/local/sbin/snpanel-api-start <<STARTER
-#!/usr/bin/env bash
-# app.serve builds the uvicorn server in Python: the same options the command
-# line used to take, plus one certificate per hostname. The panel is therefore
-# reachable on every domain on this machine that has a certificate, instead of
-# only on the one PANEL_DOMAIN names.
-#
-# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
-# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
-# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
-set -euo pipefail
-cd ${APP_DIR}/backend
-exec ${APP_DIR}/backend/.venv/bin/python -m app.serve
-STARTER
-  chmod 0755 /usr/local/sbin/snpanel-api-start
-
   cat >/etc/systemd/system/snpanel-api.service <<SERVICE
 [Unit]
 Description=SNPanel API
@@ -1210,7 +1186,7 @@ WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/sbin/snpanel-api-start
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:${PANEL_PORT} --env ${APP_DIR}/backend/.env
 Restart=always
 RestartSec=3
 
@@ -1257,7 +1233,7 @@ WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.backup_scheduler
+ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env ${APP_DIR}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
@@ -1300,7 +1276,7 @@ WorkingDirectory=${APP_DIR}/backend
 EnvironmentFile=${APP_DIR}/backend/.env
 Environment=HOME=${APP_DIR}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.malware_schedule
+ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env ${APP_DIR}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false

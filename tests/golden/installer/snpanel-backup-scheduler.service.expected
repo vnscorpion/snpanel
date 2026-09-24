@@ -11,7 +11,7 @@ WorkingDirectory=/opt/snpanel/backend
 EnvironmentFile=/opt/snpanel/backend/.env
 Environment=HOME=/opt/snpanel
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=/opt/snpanel/backend/.venv/bin/python -m app.services.backup_scheduler
+ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env /opt/snpanel/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false

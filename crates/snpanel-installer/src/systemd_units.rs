@@ -30,6 +30,9 @@ pub struct UnitSettings {
     /// `CLAMAV_SERVICE`, **with** its `.service` suffix — the unit files
     /// spell it that way in `After=`, which is the conventional form there.
     pub clamav_service: String,
+    /// `PANEL_PORT`. The API unit carries it in `--listen`; the Python
+    /// wrapper this replaced read it from the environment instead.
+    pub panel_port: u16,
 }
 
 impl UnitSettings {
@@ -46,6 +49,7 @@ impl UnitSettings {
             // the platform table's test records that asymmetry as the one
             // deliberate difference between the two copies of this value.
             clamav_service: clamav_unit_name(platform.clamav_service()),
+            panel_port: 2222,
         }
     }
 
@@ -84,29 +88,12 @@ fn clamav_unit_name(bare: &str) -> String {
 /// uvicorn server in Python: the same options the command line used to take,
 /// plus one certificate per hostname, so the panel is reachable on every
 /// domain on this machine that has a certificate rather than only on the one
-/// `PANEL_DOMAIN` names.
-pub fn api_start_script(settings: &UnitSettings) -> String {
-    let app_dir = &settings.app_dir;
-    format!(
-        "#!/usr/bin/env bash
-# app.serve builds the uvicorn server in Python: the same options the command
-# line used to take, plus one certificate per hostname. The panel is therefore
-# reachable on every domain on this machine that has a certificate, instead of
-# only on the one PANEL_DOMAIN names.
-#
-# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
-# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
-# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
-set -euo pipefail
-cd {app_dir}/backend
-exec {app_dir}/backend/.venv/bin/python -m app.serve
-"
-    )
-}
-
 pub fn api_service(settings: &UnitSettings) -> String {
     let UnitSettings {
-        app_dir, web_group, ..
+        app_dir,
+        web_group,
+        panel_port,
+        ..
     } = settings;
     let read_write = settings.read_write_paths();
     format!(
@@ -123,7 +110,7 @@ WorkingDirectory={app_dir}/backend
 EnvironmentFile={app_dir}/backend/.env
 Environment=HOME={app_dir}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/sbin/snpanel-api-start
+ExecStart=/usr/local/bin/snpanel-api-rust --listen 0.0.0.0:{panel_port} --env {app_dir}/backend/.env
 Restart=always
 RestartSec=3
 
@@ -192,7 +179,7 @@ WorkingDirectory={app_dir}/backend
 EnvironmentFile={app_dir}/backend/.env
 Environment=HOME={app_dir}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart={app_dir}/backend/.venv/bin/python -m app.services.backup_scheduler
+ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env {app_dir}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
@@ -244,6 +231,7 @@ pub fn malware_scheduler_service(settings: &UnitSettings) -> String {
         backup_root,
         web_group,
         clamav_service,
+        ..
     } = settings;
     format!(
         "[Unit]
@@ -263,7 +251,7 @@ WorkingDirectory={app_dir}/backend
 EnvironmentFile={app_dir}/backend/.env
 Environment=HOME={app_dir}
 Environment=SNPANEL_USE_HELPER=true
-ExecStart={app_dir}/backend/.venv/bin/python -m app.services.malware_schedule
+ExecStart=/usr/local/bin/snpanel-api-rust --run-malware-schedules --env {app_dir}/backend/.env
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
@@ -475,13 +463,13 @@ mod tests {
             backup_root: "/var/backups/snpanel".to_string(),
             web_group: "www-data".to_string(),
             clamav_service: "clamav-daemon.service".to_string(),
+            panel_port: 2222,
         }
     }
 
     #[test]
     fn every_unit_is_what_the_shell_writes() {
         let s = debian();
-        assert_eq!(api_start_script(&s), fixture("snpanel-api-start"));
         assert_eq!(api_service(&s), fixture("snpanel-api.service"));
         assert_eq!(
             backup_scheduler_service(&s),
