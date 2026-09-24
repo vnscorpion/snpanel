@@ -1288,8 +1288,11 @@ if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
       install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
         /usr/local/bin/snpanel-api-rust
     fi
-    if [[ -x "${RUST_BIN_DIR}/snpanel" && -f /usr/local/sbin/snpanel-cli ]]; then
-      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
+    if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
+      # The binary takes the `snpanel` name; the two older names follow it.
+      install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
+      ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
+      ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
     fi
   else
     log "No Rust binaries to refresh; leaving the installed ones alone"
@@ -1354,12 +1357,9 @@ if [[ -f "$SOURCE_DIR/installer/update.sh" ]]; then
   install -m 0755 -o root -g root "$SOURCE_DIR/installer/update.sh" /usr/local/sbin/snpanel-update
 fi
 
-if [[ -f "$SOURCE_DIR/installer/files/snpanelctl" ]]; then
-  log "Refreshing SSH menu command: snpanel"
-  install -m 0755 -o root -g root "$SOURCE_DIR/installer/files/snpanelctl" /usr/local/sbin/snpanel
-  ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
-  sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
-fi
+# The SSH menu was a bash script here; it is the `snpanel` binary now and is
+# refreshed with the other binaries above, along with its `snpanelctl` and
+# `snpanel-cli` symlinks.
 
 log "Ensuring Nginx ModSecurity WAF engine is installed"
 if id -u snpanel >/dev/null 2>&1; then

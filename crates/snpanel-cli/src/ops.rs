@@ -10,7 +10,7 @@ use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result};
 
-use crate::ENV_PATH;
+use crate::env_path_string;
 use snpanel_core::config::Settings;
 use snpanel_osabi::firewall::{
     rules::{FirewallRuleset, FirewallState},
@@ -22,7 +22,6 @@ const RULES_TSV: &str = "/var/lib/snpanel/firewall/rules.tsv";
 const FIREWALL_STATE: &str = "/var/lib/snpanel/firewall/state";
 /// Source: `write_login_info` in snpanelctl.
 const LOGIN_FILE: &str = "/root/login.txt";
-const SNPANELCTL: &str = "/usr/local/sbin/snpanelctl";
 const HELPER: &str = "/usr/local/sbin/snpanel-helper";
 
 /// C17: `/root/login.txt` keeps its format, so this just prints it.
@@ -341,7 +340,7 @@ pub fn repair_firewall(env_path: Option<&Path>) -> Result<()> {
     // `ensure_env_file`: without it there is no panel to reopen a port for,
     // and the ports this would rebuild from are unknown.
     let Some(env) = env_path else {
-        anyhow::bail!("{ENV_PATH} not found. Run the installer first.");
+        anyhow::bail!("{} not found. Run the installer first.", env_path_string());
     };
 
     // Read and validate, then do nothing with it. The bash does the same: a
@@ -555,21 +554,18 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Hand off to the bash implementation that still owns this operation.
-pub fn delegate_to_snpanelctl(args: &[&str]) -> Result<ExitCode> {
-    delegate(SNPANELCTL, args)
-}
-
+/// Run one helper verb and pass its exit status through.
+///
+/// This had a sibling, `delegate_to_snpanelctl`, which is gone: every
+/// subcommand that used it is implemented here now, so there is no bash
+/// script left to hand anything to.
 pub fn delegate_to_helper(args: &[&str]) -> Result<ExitCode> {
     delegate(HELPER, args)
 }
 
 fn delegate(binary: &str, args: &[&str]) -> Result<ExitCode> {
     if !Path::new(binary).exists() {
-        anyhow::bail!(
-            "{binary} is not installed. This command is still served by the bash \
-             implementation until Phase 2 of the Rust migration lands."
-        );
+        anyhow::bail!("{binary} is not installed");
     }
     let status = Command::new(binary)
         .args(args)
@@ -591,10 +587,14 @@ mod tests {
 
     #[test]
     fn delegating_to_a_missing_binary_explains_itself() {
-        let err = delegate("/nonexistent/snpanelctl", &["status"]).unwrap_err();
+        // It used to add "until Phase 2 of the Rust migration lands", which
+        // was true while a bash script still served these and is not now.
+        // What the operator needs is the path, so they can see whether the
+        // install is incomplete or the name is wrong.
+        let err = delegate("/nonexistent/snpanel-helper", &["status"]).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("not installed"));
-        assert!(msg.contains("Phase 2"));
+        assert!(msg.contains("not installed"), "{msg}");
+        assert!(msg.contains("/nonexistent/snpanel-helper"), "{msg}");
     }
 
     #[test]
@@ -714,7 +714,7 @@ mod tests {
         // of the panel already; "not found. Run the installer first." is the
         // difference between that and a box that was never installed.
         let err = repair_firewall(None).unwrap_err().to_string();
-        assert!(err.contains(ENV_PATH), "{err}");
+        assert!(err.contains(&env_path_string()), "{err}");
         assert!(err.contains("installer"), "{err}");
     }
 

@@ -1058,11 +1058,18 @@ install cannot continue; publish the release archive or build the tree first."
 }
 
 install_panel_cli() {
-  # `snpanelctl` is the bash rescue menu and stays; the Rust `snpanel` CLI is a
-  # different program with a different name, installed beside it when the
-  # archive carries one.
+  # The Rust binary *is* `snpanel` now. It was installed beside the bash
+  # rescue menu as `snpanel-cli` while the menu still served eight of its own
+  # subcommands; it serves all of them, so the script is gone and the binary
+  # takes the name.
+  #
+  # Both old names become symlinks. `snpanelctl` is in runbooks and in muscle
+  # memory, and `snpanel-cli` is what a box installed before this release
+  # learned - neither should stop working because a file moved.
   if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel" ]]; then
-    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
   fi
   # The API binary, which the archive has always carried and nothing ever
   # installed: the unit written below names this path,
@@ -1073,18 +1080,19 @@ install_panel_cli() {
   # somebody who is not root. It holds no privilege of its own - everything
   # privileged still goes through the helper.
   #
-  # Installing it here does more than enable the seed below. Several verbs in
-  # snpanelctl and update.sh prefer the Rust one-shot when this file exists,
-  # so from here a fresh box uses them: the site refresh, the orphan sweep
-  # and the two password writes. Each was checked against the Python it
-  # replaces before that switch was made.
+  # Installing it here does more than enable the seed below. The `snpanel`
+  # CLI and update.sh reach for this one-shot for the site refresh, the
+  # orphan sweep and the two password writes, so from here a fresh box uses
+  # them. Each was checked against the implementation it replaced before that
+  # switch was made.
   if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
     install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
       /usr/local/bin/snpanel-api-rust
   fi
-  install -m 0755 -o root -g root "${SCRIPT_DIR}/files/snpanelctl" /usr/local/sbin/snpanel
-  ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
-  sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
+  # The `sed` that used to run here rewrote the bash menu's own `APP_DIR=`
+  # line, which is how a non-default install directory reached it. A binary
+  # cannot be rewritten that way, so `snpanel` reads `APP_DIR` from the
+  # environment with the same default - see `app_dir()` in the CLI.
 }
 
 validate_privileged_helper() {

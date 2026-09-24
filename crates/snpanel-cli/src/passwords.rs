@@ -25,10 +25,8 @@ use anyhow::{Context, Result};
 use snpanel_installer::ctl::passwords as rules;
 
 use crate::secret::read_secret;
-use crate::ENV_PATH;
+use crate::{app_dir, env_path_string};
 
-/// Source: `APP_DIR`.
-const APP_DIR: &str = "/opt/snpanel";
 /// Source: `RUST_API`.
 const RUST_API: &str = "/usr/local/bin/snpanel-api-rust";
 const HELPER: &str = "/usr/local/sbin/snpanel-helper";
@@ -124,7 +122,7 @@ pub fn sync_admin_root_password(env_path: Option<&Path>) -> Result<()> {
 fn require_env(env_path: Option<&Path>) -> Result<&Path> {
     match env_path {
         Some(p) => Ok(p),
-        None => anyhow::bail!("{ENV_PATH} not found. Run the installer first."),
+        None => anyhow::bail!("{} not found. Run the installer first.", env_path_string()),
     }
 }
 
@@ -165,7 +163,7 @@ fn admin_secret_command(env: &Path, flag: &str, var: &str, value: &str) -> Comma
     let mut cmd = Command::new("runuser");
     cmd.arg(format!("--whitelist-environment={var}"))
         .args(["-u", "snpanel", "--", "env"])
-        .arg(format!("HOME={APP_DIR}"))
+        .arg(format!("HOME={}", app_dir()))
         .arg("SNPANEL_USE_HELPER=true")
         .arg(RUST_API)
         .arg("--env")
@@ -173,7 +171,7 @@ fn admin_secret_command(env: &Path, flag: &str, var: &str, value: &str) -> Comma
         .arg(flag)
         // Never argv.
         .env(var, value)
-        .current_dir(format!("{APP_DIR}/backend"));
+        .current_dir(format!("{}/backend", app_dir()));
     cmd
 }
 
@@ -325,7 +323,7 @@ mod tests {
             change_admin_password(None).unwrap_err().to_string(),
             sync_admin_root_password(None).unwrap_err().to_string(),
         ] {
-            assert!(err.contains(ENV_PATH), "{err}");
+            assert!(err.contains(&env_path_string()), "{err}");
         }
     }
 
@@ -442,7 +440,7 @@ mod tests {
         assert!(args.contains(&"snpanel".to_string()), "{args:?}");
         // HOME decides where the panel looks for `.my.cnf`.
         assert!(
-            args.iter().any(|a| a == &format!("HOME={APP_DIR}")),
+            args.iter().any(|a| a == &format!("HOME={}", app_dir())),
             "{args:?}"
         );
     }

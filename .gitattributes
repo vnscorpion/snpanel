@@ -4,7 +4,6 @@
 # Always LF for files that run on Linux servers
 *.py text eol=lf
 *.sh text eol=lf
-installer/files/snpanelctl text eol=lf
 *.j2 text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf

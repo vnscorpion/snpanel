@@ -56,33 +56,42 @@ pub const UNIT_MODE: u32 = 0o644;
 pub const SOCKET_WARNING: &str =
     "WARNING: snpanel-helper.socket did not start; the panel will use sudo";
 
-/// Where the two command-line programs end up.
+/// Where the command-line programs end up.
 ///
-/// The names are worth reading twice, because the obvious guess is wrong:
-/// the **bash** rescue menu takes the name `snpanel`, with `snpanelctl` as a
-/// symlink to it, and the **Rust** CLI — a different program with a
-/// different job — is installed beside it as `snpanel-cli`. Putting the
-/// wrong program behind the name an operator types in an emergency is not a
-/// mistake that announces itself.
+/// The names used to be worth reading twice, because the obvious guess was
+/// wrong: the **bash** rescue menu took the name `snpanel`, with `snpanelctl`
+/// a symlink to it, and the Rust CLI went beside them as `snpanel-cli`. That
+/// was right while the menu still served eight of its own subcommands and the
+/// CLI handed those back to it.
+///
+/// It serves all of them now, the script is deleted, and the binary takes the
+/// name. `snpanelctl` and `snpanel-cli` are symlinks to it - the first is in
+/// runbooks and in muscle memory, the second is what a box installed before
+/// this release learned, and neither should stop working because a file
+/// moved.
+///
+/// There is no longer a rescue menu without the Rust CLI, which is why the
+/// flag no longer guards a second entry. `install.sh` already refuses to
+/// finish without the binaries, so the case cannot arise.
 pub fn cli_files(release_has_rust_cli: bool) -> Vec<Installed> {
     let mut out = Vec::new();
     if release_has_rust_cli {
         out.push(Installed {
-            path: "/usr/local/sbin/snpanel-cli",
+            path: "/usr/local/sbin/snpanel",
             mode: 0o755,
             owner: "root",
             group: "root",
         });
         out.push(API_BINARY);
     }
-    out.push(Installed {
-        path: "/usr/local/sbin/snpanel",
-        mode: 0o755,
-        owner: "root",
-        group: "root",
-    });
     out
 }
+
+/// The two names that follow `snpanel` wherever it is installed.
+pub const CLI_ALIASES: &[(&str, &str)] = &[
+    ("/usr/local/sbin/snpanelctl", "/usr/local/sbin/snpanel"),
+    ("/usr/local/sbin/snpanel-cli", "/usr/local/sbin/snpanel"),
+];
 
 /// The Rust API binary.
 ///
@@ -103,8 +112,9 @@ pub const API_BINARY: Installed = Installed {
     group: "root",
 };
 
-/// `snpanelctl` -> `snpanel`.
-pub const CTL_ALIAS: (&str, &str) = ("/usr/local/sbin/snpanelctl", "/usr/local/sbin/snpanel");
+/// `snpanelctl` -> `snpanel`. Kept as a name of its own because it is the
+/// one an operator types; [`CLI_ALIASES`] carries it and `snpanel-cli`.
+pub const CTL_ALIAS: (&str, &str) = CLI_ALIASES[0];
 
 /// The check that the privilege path works end to end, before the installer
 /// claims success.
@@ -167,17 +177,24 @@ mod tests {
         assert_eq!(UNIT_MODE & 0o022, 0);
     }
 
-    /// The bash rescue menu takes `snpanel`, with `snpanelctl` as a symlink
-    /// to it; the Rust CLI is installed beside them as `snpanel-cli`.
-    /// Putting the wrong program behind the name an operator types in an
-    /// emergency is not a mistake that announces itself.
+    /// The name an operator types in an emergency reaches the program that
+    /// answers it.
+    ///
+    /// This asserted the opposite arrangement while the rescue menu was a
+    /// bash script: the script took `snpanel` and the binary went beside it.
+    /// Putting the wrong program behind that name is not a mistake that
+    /// announces itself either way round.
     #[test]
     fn the_rescue_menu_keeps_the_name_an_operator_types() {
         let paths: Vec<&str> = cli_files(true).iter().map(|f| f.path).collect();
-        assert!(paths.contains(&"/usr/local/sbin/snpanel"));
-        assert!(paths.contains(&"/usr/local/sbin/snpanel-cli"));
+        assert!(paths.contains(&"/usr/local/sbin/snpanel"), "{paths:?}");
+        // Both older names are symlinks, not copies: a second copy is a
+        // second thing to forget to update.
+        for (from, to) in CLI_ALIASES {
+            assert_eq!(*to, "/usr/local/sbin/snpanel", "{from} points elsewhere");
+            assert!(!paths.contains(from), "{from} is installed as a file");
+        }
         assert_eq!(CTL_ALIAS.0, "/usr/local/sbin/snpanelctl");
-        assert_eq!(CTL_ALIAS.1, "/usr/local/sbin/snpanel");
     }
 
     /// **The API binary goes where an unprivileged unit can run it.**
@@ -210,26 +227,34 @@ mod tests {
     #[test]
     fn the_units_name_the_path_the_installer_writes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer");
-        for name in ["files/snpanelctl", "install.sh", "update.sh"] {
-            let Ok(text) = std::fs::read_to_string(root.join(name)) else {
-                eprintln!("skipped: {name} is not there");
-                continue;
-            };
+        // `files/snpanelctl` was the third of these and is deleted. It is
+        // named rather than dropped silently: the loop used to `continue` on
+        // a file it could not read, so removing one would have left this
+        // passing over two while its name says every.
+        let mut checked = 0;
+        for name in ["install.sh", "update.sh"] {
+            let text =
+                std::fs::read_to_string(root.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(
                 text.contains(API_BINARY.path),
                 "{name} does not name {}",
                 API_BINARY.path
             );
+            checked += 1;
         }
+        assert_eq!(checked, 2);
     }
 
-    /// A release without the Rust CLI still installs the rescue menu. The
-    /// menu is what an operator reaches for when the panel is down, so it
-    /// cannot be conditional on a binary that may not have been built.
+    /// Without the Rust binaries there is nothing to install.
+    ///
+    /// This used to assert the opposite: the rescue menu was a bash script,
+    /// so it went on every box whether or not the archive carried a binary.
+    /// The menu *is* the binary now. `install.sh` refuses to finish without
+    /// one, which is the check that keeps this from being a box with no
+    /// rescue menu rather than a box with an old one.
     #[test]
-    fn the_rescue_menu_is_installed_whether_or_not_the_rust_cli_exists() {
-        let without: Vec<&str> = cli_files(false).iter().map(|f| f.path).collect();
-        assert_eq!(without, ["/usr/local/sbin/snpanel"]);
+    fn a_release_without_binaries_installs_no_cli() {
+        assert!(cli_files(false).is_empty());
     }
 
     /// `sudo` still works and is still what an administrator uses by hand,

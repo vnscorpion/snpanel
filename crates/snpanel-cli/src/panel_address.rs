@@ -18,8 +18,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use snpanel_installer::ctl::panel_url as rules;
 
+use crate::env_path_string;
 use crate::passwords::write_login_info;
-use crate::ENV_PATH;
 
 const HELPER: &str = "/usr/local/sbin/snpanel-helper";
 /// Source: `DEFAULT_PANEL_PORT`.
@@ -181,7 +181,7 @@ fn close_old_port(old: u16, new: u16) {
 fn require_env(env_path: Option<&Path>) -> Result<&Path> {
     match env_path {
         Some(p) => Ok(p),
-        None => anyhow::bail!("{ENV_PATH} not found. Run the installer first."),
+        None => anyhow::bail!("{} not found. Run the installer first.", env_path_string()),
     }
 }
 
@@ -420,7 +420,7 @@ mod tests {
             set_panel_url(None).unwrap_err().to_string(),
             install_panel_ssl(None).unwrap_err().to_string(),
         ] {
-            assert!(err.contains(ENV_PATH), "{err}");
+            assert!(err.contains(&env_path_string()), "{err}");
         }
     }
 }

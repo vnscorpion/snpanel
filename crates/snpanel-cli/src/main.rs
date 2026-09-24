@@ -15,6 +15,7 @@ mod menu;
 mod ops;
 mod panel_address;
 mod passwords;
+mod permissions;
 mod secret;
 
 use std::path::PathBuf;
@@ -25,7 +26,25 @@ use clap::Parser;
 use cli::{Cli, Command, FirewallCommand};
 
 /// Where the installer puts the panel's environment file.
-pub(crate) const ENV_PATH: &str = "/opt/snpanel/backend/.env";
+/// Where the panel is installed.
+///
+/// `install.sh` takes `APP_DIR` from the environment and defaults it to
+/// `/opt/snpanel`. The bash rescue menu learned the value at install time,
+/// by `sed`: the installer rewrote the script's own `APP_DIR=` line. A
+/// binary cannot be rewritten that way, so the same override arrives the
+/// other way round - from the environment, at run time, with the same
+/// default. A box that never set it sees no difference.
+pub(crate) fn app_dir() -> String {
+    std::env::var("APP_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/opt/snpanel".to_string())
+}
+
+/// The panel's `.env`, under whichever `APP_DIR` this box uses.
+pub(crate) fn env_path_string() -> String {
+    format!("{}/backend/.env", app_dir())
+}
 
 /// Restore the default SIGPIPE disposition.
 ///
@@ -54,7 +73,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let env_path = PathBuf::from(ENV_PATH);
+    let env_path = PathBuf::from(env_path_string());
     let env_path = env_path.exists().then_some(env_path);
 
     match cli.command.unwrap_or(Command::Menu) {
@@ -137,7 +156,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             panel_address::install_panel_ssl(env_path.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::FixPermissions => ops::delegate_to_snpanelctl(&["fix-permissions"]),
+        Command::FixPermissions => {
+            permissions::fix_permissions(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::ChangeAdminPassword => {
             passwords::change_admin_password(env_path.as_deref())?;
             Ok(ExitCode::SUCCESS)
@@ -146,5 +168,36 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             passwords::sync_admin_root_password(env_path.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The override the installer's `sed` used to bake into the bash.
+    ///
+    /// `install.sh` takes `APP_DIR` from the environment, and the bash
+    /// rescue menu learned it at install time because the installer rewrote
+    /// the script's own `APP_DIR=` line. A binary cannot be rewritten that
+    /// way, so the value arrives from the environment instead - and a box
+    /// that never set one must see exactly what it saw before.
+    #[test]
+    fn the_app_dir_defaults_to_the_one_every_box_has() {
+        // Not set, or set to nothing, is the default. An empty `APP_DIR=`
+        // exported by a wrapper script would otherwise make every path start
+        // with `/backend/...`.
+        std::env::remove_var("APP_DIR");
+        assert_eq!(app_dir(), "/opt/snpanel");
+        assert_eq!(env_path_string(), "/opt/snpanel/backend/.env");
+
+        std::env::set_var("APP_DIR", "");
+        assert_eq!(app_dir(), "/opt/snpanel");
+
+        std::env::set_var("APP_DIR", "/srv/panel");
+        assert_eq!(app_dir(), "/srv/panel");
+        assert_eq!(env_path_string(), "/srv/panel/backend/.env");
+
+        std::env::remove_var("APP_DIR");
     }
 }

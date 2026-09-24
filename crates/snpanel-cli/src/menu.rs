@@ -87,16 +87,22 @@ fn dispatch(choice: &str) -> Dispatch {
         "2" => Dispatch::Ran(ops::status(env_path().as_deref())),
         "3" => Dispatch::Ran(ops::logs(false, 200)),
         "4" => Dispatch::Ran(ops::restart()),
-        "5" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["repair-firewall"]).map(|_| ())),
-        "6" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["set-panel-url"]).map(|_| ())),
-        "7" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["install-panel-ssl"]).map(|_| ())),
-        "8" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["fix-permissions"]).map(|_| ())),
-        "9" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["change-admin-password"]).map(|_| ())),
-        "10" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["update"]).map(|_| ())),
-        "11" => Dispatch::Ran(ops::delegate_to_snpanelctl(&["change-ip"]).map(|_| ())),
-        "12" => {
-            Dispatch::Ran(ops::delegate_to_snpanelctl(&["sync-admin-root-password"]).map(|_| ()))
-        }
+        "5" => Dispatch::Ran(ops::repair_firewall(env_path().as_deref())),
+        "6" => Dispatch::Ran(crate::panel_address::set_panel_url(env_path().as_deref())),
+        "7" => Dispatch::Ran(crate::panel_address::install_panel_ssl(
+            env_path().as_deref(),
+        )),
+        "8" => Dispatch::Ran(crate::permissions::fix_permissions(env_path().as_deref())),
+        "9" => Dispatch::Ran(crate::passwords::change_admin_password(
+            env_path().as_deref(),
+        )),
+        // The menu has never offered a tag or a branch, and the entry says
+        // "from release".
+        "10" => Dispatch::Ran(ops::run_update(ops::UpdateTarget::Release)),
+        "11" => Dispatch::Ran(ops::change_ip(&[])),
+        "12" => Dispatch::Ran(crate::passwords::sync_admin_root_password(
+            env_path().as_deref(),
+        )),
         "0" => Dispatch::Exit,
         _ => Dispatch::Unknown,
     }
