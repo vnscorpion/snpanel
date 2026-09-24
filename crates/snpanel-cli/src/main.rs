@@ -13,6 +13,9 @@ mod cli;
 mod doctor;
 mod menu;
 mod ops;
+mod panel_address;
+mod passwords;
+mod secret;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -126,12 +129,22 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ops::change_ip(&addresses)?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::SetPanelUrl => ops::delegate_to_snpanelctl(&["set-panel-url"]),
-        Command::InstallPanelSsl => ops::delegate_to_snpanelctl(&["install-panel-ssl"]),
+        Command::SetPanelUrl => {
+            panel_address::set_panel_url(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::InstallPanelSsl => {
+            panel_address::install_panel_ssl(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::FixPermissions => ops::delegate_to_snpanelctl(&["fix-permissions"]),
-        Command::ChangeAdminPassword => ops::delegate_to_snpanelctl(&["change-admin-password"]),
+        Command::ChangeAdminPassword => {
+            passwords::change_admin_password(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::SyncAdminRootPassword => {
-            ops::delegate_to_snpanelctl(&["sync-admin-root-password"])
+            passwords::sync_admin_root_password(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
