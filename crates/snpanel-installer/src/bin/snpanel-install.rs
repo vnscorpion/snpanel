@@ -22,6 +22,10 @@ use std::process::ExitCode;
 use snpanel_installer::nginx_conf;
 use snpanel_installer::systemd_units::{self, UnitSettings};
 
+/// Source: the `install -d` in `write_modsec_base_conf`.
+const MODSEC_DIR: &str = "/etc/nginx/modsec";
+const MODSEC_SITES_DIR: &str = "/etc/nginx/modsec/sites";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -29,6 +33,8 @@ fn main() -> ExitCode {
         Some("log-limits") => run(phase_log_limits()),
         Some("nginx-conf") => run(phase_nginx_conf()),
         Some("http-flood") => run(phase_http_flood()),
+        Some("modsec-conf") => run(phase_modsec_conf()),
+        Some("waf-default-rules") => run(phase_waf_default_rules()),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -46,7 +52,9 @@ fn help() {
     println!("  snpanel-install systemd-units    write and enable the panel's units");
     println!("  snpanel-install log-limits       cap the journal and rotate btmp");
     println!("  snpanel-install nginx-conf       the fastcgi cache and the upgrade map");
-    println!("  snpanel-install http-flood       the shared flood-protection zones\n");
+    println!("  snpanel-install http-flood       the shared flood-protection zones");
+    println!("  snpanel-install modsec-conf      the ModSecurity include chain");
+    println!("  snpanel-install waf-default-rules  the rules every site gets\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -316,6 +324,59 @@ fn phase_http_flood() -> Result<(), String> {
         set_root_owned_0644(path);
     }
     Ok(())
+}
+
+/// Source: `write_waf_default_rules`.
+///
+/// A phase of its own because the shell calls it on two paths: from
+/// `write_modsec_main_conf` on a box that has the rule engine, and on its own
+/// where ModSecurity is not packaged - there the rules are written and never
+/// loaded, so the panel's WAF page can say the engine is unavailable rather
+/// than pretend the rules are in force.
+///
+/// This file has three authors: this, the helper's `waf-update`, and the
+/// panel's per-site copy. The first two are byte-identical and both pinned to
+/// the same fixture.
+fn phase_waf_default_rules() -> Result<(), String> {
+    install_dir(MODSEC_DIR, "root", "root", 0o755);
+    write_conf(
+        nginx_conf::MODSEC_DEFAULT_PATH,
+        nginx_conf::WAF_DEFAULT_RULES,
+    )
+}
+
+/// Source: `write_modsec_main_conf` and `write_modsec_base_conf`.
+///
+/// Three files and the order they include each other in.
+/// `snpanel-custom.conf` is created and never written: whatever an operator
+/// puts in it is theirs, and it is included last so it can override the
+/// defaults.
+fn phase_modsec_conf() -> Result<(), String> {
+    phase_waf_default_rules()?;
+
+    install_dir(MODSEC_DIR, "root", "root", 0o755);
+    install_dir(MODSEC_SITES_DIR, "root", "root", 0o755);
+
+    // `[[ -f /etc/modsecurity/modsecurity.conf ]] && echo "Include ..."`.
+    // The distribution's own configuration carries the engine's defaults, and
+    // a box that has it wants them; one that does not must not get an
+    // `Include` of a file that is not there, which ModSecurity refuses to
+    // start on.
+    let distro_conf = std::path::Path::new(nginx_conf::DISTRO_MODSECURITY_CONF).is_file();
+    write_conf(
+        nginx_conf::MODSEC_BASE_PATH,
+        &nginx_conf::modsec_base_conf(distro_conf),
+    )?;
+
+    // `touch`, never written.
+    if !std::path::Path::new(nginx_conf::MODSEC_CUSTOM_PATH).exists() {
+        write_conf(nginx_conf::MODSEC_CUSTOM_PATH, "")?;
+    }
+
+    write_conf(
+        nginx_conf::MODSEC_MAIN_PATH,
+        &nginx_conf::modsec_main_conf(),
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -703,24 +703,13 @@ configure_fastcgi_cache() {
 # `proxy_set_header Connection $connection_upgrade` in a site config makes
 # nginx fail to start, so this has to exist before any proxy vhost is written.
 
-write_modsec_base_conf() {
-  install -d -o root -g root -m 0755 /etc/nginx/modsec /etc/nginx/modsec/sites
-  {
-    [[ -f /etc/modsecurity/modsecurity.conf ]] && echo "Include /etc/modsecurity/modsecurity.conf"
-    echo "SecRuleEngine On"
-    echo "SecRequestBodyAccess Off"
-  } >/etc/nginx/modsec/snpanel-base.conf
-}
 
 write_modsec_main_conf() {
-  write_waf_default_rules
-  write_modsec_base_conf
-  touch /etc/nginx/modsec/snpanel-custom.conf
-  {
-    echo "Include /etc/nginx/modsec/snpanel-base.conf"
-    echo "Include /etc/nginx/modsec/snpanel-default.conf"
-    echo "Include /etc/nginx/modsec/snpanel-custom.conf"
-  } >/etc/nginx/modsec/snpanel-main.conf
+  # `snpanel-install modsec-conf` writes all three files and the default
+  # rules with them: base, the untouched custom file, and the main include
+  # chain that reads them in order.
+  "${RUST_BIN_DIR}/snpanel-install" modsec-conf \
+    || fail "Could not write the ModSecurity configuration"
 }
 
 write_http_flood_nginx_conf() {
@@ -733,31 +722,17 @@ write_http_flood_nginx_conf() {
 }
 
 write_waf_default_rules() {
-  # Every rule here is `phase:1`, and that is not a style choice. On the nginx
-  # connector a `phase:2` rule never runs - measured on Debian 13 against
-  # ngx_http_modsecurity_module, on GET and on POST, with SecRequestBodyAccess
-  # both Off and On - so it loads, it is counted, the panel shows the WAF as
-  # enabled, and it matches nothing.
+  # `snpanel-install waf-default-rules`. The rules themselves are
+  # `snpanel_installer::nginx_conf::WAF_DEFAULT_RULES`, pinned to
+  # `tests/golden/installer/snpanel-default.conf.expected` - the same fixture
+  # the helper's `waf-update` copy is pinned to, so the two cannot drift.
   #
-  # Two rules here were `phase:2` and were dead on every box this installer
-  # has set up: 1001302 (path traversal) and 1001103 (author enumeration).
-  # Phase 1 has REQUEST_URI and the query-string ARGS, which is what they
-  # inspect.
-  #
-  # This file is also written by the helper's `waf-update`, from its own copy
-  # of the same rules. Two copies, and this is the drift the second one hid.
-  install -d -o root -g root -m 0755 /etc/nginx/modsec
-  cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'
-# SNPanel default WAF rules: lightweight WordPress, Laravel, and PHP probes only.
-SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/\.user\.ini(?:\.|$)|/\.git/|/composer\.(?:json|lock)(?:$|[?])|/(?:phpinfo|info)\.php(?:$|[?])|/(?:config|database|db)\.php\.(?:bak|old|save|txt)(?:$|[?]))" "id:1001301,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP sensitive file probe'"
-SecRule REQUEST_URI|ARGS "@rx (?i)(?:\.\./|\.\.\\|%2e%2e%2f|%252e%252e%252f)" "id:1001302,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP path traversal'"
-SecRule REQUEST_URI "@rx (?i)(?:/(?:c99|r57|shell|cmd|wso)\.php(?:$|[?])|/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin\.php(?:$|[?]))" "id:1001303,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP runtime probe'"
-SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/artisan(?:$|[?])|/server\.php(?:$|[?])|/storage/logs/[^?]*\.log(?:$|[?])|/bootstrap/cache/[^?]*\.php(?:$|[?]))" "id:1001201,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel sensitive path'"
-SecRule REQUEST_URI "@rx (?i)(?:/_ignition/execute-solution(?:$|[?]))" "id:1001202,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel Ignition RCE probe'"
-SecRule REQUEST_URI "@rx (?i)(?:/wp-config\.php(?:\.|$|[?])|/wp-content/(?:uploads|cache|upgrade)/[^?]*\.php(?:$|[?])|/wp-admin/includes/[^?]*\.php(?:$|[?])|/wp-includes/[^?]*\.php(?:$|[?]))" "id:1001101,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress sensitive path'"
-SecRule ARGS:author "@rx ^[0-9]+$" "id:1001103,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress author enumeration'"
-SecRule REQUEST_URI "@rx (?i)(?:/wp-admin/install\.php(?:$|[?])|/wp-admin/setup-config\.php(?:$|[?]))" "id:1001104,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress installer probe'"
-RULES
+  # Every rule is `phase:1`, and that is not a style choice: on the nginx
+  # connector a `phase:2` rule loads, is counted, shows the WAF as enabled and
+  # matches nothing. Two rules here were `phase:2` and were dead on every box
+  # this installer had set up.
+  "${RUST_BIN_DIR}/snpanel-install" waf-default-rules \
+    || fail "Could not write the default WAF rules"
 }
 
 install_waf_engine() {

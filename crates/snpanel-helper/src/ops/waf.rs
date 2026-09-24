@@ -945,24 +945,17 @@ mod tests {
     /// difference `DEFAULT_RULES` documents was with a **third** copy, the
     /// Python service that built the per-site catalogue: it already used
     /// `phase:1` for both rules, so the installer was the only one of the
-    /// three that was wrong. That copy and the bash helper's are both gone
-    /// now, and `install.sh` is the last writer outside this file.
+    /// three that was wrong.
+    ///
+    /// The comparison is against the fixture rather than against the other
+    /// writer. It was `install.sh`'s heredoc until the installer's copy moved
+    /// into `snpanel-install waf-default-rules`; the fixture is the recording
+    /// of those exact bytes and does not move when the code does.
     #[test]
     fn the_installers_copy_of_the_rules_matches_this_one() {
-        const OPEN: &str = "cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'\n";
-        const LABEL: &str = "installer/install.sh";
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let text =
-            std::fs::read_to_string(root.join(LABEL)).unwrap_or_else(|e| panic!("{LABEL}: {e}"));
-        let start = text
-            .find(OPEN)
-            .unwrap_or_else(|| panic!("{LABEL}: no rule heredoc"))
-            + OPEN.len();
-        let end = text[start..]
-            .find("\nRULES\n")
-            .unwrap_or_else(|| panic!("{LABEL}: the heredoc never closes"))
-            + start;
-        compare_rules(LABEL, &text[start..end]);
+        const RECORDED: &str =
+            include_str!("../../../../tests/golden/installer/snpanel-default.conf.expected");
+        compare_rules("tests/golden/installer/snpanel-default.conf", RECORDED);
     }
 
     /// One shell copy of the rule set against `DEFAULT_RULES`.
