@@ -2,7 +2,7 @@
 //!
 //! Called by `--run-backup-schedules`, the one-shot mode a systemd timer
 //! invokes. The unit does **not** call it yet: the Rust binary is installed
-//! as `/usr/local/bin/snpanel-api-rust` and only by `api-cutover.sh`, so
+//! as `/usr/local/bin/snpanel-api-rust` by `install.sh.sh`, so
 //! pointing the timer at it before a box has cut over would stop backups
 //! silently. That one line moves with the cutover; see
 //! [`snpanel_installer::systemd_units::backup_scheduler_service`]. That mode does the same setup the server does — the same

@@ -95,7 +95,7 @@ pub fn cli_files(release_has_rust_cli: bool) -> Vec<Installed> {
 ///
 /// The archive has always carried it — `fetch_rust_binaries` refuses one
 /// without it — but nothing in the installer put it on disk until now, and
-/// both `snpanel-rust.service` and `api-cutover.sh` name this exact path.
+/// `install.sh`, `update.sh` and `snpanelctl` all name this exact path.
 ///
 /// **`/usr/local/bin`, not `sbin`, and 0755 root:root.** The panel's units
 /// run it as the unprivileged `snpanel` user, so it has to be executable by
@@ -189,7 +189,7 @@ mod tests {
 
     /// **The API binary goes where an unprivileged unit can run it.**
     ///
-    /// `snpanel-rust.service` and both scheduler drop-ins run it as
+    /// `snpanel-api.service` and both scheduler units run it as
     /// `User=snpanel`. In `/usr/local/sbin` with the helper's 0750
     /// root:snpanel it would be unreachable, and the panel would fail to
     /// start with a permissions error rather than anything that named the
@@ -217,12 +217,7 @@ mod tests {
     #[test]
     fn the_units_name_the_path_the_installer_writes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer");
-        for name in [
-            "files/snpanel-rust.service",
-            "files/api-cutover.sh",
-            "files/snpanelctl",
-            "install.sh",
-        ] {
+        for name in ["files/snpanelctl", "install.sh", "update.sh"] {
             let Ok(text) = std::fs::read_to_string(root.join(name)) else {
                 eprintln!("skipped: {name} is not there");
                 continue;

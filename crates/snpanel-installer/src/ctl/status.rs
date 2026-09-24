@@ -110,7 +110,8 @@ pub fn restart_order(cut_over: bool) -> Vec<&'static str> {
 /// Which unit serves the panel.
 ///
 /// Source: `panel_unit` in `snpanelctl`, which reads whether `snpanel-rust`
-/// is **enabled** — the fact `api-cutover.sh` sets and its rollback clears.
+/// is **enabled**. A box installed since the panel became the binary has
+/// no such unit and falls through to `snpanel-api`, which runs it.
 /// Not whether `/usr/local/bin/snpanel-api-rust` exists: a rolled-back box
 /// still has the binary, and restarting the Rust unit there would undo the
 /// rollback.

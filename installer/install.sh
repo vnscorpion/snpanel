@@ -975,7 +975,7 @@ sudoers_understands_requiretty() {
 #
 # A fresh install has to end with the Rust helper in place. It did not: this
 # script installed the bash helper and the Rust one arrived later, through
-# installer/files/helper-cutover.sh, which is a migration script rather than
+# a migration script rather than
 # part of installing the panel. Stage D's exit says a new installation carries
 # no bash helper, and that clause was not met while this file said otherwise.
 #
@@ -1005,7 +1005,7 @@ fi
 
 install_rust_helper() {
   # The bash helper stays, at the name the Rust one `exec`s for a verb it does
-  # not answer. That is the same arrangement helper-cutover.sh creates; doing
+  # not answer. Doing
   # it here means a fresh box is never in the state the cutover exists to move
   # it out of.
   install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" \
@@ -1074,7 +1074,7 @@ install_panel_cli() {
     install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel-cli
   fi
   # The API binary, which the archive has always carried and nothing ever
-  # installed: snpanel-rust.service and api-cutover.sh both name this path,
+  # installed: the unit written below names this path,
   # and until now only out-of-band deploy scripts created it.
   #
   # /usr/local/bin, not sbin, and 0755 root:root: the panel's own units run

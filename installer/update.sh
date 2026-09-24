@@ -129,9 +129,9 @@ DEFAULT_SOURCE_DIR="/opt/snpanel-source"           # Dev/branch checkout dir onl
 # HTTP. Which unit to *restart* has only one right answer: the one that is
 # serving.
 #
-# `api-cutover.sh` enables snpanel-rust and disables snpanel-api; its
-# rollback does the reverse. So the enabled state is the fact to read - not
-# whether the binary exists, which a rolled-back box still has.
+# A box installed since the panel became the Rust binary has no
+# `snpanel-rust` unit and falls through to `snpanel-api`, which runs that
+# binary. One that cut over while both existed still has both.
 #
 # Restarting the wrong one is two failures at once. The change does not take
 # effect, because the process serving the panel never reloaded it; and
@@ -1274,7 +1274,7 @@ fi
 # installed with, indefinitely, with nothing saying so.
 #
 # Only the API binary and the CLI are refreshed here. The Rust *helper* is
-# deliberately left to helper-cutover.sh: which path it occupies depends on
+# deliberately left alone: which path it occupies depends on
 # whether that cutover has been done, and the arrangement below already
 # threads that needle for the bash fallback. Replacing the privileged binary
 # on the same pass is a separate change with its own failure modes.

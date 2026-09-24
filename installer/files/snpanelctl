@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/snpanel}"
 ENV_FILE="${APP_DIR}/backend/.env"
-# The Rust API binary, installed by api-cutover.sh and by nothing else. The
+# The Rust API binary, which `install.sh` installs. The
 # one-shot verbs below prefer it when it is there and fall back to the venv
 # when it is not, which is what keeps this script working on a box that has
 # not cut over.
@@ -112,10 +112,11 @@ validate_port() {
 
 # Which unit serves the panel on this box.
 #
-# `api-cutover.sh` enables snpanel-rust and disables snpanel-api; its
-# rollback does the reverse. So the *enabled* state of snpanel-rust is the
-# fact to read - not whether /usr/local/bin/snpanel-api-rust exists, which a
-# rolled-back box still has.
+# A box installed since the panel became the Rust binary has no
+# `snpanel-rust` unit at all and falls through to `snpanel-api`, which runs
+# that binary. A box that cut over while both existed still has both, and
+# the enabled state is what tells them apart. Not whether
+# /usr/local/bin/snpanel-api-rust exists: every box has it now.
 panel_unit() {
   if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then
     echo snpanel-rust
@@ -432,9 +433,7 @@ change_admin_password() {
   # never reaches a command line.
   export SNPANEL_NEW_ADMIN_PASSWORD="$password"
   # Rust where it is installed, Python where it is not. `snpanel-api-rust`
-  # arrives with `api-cutover.sh`, so a box that has not cut over does not
-  # have it - and a rescue tool that could only change the password on a
-  # cut-over box would stop working exactly where it is needed.
+  # is installed with the panel, so every box has it.
   if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
     runuser --whitelist-environment=SNPANEL_NEW_ADMIN_PASSWORD -u snpanel -- \
       env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
