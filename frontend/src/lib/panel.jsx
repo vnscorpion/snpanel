@@ -2,7 +2,7 @@
 // few small components the pages share. Moved here unchanged so the pages
 // can import them without importing App.jsx, which imports the pages.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { msg } from '../i18n/index.jsx';
+import { msg, useT } from '../i18n/index.jsx';
 import { AlertCircle, Check, Moon, Sun, X } from 'lucide-react';
 
 export const API = import.meta.env.VITE_API_URL || '/api';
@@ -121,8 +121,9 @@ export function useTheme() {
 }
 
 export function ThemeToggle({ theme, onToggle, className = '' }) {
+  const t = useT();
   const isDark = theme === 'dark';
-  const label = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+  const label = isDark ? t('Switch to light mode') : t('Switch to dark mode');
   return <button
     type="button"
     className={`theme-toggle ${className}`.trim()}

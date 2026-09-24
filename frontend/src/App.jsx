@@ -3366,33 +3366,33 @@ function App() {
   }, [page]);
 
   function roleLabel(role) {
-    return role === 'admin' ? 'Admin' : 'End user';
+    return role === 'admin' ? t('Admin') : t('End user');
   }
 
   const mainNavItems = [
-    ['dashboard', 'Dashboard', Home],
-    ['websites', 'Websites', Globe],
-    ...(appsFeatureEnabled ? [['applications', 'Applications', Server]] : []),
-    ['ssl', 'SSL', Lock],
-    ['databases', 'Database', Database],
-    ['cron', 'Cron', Clock],
-    ['files', 'File manager', FolderOpen],
-    ['backups', 'Backups', Archive],
-    ...(isAdmin ? [['users', 'Panel users', Users]] : []),
+    ['dashboard', t('Dashboard'), Home],
+    ['websites', t('Websites'), Globe],
+    ...(appsFeatureEnabled ? [['applications', t('Applications'), Server]] : []),
+    ['ssl', t('SSL'), Lock],
+    ['databases', t('Database'), Database],
+    ['cron', t('Cron'), Clock],
+    ['files', t('File manager'), FolderOpen],
+    ['backups', t('Backups'), Archive],
+    ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
   ];
 
   const settingsNavItems = [
-    ...(isAdmin ? [['settings', 'Panel settings', SettingsIcon]] : []),
-    ...(isAdmin ? [['api-tokens', 'API Tokens', KeyRound]] : []),
-    ['security', 'Security', Shield],
-    ...(isAdmin ? [['php', 'PHP config', Code2]] : []),
-    ...(isAdmin ? [['firewall', 'Firewall', Shield]] : []),
-    ['waf', 'WAF', Shield],
-    ...(isAdmin ? [['malware', 'Malware Scanner', Search]] : []),
-    ...(isAdmin ? [['access-logs', 'Access Logs', FileText]] : []),
-    ...(isAdmin ? [['updates', 'Updates', RefreshCw]] : []),
-    ...(isAdmin ? [['addons', 'Addons', Boxes]] : []),
-    ['services', 'Services Status', Server],
+    ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
+    ...(isAdmin ? [['api-tokens', t('API Tokens'), KeyRound]] : []),
+    ['security', t('Security'), Shield],
+    ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
+    ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
+    ['waf', t('WAF'), Shield],
+    ...(isAdmin ? [['malware', t('Malware Scanner'), Search]] : []),
+    ...(isAdmin ? [['access-logs', t('Access Logs'), FileText]] : []),
+    ...(isAdmin ? [['updates', t('Updates'), RefreshCw]] : []),
+    ...(isAdmin ? [['addons', t('Addons'), Boxes]] : []),
+    ['services', t('Services Status'), Server],
   ];
 
   const navItems = [...mainNavItems, ...settingsNavItems];
@@ -3591,28 +3591,28 @@ function App() {
   function renderStandaloneEditor() {
     const editorLineCount = Math.max(1, String(fileContent || '').split('\n').length);
     const editorMode = editorLanguage(filePath);
-    const siteLabel = currentSite?.domain || (selectedWebsiteId ? `Website #${selectedWebsiteId}` : 'Website');
+    const siteLabel = currentSite?.domain || (selectedWebsiteId ? t('Website #{id}', { id: selectedWebsiteId }) : t('Website'));
     return <main className="standalone-editor-page">
       <header className="standalone-editor-top">
         <div className="standalone-editor-title">
-          <strong>{filePath || 'No file selected'}</strong>
+          <strong>{filePath || t('No file selected')}</strong>
           <span>{siteLabel}</span>
         </div>
         <div className="standalone-editor-actions">
           <span className="editor-chip">{editorMode}</span>
-          <span className="editor-chip">{editorLineCount} line(s)</span>
-          <span className="editor-chip">Ln {editorCursor.line}, Col {editorCursor.column}</span>
-          <button disabled={!selectedWebsiteId || !!loading} onClick={() => readFile(filePath)}><RefreshCw size={14}/> Reload</button>
-          <button disabled={!selectedWebsiteId || !!loading} onClick={writeFile}>Save</button>
+          <span className="editor-chip">{t('{count} line(s)', { count: editorLineCount })}</span>
+          <span className="editor-chip">{t('Ln {line}, Col {column}', { line: editorCursor.line, column: editorCursor.column })}</span>
+          <button disabled={!selectedWebsiteId || !!loading} onClick={() => readFile(filePath)}><RefreshCw size={14}/> {t('Reload')}</button>
+          <button disabled={!selectedWebsiteId || !!loading} onClick={writeFile}>{t('Save')}</button>
           <button disabled={!selectedWebsiteId || !filePath || !!loading} onClick={() => downloadFile(filePath)}><Download size={14}/></button>
           <ThemeToggle theme={theme} onToggle={toggleTheme}/>
-          <button className="secondary-light" onClick={() => window.close()}><X size={14}/> Close</button>
+          <button className="secondary-light" onClick={() => window.close()}><X size={14}/> {t('Close')}</button>
         </div>
       </header>
       {loading && <div className="loading">{loading}</div>}
       {renderNotifications()}
       <section className="standalone-editor-body">
-        <Suspense fallback={<div className="loading">Loading editor…</div>}>
+        <Suspense fallback={<div className="loading">{t('Loading editor…')}</div>}>
           <CodeEditor
             value={fileContent}
             mode={editorMode}
@@ -4114,9 +4114,9 @@ function App() {
           <div className="login-brand">
             {renderBrandMark('login-brand-mark')}
             <div>
-              <p className="eyebrow">Server Management Panel</p>
+              <p className="eyebrow">{t('Server Management Panel')}</p>
               <h1>{panelSettings.app_name || 'SNPanel'}</h1>
-              <p className="hint">Manage websites, databases, backups, SSL, and services.</p>
+              <p className="hint">{t('Manage websites, databases, backups, SSL, and services.')}</p>
             </div>
           </div>
           <div className="login-toggles">
@@ -4125,14 +4125,14 @@ function App() {
           </div>
         </div>
         <div className="login-form">
-          <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Username" autoComplete="username" />
-          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password" autoComplete="current-password" onKeyDown={e => { if (e.key === 'Enter') login(); }} />
-          {needsTwoFactor && <input value={otpCode} onChange={e => setOtpCode(e.target.value)} placeholder="Authentication code" inputMode="numeric" autoComplete="one-time-code" onKeyDown={e => { if (e.key === 'Enter') login(); }} />}
+          <input value={username} onChange={e => setUsername(e.target.value)} placeholder={t('Username')} autoComplete="username" />
+          <input value={password} onChange={e => setPassword(e.target.value)} placeholder={t('Password')} type="password" autoComplete="current-password" onKeyDown={e => { if (e.key === 'Enter') login(); }} />
+          {needsTwoFactor && <input value={otpCode} onChange={e => setOtpCode(e.target.value)} placeholder={t('Authentication code')} inputMode="numeric" autoComplete="one-time-code" onKeyDown={e => { if (e.key === 'Enter') login(); }} />}
           <label className="login-remember">
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
-            Keep me signed in for 30 days
+            {t('Keep me signed in for 30 days')}
           </label>
-          <button disabled={!!loading || !username || !password} onClick={login}>{loading ? 'Logging in...' : 'Login'}</button>
+          <button disabled={!!loading || !username || !password} onClick={login}>{loading ? t('Logging in...') : t('Login')}</button>
         </div>
       </section>
       {renderNotifications()}
@@ -4146,16 +4146,16 @@ function App() {
   return <main className="app-shell">
     <section className="layout">
       {mobileMenuOpen && <div className="mobile-nav-backdrop" onClick={() => setMobileMenuOpen(false)} aria-hidden="true"></div>}
-      <aside className={`sidebar ${mobileMenuOpen ? 'open' : ''}`} role="navigation" aria-label="Main navigation">
+      <aside className={`sidebar ${mobileMenuOpen ? 'open' : ''}`} role="navigation" aria-label={t('Main navigation')}>
         <div className="sidebar-head">
           <div className="sidebar-brand">
             {renderBrandMark()}
             <div>
               <strong>{panelSettings.app_name || 'SNPanel'}</strong>
-              <small>Server Panel</small>
+              <small>{t('Server Panel')}</small>
             </div>
           </div>
-          <button className="sidebar-close" onClick={() => setMobileMenuOpen(false)} aria-label="Close menu"><X size={18}/></button>
+          <button className="sidebar-close" onClick={() => setMobileMenuOpen(false)} aria-label={t('Close menu')}><X size={18}/></button>
         </div>
         <nav className="sidebar-nav">
           {mainNavItems.map(([key, label, Icon]) => <button key={key} type="button" className={navPage === key ? 'active' : ''} onClick={() => navigateToPage(key)} aria-current={navPage === key ? 'page' : undefined}>
@@ -4163,7 +4163,7 @@ function App() {
           </button>)}
           <div className={`sidebar-nav-group ${settingsMenuOpen ? 'open' : ''}`}>
             <button className={`sidebar-group-toggle ${settingsIsActive ? 'active' : ''}`} onClick={() => setSettingsMenuOpen(open => !open)} aria-expanded={settingsMenuOpen} aria-controls="settings-submenu">
-              <SettingsIcon size={17}/><span>Settings</span><ChevronDown className="sidebar-group-chevron" size={16}/>
+              <SettingsIcon size={17}/><span>{t('Settings')}</span><ChevronDown className="sidebar-group-chevron" size={16}/>
             </button>
             {settingsMenuOpen && <div className="sidebar-subnav" id="settings-submenu">
               {settingsNavItems.map(([key, label, Icon]) => <button key={key} type="button" className={navPage === key ? 'active' : ''} onClick={() => navigateToPage(key)} aria-current={navPage === key ? 'page' : undefined}>
@@ -4176,24 +4176,24 @@ function App() {
       </aside>
       <div className="content">
         <section className="topbar">
-          <button className="mobile-nav-toggle" onClick={() => setMobileMenuOpen(o => !o)} aria-expanded={mobileMenuOpen} aria-label="Toggle navigation">
-            <Menu size={20}/><span><ActiveIcon size={17}/>{activeNavItem?.[1] || 'Menu'}</span>
+          <button className="mobile-nav-toggle" onClick={() => setMobileMenuOpen(o => !o)} aria-expanded={mobileMenuOpen} aria-label={t('Toggle navigation')}>
+            <Menu size={20}/><span><ActiveIcon size={17}/>{activeNavItem?.[1] || t('Menu')}</span>
           </button>
           <div className="page-title">
-            <p className="eyebrow">Server Management Panel</p>
+            <p className="eyebrow">{t('Server Management Panel')}</p>
             <h1>{activeNavItem?.[1] || panelSettings.app_name || 'SNPanel'}</h1>
           </div>
           <div className="login logged-in">
-            <div className="account-pill" title={accountLabel}><span>Logged in as</span><strong>{accountLabel}</strong></div>
+            <div className="account-pill" title={accountLabel}><span>{t('Logged in as')}</span><strong>{accountLabel}</strong></div>
             <div className="top-actions">
               <LocaleSwitch className="theme-toggle"/>
               <ThemeToggle theme={theme} onToggle={toggleTheme}/>
-              <button className="secondary compact-btn" onClick={logout} aria-label="Logout" title="Logout"><LogOut size={15}/><span className="btn-label">Logout</span></button>
+              <button className="secondary compact-btn" onClick={logout} aria-label={t('Logout')} title={t('Logout')}><LogOut size={15}/><span className="btn-label">{t('Logout')}</span></button>
             </div>
           </div>
         </section>
         <div className="content-body">
-          {<PanelContext.Provider value={panelContext()}><Suspense fallback={<div className="loading">Loading…</div>}>{renderPage()}</Suspense></PanelContext.Provider>}
+          {<PanelContext.Provider value={panelContext()}><Suspense fallback={<div className="loading">{t('Loading…')}</div>}>{renderPage()}</Suspense></PanelContext.Provider>}
           {loading && <div className="loading"><span></span>{loading}</div>}
         </div>
       </div>
