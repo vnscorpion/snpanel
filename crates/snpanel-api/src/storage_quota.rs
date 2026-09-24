@@ -101,6 +101,19 @@ pub fn path_usage_bytes(path: impl AsRef<Path>) -> u64 {
     total
 }
 
+/// [`path_usage_bytes`] over several trees, on the blocking pool.
+///
+/// A walk over a customer's files is thousands of `stat` calls. Run on an
+/// async worker it holds that worker - and every request queued behind it -
+/// until it finishes; the user list used to walk every account that way in
+/// turn, and every write's quota check still walks its owner's. Same trees,
+/// same sum, somewhere that does not stall the rest of the panel.
+pub async fn path_usage_bytes_blocking(paths: Vec<std::path::PathBuf>) -> u64 {
+    tokio::task::spawn_blocking(move || paths.iter().map(path_usage_bytes).sum())
+        .await
+        .expect("a storage walk panicked")
+}
+
 /// Source: `website_storage_used_bytes`.
 pub fn website_storage_used_bytes(root_path: &str) -> u64 {
     if root_path.is_empty() {
@@ -209,7 +222,7 @@ pub async fn app_storage_used_bytes(
         return 0;
     }
 
-    let mut total = 0u64;
+    let mut directories: Vec<std::path::PathBuf> = Vec::new();
     let mut linux_users: Vec<String> = Vec::new();
     for app in &apps {
         // Source: the `except (ValueError, AttributeError): continue` - an app
@@ -227,11 +240,12 @@ pub async fn app_storage_used_bytes(
         let Some(directory) = app_directory(owner.as_str(), &app.name) else {
             continue;
         };
-        total += path_usage_bytes(directory);
+        directories.push(directory);
         if !linux_users.iter().any(|u| u == owner.as_str()) {
             linux_users.push(owner.as_str().to_string());
         }
     }
+    let mut total = path_usage_bytes_blocking(directories).await;
     for linux_user in &linux_users {
         total += volume_usage_bytes(dry_run, linux_user, true).await;
     }
@@ -263,10 +277,13 @@ pub async fn user_storage_used_bytes(
         .list(Some(user_id), "")
         .await
         .unwrap_or_default();
-    let mut total: u64 = websites
+    // `website_storage_used_bytes` for each: an empty root counts nothing.
+    let roots: Vec<std::path::PathBuf> = websites
         .iter()
-        .map(|w| website_storage_used_bytes(&w.root_path))
-        .sum();
+        .filter(|w| !w.root_path.is_empty())
+        .map(|w| std::path::PathBuf::from(&w.root_path))
+        .collect();
+    let mut total = path_usage_bytes_blocking(roots).await;
     total += app_storage_used_bytes(dry_run, db, user_id, application_installed).await;
     total
 }

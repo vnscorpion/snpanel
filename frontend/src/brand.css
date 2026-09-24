@@ -32,6 +32,8 @@ h1,h2{color:var(--brand-navy)}
 .resource-card small{color:var(--text-muted);font-size:var(--text-sm);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .user-metric{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 10px;background:var(--surface-alt);border:1px solid var(--border);border-radius:999px;color:var(--text-secondary);font-size:var(--text-sm);font-weight:700;line-height:1;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis}
 .user-metric svg{width:13px;height:13px;flex:none;color:var(--primary)}
+/* A storage figure still on its way: the list shows first, each figure after. */
+.user-metric.usage-pending{color:var(--text-muted);font-weight:600}
 .user-edit-panel{background:var(--surface-alt);border-color:var(--primary-border)}
 .panel-settings-grid{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.2fr) 120px max-content;gap:10px;align-items:end}
 .panel-settings-compact{grid-template-columns:minmax(190px,1fr) minmax(220px,1.2fr) max-content max-content}

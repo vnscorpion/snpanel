@@ -237,6 +237,9 @@ function App() {
   const t = useT();
   // Which loadPanelSettings() call is the latest. See there.
   const panelSettingsRequest = useRef(0);
+  // Which loadUsers() call is the latest: a storage figure fetched for an
+  // older list must not land on a newer one.
+  const usersRequest = useRef(0);
   const isAdmin = currentUser?.role === 'admin';
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
@@ -794,13 +797,30 @@ function App() {
     }
   }
 
+  // The list at once, without the storage walk (`?usage=0`) that kept it
+  // waiting on every account's files; then, on the Users page, each user's
+  // figure from `/users/{id}/usage`, four at a time, filled in as it comes.
   async function loadUsers() {
-    const data = await request('/users');
-    if (data) {
-      setUsers(data);
-      if (!selectedBackupUserId && data[0]) setSelectedBackupUserId(String(data[0].id));
-      setNewBackupSchedule(prev => (!prev.all_users && (!prev.user_ids || prev.user_ids.length === 0) && data[0]) ? ({ ...prev, user_ids: [String(data[0].id)] }) : prev);
-    }
+    const call = ++usersRequest.current;
+    const data = await request('/users?usage=0');
+    if (!data || call !== usersRequest.current) return;
+    setUsers(data);
+    if (!selectedBackupUserId && data[0]) setSelectedBackupUserId(String(data[0].id));
+    setNewBackupSchedule(prev => (!prev.all_users && (!prev.user_ids || prev.user_ids.length === 0) && data[0]) ? ({ ...prev, user_ids: [String(data[0].id)] }) : prev);
+    if (page === 'users') loadUserUsage(data.map(user => user.id), call);
+  }
+
+  async function loadUserUsage(ids, call) {
+    const queue = [...ids];
+    const next = async () => {
+      while (queue.length > 0) {
+        const id = queue.shift();
+        const figure = await request(`/users/${id}/usage`, { silent: true });
+        if (call !== usersRequest.current) return;
+        if (figure) setUsers(prev => prev.map(user => (user.id === id ? { ...user, ...figure } : user)));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, next));
   }
 
   async function loadResourceUsage() {

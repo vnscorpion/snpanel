@@ -40,6 +40,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/users", get(list).post(create).fallback(crate::fallback))
         .route("/users/me", get(me).fallback(crate::fallback))
+        .route(
+            "/users/{user_id}/usage",
+            get(usage).fallback(crate::fallback),
+        )
         .route("/users/audit/log", get(audit_log).fallback(crate::fallback))
         .route(
             "/users/{user_id}",
@@ -71,11 +75,42 @@ fn require_admin(current: &CurrentUser) -> Result<(), Response> {
     }
 }
 
+/// How a user record gets its storage figure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StorageFigure {
+    /// Measured now - every caller but the list.
+    Fresh,
+    /// Five minutes' cache - the list, as Python's `cached_usage=True`.
+    Cached,
+    /// Not measured: `null`, for the page to ask `/users/{id}/usage` after.
+    Later,
+}
+
+/// `storage_used_bytes`, `storage_limit_bytes` and `storage_percent`.
+///
+/// With no figure the used bytes and the percentage are `null` and the limit
+/// is still given: the limit is a setting, read from the row; only the usage
+/// is a measurement.
+fn storage_fields(used: Option<u64>, role: &str, storage_limit_mb: i64) -> (Value, Value, Value) {
+    let limit = storage::limit_bytes(role, storage_limit_mb);
+    match used {
+        Some(used) => {
+            let usage = storage::Usage::new(used as i64, limit);
+            (
+                json!(usage.used_bytes),
+                json!(usage.limit_bytes),
+                json!(usage.percent),
+            )
+        }
+        None => (Value::Null, json!(limit), Value::Null),
+    }
+}
+
 /// Source: `_user_out`.
-/// `cached_usage` matches Python's `_user_out(..., cached_usage=)`: true only
-/// for the user **list**, which walks every account's files at once. Every
-/// other caller asks for a fresh figure.
-async fn user_out(state: &AppState, user: &User, cached_usage: bool) -> Value {
+/// [`StorageFigure::Cached`] matches Python's `_user_out(..., cached_usage=)`:
+/// only the user **list** asks for it, since it walks every account's files
+/// at once. Every other caller asks for a fresh figure.
+async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value {
     let package_name = state
         .db
         .users()
@@ -86,27 +121,29 @@ async fn user_out(state: &AppState, user: &User, cached_usage: bool) -> Value {
     // Applications as well as websites — see `auth::user_storage` for why
     // reporting less than the quota check enforces is the bug this fixes.
     let application_installed = super::addons::application_installed();
-    let used = if cached_usage {
-        crate::storage_quota::user_storage_used_bytes_cached(
-            state.settings.command_dry_run,
-            &state.db,
-            user.id,
-            application_installed,
-        )
-        .await
-    } else {
-        crate::storage_quota::user_storage_used_bytes(
-            state.settings.command_dry_run,
-            &state.db,
-            user.id,
-            application_installed,
-        )
-        .await
+    let used = match figure {
+        StorageFigure::Cached => Some(
+            crate::storage_quota::user_storage_used_bytes_cached(
+                state.settings.command_dry_run,
+                &state.db,
+                user.id,
+                application_installed,
+            )
+            .await,
+        ),
+        StorageFigure::Fresh => Some(
+            crate::storage_quota::user_storage_used_bytes(
+                state.settings.command_dry_run,
+                &state.db,
+                user.id,
+                application_installed,
+            )
+            .await,
+        ),
+        StorageFigure::Later => None,
     };
-    let usage = storage::Usage::new(
-        used as i64,
-        storage::limit_bytes(&user.role, user.storage_limit_mb),
-    );
+    let (used_bytes, limit_bytes, percent) =
+        storage_fields(used, &user.role, user.storage_limit_mb);
 
     json!({
         "id": user.id,
@@ -118,17 +155,29 @@ async fn user_out(state: &AppState, user: &User, cached_usage: bool) -> Value {
         "package_name": package_name,
         "website_limit": user.website_limit,
         "storage_limit_mb": user.storage_limit_mb,
-        "storage_used_bytes": usage.used_bytes,
-        "storage_limit_bytes": usage.limit_bytes,
-        "storage_percent": usage.percent,
+        "storage_used_bytes": used_bytes,
+        "storage_limit_bytes": limit_bytes,
+        "storage_percent": percent,
         "totp_enabled": user.totp_enabled,
     })
 }
 
-async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
+async fn list(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     if let Err(r) = require_admin(&current) {
         return r;
     }
+    // Not in the Python. `?usage=0` leaves out the one column that walks
+    // every account's files, so the page can show the users at once and ask
+    // `/users/{id}/usage` for each figure after. Without it, the list is the
+    // Python's, figures and all.
+    let figure = match params.get("usage").map(String::as_str) {
+        Some("0" | "false" | "no") => StorageFigure::Later,
+        _ => StorageFigure::Cached,
+    };
     let users = match state.db.users().list_all().await {
         Ok(u) => u,
         Err(e) => {
@@ -138,14 +187,51 @@ async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
     };
     let mut out = Vec::with_capacity(users.len());
     for user in &users {
-        out.push(user_out(&state, user, true).await);
+        out.push(user_out(&state, user, figure).await);
     }
     axum::Json(out).into_response()
 }
 
 /// Every user may read their own record - no role check, as in the Python.
 async fn me(State(state): State<AppState>, current: CurrentUser) -> Response {
-    axum::Json(user_out(&state, &current.user, false).await).into_response()
+    axum::Json(user_out(&state, &current.user, StorageFigure::Fresh).await).into_response()
+}
+
+/// `GET /users/{user_id}/usage` - one user's storage figure, the list's way
+/// (five minutes' cache). Not in the Python: it is the other half of the
+/// list's `?usage=0`.
+async fn usage(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(user_id): Path<i64>,
+) -> Response {
+    if let Err(r) = require_admin(&current) {
+        return r;
+    }
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found("User not found"),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    let used = crate::storage_quota::user_storage_used_bytes_cached(
+        state.settings.command_dry_run,
+        &state.db,
+        user.id,
+        super::addons::application_installed(),
+    )
+    .await;
+    let (used_bytes, limit_bytes, percent) =
+        storage_fields(Some(used), &user.role, user.storage_limit_mb);
+    axum::Json(json!({
+        "id": user.id,
+        "storage_used_bytes": used_bytes,
+        "storage_limit_bytes": limit_bytes,
+        "storage_percent": percent,
+    }))
+    .into_response()
 }
 
 /// What a user's limits end up as, given a package and the request's own
@@ -342,7 +428,7 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         &updated.username,
     )
     .await;
-    axum::Json(user_out(&state, &updated, false).await).into_response()
+    axum::Json(user_out(&state, &updated, StorageFigure::Fresh).await).into_response()
 }
 
 async fn reset_two_factor(
@@ -1185,7 +1271,7 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Ok(Some(u)) => u,
         _ => return internal_error(),
     };
-    axum::Json(user_out(&state, &created, false).await).into_response()
+    axum::Json(user_out(&state, &created, StorageFigure::Fresh).await).into_response()
 }
 
 /// `DELETE /users/{user_id}`.
@@ -1496,6 +1582,35 @@ async fn forget_user_in_schedules(state: &AppState, user_id: i64) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_without_figures_still_gives_each_limit() {
+        // `?usage=0`: the measurement is null, the setting is not.
+        assert_eq!(
+            storage_fields(None, "end_user", 100),
+            (Value::Null, json!(100 * 1024 * 1024), Value::Null)
+        );
+        // An administrator has no limit, figure or not.
+        assert_eq!(
+            storage_fields(None, "admin", 100),
+            (Value::Null, Value::Null, Value::Null)
+        );
+        // With a figure, the three fields are the list's own.
+        assert_eq!(
+            storage_fields(Some(25 * 1024 * 1024), "end_user", 100),
+            (
+                json!(25 * 1024 * 1024),
+                json!(100 * 1024 * 1024),
+                json!(25.0)
+            )
+        );
+        // A limit of zero is a limit: the used bytes are there, the
+        // percentage is the helper's 0.0 for a zero limit, as before.
+        assert_eq!(
+            storage_fields(Some(1), "end_user", 0),
+            (json!(1), json!(0), json!(0.0))
+        );
+    }
 
     /// Every `_decode_schedule_user_ids` verdict the real Python gave.
     ///
