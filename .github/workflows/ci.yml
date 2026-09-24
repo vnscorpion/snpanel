@@ -121,6 +121,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `fetch_rust_binaries` prefers a locally built tree over a release
+      # asset, so building here is what makes the installer take its Rust
+      # path. Without this the job silently tests the fallback: no release
+      # has ever published the archive, so the fetch 404s every time.
+      - name: Build the binaries the installer will use
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo build --release --locked --target x86_64-unknown-linux-musl \
+            -p snpanel-helper -p snpanel-api -p snpanel-cli
+
+      - name: The installer sees them
+        run: |
+          ls -l target/x86_64-unknown-linux-musl/release/snpanel-helper \
+                target/x86_64-unknown-linux-musl/release/snpanel-api \
+                target/x86_64-unknown-linux-musl/release/snpanel \
+                target/x86_64-unknown-linux-musl/release/snpanel-extract
+
       - name: Run install.sh unattended
         # PANEL_URL supplies the hostname and port, so no prompt is reached;
         # an IP for a hostname also pins ENABLE_SSL=no, which keeps Let's
