@@ -121,12 +121,6 @@ fn socket_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("snpanel-test-{}-{}.sock", name, std::process::id()))
 }
 
-/// The CLI must pass an unported operation to the bash helper, and say so.
-///
-/// This is what makes the cutover safe, so it is worth a test that does not
-/// need a real installation: with no bash helper present the message has to
-/// name both the operation and the missing fallback, rather than failing
-/// vaguely.
 /// An operation nothing answers is reported the way the bash reported one.
 ///
 /// This test used to name `site-runtime-ensure` and check that the helper

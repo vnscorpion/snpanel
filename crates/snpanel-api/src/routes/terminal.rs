@@ -25,8 +25,8 @@
 //! because the allow-list stops looking like the whole story.
 //!
 //! The helper's copy was a `case` statement in `snpanel-helper.sh` until that
-//! script was deleted; it is `ops::terminal` now, and the pairing is the
-//! same.
+//! script was deleted. It is `snpanel_ipc::TERMINAL_ALLOWLIST` now, enforced
+//! by the helper's `ops::terminal`, and the pairing is the same.
 
 use std::path::{Path, PathBuf};
 

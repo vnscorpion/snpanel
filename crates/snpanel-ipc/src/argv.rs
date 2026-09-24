@@ -22,12 +22,15 @@ use snpanel_core::{AppName, DockerImage, IpOrCidr, PanelUsername, Port, SitePath
 /// Why an argument list did not become a request.
 ///
 /// The two cases are not interchangeable, and the difference decides what the
-/// caller does next. [`InvocationError::Unmapped`] means this build does not answer
-/// the verb, so the caller hands it to the bash helper - that fallthrough is
-/// the cutover mechanism itself. [`InvocationError::Invalid`] means the verb *is*
-/// answered here and its arguments were refused, and the caller must report
-/// that rather than try the bash: an argument rejected here must not get a
-/// second hearing from an implementation that may parse it more loosely.
+/// caller does next. [`InvocationError::Unmapped`] means this build does not
+/// answer the verb. That used to send the caller to the bash helper and was
+/// the cutover mechanism; with the script gone it means the verb is unknown,
+/// and the panel's socket path still falls through to sudo for it because the
+/// same fallthrough carries a helper that is not listening.
+/// [`InvocationError::Invalid`] means the verb *is* answered here and its
+/// arguments were refused, and the caller must report that rather than retry
+/// it by another route: an argument rejected here must not get a second
+/// hearing from an implementation that may parse it more loosely.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvocationError {
     Unmapped(String),
@@ -43,7 +46,8 @@ impl InvocationError {
         Self::Invalid(message.into())
     }
 
-    /// Whether the bash helper should be given this call instead.
+    /// Whether no arm answers this verb at all, as opposed to an arm having
+    /// refused its arguments.
     pub fn is_unmapped(&self) -> bool {
         matches!(self, Self::Unmapped(_))
     }
@@ -211,10 +215,16 @@ impl HelperRequest {
     /// Map `<verb> <arg>...` onto a request.
     ///
     /// `stdin` is *called* only by the verbs that carry a payload, which is
-    /// why it is a closure and not bytes. A verb this build does not answer is
-    /// handed to the bash helper, and the bash helper reads that payload
-    /// itself - so reading it here to decide would consume the very thing the
-    /// fallthrough needs. Laziness is the guarantee, not an optimisation.
+    /// why it is a closure and not bytes.
+    ///
+    /// It was written that way for the fallthrough: a verb this build did not
+    /// answer went to the bash helper, which read the payload itself, so
+    /// reading it here to decide would have consumed the very thing the
+    /// fallthrough needed. The fallthrough is gone and the laziness is still
+    /// load-bearing, for a plainer reason - the CLI's closure reads the real
+    /// stdin, and reading it before knowing whether the verb wants it hangs
+    /// `snpanel-helper firewall-status` typed at a terminal until the
+    /// operator presses ctrl-D.
     pub fn from_argv(
         argv: &[String],
         stdin: impl FnOnce() -> Vec<u8>,
@@ -480,12 +490,14 @@ impl HelperRequest {
                 };
                 HelperRequest::WafCrsMode { mode }
             }
-            // The bash answers three names per arm; the two older ones are
-            // from when this was an nginx and then a ufw feature. A verb the
-            // mapping does not know falls through to the bash and still
-            // works, so the aliases are here for the same reason the bash
-            // keeps them: an operator's muscle memory and a script somebody
-            // wrote years ago.
+            // The bash answered three names per arm; the two older ones are
+            // from when this was an nginx and then a ufw feature. They are
+            // kept for the reason the bash kept them - an operator's muscle
+            // memory, and a script somebody wrote years ago - and keeping
+            // them costs a line each. It used to cost nothing, because an
+            // unmapped name fell through to a script that answered it; there
+            // is no script now, so an alias that is missing here is a name
+            // that has stopped working.
             ("certbot-dns-cloudflare-install", 0) => HelperRequest::CertbotDnsCloudflareInstall,
             ("maldet-scan", n) if n >= 4 => HelperRequest::MaldetScan {
                 job: rest[0].clone(),
@@ -1202,9 +1214,10 @@ mod tests {
 
     /// The verbs Stage D added, and the argument counts the bash enforces.
     ///
-    /// A verb that maps with the wrong arity is worse than one that does not
-    /// map at all: the unmapped one falls through to the bash and still works,
-    /// while a wrong arity is a refusal the customer sees.
+    /// A verb that maps with the wrong arity used to be worse than one that
+    /// did not map at all: the unmapped one fell through to the bash and
+    /// still worked, while a wrong arity was a refusal the customer saw. Both
+    /// are refusals now, and the arity is still what this pins.
     #[test]
     fn the_stage_d_verbs_map_with_the_bashs_arities() {
         // No arguments and no payload.
