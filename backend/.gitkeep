@@ -1,0 +1,5 @@
+# `backend/` is where an installed panel keeps its `.env` and
+# `snpanel.db`, and install.sh copies this directory to create it.
+# The Python that used to live here was removed once every route it
+# served had been ported and the panel had been measured running
+# without it.
