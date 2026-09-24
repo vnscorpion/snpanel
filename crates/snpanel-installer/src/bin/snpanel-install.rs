@@ -40,6 +40,7 @@ fn main() -> ExitCode {
         Some("waf-default-rules") => run(phase_waf_default_rules()),
         Some("sftp-access") => run(phase_sftp_access()),
         Some("tools-vhost") => run(phase_tools_vhost()),
+        Some("backend-env") => run(phase_backend_env()),
         Some("--help") | Some("-h") | None => {
             help();
             ExitCode::SUCCESS
@@ -61,7 +62,8 @@ fn help() {
     println!("  snpanel-install modsec-conf      the ModSecurity include chain");
     println!("  snpanel-install waf-default-rules  the rules every site gets");
     println!("  snpanel-install sftp-access      the sshd block SFTP logins match");
-    println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on\n");
+    println!("  snpanel-install tools-vhost      the default server phpMyAdmin sits on");
+    println!("  snpanel-install backend-env      the panel's .env, then seed the database\n");
     println!("Settings come from the environment install.sh exports:");
     println!("  APP_DIR       default /opt/snpanel");
     println!("  BACKUP_ROOT   default /var/backups/snpanel");
@@ -467,6 +469,132 @@ fn phase_tools_vhost() -> Result<(), String> {
     write_conf(tools_vhost::TOOLS_CONF_PATH, &body)
 }
 
+/// Source: `setup_backend`.
+///
+/// Writes the panel's `.env`, hands the tree to the `snpanel` account, and
+/// seeds the database.
+///
+/// **C18: every name in that file stays exactly as it is.** It is written
+/// here, rewritten by every update, and read by the panel on every start; a
+/// rename strands existing boxes. The list is
+/// `snpanel_installer::backend_env`, with a fixture.
+///
+/// **C37 for the admin password.** It arrives in this process's environment
+/// and leaves in the child's, never in either argv. `/proc/<pid>/cmdline` is
+/// mode 444 and on a hosting box every customer's PHP can read it; measured
+/// once in a container, an unprivileged account read the password out of
+/// `/proc` while the seed ran. `/proc/<pid>/environ` is 400.
+///
+/// The password stays the shell's to generate, because the shell needs the
+/// value afterwards for `/root/login.txt` and the summary it prints. The
+/// `SECRET_KEY` does not, so it is generated here and never becomes a shell
+/// variable at all.
+fn phase_backend_env() -> Result<(), String> {
+    let app_dir = app_dir();
+    let env_path = format!("{app_dir}/backend/.env");
+
+    let platform = snpanel_osabi::detect().map_err(|e| format!("unsupported platform: {e}"))?;
+    let php_default = env_opt("PHP_DEFAULT").unwrap_or_else(|| platform.php_default().to_string());
+
+    let secret_key = random_hex(32)?;
+    let body = backend_env::backend_env(&backend_env::BackendEnv {
+        app_dir: &app_dir,
+        secret_key: &secret_key,
+        panel_url: &env_opt("PANEL_URL").unwrap_or_default(),
+        panel_domain: &env_opt("PANEL_DOMAIN").unwrap_or_default(),
+        panel_port: env_opt("PANEL_PORT")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2222),
+        backup_root: &env_opt("BACKUP_ROOT").unwrap_or_else(|| "/var/backups/snpanel".to_string()),
+        ssl_email: &env_opt("SSL_EMAIL").unwrap_or_default(),
+        default_php_version: &php_default,
+    });
+
+    write_conf(&env_path, &body)?;
+    // 0640 before anything reads it: the file holds `SECRET_KEY`, which is
+    // what makes a session token valid.
+    set_mode(&env_path, backend_env::ENV_MODE)?;
+
+    // The panel runs as `snpanel` and writes its own database here.
+    for dir in [format!("{app_dir}/backend"), format!("{app_dir}/frontend")] {
+        if std::path::Path::new(&dir).exists() {
+            let _ = std::process::Command::new("chown")
+                .args(["-R", "snpanel:snpanel", &dir])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    // `--init-db` builds the schema from a dump captured out of Alembic and
+    // stamps it at the same revision, so the database is one Alembic would
+    // recognise if it were ever pointed at it again.
+    //
+    // `runuser -u` does not reset the environment, unlike sudo - which is
+    // what carries the password across the user switch without it ever being
+    // written down. `--whitelist-environment` is stated for intent and
+    // becomes the mechanism the day somebody adds `--login`.
+    // Inherited rather than set: the value is already in this process's
+    // environment, put there by the shell, and copying it into a variable
+    // here would be one more place it lives.
+    let status = init_db_command(&app_dir, &env_path)
+        .status()
+        .map_err(|e| format!("running snpanel-api-rust --init-db: {e}"))?;
+    if !status.success() {
+        return Err(format!("--init-db exited {:?}", status.code()));
+    }
+    Ok(())
+}
+
+/// The seed command, built but not run, so a test can read its argv.
+///
+/// Separated for the same reason the panel's password paths separate theirs:
+/// the obvious way to hand a secret to a child is one more `.arg()`, and
+/// nothing else in the program would notice.
+/// `the_seed_never_carries_the_password_in_argv` reads it back.
+fn init_db_command(app_dir: &str, env_path: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("runuser");
+    cmd.arg("--whitelist-environment=SNPANEL_ADMIN_PASSWORD")
+        .args(["-u", "snpanel", "--", "env"])
+        .arg(format!("HOME={app_dir}"))
+        .arg("SNPANEL_USE_HELPER=true")
+        .arg("/usr/local/bin/snpanel-api-rust")
+        .arg("--env")
+        .arg(env_path)
+        .arg("--init-db")
+        .current_dir(format!("{app_dir}/backend"));
+    cmd
+}
+
+/// `openssl rand -hex <n>`.
+///
+/// Read from `/dev/urandom` rather than through a crate, which keeps this
+/// binary's dependencies at the three the library already has. **Fatal if it
+/// cannot be read in full**: a short read here would be a `SECRET_KEY` with
+/// less entropy than it looks like, and every session token on the box is
+/// signed with it.
+fn random_hex(bytes: usize) -> Result<String, String> {
+    use std::io::Read;
+    let mut buf = vec![0u8; bytes];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .map_err(|e| format!("reading /dev/urandom: {e}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn set_mode(path: &str, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path).map_err(|e| format!("stat {path}: {e}"))?;
+    let mut perms = meta.permissions();
+    perms.set_mode(mode);
+    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {path}: {e}"))
+}
+
+/// `APP_DIR`, `/opt/snpanel` unless the operator set it.
+fn app_dir() -> String {
+    env_opt("APP_DIR").unwrap_or_else(|| "/opt/snpanel".to_string())
+}
+
 // ---------------------------------------------------------------------------
 
 fn env_opt(key: &str) -> Option<String> {
@@ -669,5 +797,49 @@ mod tests {
             .find(|l| l.starts_with("After="))
             .expect("an After= line");
         assert!(after.contains(".service"), "{after}");
+    }
+
+    /// C37: the admin password is never a word on a command line.
+    ///
+    /// `/proc/<pid>/cmdline` is mode 444 and on a hosting box every
+    /// customer's PHP can read it. Measured once in a container: an
+    /// unprivileged account read the password out of `/proc` while the seed
+    /// ran, and could not after the shell stopped spelling it out in argv.
+    /// This keeps it that way on the Rust side.
+    #[test]
+    fn the_seed_never_carries_the_password_in_argv() {
+        const SECRET: &str = "correct-horse-battery-staple";
+        // What the shell puts here before calling this binary.
+        std::env::set_var("SNPANEL_ADMIN_PASSWORD", SECRET);
+
+        let cmd = init_db_command("/opt/snpanel", "/opt/snpanel/backend/.env");
+        for arg in cmd.get_args() {
+            let arg = arg.to_string_lossy();
+            assert!(!arg.contains(SECRET), "the password is in argv as {arg:?}");
+        }
+        // And nothing in here puts it back into the child's environment by
+        // hand either - it arrives by inheritance, which is what
+        // `--whitelist-environment` is naming.
+        assert!(
+            cmd.get_envs().next().is_none(),
+            "the command sets an environment variable explicitly"
+        );
+        let named = cmd
+            .get_args()
+            .any(|a| a.to_string_lossy().contains("SNPANEL_ADMIN_PASSWORD"));
+        assert!(named, "the whitelist no longer names the variable");
+
+        std::env::remove_var("SNPANEL_ADMIN_PASSWORD");
+    }
+
+    /// `openssl rand -hex 32`, and it has to be 32 *bytes*.
+    #[test]
+    fn the_secret_key_is_sixty_four_hex_characters() {
+        let key = random_hex(32).expect("/dev/urandom");
+        assert_eq!(key.len(), 64, "{key}");
+        assert!(key.bytes().all(|b| b.is_ascii_hexdigit()), "{key}");
+        // Two reads must differ. A `SECRET_KEY` that is the same on every box
+        // is a session token minted on one that is valid on all of them.
+        assert_ne!(key, random_hex(32).expect("/dev/urandom"));
     }
 }

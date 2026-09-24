@@ -1056,62 +1056,22 @@ validate_privileged_helper() {
 }
 
 setup_backend() {
-  cd "${APP_DIR}/backend"
-
+  # The password is generated here and not in the phase, because this script
+  # needs the value afterwards - `/root/login.txt` and the summary it prints.
+  # The `SECRET_KEY` is not needed here, so the phase generates that one and
+  # it never becomes a shell variable at all.
   ADMIN_PASSWORD="${SNPANEL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '\n')}"
 
-  cat > .env <<ENV
-APP_ENV=production
-SECRET_KEY=$(openssl rand -hex 32)
-COMMAND_DRY_RUN=false
-DATABASE_URL=sqlite:///${APP_DIR}/backend/snpanel.db
-REDIS_URL=redis://localhost:6379/0
-RATE_LIMIT_BACKEND=redis
-ALLOWED_ORIGINS=${PANEL_URL}
-BACKUP_ROOT=${BACKUP_ROOT}
-SSL_EMAIL=${SSL_EMAIL}
-PANEL_URL=${PANEL_URL}
-PANEL_DOMAIN=${PANEL_DOMAIN}
-PANEL_PORT=${PANEL_PORT}
-PANEL_SSL_CERT=
-PANEL_SSL_KEY=
-FRONTEND_DIST=${APP_DIR}/frontend/dist
-# Which PHP version the panel acts on when a site does not name one. Written
-# here because this is the only place that knows what was installed: Ubuntu
-# 24.04 gets 8.3 and 8.4, 26.04 carries 8.5 alone, and EL gets 8.3 and 8.4 from
-# Remi. Without it the panel fell back to a constant and asked the helper about
-# a version the machine did not have.
-DEFAULT_PHP_VERSION=${PHP_DEFAULT}
-ENV
-
-  # Lock down the env file: contains SECRET_KEY and ALLOWED_ORIGINS.
-  chmod 0640 "${APP_DIR}/backend/.env"
-
-  # Make panel files writable before seed creates the SQLite DB and admin Linux user.
-  chown -R snpanel:snpanel "${APP_DIR}/backend"
-  chown -R snpanel:snpanel "${APP_DIR}/frontend" 2>/dev/null || true
-
-  # The password reaches the seed through the environment, never argv.
-  #
-  # `env` execs and drops its own command line, which is what made the old
-  # `sudo -u snpanel env SNPANEL_ADMIN_PASSWORD=... ` look safe. But sudo
-  # forks and waits, so sudo's argv — assignment and all — sits in
-  # /proc/<pid>/cmdline for as long as the seed runs. That file is mode 444;
-  # on a hosting box every customer's PHP can read it. Measured in a
-  # container: an unprivileged account read the password out of /proc during
-  # the seed, and cannot after this change.
-  #
-  # What carries the variable is that `runuser -u` does not reset the
-  # environment (unlike sudo, whose env_reset is why the value had to be
-  # spelled out). --whitelist-environment is stated for intent and for the
-  # day somebody adds --login, where it does become load-bearing.
+  # C37: the password travels in the environment, never in argv.
+  # `/proc/<pid>/cmdline` is mode 444 and on a hosting box every customer's
+  # PHP can read it; `/proc/<pid>/environ` is 400. `snpanel-install` inherits
+  # it from here and hands it to the seed the same way.
   export SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
-  # `--init-db` builds the schema from a dump captured out of Alembic and
-  # stamps it at the same revision, so the database is one Alembic would
-  # recognise if it were ever pointed at it again.
-  runuser --whitelist-environment=SNPANEL_ADMIN_PASSWORD -u snpanel -- \
-    env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
-    /usr/local/bin/snpanel-api-rust --env "${APP_DIR}/backend/.env" --init-db
+  APP_DIR="$APP_DIR" PANEL_URL="$PANEL_URL" PANEL_DOMAIN="$PANEL_DOMAIN" \
+  PANEL_PORT="$PANEL_PORT" BACKUP_ROOT="$BACKUP_ROOT" SSL_EMAIL="$SSL_EMAIL" \
+  PHP_DEFAULT="$PHP_DEFAULT" \
+    "${RUST_BIN_DIR}/snpanel-install" backend-env \
+    || { unset SNPANEL_ADMIN_PASSWORD; fail "Could not set up the panel backend"; }
   unset SNPANEL_ADMIN_PASSWORD
 }
 

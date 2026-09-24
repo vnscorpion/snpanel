@@ -3325,3 +3325,129 @@ than blocking. `APP_DIR=/nonexistent` reaches the path in the error.
 `Match Group snpanel-sftp` block — sshd reads a second as a duplicate and
 refuses to start, so an append without a remove would break SSH on the second
 run, not the first. Panel and site both answered 200 afterwards.
+
+## The installer starts moving, a phase at a time
+
+`install.sh` is 1993 lines at the start of this and 1643 now. Nine phases run
+Rust; the shell function that remains is the call and the reason.
+
+| phase | was | is |
+| --- | ---: | ---: |
+| `setup_systemd` | 214 | 15 |
+| `write_tools_nginx_config` | 59 | 13 |
+| `setup_backend` | 59 | 19 |
+| `configure_log_limits` | 40 | 7 |
+| `configure_fastcgi_cache` + `configure_proxy_upgrade_map` | 31 | 10 |
+| `setup_sftp_access` | 29 | 10 |
+| `write_waf_default_rules` | 26 | 12 |
+| `write_modsec_base_conf` + `write_modsec_main_conf` | 22 | 7 |
+| `write_http_flood_nginx_conf` | 21 | 7 |
+
+### The crate had no caller
+
+`snpanel-installer` was thirteen thousand lines of Rust with 415 tests that no
+machine had ever run: nothing depended on it. Its own doc explains the shape —
+each phase split into the part that *decides* what a file should contain, a
+pure function with a golden fixture recorded from the bash running on a real
+Debian 13, and the part that *writes* it. Every module was a deciding half.
+
+`snpanel-install` is the caller, one subcommand per phase. So most of this is
+not porting; the deciding halves were written and tested long ago. What was
+missing was the twenty lines of `std::fs` around each, and something to run
+them.
+
+### The method, and what it keeps finding
+
+Two checks per phase, and both have earned their place.
+
+**Before the move**: pull the shell's heredoc out and diff it against the
+fixture. If the shell has drifted since the fixture was recorded, the move
+would silently ship the drift.
+
+That found the one bug of the stage. `install.sh` wrote
+`After=network.target clamav-daemon` in the malware scheduler, without the
+`.service` suffix. systemd does not append it and does not complain about a
+name it cannot resolve — measured on the container, `systemctl show -p After`
+on a unit written that way does not list ClamAV at all. The weekly malware
+scan was not waiting for the daemon it scans with. The crate's
+`clamav_unit_name` had predicted it in a doc comment; the fixture, recorded
+from an earlier `install.sh`, has the suffix.
+
+**After the move**: run the phase on the demo container and diff what it wrote
+against what the shell had left. Every phase so far has produced
+byte-identical output, except where the container itself was stale — its
+systemd units still named a Python venv, and its tools vhost still named
+`php8.3` on a box whose default is `php8.4`.
+
+### An ordering bug the move created
+
+`install_privileged_helper` fetched the binaries, and it is the fourteenth
+phase. The first phase rewritten to call one, `configure_fastcgi_cache`, is
+the sixth — it would have run with `RUST_BIN_DIR` empty and invoked
+`/snpanel-install`, stopping the install at the fifth log line. The commit
+before it got away with the same mistake only because both phases it moved run
+after the fetch.
+
+`require_rust_binaries` is a phase of its own now, and `plan.rs` has two
+tests: one asserts the ordering, the other reads `install.sh` and checks that
+every phase which actually invokes the binary is in the list the first one
+iterates. The second caught its own first draft, which counted the `-x` test
+inside `require_rust_binaries` as a call.
+
+### An improvement taken back out
+
+The first draft of the systemd phase made enabling the malware timer
+non-fatal, reasoning that a box without ClamAV still has a panel. True, and
+not what the installer had been doing: all three `systemctl enable --now`
+lines sit under `set -euo pipefail` with no `|| true`. A timer that silently
+did not get enabled is a weekly scan that never runs.
+
+### One writer instead of two
+
+`snpanel fix-permissions` and `setup_sftp_access` each had their own copy of
+the `sshd_config` splice, the `sshd -t` and the rollback. Both go through
+`runtime::apply_sftp_block` now — a writing half in the library, which this
+crate otherwise keeps out of it, because two copies of an edit to
+`sshd_config` is two chances to get the rollback wrong and the rollback is the
+only thing between a bad edit and a remote box with no SSH.
+
+They differ in one thing and it survives: the installer treats an invalid
+result as fatal, the repair path warns and carries on.
+
+Verified by breaking `sshd_config` deliberately: the phase exits 1 and the
+file comes back as it was *before the phase ran* — the operator's broken line
+is still theirs, and what is not there is a block the phase could not
+validate.
+
+### Tests that had stopped meaning what they said
+
+Three, all the same shape: a loop that `continue`s over a file it cannot read,
+with a `>=` assertion at the end. As the files it named disappeared, each got
+closer to passing while checking nothing.
+
+* `the_units_name_the_path_the_installer_writes` named three files, one of
+  which is deleted.
+* `every_writer_of_the_tools_vhost_silences_twig` named four and asserted
+  `>= 3`; two are gone, so it was one move from passing on a single file while
+  its name claims every writer.
+* And the bash-verb test from the previous stage, whose own doc said to delete
+  it when the script went.
+
+Each now asserts its count exactly and fails on a file it cannot read.
+
+Three more tests moved from comparing against *a writer* to comparing against
+the *recording*: the upgrade map, the WAF default rules and the unit bodies.
+The bytes have not changed once; where they live has changed three times in
+three commits. The fixture is the thing that does not move.
+
+### C37, twice more
+
+Both new paths that carry a secret build their command in a function of its
+own so a test can read the argv back: the panel's password writes in the CLI,
+and the seed in `backend-env`. `/proc/<pid>/cmdline` is mode 444 and on a
+hosting box every customer's PHP can read it; `/proc/<pid>/environ` is 400.
+Adding the value as one more `.arg()` fails a named test in each case.
+
+The admin password stays the shell's to generate, because the shell needs it
+afterwards for `/root/login.txt` and the summary. The `SECRET_KEY` does not,
+so the phase generates it and it never becomes a shell variable at all.
