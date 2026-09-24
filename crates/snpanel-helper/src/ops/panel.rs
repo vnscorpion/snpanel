@@ -496,6 +496,39 @@ pub(crate) fn copy_panel_live_certificate(domain: &str) {
     }
 }
 
+/// What `panel-ssl-install` writes into the `.env`.
+///
+/// Separated from the verb so it can be read back in a test - the list is the
+/// part that has been wrong before, and everything around it is `certbot` and
+/// `install`.
+fn ssl_install_env(domain: &Domain, port: Port, email: Option<&Email>) -> Vec<(String, String)> {
+    let url = format!("https://{domain}:{port}");
+    let mut pairs = vec![
+        ("PANEL_DOMAIN".to_string(), domain.to_string()),
+        ("PANEL_PORT".to_string(), port.to_string()),
+        ("PANEL_SSL_CERT".to_string(), PANEL_CERT.to_string()),
+        ("PANEL_SSL_KEY".to_string(), PANEL_KEY.to_string()),
+        // The bash did not set this and `status` read it, so a box that had
+        // just been given a real certificate went on reporting "selfsigned".
+        ("PANEL_SSL_MODE".to_string(), "letsencrypt".to_string()),
+        ("PANEL_URL".to_string(), url.clone()),
+        ("ALLOWED_ORIGINS".to_string(), url),
+    ];
+    // Source: `env_set SSL_EMAIL "$email"`, which this verb did not carry
+    // across.
+    //
+    // Remembering it is the whole of what it is for: the address is what
+    // Let's Encrypt sends an expiry warning to, and the next caller - the
+    // rescue menu, or the panel's settings page - offers it back rather than
+    // asking again. Only when one was given: `None` means the certificate was
+    // registered without an address, and clearing the stored one would lose an
+    // address that is still on file with the issuer.
+    if let Some(e) = email {
+        pairs.push(("SSL_EMAIL".to_string(), e.to_string()));
+    }
+    pairs
+}
+
 // ---------------------------------------------------------------------------
 // the verbs
 // ---------------------------------------------------------------------------
@@ -656,16 +689,17 @@ pub fn ssl_install(
     if let Err(resp) = install_panel_pair(&live) {
         return resp;
     }
-    let url = format!("https://{domain}:{port}");
-    if let Err(resp) = env_set_all(&[
-        ("PANEL_DOMAIN", domain.as_str()),
-        ("PANEL_PORT", &port.to_string()),
-        ("PANEL_SSL_CERT", PANEL_CERT),
-        ("PANEL_SSL_KEY", PANEL_KEY),
-        ("PANEL_SSL_MODE", "letsencrypt"),
-        ("PANEL_URL", &url),
-        ("ALLOWED_ORIGINS", &url),
-    ]) {
+    let owned = ssl_install_env(domain, port, email);
+    let pairs: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let url = pairs
+        .iter()
+        .find(|(k, _)| *k == "PANEL_URL")
+        .map(|(_, v)| (*v).to_string())
+        .unwrap_or_default();
+    if let Err(resp) = env_set_all(&pairs) {
         return resp;
     }
 
@@ -1041,5 +1075,57 @@ mod tests {
         ] {
             assert!(!is_ipv4(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn installing_a_certificate_records_the_address_it_was_issued_to() {
+        // The bash stored `SSL_EMAIL` and this verb did not, so moving the
+        // rescue menu onto it would have made the menu ask for the address
+        // again on every run - and left `Settings.ssl_email` showing whatever
+        // the installer wrote a year ago.
+        let domain = Domain::parse("panel.example.com").unwrap();
+        let port = Port::parse("2222").unwrap();
+        let email = Email::parse("ops@example.com").unwrap();
+
+        let with = ssl_install_env(&domain, port, Some(&email));
+        let stored: Vec<&str> = with.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(stored.contains(&"SSL_EMAIL"), "{stored:?}");
+        assert_eq!(
+            with.iter().find(|(k, _)| k == "SSL_EMAIL").unwrap().1,
+            "ops@example.com"
+        );
+
+        // And a certificate registered without one must not clear the address
+        // that is still on file with the issuer.
+        let without = ssl_install_env(&domain, port, None);
+        assert!(!without.iter().any(|(k, _)| k == "SSL_EMAIL"));
+    }
+
+    #[test]
+    fn installing_a_certificate_stops_the_panel_calling_itself_selfsigned() {
+        // `snpanel status` reads `PANEL_SSL_MODE`. The bash never set it here,
+        // so a box that had just been given a real certificate reported
+        // "selfsigned" - which reads as a configuration that did not take.
+        let domain = Domain::parse("panel.example.com").unwrap();
+        let port = Port::parse("2222").unwrap();
+        let pairs = ssl_install_env(&domain, port, None);
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "PANEL_SSL_MODE").unwrap().1,
+            "letsencrypt"
+        );
+        // And the URL the panel answers on is https, on the port it was told.
+        assert_eq!(
+            pairs.iter().find(|(k, _)| k == "PANEL_URL").unwrap().1,
+            "https://panel.example.com:2222"
+        );
+        // CORS follows the URL, or the SPA cannot call its own API.
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(k, _)| k == "ALLOWED_ORIGINS")
+                .unwrap()
+                .1,
+            "https://panel.example.com:2222"
+        );
     }
 }
