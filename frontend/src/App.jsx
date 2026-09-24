@@ -238,6 +238,8 @@ function App() {
   const panelUpdateInterval = useRef(null);
   const [osAutoUpdate, setOsAutoUpdate] = useState({ enabled: true, mode: 'security', auto_reboot: false });
   const noticeTimer = useRef(null);
+  // Which loadPanelSettings() call is the latest. See there.
+  const panelSettingsRequest = useRef(0);
   const isAdmin = currentUser?.role === 'admin';
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
@@ -509,10 +511,19 @@ function App() {
     // know: the hostnames it answers for and the certificates on this server
     // only come back from the authenticated route.
     const path = currentUser ? '/panel-settings' : '/panel-settings/public';
+    // Only the latest call may write. Opening /settings with a live session
+    // starts two: the public one from mount, before the session is known,
+    // and the authenticated one once it is. The public answer has an empty
+    // hostname and `ssl_enabled: false`, and if it lands second it
+    // overwrites the form - so the admin sees the panel's IP and SSL off,
+    // and "Save settings" would make both true. Measured: a Playwright run
+    // against a busy server caught the form in exactly that state.
+    const request = ++panelSettingsRequest.current;
     try {
       const res = await fetch(`${API}${path}`, { credentials: 'include' });
       if (!res.ok) return null;
       const data = await res.json();
+      if (request !== panelSettingsRequest.current) return data;
       setPanelSettings(data);
       setPanelSettingsForm(formFromPanelSettings(data));
       return data;
