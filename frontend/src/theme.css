@@ -1,23 +1,66 @@
 /* ============================================================
-   SNPanel theme layer — Noto Sans typography + light/dark tokens.
+   SNPanel theme layer — Inter typography, the scale, light/dark tokens.
    Loaded last so :root here wins over style.css / brand.css.
    ============================================================ */
 
-/* --- Noto Sans (self-hosted variable font, no external CDN) --- */
+/* --- Inter (self-hosted variable font, no external CDN) ---
+   The font most hosting and infrastructure dashboards now set their UI in,
+   and chosen here for one practical reason as much as that: its tabular
+   figures line up IP addresses, sizes and percentages in a column. Full
+   Vietnamese coverage. SIL Open Font License, see fonts/Inter-LICENSE.txt.
+   Split by script so a page only downloads what its text uses. */
 @font-face{
-  font-family:'Noto Sans';font-style:normal;font-weight:100 900;font-display:swap;
-  src:url('./fonts/noto-sans-vietnamese.woff2') format('woff2');
+  font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;
+  src:url('./fonts/inter-vietnamese.woff2') format('woff2');
   unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB;
 }
 @font-face{
-  font-family:'Noto Sans';font-style:normal;font-weight:100 900;font-display:swap;
-  src:url('./fonts/noto-sans-latin-ext.woff2') format('woff2');
+  font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;
+  src:url('./fonts/inter-latin-ext.woff2') format('woff2');
   unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
 }
 @font-face{
-  font-family:'Noto Sans';font-style:normal;font-weight:100 900;font-display:swap;
-  src:url('./fonts/noto-sans-latin.woff2') format('woff2');
+  font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;
+  src:url('./fonts/inter-latin.woff2') format('woff2');
   unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* ============================ SCALE ============================
+   Shared by both themes. Type sizes were nineteen different values from
+   10.5px to 36px, with 12px the most common; they are this scale now, one
+   step up at the small end, so body text reads at 14px. */
+:root{
+  --font-sans:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+  --font-mono:ui-monospace,'SF Mono','JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;
+
+  --text-2xs:11px;
+  --text-xs:12px;
+  --text-sm:13px;
+  --text-base:14px;
+  --text-md:15px;
+  --text-lg:16px;
+  --text-xl:18px;
+  --text-2xl:20px;
+  --text-3xl:24px;
+  --text-4xl:30px;
+  --leading-tight:1.25;
+  --leading-normal:1.5;
+
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-5:20px;
+  --space-6:24px;
+  --space-8:32px;
+  --space-10:40px;
+  --space-12:48px;
+
+  --radius-sm:6px;
+  --radius-md:8px;
+  --radius-lg:12px;
+  --radius-xl:16px;
+  --radius-full:999px;
 }
 
 /* ============================ LIGHT (default) ============================ */
@@ -45,16 +88,16 @@
   /* Neutrals */
   --text:#16202b;
   --text-secondary:#4a5765;
-  --text-muted:#6f7c8a;
+  --text-muted:#5d6978;
   --text-inverse:#ffffff;
   --bg:#f4f7fa;
   --surface:#ffffff;
   --surface-alt:#f8fafc;
   --surface-sunken:#eef2f7;
   --surface-hover:#f1f5f9;
-  --border:#dde5ee;
+  --border:#d3dce6;
   --border-hover:#c6d2e0;
-  --border-strong:#adbccd;
+  --border-strong:#8292a4;
   --overlay:rgba(15,23,42,.45);
 
   /* State: danger */
@@ -145,7 +188,7 @@
   --surface-hover:#212a34;
   --border:#2a343f;
   --border-hover:#3a4653;
-  --border-strong:#4d5b6a;
+  --border-strong:#65737f;
   --overlay:rgba(0,0,0,.62);
 
   --danger:#ef4444;
@@ -225,7 +268,7 @@
     --surface-hover:#212a34;
     --border:#2a343f;
     --border-hover:#3a4653;
-    --border-strong:#4d5b6a;
+    --border-strong:#65737f;
     --overlay:rgba(0,0,0,.62);
 
     --danger:#ef4444;
@@ -278,17 +321,22 @@
 
 /* ============================ Base ============================ */
 :root{
-  font-family:'Noto Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+  font-family:var(--font-sans);
   color:var(--text);
   background:var(--bg);
 }
 body{
-  font-family:'Noto Sans','Segoe UI',system-ui,-apple-system,sans-serif;
+  font-family:var(--font-sans);
+  font-size:var(--text-base);
+  line-height:var(--leading-normal);
   background:var(--bg);
   color:var(--text);
   transition:background-color .2s ease,color .2s ease;
 }
 h1,h2,h3,h4,h5,h6,button,input,select,textarea{font-family:inherit}
+/* Figures line up wherever numbers are compared down a column or read at a glance. */
+table,.badge,code,kbd,pre,.stat-value,.editor-chip{font-variant-numeric:tabular-nums}
+code,kbd,pre,samp{font-family:var(--font-mono)}
 ::selection{background:var(--primary);color:var(--primary-fg)}
 a{color:var(--primary-text)}
 a:hover{color:var(--primary)}
