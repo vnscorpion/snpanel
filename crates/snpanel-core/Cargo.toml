@@ -22,3 +22,9 @@ jsonwebtoken.workspace = true
 totp-rs.workspace = true
 rand.workspace = true
 subtle.workspace = true
+# Passkey (WebAuthn) signatures: ES256, RS256 and EdDSA. Pinned to the
+# versions russh already brings in, so the lock gains no package; `rsa`
+# carries its own SHA-256 for PKCS#1 v1.5.
+p256 = "=0.14.0"
+rsa = { version = "=0.10.0-rc.18", features = ["sha2"] }
+ed25519-dalek = "=3.0.0"

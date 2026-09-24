@@ -13,6 +13,7 @@ pub mod maintenance;
 pub mod malware;
 pub mod packages;
 pub mod panel_settings;
+pub mod passkeys;
 pub mod provisioning;
 pub mod refresh;
 pub mod services;

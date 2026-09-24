@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -33,6 +33,7 @@ import './file-manager.css';
 import './theme.css';
 import { PanelContext } from './lib/panel-context.jsx';
 import { LocaleProvider, LocaleSwitch, useT } from './i18n/index.jsx';
+import { createPasskey, getPasskeyAssertion, passkeysSupported } from './lib/webauthn.js';
 // Loaded on demand. Every page but the Dashboard - the one each session lands
 // on - and the code editor, which pulls in ace and is only ever shown in the
 // standalone editor window.
@@ -71,6 +72,10 @@ function App() {
   const [password, setPassword] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
+  // A passkey sign-in: '' none, 'waiting' on the authenticator, 'failed' when
+  // it did not work and the authenticator code is asked for instead.
+  const [passkeyStatus, setPasskeyStatus] = useState('');
+  const passkeyAbort = useRef(null);
   const [rememberMe, setRememberMe] = useState(false);
   const [page, setPage] = useState(() => pageFromPathname(window.location.pathname));
   const [domain, setDomain] = useState('');
@@ -201,6 +206,7 @@ function App() {
   const [twoFactorStatus, setTwoFactorStatus] = useState(null);
   const [twoFactorSetup, setTwoFactorSetup] = useState(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [passkeys, setPasskeys] = useState({ items: [], available: false, totp_enabled: false, limit: 10, loaded: false });
   const [malwareScanStatus, setMalwareScanStatus] = useState(null);
   const [scanTargetWebsiteId, setScanTargetWebsiteId] = useState('');
   const [scanResults, setScanResults] = useState(null);
@@ -321,6 +327,8 @@ function App() {
     setIsAuthenticated(false);
     setCurrentUser(null);
     setNeedsTwoFactor(false);
+    passkeyAbort.current?.abort();
+    setPasskeyStatus('');
     setOtpCode('');
     setWebsites([]);
     setDatabases([]);
@@ -423,12 +431,14 @@ function App() {
     }
   }
 
-  async function login() {
+  // `options.otp` lets "try the passkey again" send no code whatever is typed.
+  async function login(options = {}) {
+    const otp = typeof options.otp === 'string' ? options.otp : otpCode;
     try {
       setError('');
       setLoading('Logging in...');
       const body = new URLSearchParams({ username, password });
-      if (needsTwoFactor || otpCode) body.set('otp', otpCode);
+      if (needsTwoFactor || otp) body.set('otp', otp);
       if (rememberMe) body.set('remember', 'true');
       const res = await fetch(`${API}/auth/login`, {
         method: 'POST',
@@ -438,14 +448,23 @@ function App() {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.requires_2fa) {
         setNeedsTwoFactor(true);
-        setNotice('Enter your authentication code.');
+        // A passkey registered at this address is tried first; the code is
+        // asked for when it does not work. Not awaited: the person may take
+        // a while, and nothing else should wait on them.
+        if (data.passkey && passkeysSupported()) {
+          signInWithPasskey(data.passkey);
+        } else {
+          setPasskeyStatus('');
+          setNotice(t('Enter your authentication code.'));
+        }
       } else if (res.ok && data.access_token) {
         // Don't keep the token anywhere: the HttpOnly cookie just got set by
         // the response. JS code MUST NOT touch the JWT.
         setIsAuthenticated(true);
         setNeedsTwoFactor(false);
+        setPasskeyStatus('');
         setOtpCode('');
-        setNotice('Login successful.');
+        setNotice(t('Login successful.'));
         await loadCurrentUser();
       } else {
         setError(formatApiError(data.detail, `Login failed with status ${res.status}`));
@@ -455,6 +474,45 @@ function App() {
     } finally {
       setLoading('');
     }
+  }
+
+  // The passkey half of the second step, from the ticket and options the
+  // password step returned. When it does not work - no authenticator to
+  // hand, the prompt cancelled, the signature refused - the page falls back
+  // to the authenticator code.
+  async function signInWithPasskey(offer) {
+    passkeyAbort.current?.abort();
+    const controller = new AbortController();
+    passkeyAbort.current = controller;
+    setPasskeyStatus('waiting');
+    try {
+      const credential = await getPasskeyAssertion(offer.publicKey, controller.signal);
+      const res = await fetch(`${API}/auth/login/passkey`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket: offer.ticket, credential }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.access_token) {
+        setIsAuthenticated(true);
+        setNeedsTwoFactor(false);
+        setPasskeyStatus('');
+        setOtpCode('');
+        setNotice(t('Login successful.'));
+        await loadCurrentUser();
+        return;
+      }
+    } catch {
+      // The person chose the code instead: nothing went wrong.
+      if (controller.signal.aborted) {
+        setPasskeyStatus('');
+        return;
+      }
+    } finally {
+      if (passkeyAbort.current === controller) passkeyAbort.current = null;
+    }
+    setPasskeyStatus('failed');
   }
 
   async function logout() {
@@ -1115,15 +1173,15 @@ function App() {
   }
 
   async function setupTwoFactorAuth() {
-    const currentPassword = prompt('Enter your current password to generate a new 2FA secret:');
+    const currentPassword = prompt(t('Enter your current password to set up the authenticator app:'));
     if (!currentPassword) return;
     const payload = { current_password: currentPassword };
     if (currentUser?.totp_enabled) {
-      const code = prompt('Enter the 6-digit code from your authenticator:');
+      const code = prompt(t('Enter the six-digit code from your authenticator app:'));
       if (!code) return;
       payload.code = code.trim();
     }
-    const data = await request('/auth/2fa/setup', { method: 'POST', body: JSON.stringify(payload) }, 'Preparing 2FA...');
+    const data = await request('/auth/2fa/setup', { method: 'POST', body: JSON.stringify(payload) }, t('Preparing the authenticator app...'));
     if (data) {
       setTwoFactorSetup(data);
       setTwoFactorStatus({ enabled: false });
@@ -1131,29 +1189,66 @@ function App() {
   }
 
   async function enableTwoFactorAuth() {
-    const data = await request('/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ code: twoFactorCode }) }, 'Enabling 2FA...');
+    const data = await request('/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ code: twoFactorCode }) }, t('Turning on two-step verification...'));
     if (data) {
       setTwoFactorStatus(data);
       setTwoFactorSetup(null);
       setTwoFactorCode('');
       await loadCurrentUser();
-      setNotice('2FA enabled.');
+      await loadPasskeys();
+      setNotice(t('Two-step verification is on.'));
     }
   }
 
   async function disableTwoFactorAuth() {
-    const currentPassword = prompt('Enter your current password to disable 2FA:');
+    const currentPassword = prompt(t('Enter your current password to turn off two-step verification:'));
     if (!currentPassword) return;
     const data = await request(
       '/auth/2fa/disable',
       { method: 'POST', body: JSON.stringify({ current_password: currentPassword, code: twoFactorCode }) },
-      'Disabling 2FA...',
+      t('Turning off two-step verification...'),
     );
     if (data) {
       setTwoFactorStatus(data);
       setTwoFactorCode('');
       await loadCurrentUser();
-      setNotice('2FA disabled.');
+      await loadPasskeys();
+      setNotice(t('Two-step verification is off. Your passkeys were removed with it.'));
+    }
+  }
+
+  async function loadPasskeys() {
+    const data = await request('/auth/passkeys', { silent: true });
+    if (data) setPasskeys({ ...data, loaded: true });
+  }
+
+  // A current authenticator code, then the device's own prompt. Returns
+  // whether a passkey was added.
+  async function addPasskey(name, code) {
+    const options = await request('/auth/passkeys/register/options', { method: 'POST', body: JSON.stringify({ code }) }, t('Preparing the passkey...'));
+    if (!options) return false;
+    let credential;
+    try {
+      credential = await createPasskey(options.publicKey);
+    } catch (err) {
+      setError(err?.name === 'InvalidStateError'
+        ? t('This device already has a passkey for this account.')
+        : t('No passkey was created. The device prompt was closed or not available.'));
+      return false;
+    }
+    const data = await request('/auth/passkeys/register', { method: 'POST', body: JSON.stringify({ name, credential }) }, t('Saving the passkey...'));
+    if (!data) return false;
+    setNotice(t('Passkey added.'));
+    await loadPasskeys();
+    return true;
+  }
+
+  async function removePasskey(item) {
+    if (!confirm(t('Remove the passkey {name}? You can still sign in with the authenticator app.', { name: item.name }))) return;
+    const data = await request(`/auth/passkeys/${item.id}`, { method: 'DELETE' }, t('Removing the passkey...'));
+    if (data) {
+      setNotice(t('Passkey removed.'));
+      await loadPasskeys();
     }
   }
 
@@ -3340,7 +3435,7 @@ function App() {
     if (isAuthenticated && page === 'updates' && currentUser?.role === 'admin') loadUpdates();
     if (isAuthenticated && page === 'security') {
       loadTwoFactorStatus();
-      if (isAdmin) { loadMalwareScanStatus(); loadMalwareScanJobs(); loadLatestMalwareScanJob(); }
+      loadPasskeys();
       if (!websites.length) refreshAll();
     }
     if (isAuthenticated && ['settings', 'api-tokens'].includes(page)) {
@@ -3651,6 +3746,7 @@ function App() {
       addFirewallBlocklistUrl,
       addFirewallRule,
       addGlobalBots,
+      addPasskey,
       addWebsiteAlias,
       addons,
       adminAccountForm,
@@ -3807,6 +3903,7 @@ function App() {
       loadMalwareScanStatus,
       loadPackages,
       loadPanelSettings,
+      loadPasskeys,
       loadPhpConfig,
       loadPhpTune,
       loadRestoreBackups,
@@ -3864,6 +3961,7 @@ function App() {
       panelUpdateLog,
       panelUpdating,
       parentFilePath,
+      passkeys,
       phpConfig,
       phpTune,
       phpTuneApplied,
@@ -3875,6 +3973,7 @@ function App() {
       refreshScheduledBackupArea,
       refreshUserBackupArea,
       reloadFirewall,
+      removePasskey,
       renameFileItem,
       renderBrandMark,
       resetNginxDefault,
@@ -4123,12 +4222,19 @@ function App() {
         <div className="login-form">
           <input value={username} onChange={e => setUsername(e.target.value)} placeholder={t('Username')} autoComplete="username" />
           <input value={password} onChange={e => setPassword(e.target.value)} placeholder={t('Password')} type="password" autoComplete="current-password" onKeyDown={e => { if (e.key === 'Enter') login(); }} />
-          {needsTwoFactor && <input value={otpCode} onChange={e => setOtpCode(e.target.value)} placeholder={t('Authentication code')} inputMode="numeric" autoComplete="one-time-code" onKeyDown={e => { if (e.key === 'Enter') login(); }} />}
+          {needsTwoFactor && passkeyStatus === 'waiting' && <div className="login-passkey" role="status">
+            <KeyRound size={18} aria-hidden="true"/>
+            <span>{t('Confirm with your passkey…')}</span>
+            <button type="button" className="link-button" onClick={() => passkeyAbort.current?.abort()}>{t('Use the authenticator code instead')}</button>
+          </div>}
+          {needsTwoFactor && passkeyStatus === 'failed' && <p className="login-passkey-failed" role="alert">{t('The passkey did not work. Enter the code from your authenticator app instead.')}</p>}
+          {needsTwoFactor && passkeyStatus !== 'waiting' && <input value={otpCode} onChange={e => setOtpCode(e.target.value)} placeholder={t('Authentication code')} inputMode="numeric" autoComplete="one-time-code" autoFocus onKeyDown={e => { if (e.key === 'Enter') login(); }} />}
           <label className="login-remember">
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
             {t('Keep me signed in for 30 days')}
           </label>
-          <button disabled={!!loading || !username || !password} onClick={login}>{loading ? t('Logging in...') : t('Login')}</button>
+          {passkeyStatus !== 'waiting' && <button disabled={!!loading || !username || !password} onClick={() => login()}>{loading ? t('Logging in...') : t('Login')}</button>}
+          {needsTwoFactor && passkeyStatus === 'failed' && <button type="button" className="secondary" disabled={!!loading} onClick={() => login({ otp: '' })}>{t('Try the passkey again')}</button>}
         </div>
       </section>
       {renderNotifications()}

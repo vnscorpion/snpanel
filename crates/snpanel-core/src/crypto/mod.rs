@@ -8,6 +8,7 @@ pub mod fernet;
 pub mod password;
 pub mod token;
 pub mod totp;
+pub mod webauthn;
 
 pub use fernet::{FernetError, FernetKey};
 pub use password::{verify_dummy, verify_password};

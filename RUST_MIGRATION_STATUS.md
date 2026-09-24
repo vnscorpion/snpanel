@@ -1792,9 +1792,14 @@ the symptom is the opposite of useful — a warning on every correct box and
 silence on the one that is behind. The head is taken to be the revision no
 other revision points at, not the highest filename.
 
-`RUST_MIGRATIONS` is empty, which is contract C12 rather than an omission:
-the first Rust migration must be a no-op on every existing database, and
-none at all is the only version of that which cannot be got wrong. Its
+`RUST_MIGRATIONS` was empty, which was contract C12 rather than an
+omission: the first Rust migration had to be a no-op on every existing
+database, and none at all was the only version of that which could not be
+got wrong. It holds one table now - `passkeys` - and C12 reads: **a Rust
+migration only adds**. Every entry is a `CREATE ... IF NOT EXISTS`; nothing
+already in the database is altered, dropped or rewritten. Two tests hold
+that: one reads each statement, the other applies them all to a fresh
+schema and checks every Python table is exactly as it was. Its
 bookkeeping table is this side's own — writing into `alembic_version` would
 make Alembic's own `upgrade` disagree with it, and while both sides are
 alive that is a fight neither wins.

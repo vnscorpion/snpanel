@@ -239,6 +239,21 @@ export function websiteConfigForm(site = {}) {
   };
 }
 
+// A time the API wrote, as year-first 24-hour local time. The API writes
+// SQLAlchemy's naive UTC - "2026-09-24 22:23:24.748631", no zone - which
+// `new Date` reads as local time, wrong by the viewer's offset. A time with
+// no zone is taken as the UTC it is.
+export function formatWhen(value) {
+  if (!value) return '';
+  const text = String(value).trim();
+  const zoned = /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(text);
+  const iso = zoned ? text : `${text.replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1')}Z`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return text;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function formatAccessLogTime(value = '') {
   if (!value) return '';
   const date = new Date(value);

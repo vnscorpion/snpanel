@@ -62,6 +62,7 @@ pub fn router() -> Router<AppState> {
         .route("/2fa/setup", post(two_factor_setup))
         .route("/2fa/enable", post(two_factor_enable))
         .route("/2fa/disable", post(two_factor_disable))
+        .merge(super::passkeys::router())
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 
 /// A 429 with the `Retry-After` header the Python attaches.
-fn too_many(detail: &str, retry_after: u64) -> Response {
+pub(crate) fn too_many(detail: &str, retry_after: u64) -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
         [("retry-after", retry_after.to_string())],
@@ -96,7 +97,7 @@ fn too_many(detail: &str, retry_after: u64) -> Response {
 /// `http://IP:2222` during a first install, and forcing `Secure` there would
 /// set a cookie the browser never sends back - a login that appears to succeed
 /// and lands you on the login page again.
-fn is_secure_request(headers: &HeaderMap, serves_tls: bool) -> bool {
+pub(crate) fn is_secure_request(headers: &HeaderMap, serves_tls: bool) -> bool {
     if serves_tls {
         return true;
     }
@@ -157,7 +158,7 @@ fn clear_session_cookies(headers: &mut HeaderMap) {
 }
 
 /// Source: `_issue_login_session`.
-fn issue_login_session(
+pub(crate) fn issue_login_session(
     state: &AppState,
     headers: &mut HeaderMap,
     secure: bool,
@@ -332,12 +333,27 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
     if user.totp_enabled {
         if otp.is_empty() {
             // Not an error: the SPA shows the code field on this reply.
-            return axum::Json(json!({
+            //
+            // Not in the Python: `methods`, and - when the user has a passkey
+            // registered on this host - `passkey`, which the page tries first
+            // and falls back from to the code. See `passkeys.rs`.
+            let remember_me = matches!(
+                remember.trim().to_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            );
+            let mut body = json!({
                 "access_token": Value::Null,
                 "token_type": "bearer",
-                "requires_2fa": true
-            }))
-            .into_response();
+                "requires_2fa": true,
+                "methods": ["totp"]
+            });
+            if let Some(offer) =
+                super::passkeys::login_offer(&state, &headers, &user, remember_me).await
+            {
+                body["methods"] = json!(["passkey", "totp"]);
+                body["passkey"] = offer;
+            }
+            return axum::Json(body).into_response();
         }
         if !verify_totp(&state, &user, &otp) {
             state.rate_limiter.record_failure(&ip_key, true).await;
@@ -897,6 +913,14 @@ async fn two_factor_disable(State(state): State<AppState>, req: Request) -> Resp
 
     if let Err(r) = require_step_up(&state, &current.user, &current_password, &code) {
         return r;
+    }
+
+    // Passkeys stand beside the code, never alone. They go first: if they
+    // cannot, the code stays on rather than leaving passkeys with nothing
+    // behind them.
+    if let Err(e) = state.db.passkeys().delete_for_user(current.user.id).await {
+        tracing::error!("removing passkeys before turning 2FA off failed: {e}");
+        return internal_error();
     }
 
     let mut user = current.user;

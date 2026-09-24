@@ -33,6 +33,7 @@ pub mod backups;
 pub mod cloudflare;
 mod databases;
 pub mod packages;
+pub mod passkeys;
 pub mod provisioning;
 pub mod schema;
 pub mod site_apps;
@@ -46,6 +47,7 @@ pub use backups::{
 pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
+pub use passkeys::{NewPasskey, Passkey, PasskeyRepo};
 pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
 pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
@@ -187,6 +189,10 @@ impl Database {
 
     pub fn api_tokens(&self) -> ApiTokenRepo<'_> {
         ApiTokenRepo::new(&self.pool)
+    }
+
+    pub fn passkeys(&self) -> PasskeyRepo<'_> {
+        PasskeyRepo::new(&self.pool)
     }
 
     pub fn provisioning(&self) -> ProvisioningRepo<'_> {

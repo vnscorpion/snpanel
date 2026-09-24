@@ -460,6 +460,12 @@ async fn reset_two_factor(
         return bad_request("Use the Security page to disable your own 2FA");
     }
 
+    // A reset is for someone who lost their second factor; their passkeys go
+    // with the code, first, so none is left without one.
+    if let Err(e) = state.db.passkeys().delete_for_user(user_id).await {
+        tracing::error!("removing passkeys in a 2FA reset failed: {e}");
+        return internal_error();
+    }
     if let Err(e) = state
         .db
         .users()

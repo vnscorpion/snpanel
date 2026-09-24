@@ -16,11 +16,13 @@
 //! at all. The statements come from [`BOOTSTRAP_DDL`], which was captured
 //! from Alembic rather than transcribed from it.
 //!
-//! [`RUST_MIGRATIONS`] is still empty, and **C12 still stands**: the first
-//! migration written here has to be a no-op on every existing database. The
-//! runner is exercised against migrations that do something by the tests
-//! below, through [`Database::apply_migrations`], so the first real one will
-//! not be the first time this code ran anything.
+//! **C12, as it reads now: a Rust migration only adds.** It was "the first
+//! migration must be a no-op on every existing database", and while the
+//! list was empty that was trivially kept. The first entry is a new table,
+//! `passkeys`, and C12 keeps what it was for: nothing a migration here does
+//! may change a table, index or row that was there before it. Every entry is
+//! a `CREATE ... IF NOT EXISTS`, and the tests below check both that and the
+//! result - every Python table left exactly as it was.
 
 use super::DbError;
 
@@ -110,18 +112,44 @@ pub enum Bootstrap {
 
 /// Migrations this side owns.
 ///
-/// Empty, and that is contract C12 rather than an omission: the first
-/// migration written here has to be a no-op on every existing database, and
-/// no migration at all is the only version of that which cannot be got
-/// wrong.
+/// **C12: only additions.** Each entry creates something new - `CREATE TABLE
+/// IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS` - and touches nothing that
+/// was there before it: no `ALTER`, no `DROP`, no rewritten rows. A Python
+/// that still runs beside this side on an upgraded box sees its own tables
+/// exactly as it left them.
 ///
 /// This is now where a schema change goes. Adding one to `backend/alembic`
 /// instead would put it behind a Python that a cut-over box does not run.
 ///
-/// Each entry is `(name, sql)`. The name is recorded so a migration runs
-/// once; the SQL has to be safe to run against a database at
-/// [`PYTHON_HEAD`].
-pub const RUST_MIGRATIONS: &[(&str, &str)] = &[];
+/// Each entry is `(name, sql)`, one statement each. The name is recorded so
+/// a migration runs once; the SQL has to be safe to run against a database
+/// at [`PYTHON_HEAD`].
+pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
+    // Passkeys: WebAuthn credentials, a second factor beside the TOTP code.
+    // See `passkeys.rs`. `username` is there on purpose: SQLite can give a
+    // deleted user's id to the next account, and a leftover passkey must not
+    // follow the number.
+    (
+        "rust_0001_passkeys",
+        "CREATE TABLE IF NOT EXISTS passkeys (\
+            id INTEGER NOT NULL PRIMARY KEY, \
+            user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE, \
+            username VARCHAR(64) NOT NULL, \
+            credential_id VARCHAR(1400) NOT NULL UNIQUE, \
+            public_key BLOB NOT NULL, \
+            algorithm INTEGER NOT NULL, \
+            sign_count INTEGER DEFAULT 0 NOT NULL, \
+            rp_id VARCHAR(253) NOT NULL, \
+            name VARCHAR(64) NOT NULL, \
+            aaguid VARCHAR(36) DEFAULT '' NOT NULL, \
+            created_at DATETIME NOT NULL, \
+            last_used_at DATETIME)",
+    ),
+    (
+        "rust_0002_passkeys_by_user",
+        "CREATE INDEX IF NOT EXISTS ix_passkeys_user_id ON passkeys (user_id)",
+    ),
+];
 
 /// Where applied Rust migrations are recorded.
 ///
@@ -610,24 +638,72 @@ mod tests {
         );
     }
 
-    /// **C12.** With no Rust migrations, a start against a database at head
-    /// changes nothing but the bookkeeping table.
+    /// **C12, by reading the SQL.** Every Rust migration is one statement
+    /// that creates something new, and none says anything that could change
+    /// what was already there.
+    #[test]
+    fn every_rust_migration_only_adds() {
+        let names: Vec<&str> = RUST_MIGRATIONS.iter().map(|(name, _)| *name).collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "a name used twice runs once");
+        for (name, sql) in RUST_MIGRATIONS {
+            let upper = sql.to_uppercase();
+            assert!(
+                [
+                    "CREATE TABLE IF NOT EXISTS ",
+                    "CREATE INDEX IF NOT EXISTS ",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                ]
+                .iter()
+                .any(|prefix| upper.starts_with(prefix)),
+                "{name} does not create something new"
+            );
+            let words: Vec<&str> = upper
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .collect();
+            for forbidden in [
+                "ALTER", "DROP", "UPDATE", "DELETE", "INSERT", "REPLACE", "RENAME",
+            ] {
+                // `ON DELETE CASCADE` is a clause of a new column, not a
+                // statement against an old table.
+                let hits = words.iter().filter(|w| **w == forbidden).count();
+                let allowed = if forbidden == "DELETE" {
+                    upper.matches("ON DELETE ").count()
+                } else {
+                    0
+                };
+                assert_eq!(hits, allowed, "{name} says {forbidden}");
+            }
+            assert!(!sql.contains(';'), "{name} is more than one statement");
+        }
+    }
+
+    /// **C12, by the result.** On the schema a fresh install has, applying
+    /// every Rust migration leaves each table and index that was there
+    /// exactly as it was, and adds only what the migrations name.
     #[tokio::test]
-    async fn the_first_start_applies_nothing() {
-        let pool = stamped(Some(PYTHON_HEAD)).await;
-        let db = super::super::Database::from_pool(pool.clone());
-        assert!(RUST_MIGRATIONS.is_empty(), "C12: the list must start empty");
-        assert!(db.apply_rust_migrations().await.unwrap().is_empty());
-        // The table exists afterwards, so the mechanism is exercised by
-        // every start rather than first on the day it matters.
-        let tables: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
-        )
-        .bind(MIGRATIONS_TABLE)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(tables, 1);
+    async fn the_rust_migrations_leave_every_python_table_as_it_was() {
+        let (pool, db) = fresh().await;
+        let before = dump(&pool).await;
+        let applied = db.apply_rust_migrations().await.unwrap();
+        assert_eq!(applied.len(), RUST_MIGRATIONS.len());
+        let after = dump(&pool).await;
+        for entry in &before {
+            assert!(after.contains(entry), "{} changed or went", entry.1);
+        }
+        let mut added: Vec<&str> = after
+            .iter()
+            .filter(|entry| !before.contains(entry))
+            .map(|entry| entry.1.as_str())
+            .collect();
+        added.sort();
+        assert_eq!(
+            added,
+            vec!["ix_passkeys_user_id", "passkeys", MIGRATIONS_TABLE],
+            "only the passkeys table, its index and the bookkeeping table are new"
+        );
     }
 
     /// Running twice is running once. A migration that reapplied on every
@@ -637,7 +713,10 @@ mod tests {
     async fn applying_twice_changes_nothing() {
         let pool = stamped(Some(PYTHON_HEAD)).await;
         let db = super::super::Database::from_pool(pool.clone());
-        assert!(db.apply_rust_migrations().await.unwrap().is_empty());
+        assert_eq!(
+            db.apply_rust_migrations().await.unwrap().len(),
+            RUST_MIGRATIONS.len()
+        );
         assert!(db.apply_rust_migrations().await.unwrap().is_empty());
     }
 

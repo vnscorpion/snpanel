@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Copy, Image, KeyRound, Lock, Plus, RefreshCw, Settings as SettingsIcon, SlidersHorizontal, Trash2, Upload, UserCog } from 'lucide-react';
+import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import './PanelSettings.css';
@@ -8,14 +9,6 @@ import './PanelSettings.css';
 // now, and the addresses that opened that page - /api-tokens, /api-token -
 // open this one on the tokens tab, so a WHMCS guide that links there still
 // lands in the right place.
-// Year first, 24-hour, local time: read the same way in either language.
-function when(value) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 const TABS = [
   ['general', msg('General'), SlidersHorizontal],
   ['account', msg('Admin account'), UserCog],
@@ -179,7 +172,7 @@ export default function PanelSettingsPage() {
                 <td><strong>{token.name}</strong></td>
                 <td>{token.allowed_ips ? <code>{token.allowed_ips}</code> : <span className="data-table-muted">{t('Any IP')}</span>}</td>
                 <td><span className={`badge ${token.is_active ? 'ok' : ''}`}>{token.is_active ? t('Active') : t('Revoked')}</span></td>
-                <td>{token.last_used_at ? when(token.last_used_at) : <span className="data-table-muted">{t('Never')}</span>}</td>
+                <td>{token.last_used_at ? formatWhen(token.last_used_at) : <span className="data-table-muted">{t('Never')}</span>}</td>
                 <td className="data-table-actions">
                   {token.is_active && <button type="button" className="secondary icon-button danger-hover" disabled={busy} onClick={() => revokeApiToken(token)}
                     aria-label={t('Revoke {name}', { name: token.name })} title={t('Revoke {name}', { name: token.name })}><Trash2 size={15} aria-hidden="true"/></button>}

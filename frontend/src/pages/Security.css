@@ -1,0 +1,25 @@
+/* Two-step verification: the authenticator app, then passkeys beside it.
+   See pages/Security.jsx. */
+
+.security-page{display:grid;gap:var(--space-4)}
+.security-page>.section{margin-bottom:0}
+
+.security-head{display:flex;align-items:center;gap:var(--space-3)}
+.security-head-text{flex:1;min-width:0}
+.security-head-text h2{display:flex;align-items:center;gap:var(--space-2);margin:0;font-size:var(--text-lg)}
+.security-head-text .hint{margin-top:2px}
+.security-icon{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:var(--radius-lg)}
+.security-icon.on{background:var(--success-bg);color:var(--success-text)}
+.security-icon.off{background:var(--surface-sunken);color:var(--text-secondary)}
+.security-page .security-grid{margin-top:0}
+
+.passkey-table td strong{display:block}
+.passkey-elsewhere{display:block;margin-top:2px;color:var(--text-muted);font-size:var(--text-xs);font-weight:600}
+.passkey-form{display:grid;grid-template-columns:minmax(180px,1.4fr) minmax(140px,1fr) auto;gap:var(--space-2);align-items:end}
+.passkey-form label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.passkey-form label span{font-size:var(--text-sm)}
+.passkey-first{display:flex;align-items:center;gap:6px}
+
+@media (max-width:640px){
+  .passkey-form{grid-template-columns:1fr}
+}
