@@ -36,7 +36,7 @@ export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'settings' };
 
 // 'waf-site' is reached from the WAF overview rather than the sidebar, but it
 // still belongs to Settings so the menu stays open and WAF stays highlighted.
-export const SETTINGS_PAGE_KEYS = ['settings', 'api-tokens', 'security', 'php', 'firewall', 'waf', 'waf-site', 'malware', 'access-logs', 'updates', 'addons', 'services'];
+export const SETTINGS_PAGE_KEYS = ['settings', 'api-tokens', 'security', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'access-logs', 'updates', 'addons', 'services'];
 export const PAGE_ROUTES = {
   dashboard: '/',
   websites: '/website',
@@ -52,6 +52,7 @@ export const PAGE_ROUTES = {
   security: '/security',
   php: '/php',
   firewall: '/firewall',
+  fail2ban: '/fail2ban',
   waf: '/waf',
   'waf-site': '/waf-site',
   malware: '/malware',

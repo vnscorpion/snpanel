@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -51,6 +51,7 @@ const BackupsPage = lazy(() => import('./pages/Backups.jsx'));
 const ServicesPage = lazy(() => import('./pages/Services.jsx'));
 const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
+const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
 const WafPage = lazy(() => import('./pages/Waf.jsx'));
 const WafSitePage = lazy(() => import('./pages/WafSite.jsx'));
 const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
@@ -208,6 +209,7 @@ function App() {
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [passkeys, setPasskeys] = useState({ items: [], available: false, totp_enabled: false, limit: 10, loaded: false });
   const [malwareScanStatus, setMalwareScanStatus] = useState(null);
+  const [fail2ban, setFail2ban] = useState(null);
   const [scanTargetWebsiteId, setScanTargetWebsiteId] = useState('');
   const [scanResults, setScanResults] = useState(null);
   const [scanJob, setScanJob] = useState(null);
@@ -249,6 +251,7 @@ function App() {
   const isAdmin = currentUser?.role === 'admin';
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
+  const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
   // Two locks, and both have to be open: the server has to have the addon
   // installed at all, and the customer's package has to include it. Admins skip
   // the second one, never the first.
@@ -1678,12 +1681,15 @@ function App() {
   async function setAddonInstalled(slug, install) {
     const addon = addons.items.find(item => item.slug === slug);
     const label = addon?.name || slug;
-    if (!install && !confirm(t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label }))) return;
+    const uninstallQuestion = slug === 'fail2ban'
+      ? t('Uninstall the Fail2ban addon?\n\nFail2ban is stopped, and every address it banned can connect again. Its settings are kept, and reinstalling puts them back.')
+      : t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label });
+    if (!install && !confirm(uninstallQuestion)) return;
     const data = await request(`/addons/${slug}/${install ? 'install' : 'uninstall'}`, { method: 'POST' },
       install ? t('Installing {name}...', { name: label }) : t('Uninstalling {name}...', { name: label }));
     if (data) {
       setNotice(install
-        ? `${t('{name} installed.', { name: label })} ${data.next_step || ''}`.trim()
+        ? `${t('{name} installed.', { name: label })} ${data.next_step ? t(data.next_step) : ''}`.trim()
         : `${t('{name} uninstalled.', { name: label })}${data.stopped?.length ? ` ${t('{count} application(s) stopped.', { count: data.stopped.length })}` : ''}`);
       await loadAddons();
       // The nav and the website mode picker both hang off this.
@@ -2969,6 +2975,29 @@ function App() {
     if (data) setFirewallStatus(data);
   }
 
+  // The Fail2ban addon's page: every answer is the whole page again.
+  async function loadFail2ban() {
+    const data = await request('/fail2ban', {}, t('Loading Fail2ban...'));
+    if (data) setFail2ban(data);
+  }
+
+  async function saveFail2banSettings(settings) {
+    const data = await request('/fail2ban/settings', { method: 'PUT', body: JSON.stringify(settings) }, t('Saving Fail2ban settings...'));
+    if (data) { setFail2ban(data); setNotice(t('Fail2ban settings saved.')); }
+    return !!data;
+  }
+
+  async function fail2banBan(jail, address) {
+    const data = await request('/fail2ban/ban', { method: 'POST', body: JSON.stringify({ jail, address }) }, t('Banning {address}...', { address }));
+    if (data) { setFail2ban(data); setNotice(t('{address} is banned.', { address })); }
+    return !!data;
+  }
+
+  async function fail2banUnban(address) {
+    const data = await request('/fail2ban/unban', { method: 'POST', body: JSON.stringify({ address }) }, t('Letting {address} back in...', { address }));
+    if (data) { setFail2ban(data); setNotice(t('{address} can connect again.', { address })); }
+  }
+
   async function runFirewallAction(path, options = {}, label = t('Updating firewall...')) {
     const data = await request(path, options, label);
     if (data) { setNotice((data.stdout || data.stderr || t('Firewall updated.')).trim()); await loadFirewall(); }
@@ -3419,6 +3448,12 @@ function App() {
     else if (page === 'websites' || page === 'files') loadSiteApps();
   }, [page, currentUser, applicationAddonInstalled]);
 
+  // Asked once the addon list says it is installed: before that the API
+  // answers 409, and the page explains the missing addon itself.
+  useEffect(() => {
+    if (isAuthenticated && page === 'fail2ban' && isAdmin && fail2banAddonInstalled) loadFail2ban();
+  }, [isAuthenticated, page, isAdmin, fail2banAddonInstalled]);
+
   useEffect(() => {
     if (page !== 'files' || !hasFileTarget()) return;
     // An app has no public_html; its root is the code directory itself.
@@ -3516,6 +3551,7 @@ function App() {
     ['security', t('Two-step verification'), Shield],
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
+    ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
     ['waf', t('WAF'), Shield],
     ...(isAdmin ? [['malware', t('Malware Scanner'), Search]] : []),
     ...(isAdmin ? [['access-logs', t('Access Logs'), FileText]] : []),
@@ -3878,6 +3914,9 @@ function App() {
       enableTwoFactorAuth,
       exportWafAccessLogs,
       extractArchiveFile,
+      fail2ban,
+      fail2banBan,
+      fail2banUnban,
       fileBreadcrumbs,
       fileJobs,
       fileListPath,
@@ -3918,6 +3957,7 @@ function App() {
       loadBotBlocks,
       loadCrs,
       loadDatabases,
+      loadFail2ban,
       loadFirewall,
       loadFirewallBlocklists,
       loadMalwareScanJobs,
@@ -4013,6 +4053,7 @@ function App() {
       runServiceAction,
       saveAdminAccount,
       saveCrsMode,
+      saveFail2banSettings,
       saveGlobalBots,
       saveMalwareSchedule,
       saveNginxCustom,
@@ -4203,6 +4244,7 @@ function App() {
     if (page === 'security') return <SecurityPage />;
     if (page === 'php') return <PhpConfigPage />;
     if (page === 'firewall') return <FirewallPage />;
+    if (page === 'fail2ban') return <Fail2banPage />;
     if (page === 'waf') return <WafPage />;
     if (page === 'waf-site') return <WafSitePage />;
     if (page === 'malware') return <MalwarePage />;

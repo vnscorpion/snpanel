@@ -25,7 +25,7 @@ use crate::exec;
 ///
 /// Defaulting matters less than not panicking: this runs as root on a box
 /// whose identity is already established by the installer.
-fn family() -> Family {
+pub(crate) fn family() -> Family {
     snpanel_osabi::detect()
         .map(|p| p.family())
         .unwrap_or(Family::Debian)

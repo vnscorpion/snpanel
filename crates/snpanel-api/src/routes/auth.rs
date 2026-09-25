@@ -323,6 +323,7 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
     let Some(user) = user.filter(|_| password_ok) else {
         state.rate_limiter.record_failure(&ip_key, true).await;
         state.rate_limiter.record_failure(&user_key, false).await;
+        crate::auth_log::login_failure(&parts);
         return error(StatusCode::UNAUTHORIZED, "Invalid username or password");
     };
 
@@ -358,6 +359,7 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
         if !verify_totp(&state, &user, &otp) {
             state.rate_limiter.record_failure(&ip_key, true).await;
             state.rate_limiter.record_failure(&user_key, false).await;
+            crate::auth_log::login_failure(&parts);
             return error(StatusCode::UNAUTHORIZED, "Invalid authentication code");
         }
     }

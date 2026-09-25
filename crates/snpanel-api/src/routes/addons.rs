@@ -38,6 +38,9 @@ pub fn router() -> Router<AppState> {
 /// Source: `addons.APPLICATION`.
 const APPLICATION: &str = "application";
 
+/// Not in the Python: fail2ban, run with the panel's jails.
+const FAIL2BAN: &str = "fail2ban";
+
 /// Source: `addons.CATALOGUE`.
 ///
 /// Held here rather than read from a file because it is the Python's own
@@ -45,25 +48,48 @@ const APPLICATION: &str = "application";
 /// what has been *installed* lives on disk. The Vietnamese strings are the
 /// panel's own and are copied byte for byte - they are what an administrator
 /// reads on the Addons page.
+///
+/// Fail2ban is not in the Python. Its text is English, the panel's language
+/// now, and the Addons page translates it.
 fn catalogue() -> Vec<(&'static str, Value)> {
-    vec![(
-        APPLICATION,
-        json!({
-            "name": "Application",
-            "version": "1.0.0",
-            "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
-            "details": [
-                "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-                "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-                "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài.",
-            ],
-            "notes": [
-                "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-                "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách.",
-            ],
-            "keeps_data_on_uninstall": true,
-        }),
-    )]
+    vec![
+        (
+            APPLICATION,
+            json!({
+                "name": "Application",
+                "version": "1.0.0",
+                "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+                "details": [
+                    "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
+                    "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
+                    "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài.",
+                ],
+                "notes": [
+                    "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
+                    "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
+        (
+            FAIL2BAN,
+            json!({
+                "name": "Fail2ban",
+                "version": "1.0.0",
+                "summary": "Bans addresses that keep failing to sign in - to SSH, to the panel and to WordPress sites - in the server's firewall.",
+                "details": [
+                    "Installs fail2ban and runs it with jails for SSH, panel sign-ins, WordPress sign-ins and repeat offenders.",
+                    "Bans are nftables rules beside the panel's firewall, and they lift by themselves when they expire.",
+                    "The Fail2ban page sets how long a ban lasts, which jails run and which addresses are never banned.",
+                ],
+                "notes": [
+                    "The address you install it from is never banned. Add the other addresses you manage the server from on the Fail2ban page.",
+                    "Cloudflare's addresses are never banned from a site's log: a site behind Cloudflare logs Cloudflare, not its visitors.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
+    ]
 }
 
 /// Source: `addons.ADDONS_FILE`.
@@ -101,8 +127,17 @@ pub(super) fn require_application() -> Result<(), axum::response::Response> {
 /// the addon off has to take effect on the next request, and the file is one
 /// small read.
 pub fn application_installed() -> bool {
+    is_installed(APPLICATION)
+}
+
+/// Whether the Fail2ban addon is installed, read the same way.
+pub fn fail2ban_installed() -> bool {
+    is_installed(FAIL2BAN)
+}
+
+fn is_installed(slug: &str) -> bool {
     stored()
-        .get(APPLICATION)
+        .get(slug)
         .and_then(|record| record.get("installed"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
@@ -245,9 +280,14 @@ fn uninstall_record(data: &mut Value, slug: &str) {
 }
 
 /// Source: `install_addon`.
+///
+/// Not in the Python: an addon that is a service is installed with it, before
+/// the record says so - a Fail2ban addon marked installed with no fail2ban
+/// behind it would be a page of empty jails and no explanation.
 async fn install(
     State(state): State<AppState>,
     axum::extract::Path(slug): axum::extract::Path<String>,
+    parts: axum::http::request::Parts,
     current: CurrentUser,
 ) -> Response {
     if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
@@ -258,6 +298,23 @@ async fn install(
     };
 
     let version = entry["version"].as_str().unwrap_or("").to_string();
+    if slug == FAIL2BAN {
+        // The settings from last time, if it was installed before; otherwise
+        // the defaults, with the installing administrator's address exempt.
+        let config = crate::fail2ban::stored().unwrap_or_else(|| {
+            let admin = crate::client::client_host(&parts)
+                .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                .map(|a| a.to_canonical());
+            snpanel_ipc::Fail2banConfig::defaults(admin)
+        });
+        if let Err(message) = crate::fail2ban::install(&state, &config).await {
+            return crate::errors::bad_request(&message);
+        }
+        if let Err(e) = crate::fail2ban::save(&config) {
+            tracing::error!("writing fail2ban.json failed: {e}");
+            return crate::errors::internal_error();
+        }
+    }
     let mut data = stored();
     install_record(&mut data, &slug, &version, &now_utc());
     if let Err(e) = write_addons(&data) {
@@ -279,10 +336,10 @@ async fn install(
         // The runtimes an application needs are installed from the Application
         // page itself, which can report progress; saying so here saves someone
         // wondering why Docker did not appear.
-        "next_step": if slug == APPLICATION {
-            "Vào mục Application để cài Docker hoặc bản Node.js cần dùng."
-        } else {
-            ""
+        "next_step": match slug.as_str() {
+            APPLICATION => "Vào mục Application để cài Docker hoặc bản Node.js cần dùng.",
+            FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
+            _ => "",
         },
     }))
     .into_response()
@@ -328,6 +385,14 @@ async fn uninstall(
         }
     }
 
+    // Not in the Python: stopped rather than removed, which lifts every ban
+    // and keeps the package and the settings for next time.
+    if slug == FAIL2BAN {
+        if let Err(message) = crate::fail2ban::stop(&state).await {
+            return crate::errors::bad_request(&message);
+        }
+    }
+
     let mut data = stored();
     uninstall_record(&mut data, &slug);
     if let Err(e) = write_addons(&data) {
@@ -352,7 +417,11 @@ async fn uninstall(
         "installed": false,
         "stopped": stopped,
         "could_not_stop": failed,
-        "kept": "Thư mục ứng dụng, volume và dữ liệu trong panel được giữ nguyên.",
+        "kept": if slug == FAIL2BAN {
+            "Fail2ban's settings are kept; installing the addon again puts them back."
+        } else {
+            "Thư mục ứng dụng, volume và dữ liệu trong panel được giữ nguyên."
+        },
     }))
     .into_response()
 }
@@ -556,6 +625,7 @@ mod tests {
         // `known()` is what makes an unknown slug a 404 rather than a new
         // entry in the file that nothing can ever uninstall.
         assert!(known("application").is_some());
+        assert!(known("fail2ban").is_some());
         for bad in [
             "",
             "Application",
@@ -570,27 +640,29 @@ mod tests {
     #[test]
     fn an_entry_carries_the_catalogue_and_the_stored_record() {
         let items = addon_state();
-        assert_eq!(items.len(), 1, "one addon in the catalogue");
-        let app = &items[0];
-        assert_eq!(app["slug"], json!(APPLICATION));
-        for key in [
-            "name",
-            "version",
-            "summary",
-            "details",
-            "notes",
-            "keeps_data_on_uninstall",
-            "installed",
-            "installed_version",
-            "installed_at",
-        ] {
-            assert!(app.get(key).is_some(), "{key} is missing");
+        // Sorted by slug, as the Python sorts them.
+        let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
+        assert_eq!(slugs, [APPLICATION, FAIL2BAN]);
+        for addon in &items {
+            for key in [
+                "name",
+                "version",
+                "summary",
+                "details",
+                "notes",
+                "keeps_data_on_uninstall",
+                "installed",
+                "installed_version",
+                "installed_at",
+            ] {
+                assert!(addon.get(key).is_some(), "{key} is missing");
+            }
+            // Absent from the store means not installed, with empty strings
+            // rather than nulls - the frontend renders these directly.
+            assert!(addon["installed"].is_boolean());
+            assert!(addon["installed_version"].is_string());
+            assert!(addon["installed_at"].is_string());
         }
-        // Absent from the store means not installed, with empty strings rather
-        // than nulls - the frontend renders these directly.
-        assert!(app["installed"].is_boolean());
-        assert!(app["installed_version"].is_string());
-        assert!(app["installed_at"].is_string());
     }
 
     #[test]

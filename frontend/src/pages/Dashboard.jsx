@@ -1,7 +1,28 @@
 import {
-  Activity, Archive, Boxes, BrickWall, Bug, CalendarClock, Cpu, Database, FileCode2, Fingerprint,
-  FolderOpen, Globe, HardDrive, Lock, MemoryStick, Network, Plus, Puzzle, RefreshCw,
-  ScrollText, Settings, ShieldCheck, UserCog,
+  Activity,
+  Archive,
+  Boxes,
+  BrickWall,
+  Bug,
+  CalendarClock,
+  Cpu,
+  Database,
+  FileCode2,
+  Fingerprint,
+  FolderOpen,
+  Globe,
+  HardDrive,
+  Lock,
+  MemoryStick,
+  Network,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  ScrollText,
+  Settings,
+  ShieldBan,
+  ShieldCheck,
+  UserCog,
 } from 'lucide-react';
 import { routeForPage } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
@@ -67,6 +88,7 @@ const GROUPS = [
 // that is not listed here gets a tile that opens the Addons page.
 const ADDON_TILES = {
   application: ['applications', Boxes],
+  fail2ban: ['fail2ban', ShieldBan],
 };
 
 // A plain click stays in the panel; a click that asks for a new tab or window

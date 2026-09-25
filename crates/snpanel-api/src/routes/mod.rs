@@ -7,6 +7,7 @@
 pub mod addons;
 pub mod auth;
 pub mod databases;
+pub mod fail2ban;
 pub mod firewall;
 pub mod health;
 pub mod maintenance;
@@ -40,6 +41,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(packages::router())
         .merge(users::router())
         .merge(firewall::router())
+        .merge(fail2ban::router())
         .merge(databases::router())
         .merge(updates::router())
         .merge(addons::router())

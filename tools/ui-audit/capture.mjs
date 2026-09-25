@@ -42,6 +42,7 @@ export const ROUTES = {
   security: '/security',
   php: '/php',
   firewall: '/firewall',
+  fail2ban: '/fail2ban',
   waf: '/waf',
   malware: '/malware',
   'access-logs': '/access-logs',

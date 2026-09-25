@@ -108,6 +108,23 @@ fn lines_or(raw: Option<&String>, default: u32) -> Result<u32, InvocationError> 
     }
 }
 
+/// The Fail2ban settings on stdin: JSON, and inside every range.
+fn fail2ban_config(
+    stdin: impl FnOnce() -> Vec<u8>,
+) -> Result<crate::Fail2banConfig, InvocationError> {
+    let config: crate::Fail2banConfig = serde_json::from_slice(&stdin())
+        .map_err(|e| InvocationError::invalid(format!("fail2ban settings: {e}")))?;
+    config.validate().map_err(InvocationError::invalid)?;
+    Ok(config)
+}
+
+/// One address - not a network: a ban is of a host.
+fn address_of(raw: &str) -> Result<std::net::IpAddr, InvocationError> {
+    raw.parse::<std::net::IpAddr>()
+        .map(|a| a.to_canonical())
+        .map_err(|_| InvocationError::invalid(format!("not an address: {raw}")))
+}
+
 fn user_of(raw: &str) -> Result<PanelUsername, InvocationError> {
     PanelUsername::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
@@ -714,6 +731,24 @@ impl HelperRequest {
             ("clamav-start", 0) => HelperRequest::ClamavControl { start: true },
             ("clamav-stop", 0) => HelperRequest::ClamavControl { start: false },
 
+            ("fail2ban-install", 0) => HelperRequest::Fail2banInstall {
+                config: fail2ban_config(stdin)?,
+            },
+            ("fail2ban-configure", 0) => HelperRequest::Fail2banConfigure {
+                config: fail2ban_config(stdin)?,
+            },
+            ("fail2ban-status", 0) => HelperRequest::Fail2banStatus,
+            ("fail2ban-ban", 2) => HelperRequest::Fail2banBan {
+                jail: crate::Fail2banJail::parse(&rest[0]).ok_or_else(|| {
+                    InvocationError::invalid(format!("unknown jail: {}", rest[0]))
+                })?,
+                address: address_of(&rest[1])?,
+            },
+            ("fail2ban-unban", 1) => HelperRequest::Fail2banUnban {
+                address: address_of(&rest[0])?,
+            },
+            ("fail2ban-stop", 0) => HelperRequest::Fail2banStop,
+
             ("cron-list", 0) => HelperRequest::CronList { user: None },
             ("cron-list", 1) => match PanelUsername::parse(&rest[0]) {
                 Ok(u) => HelperRequest::CronList { user: Some(u) },
@@ -1256,6 +1291,76 @@ mod tests {
 
     /// `panel-user-lock` and `panel-user-unlock` are one operation with a
     /// direction, and the direction has to survive the mapping.
+    /// The settings come from stdin and are checked before a request exists;
+    /// a jail or an address is checked the same way.
+    #[test]
+    fn the_fail2ban_verbs_map() {
+        let config = crate::Fail2banConfig::defaults(Some("203.0.113.7".parse().unwrap()));
+        let json = serde_json::to_vec(&config).unwrap();
+        for verb in ["fail2ban-install", "fail2ban-configure"] {
+            let payload = json.clone();
+            let req = HelperRequest::from_argv(&[verb.to_string()], move || payload).unwrap();
+            match req {
+                HelperRequest::Fail2banInstall { config: got }
+                | HelperRequest::Fail2banConfigure { config: got } => assert_eq!(got, config),
+                other => panic!("{verb} mapped to {other:?}"),
+            }
+        }
+
+        let broken = serde_json::to_vec(&crate::Fail2banConfig {
+            maxretry: 0,
+            ..config.clone()
+        })
+        .unwrap();
+        let err = HelperRequest::from_argv(&["fail2ban-configure".to_string()], move || broken)
+            .unwrap_err();
+        assert!(err.to_string().contains("maxretry"), "{err}");
+        let err = HelperRequest::from_argv(&["fail2ban-configure".to_string()], || {
+            b"[banaction]\naction = rm -rf /".to_vec()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("fail2ban settings"), "{err}");
+
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match HelperRequest::from_argv(
+            &argv(&["fail2ban-ban", "recidive", "198.51.100.7"]),
+            Vec::new,
+        )
+        .unwrap()
+        {
+            HelperRequest::Fail2banBan { jail, address } => {
+                assert_eq!(jail, crate::Fail2banJail::Recidive);
+                assert_eq!(address.to_string(), "198.51.100.7");
+            }
+            other => panic!("{other:?}"),
+        }
+        // An IPv4 address written the IPv6 way is banned as what it is.
+        match HelperRequest::from_argv(&argv(&["fail2ban-unban", "::ffff:198.51.100.7"]), Vec::new)
+            .unwrap()
+        {
+            HelperRequest::Fail2banUnban { address } => {
+                assert_eq!(address.to_string(), "198.51.100.7")
+            }
+            other => panic!("{other:?}"),
+        }
+        for bad in [
+            &["fail2ban-ban", "sshd-ddos", "198.51.100.7"][..],
+            &["fail2ban-ban", "sshd", "198.51.100.0/24"],
+            &["fail2ban-ban", "sshd", "example.com"],
+            &["fail2ban-unban", "198.51.100.7; reboot"],
+        ] {
+            assert!(
+                HelperRequest::from_argv(&argv(bad), Vec::new).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+        for verb in ["fail2ban-status", "fail2ban-stop"] {
+            let req =
+                HelperRequest::from_argv(&argv(&[verb]), || panic!("{verb} read stdin")).unwrap();
+            assert_eq!(req.op_name(), verb);
+        }
+    }
+
     #[test]
     fn locking_and_unlocking_are_told_apart() {
         let locked = map(&["panel-user-lock", "alice"]).expect("lock");

@@ -3585,6 +3585,7 @@ async fn delete_website(
         &ssl_note,
     )
     .await;
+    crate::fail2ban::refresh_in_background(&state);
 
     axum::Json(json!({
         "ok": true,
@@ -3944,6 +3945,9 @@ async fn create_site_from(
         &request.domain,
     )
     .await;
+    // The WordPress jail reads every site's access log, and fail2ban finds
+    // log files only when it reads its settings.
+    crate::fail2ban::refresh_in_background(&state);
 
     let row = match state.db.websites().by_id(website_id).await {
         Ok(Some(row)) => row,

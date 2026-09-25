@@ -17,6 +17,8 @@
 
 mod argv;
 pub use argv::InvocationError;
+mod fail2ban;
+pub use fail2ban::{Fail2banConfig, Fail2banJail};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -1082,6 +1084,33 @@ pub enum HelperRequest {
     },
     MaldetStatus,
 
+    // --- fail2ban (the addon) ---
+    /// `fail2ban-install` - the package, the panel's filters and jail file,
+    /// and the service enabled. The settings arrive on stdin, as JSON.
+    Fail2banInstall {
+        config: Fail2banConfig,
+    },
+    /// `fail2ban-configure` - the panel's jail file rewritten from `config`,
+    /// checked by fail2ban, and the service reloaded.
+    Fail2banConfigure {
+        config: Fail2banConfig,
+    },
+    /// `fail2ban-status` - the service and every jail it runs, as JSON on
+    /// stdout.
+    Fail2banStatus,
+    /// `fail2ban-ban <jail> <address>`.
+    Fail2banBan {
+        jail: Fail2banJail,
+        address: std::net::IpAddr,
+    },
+    /// `fail2ban-unban <address>` - out of every jail that holds it.
+    Fail2banUnban {
+        address: std::net::IpAddr,
+    },
+    /// `fail2ban-stop` - the service stopped and disabled at boot. Its bans
+    /// go with it; the package and the settings stay.
+    Fail2banStop,
+
     // --- terminal ---
     TerminalExec {
         user: PanelUsername,
@@ -1247,6 +1276,12 @@ impl HelperRequest {
             Self::ClamavStatus => "clamav-status",
             Self::ClamavControl { .. } => "clamav-control",
             Self::MaldetStatus => "maldet-status",
+            Self::Fail2banInstall { .. } => "fail2ban-install",
+            Self::Fail2banConfigure { .. } => "fail2ban-configure",
+            Self::Fail2banStatus => "fail2ban-status",
+            Self::Fail2banBan { .. } => "fail2ban-ban",
+            Self::Fail2banUnban { .. } => "fail2ban-unban",
+            Self::Fail2banStop => "fail2ban-stop",
             Self::TerminalExec { .. } => "terminal-exec",
         }
     }

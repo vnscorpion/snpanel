@@ -14,6 +14,7 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
 pub mod fwrules;
@@ -452,6 +453,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafUpdate => waf::update_rules(),
         HelperRequest::ClamavStatus => waf::clamav_status(),
         HelperRequest::ClamavControl { start } => waf::clamav_control(*start),
+        HelperRequest::Fail2banInstall { config } => fail2ban::install(config, ctx),
+        HelperRequest::Fail2banConfigure { config } => fail2ban::configure(config, ctx),
+        HelperRequest::Fail2banStatus => fail2ban::status(),
+        HelperRequest::Fail2banBan { jail, address } => fail2ban::ban(*jail, *address),
+        HelperRequest::Fail2banUnban { address } => fail2ban::unban(*address),
+        HelperRequest::Fail2banStop => fail2ban::stop(),
         HelperRequest::MaldetStatus => packages::maldet_status(),
     }
 }

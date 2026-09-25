@@ -154,7 +154,7 @@ pub fn custom_delete(domain: &Domain) -> HelperResponse {
 ///
 /// nginx may be reading the file at the moment it is replaced; a rename is
 /// atomic, a truncate-and-write is not.
-fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = path.parent().unwrap_or(std::path::Path::new("/"));

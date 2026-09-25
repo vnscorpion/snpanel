@@ -962,6 +962,44 @@ The end-to-end runs found three faults, none of them in the switch:
   which must be `installed` for every package - the same fix for the
   certbot Cloudflare plugin and the ModSecurity module, its other callers.
 
+### The Fail2ban addon (past the Python)
+
+An addon that is a service. Installing it installs fail2ban (`fail2ban` on
+Debian and Ubuntu; EPEL's `fail2ban-server` and `python3-systemd` on EL),
+writes the panel's jail file and two filters, and starts it - and the addon is
+recorded as installed only once fail2ban answers. Uninstalling stops and
+disables it, which lifts every ban, and keeps the package and the settings;
+installing again puts them back.
+
+The settings are the panel's, in `fail2ban.json` beside `addons.json`, and
+the helper is handed them typed - `Fail2banConfig`: every number inside a
+range, every exempt entry a parsed address, every jail one of five - and never
+as text. A jail file can name actions, and an action is a shell command
+fail2ban runs as root. `fail2ban-client --test` checks what was written, and a
+file it refuses is replaced by the previous one.
+
+The jails: `sshd` on the ports `sshd -T` reports, `snpanel-login` on the
+panel's port, `snpanel-wordpress` for failed `wp-login.php` sign-ins in every
+site's access log, `nginx-http-auth`, and `recidive`. Three decisions a review
+should know about:
+
+- **The panel's sign-in writes a line for fail2ban**, `login failure from
+  <address>`, to the journal as `snpanel-auth` - for a wrong password and for
+  a wrong code. Nothing the client typed is in it, and the filter matches
+  `_UID` as well as the identifier: any process can claim an identifier, a
+  customer's PHP included, and a forged line would ban whoever it named. On
+  the box, five forged lines from `nobody` banned nobody.
+- **Cloudflare's published ranges are never banned from a site's log.** The
+  panel does not set `real_ip`, so a site behind Cloudflare logs Cloudflare's
+  address; a ban would shut out everyone that edge serves.
+- **A ban asked for by name is refused for the caller's own address and for
+  an exempt one**: `ignoreip` covers what fail2ban's filters find, not a ban
+  requested through `fail2ban-client`.
+
+fail2ban expands log globs only when it reads its settings, so adding or
+deleting a site re-applies them in the background. A deleted site's log files
+stay behind, and stay matched; nothing writes to them.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

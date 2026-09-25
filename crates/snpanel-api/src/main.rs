@@ -27,6 +27,7 @@
 mod access_log;
 mod archive;
 mod auth;
+mod auth_log;
 mod backup_jobs;
 #[allow(
     dead_code,
@@ -44,6 +45,7 @@ mod ctl;
 mod da_import;
 mod da_jobs;
 mod errors;
+mod fail2ban;
 mod file_jobs;
 mod files;
 mod helper_socket;
