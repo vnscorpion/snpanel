@@ -119,10 +119,13 @@ function App() {
   const [restoreBackupDir, setRestoreBackupDir] = useState('');
   const [selectedBackupUserId, setSelectedBackupUserId] = useState('');
   const [backupSchedules, setBackupSchedules] = useState([]);
-  const [newBackupSchedule, setNewBackupSchedule] = useState({ user_ids: [], all_users: false, schedule: '0 2 * * *', target_id: '', retention: 7 });
+  const [newBackupSchedule, setNewBackupSchedule] = useState({ user_ids: [], all_users: false, schedule: '0 2 * * *', destination: '', name_style: 'timestamp', retention: 7 });
   const [sftpTargets, setSftpTargets] = useState([]);
   const [selectedSftpTargetId, setSelectedSftpTargetId] = useState('');
   const [newSftpTarget, setNewSftpTarget] = useState({ name: '', host: '', port: 22, username: '', password: '', private_key: '', remote_path: '/backups/snpanel' });
+  const [s3Targets, setS3Targets] = useState([]);
+  // Where a full user backup goes: '' for this server only, 'sftp:<id>' or 's3:<id>'.
+  const [userBackupDestination, setUserBackupDestination] = useState('');
   const [daBackups, setDaBackups] = useState([]);
   const [daReplaceExisting, setDaReplaceExisting] = useState(false);
   const [daScanResult, setDaScanResult] = useState(null);
@@ -358,6 +361,8 @@ function App() {
     setBackupSchedules([]);
     setSftpTargets([]);
     setSelectedSftpTargetId('');
+    setS3Targets([]);
+    setUserBackupDestination('');
     setTwoFactorStatus(null);
     setTwoFactorSetup(null);
     setTwoFactorCode('');
@@ -2514,6 +2519,7 @@ function App() {
   async function refreshScheduledBackupArea() {
     await loadUsers();
     await loadSftpTargets();
+    await loadS3Targets();
     await loadBackupSchedules();
     await loadBackupJobs();
   }
@@ -2524,11 +2530,20 @@ function App() {
     if (data?.items) setUserBackups(data.items);
   }
 
+  // A destination picker's value as the API's two ids: an SFTP target or an S3 one.
+  function destinationIds(value) {
+    const [kind, id] = String(value || '').split(':');
+    return {
+      target_id: kind === 'sftp' ? Number(id) : null,
+      s3_target_id: kind === 's3' ? Number(id) : null,
+    };
+  }
+
   async function createUserBackup() {
     if (!selectedBackupUserId) return;
     const body = {
       user_id: Number(selectedBackupUserId),
-      target_id: selectedSftpTargetId ? Number(selectedSftpTargetId) : null,
+      ...destinationIds(userBackupDestination),
     };
     const data = await request('/maintenance/user-backup', { method: 'POST', body: JSON.stringify(body) }, 'Queueing full user backup...');
     if (data?.job_id) { setNotice('Full user backup queued. It will keep running on the server.'); await loadBackupJobs(); }
@@ -2557,7 +2572,8 @@ function App() {
       user_ids: newBackupSchedule.all_users ? [] : selectedUserIds,
       all_users: !!newBackupSchedule.all_users,
       schedule: newBackupSchedule.schedule,
-      target_id: newBackupSchedule.target_id ? Number(newBackupSchedule.target_id) : null,
+      ...destinationIds(newBackupSchedule.destination),
+      name_style: newBackupSchedule.name_style || 'timestamp',
       retention: Number(newBackupSchedule.retention || 7),
       is_active: true,
     };
@@ -2601,6 +2617,42 @@ function App() {
     if (!confirm('Delete this SFTP target?')) return;
     const data = await request(`/maintenance/sftp-targets/${id}`, { method: 'DELETE' }, 'Deleting SFTP target...');
     if (data) await loadSftpTargets();
+  }
+
+  async function loadS3Targets() {
+    const data = await request('/maintenance/s3-targets');
+    if (data) setS3Targets(data);
+  }
+
+  // Creates one when `id` is null. The saved destination, or null.
+  async function saveS3Target(id, body) {
+    const data = await request(
+      id ? `/maintenance/s3-targets/${id}` : '/maintenance/s3-targets',
+      { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) },
+      t('Saving S3 destination...'),
+    );
+    if (data) {
+      setNotice(t('Saved S3 destination {name}.', { name: data.name }));
+      await loadS3Targets();
+    }
+    return data;
+  }
+
+  async function deleteS3Target(id) {
+    if (!confirm(t('Delete this S3 destination?'))) return;
+    const data = await request(`/maintenance/s3-targets/${id}`, { method: 'DELETE' }, t('Deleting S3 destination...'));
+    if (data) await loadS3Targets();
+  }
+
+  // Writes a small file to the bucket and removes it again.
+  async function testS3Target(target) {
+    const data = await request(`/maintenance/s3-targets/${target.id}/test`, { method: 'POST' }, t('Testing S3 destination...'));
+    if (data) {
+      setNotice(data.removed
+        ? t('{name} accepts backups.', { name: target.name })
+        : t('{name} accepts backups. The key may not delete, so the test file is still in the bucket.', { name: target.name }));
+    }
+    return data;
   }
 
   async function createSftpBackup() {
@@ -3552,7 +3604,7 @@ function App() {
       loadPanelSettings();
       if (currentUser?.role === 'admin') loadApiTokens();
     }
-    if (isAuthenticated && page === 'backups' && currentUser?.role === 'admin') { loadUsers(); loadSftpTargets(); loadBackupSchedules(); loadRestoreBackups(); }
+    if (isAuthenticated && page === 'backups' && currentUser?.role === 'admin') { loadUsers(); loadSftpTargets(); loadS3Targets(); loadBackupSchedules(); loadRestoreBackups(); }
   }, [isAuthenticated, page, currentUser?.role]);
 
   useEffect(() => {
@@ -3945,6 +3997,7 @@ function App() {
       deletePanelUser,
       deleteRestoreBackup,
       deleteSelectedFiles,
+      deleteS3Target,
       deleteSftpTarget,
       deleteSiteApp,
       deleteUserBackup,
@@ -4023,6 +4076,7 @@ function App() {
       loadPhpTune,
       loadRestoreBackups,
       loadSftpAccess,
+      loadS3Targets,
       loadSftpTargets,
       loadSiteApps,
       loadSiteRuntimes,
@@ -4212,7 +4266,12 @@ function App() {
       setWpAdminPassword,
       setWpAdminUser,
       setupTwoFactorAuth,
+      s3Targets,
+      saveS3Target,
+      setUserBackupDestination,
       sftpTargets,
+      testS3Target,
+      userBackupDestination,
       sharedSource,
       showMalwareScanJob,
       showUpdateLog,

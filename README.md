@@ -42,7 +42,11 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 - Let's Encrypt SSL via certbot
 - Native SNPanel file manager with upload, edit, archive, and extract support
 - Backups: archive site files + SQL, scheduled full-user backups, restore, upload, download
-- SFTP backup targets for off-server backup copies
+- Off-server copies to SFTP servers and to S3 buckets - AWS S3, Cloudflare R2,
+  Backblaze B2, Wasabi, MinIO or any other S3-compatible store
+- A schedule names its archives by date and time (every run kept, pruned to
+  its retention), by the user name alone (each run replaces the last), by
+  the day of the week (a week of copies) or by the date (one a day, pruned)
 - iptables + ipset firewall with protected panel/web/mail ports, per-IP allow/deny rules,
   and URL blocklists loaded straight into an ipset
 - Update controls for apt-based OS packages and SNPanel source updates

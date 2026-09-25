@@ -6,6 +6,7 @@
 
 pub mod fernet;
 pub mod password;
+pub mod sigv4;
 pub mod token;
 pub mod totp;
 pub mod webauthn;

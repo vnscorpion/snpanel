@@ -35,6 +35,7 @@ mod databases;
 pub mod packages;
 pub mod passkeys;
 pub mod provisioning;
+pub mod s3_targets;
 pub mod schema;
 pub mod sftp_accounts;
 pub mod site_apps;
@@ -198,6 +199,14 @@ impl Database {
 
     pub fn sftp_accounts(&self) -> sftp_accounts::SftpAccountRepo<'_> {
         sftp_accounts::SftpAccountRepo::new(&self.pool)
+    }
+
+    pub fn s3_targets(&self) -> s3_targets::S3TargetRepo<'_> {
+        s3_targets::S3TargetRepo::new(&self.pool)
+    }
+
+    pub fn schedule_options(&self) -> s3_targets::ScheduleOptionsRepo<'_> {
+        s3_targets::ScheduleOptionsRepo::new(&self.pool)
     }
 
     pub fn provisioning(&self) -> ProvisioningRepo<'_> {

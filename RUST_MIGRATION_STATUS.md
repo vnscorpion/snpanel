@@ -1056,6 +1056,76 @@ all.
   with the old owner, who could still see and delete the database of a site
   that was no longer theirs.
 
+### S3 destinations, and the names a schedule gives its archives (past the Python)
+
+Backups could go off the server only over SFTP. There is now an S3
+destination beside it, and a schedule chooses what is appended to the user
+name in its archives' names.
+
+- `GET/POST /api/maintenance/s3-targets`, `PUT/DELETE .../{id}` and
+  `POST .../{id}/test`, for administrators. The secret key is Fernet-
+  encrypted before it reaches `s3_backup_targets` and never sent back; an
+  edit that leaves it blank keeps it, which is what rotating the other
+  fields needs. The test writes one small object and removes it again - and
+  passes, saying so, when the key may write but not delete, as a backup key
+  often may not. A destination a schedule uploads to cannot be deleted
+  (409): the schedule would quietly go on backing up to this server alone.
+- The client is `s3.rs`, built like the Cloudflare one from `hyper` and
+  `rustls` and sharing its trust store: the panel's second outbound call.
+  Requests are signed with Signature Version 4 (`snpanel-core`'s
+  `crypto::sigv4`, checked byte for byte against the worked examples AWS
+  publishes). An archive up to 16 MiB is one PUT; a larger one is a
+  multipart upload read a part at a time - never whole into memory - and
+  aborted when a part fails, since the parts of an upload nobody completes
+  are stored and billed. What S3 says to retry is retried twice; an `<Error>`
+  inside a `200` from CompleteMultipartUpload is a failure; a bucket in
+  another region is named in the error. Path-style addressing is a setting,
+  and required for an IP address or a bucket name with dots over HTTPS.
+- `POST /api/maintenance/user-backup` takes `s3_target_id` in place of
+  `target_id`, and a schedule takes `s3_target_id` and `name_style`. The two
+  live in `backup_schedule_options`, a table of their own because a Rust
+  migration only adds (C12); a schedule with no row is the Python's.
+- `name_style`: `timestamp` is the Python's `user-<name>-<stamp>.tar.gz`
+  and the default; `none` writes `<name>.tar.gz`, `weekday`
+  `<name>-monday.tar.gz` and `date` `<name>-2026-09-25.tar.gz`, by the
+  schedule's own clock. The name is the same here and at the destination.
+  A reused name is written beside itself and renamed over, so last night's
+  good copy is never replaced by half of tonight's.
+- Pruning counts only the archives of the schedule's own style. The Python
+  pruned every `*.tar.gz` in the user's directory, which made no difference
+  while all of them were timestamped; now a nightly timestamped schedule
+  would have deleted a week of `-monday` files. `none` and `weekday` replace
+  their files instead and prune nothing. Copies at the destination are not
+  pruned, as the Python's SFTP copies never were; the form says so, and a
+  bucket's lifecycle rule is the tool for it.
+
+Three things found on the way:
+
+- **The Rust scheduler did not upload.** It built and pruned, and a
+  schedule's SFTP target was never used - the Python's
+  `_upload_if_configured` had not been ported. Restored, with its message
+  (`user: target:remote file`) and its errors, including "Failed to decrypt
+  SFTP target password; please re-save the target in panel settings" where
+  the Rust code used to log in with no password and report the refusal.
+- **The SFTP upload read the whole archive into memory** before writing it.
+  It streams now: the scheduler sends one archive per user.
+- **"Local only" user backups were refused with a 422.** The page sends
+  `target_id: null`; the Python's `Optional[int] = None` takes it, and
+  `read_int` - written for plain `int` fields - did not.
+
+Tests: the SigV4 vectors; the client against a fake store that recomputes
+every signature - one PUT, parts and their assembly, an abort, a `200`
+error, retries and a refusal that is not retried; the four names and that
+no two styles ever count the same file, whatever the user is called; each
+prune; a replaced archive; the repository. Fourteen checks removed one at a
+time, each caught. And `tools/ui-audit/s3backup.mjs` on the Debian 13 box
+against moto with its signature checking on, so botocore verifies every
+request: 35 checks - a 20 MB backup in two parts, byte for byte; each name
+style here and in the bucket, and its pruning; the scheduler's SFTP upload,
+streamed and pinned; the forms, in both themes and languages and on a
+phone. The Backups page is in the translation now. Not tried against AWS,
+R2 or B2 themselves, nor virtual-hosted addressing outside unit tests.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

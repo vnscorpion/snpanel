@@ -31,6 +31,7 @@ use crate::files;
 use crate::php;
 use crate::shell;
 use crate::state::AppState;
+use snpanel_db::s3_targets::{NameStyle, ScheduleOptions};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -2030,9 +2031,13 @@ async fn list_restore_backups(State(state): State<AppState>, current: CurrentUse
 /// Source: `BackupScheduleOut`, whose `user_ids` validator decodes the JSON
 /// the column holds. A column that will not parse becomes an empty list
 /// rather than an error, the same way the Python's `before` validator does.
-fn schedule_json(row: &snpanel_db::BackupSchedule) -> Value {
+/// With what the Python's schedule did not have: an S3 destination, and how
+/// the archives are named.
+fn schedule_json(row: &snpanel_db::BackupSchedule, options: ScheduleOptions) -> Value {
     let user_ids: Vec<i64> = serde_json::from_str(&row.user_ids).unwrap_or_default();
     json!({
+        "s3_target_id": options.s3_target_id,
+        "name_style": options.name_style.as_str(),
         "id": row.id,
         "user_id": row.user_id,
         "user_ids": user_ids,
@@ -2097,6 +2102,22 @@ fn validate_cron(value: &str) -> Option<String> {
     Some(fields.join(" "))
 }
 
+/// A schedule or a user backup names one destination.
+fn one_destination() -> Response {
+    crate::errors::error(
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "Choose one destination: SFTP or S3, not both.",
+    )
+}
+
+/// A deleted schedule's options. The foreign key cascades too; this does not
+/// rest on `PRAGMA foreign_keys` having been on.
+pub(crate) async fn forget_schedule_options(state: &AppState, schedule_id: i64) {
+    if let Err(e) = state.db.schedule_options().delete(schedule_id).await {
+        tracing::error!("deleting backup schedule {schedule_id}'s options failed: {e}");
+    }
+}
+
 async fn require_admin(current: &CurrentUser) -> Result<(), Response> {
     if permissions::is_admin_role(&current.user.role) {
         Ok(())
@@ -2110,13 +2131,31 @@ async fn list_backup_schedules(State(state): State<AppState>, current: CurrentUs
     if let Err(r) = require_admin(&current).await {
         return r;
     }
-    match state.db.backup_schedules().list().await {
-        Ok(rows) => axum::Json(rows.iter().map(schedule_json).collect::<Vec<_>>()).into_response(),
+    let rows = match state.db.backup_schedules().list().await {
+        Ok(rows) => rows,
         Err(e) => {
             tracing::error!("listing backup schedules failed: {e}");
-            internal_error()
+            return internal_error();
         }
-    }
+    };
+    let options = match state.db.schedule_options().all().await {
+        Ok(options) => options,
+        Err(e) => {
+            tracing::error!("reading the backup schedules' options failed: {e}");
+            return internal_error();
+        }
+    };
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let options = options
+                .get(&row.id)
+                .copied()
+                .unwrap_or(ScheduleOptions::DEFAULT);
+            schedule_json(row, options)
+        })
+        .collect();
+    axum::Json(items).into_response()
 }
 
 /// Source: `create_backup_schedule`.
@@ -2190,6 +2229,25 @@ async fn create_backup_schedule(
         .get("target_id")
         .and_then(Value::as_i64)
         .filter(|id| *id != 0);
+    // Not in the Python: an S3 destination instead, and the archives' names.
+    let s3_target_id = payload
+        .get("s3_target_id")
+        .and_then(Value::as_i64)
+        .filter(|id| *id != 0);
+    if target_id.is_some() && s3_target_id.is_some() {
+        return one_destination();
+    }
+    let name_style = match payload.get("name_style") {
+        None | Some(Value::Null) => Some(NameStyle::Timestamp),
+        Some(Value::String(raw)) => NameStyle::parse(raw),
+        Some(_) => None,
+    };
+    let Some(name_style) = name_style else {
+        return crate::errors::error(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "name_style is one of timestamp, none, weekday or date",
+        );
+    };
     if let Some(id) = target_id {
         match state.db.sftp_targets().active_exists(id).await {
             Ok(true) => {}
@@ -2200,6 +2258,15 @@ async fn create_backup_schedule(
             }
         }
     }
+    if let Some(id) = s3_target_id {
+        if let Err(response) = super::s3_targets::usable(&state, id).await {
+            return response;
+        }
+    }
+    let options = ScheduleOptions {
+        s3_target_id,
+        name_style,
+    };
 
     let schedule_raw = payload
         .get("schedule")
@@ -2265,6 +2332,16 @@ async fn create_backup_schedule(
             return internal_error();
         }
     };
+    // Written for the default too: an id SQLite hands out again must not
+    // inherit a deleted schedule's destination.
+    if let Err(e) = state.db.schedule_options().set(created.id, options).await {
+        tracing::error!(
+            "saving backup schedule {}'s options failed: {e}",
+            created.id
+        );
+        let _ = state.db.backup_schedules().delete(created.id).await;
+        return internal_error();
+    }
 
     let target = if all_users {
         "all_users".to_string()
@@ -2279,7 +2356,7 @@ async fn create_backup_schedule(
         &target,
     )
     .await;
-    axum::Json(schedule_json(&created)).into_response()
+    axum::Json(schedule_json(&created, options)).into_response()
 }
 
 /// Source: `delete_backup_schedule`.
@@ -2298,6 +2375,7 @@ async fn delete_backup_schedule(
     }
     match state.db.backup_schedules().delete(schedule_id).await {
         Ok(true) => {
+            forget_schedule_options(&state, schedule_id).await;
             super::packages::audit_action(
                 &state,
                 &parts,
@@ -8316,10 +8394,22 @@ async fn queue_user_backup(State(state): State<AppState>, req: axum::extract::Re
         Ok(None) => return crate::errors::missing_field("user_id", payload.clone()),
         Err(response) => return response,
     };
-    let target_id = match crate::errors::read_int("target_id", payload.get("target_id")) {
+    // `target_id: Optional[int] = None`: an explicit null is no target, where
+    // `read_int` - written for plain `int` fields - would refuse it. The page
+    // sends one for "Local only".
+    let optional = |field: &str| payload.get(field).filter(|value| !value.is_null());
+    let target_id = match crate::errors::read_int("target_id", optional("target_id")) {
         Ok(value) => value.filter(|id| *id != 0),
         Err(response) => return response,
     };
+    // Not in the Python: an S3 destination instead of an SFTP one.
+    let s3_target_id = match crate::errors::read_int("s3_target_id", optional("s3_target_id")) {
+        Ok(value) => value.filter(|id| *id != 0),
+        Err(response) => return response,
+    };
+    if target_id.is_some() && s3_target_id.is_some() {
+        return one_destination();
+    }
 
     // `get_backup_user`: your own account, or anyone's if you are an admin.
     let target_user = match state.db.users().by_id(user_id).await {
@@ -8344,6 +8434,14 @@ async fn queue_user_backup(State(state): State<AppState>, req: axum::extract::Re
                 tracing::error!("reading SFTP target {target_id} failed: {e}");
                 return internal_error();
             }
+        }
+    }
+    if let Some(s3_target_id) = s3_target_id {
+        if !permissions::is_admin_role(&current.user.role) {
+            return crate::errors::not_enough_permissions();
+        }
+        if let Err(response) = super::s3_targets::usable(&state, s3_target_id).await {
+            return response;
         }
     }
     audit_request(
@@ -8374,7 +8472,7 @@ async fn queue_user_backup(State(state): State<AppState>, req: axum::extract::Re
             requester,
             is_admin,
             target_user.id,
-            target_id,
+            (target_id, s3_target_id),
         )
         .await;
     });
@@ -8387,10 +8485,11 @@ async fn run_user_backup(
     requester_id: i64,
     is_admin: bool,
     target_user_id: i64,
-    target_id: Option<i64>,
+    destination: (Option<i64>, Option<i64>),
 ) {
     crate::backup_jobs::start(&job_id, "Creating full user backup");
-    let outcome = user_backup_work(&state, requester_id, is_admin, target_user_id, target_id).await;
+    let outcome =
+        user_backup_work(&state, requester_id, is_admin, target_user_id, destination).await;
     if let Ok(done) = &outcome {
         let detail = if done.remote_file.is_empty() {
             done.backup_file.clone()
@@ -8423,7 +8522,7 @@ async fn user_backup_work(
     requester_id: i64,
     is_admin: bool,
     target_user_id: i64,
-    target_id: Option<i64>,
+    (target_id, s3_target_id): (Option<i64>, Option<i64>),
 ) -> Result<UserArchive, String> {
     let requester = active_user(state, requester_id).await?;
     let _ = &requester;
@@ -8432,7 +8531,7 @@ async fn user_backup_work(
         Ok(None) => return Err("User not found".to_string()),
         Err(e) => return Err(format!("Could not read the account: {e}")),
     };
-    let archive = build_user_backup(state, &user).await?;
+    let archive = build_user_backup(state, &user, NameStyle::Timestamp).await?;
     let mut remote_file = String::new();
     let mut target_name = String::new();
     if let Some(target_id) = target_id {
@@ -8442,6 +8541,13 @@ async fn user_backup_work(
         let uploaded = upload_archive_to_target(state, target_id, &archive).await?;
         target_name = uploaded.0;
         remote_file = uploaded.1;
+    }
+    if let Some(s3_target_id) = s3_target_id {
+        if !is_admin {
+            return Err("Not enough permissions".to_string());
+        }
+        (target_name, remote_file) =
+            super::s3_targets::upload_archive(state, s3_target_id, &archive).await?;
     }
     Ok(UserArchive {
         backup_file: archive,
@@ -8563,11 +8669,55 @@ async fn sftp_backup_work(
     })
 }
 
-/// Source: `upload_archive_to_target`.
+/// Source: `run_due_schedules`, the body of its loop for one user: the
+/// archive, the upload when the schedule has a destination
+/// (`_upload_if_configured`), then the prune. Returns where the backup went,
+/// for the schedule's message - the archive, or `target:remote file`.
+///
+/// Not the Python's: the destination may be S3, and the archive is named as
+/// the schedule says, which is also what its prune counts.
+pub(crate) async fn run_scheduled_user_backup(
+    state: &AppState,
+    schedule: &snpanel_db::BackupSchedule,
+    options: ScheduleOptions,
+    user: &snpanel_db::User,
+) -> Result<String, String> {
+    let archive = build_user_backup(state, user, options.name_style).await?;
+    let mut went = Vec::new();
+    // `if not schedule.target_id: return archive`
+    if let Some(target_id) = schedule.target_id.filter(|id| *id != 0) {
+        let (name, remote_file) = upload_archive_to_target(state, target_id, &archive).await?;
+        went.push(format!("{name}:{remote_file}"));
+    }
+    if let Some(target_id) = options.s3_target_id {
+        let (name, location) =
+            super::s3_targets::upload_archive(state, target_id, &archive).await?;
+        went.push(format!("{name}:{location}"));
+    }
+    let _ = crate::backups::prune_user_backups(
+        &state.settings.backup_root,
+        &user.username,
+        options.name_style,
+        schedule.retention,
+        state.settings.command_dry_run,
+    );
+    Ok(if went.is_empty() {
+        archive
+    } else {
+        went.join(", ")
+    })
+}
+
+/// Source: `upload_archive_to_target`, and `_upload_if_configured` in the
+/// scheduler.
 ///
 /// Returns the target's name and where the file landed. A host key that was
 /// not pinned yet is pinned here, which is the bootstrap half of the TOFU
 /// model: everything after this upload is checked against it.
+///
+/// A password or key that no longer decrypts fails the upload with the
+/// scheduler's message, as both Python paths failed at `decrypt` - rather
+/// than logging in with nothing and reporting that the server said no.
 async fn upload_archive_to_target(
     state: &AppState,
     target_id: i64,
@@ -8585,18 +8735,24 @@ async fn upload_archive_to_target(
         .await
         .map_err(|e| format!("Could not read the SFTP target: {e}"))?
         .ok_or_else(|| "SFTP target not found".to_string())?;
-    let decrypt = |value: Option<String>| -> Option<String> {
-        value.filter(|text| !text.is_empty()).and_then(|text| {
-            snpanel_core::crypto::fernet::decrypt(
-                &state.settings.secret_key,
-                Some(&text),
-                state.settings.strict_decrypt,
+    let decrypt = |value: Option<String>, what: &str| -> Result<Option<String>, String> {
+        let Some(text) = value.filter(|text| !text.is_empty()) else {
+            return Ok(None);
+        };
+        snpanel_core::crypto::fernet::decrypt(
+            &state.settings.secret_key,
+            Some(&text),
+            state.settings.strict_decrypt,
+        )
+        .map(Some)
+        .map_err(|_| {
+            format!(
+                "Failed to decrypt SFTP target {what}; please re-save the target in panel settings"
             )
-            .ok()
         })
     };
-    let password = decrypt(secrets.password);
-    let private_key = decrypt(secrets.private_key);
+    let password = decrypt(secrets.password, "password")?;
+    let private_key = decrypt(secrets.private_key, "private key")?;
 
     let uploaded = crate::sftp::upload(
         archive,
@@ -8672,10 +8828,16 @@ async fn audit_request(
 /// The applications are the part that is easy to leave out — their data is
 /// not under any website root — and leaving them out is how a restore brings
 /// back the sites and quietly drops every container's workflows.
+///
+/// `style` names the archive - see [`crate::backups::archive_name`]. It is
+/// named when the run starts: a Monday backup that finishes after midnight is
+/// still Monday's.
 pub(crate) async fn build_user_backup(
     state: &AppState,
     user: &snpanel_db::User,
+    style: NameStyle,
 ) -> Result<String, String> {
+    let file_name = crate::backups::archive_name(&user.username, style, chrono::Local::now());
     let backup_dir = crate::backups::user_backup_dir(&state.settings.backup_root, &user.username)
         .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&backup_dir)
@@ -8691,7 +8853,7 @@ pub(crate) async fn build_user_backup(
     std::fs::create_dir_all(&staging)
         .map_err(|e| format!("Cannot make the staging directory: {e}"))?;
 
-    let outcome = collect_user_backup(state, user, &staging).await;
+    let outcome = collect_user_backup(state, user, &staging, &file_name).await;
     // A full copy of a customer's databases; it goes either way.
     let _ = std::fs::remove_dir_all(&staging);
     outcome
@@ -8701,6 +8863,7 @@ async fn collect_user_backup(
     state: &AppState,
     user: &snpanel_db::User,
     staging: &std::path::Path,
+    file_name: &str,
 ) -> Result<String, String> {
     let websites = state
         .db
@@ -8823,6 +8986,7 @@ async fn collect_user_backup(
     crate::backups::write_user_backup(
         &state.settings.backup_root,
         &user.username,
+        file_name,
         &manifest,
         &sites,
         &owned_files,

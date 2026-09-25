@@ -17,6 +17,7 @@ pub mod panel_settings;
 pub mod passkeys;
 pub mod provisioning;
 pub mod refresh;
+pub mod s3_targets;
 pub mod services;
 pub mod sftp;
 pub mod site_apps;
@@ -52,6 +53,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(terminal::router())
         .merge(provisioning::router())
         .merge(maintenance::router())
+        .merge(s3_targets::router())
         .merge(malware::router())
         .merge(panel_settings::router())
         .merge(site_apps::router())

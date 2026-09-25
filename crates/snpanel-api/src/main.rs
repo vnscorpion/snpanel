@@ -65,6 +65,7 @@ mod qr;
 mod ratelimit;
 mod restore;
 mod routes;
+mod s3;
 mod sftp;
 mod sftp_access;
 mod shell;
@@ -719,19 +720,23 @@ async fn run_backup_schedules(state: &AppState) -> usize {
 
         let mut successes = Vec::new();
         let mut errors = Vec::new();
-        for user in users {
-            match routes::maintenance::build_user_backup(state, &user).await {
-                Ok(archive) => {
-                    let _ = crate::backups::prune_user_backups(
-                        &state.settings.backup_root,
-                        &user.username,
-                        schedule.retention,
-                        state.settings.command_dry_run,
-                    );
-                    successes.push(format!("{}: {archive}", user.username));
+        // Not in the Python: where else the archives go, and their names. A
+        // schedule whose options cannot be read is not run as if it had
+        // none - that would keep an offsite backup on this server alone.
+        match state.db.schedule_options().get(schedule.id).await {
+            Ok(options) => {
+                for user in users {
+                    match routes::maintenance::run_scheduled_user_backup(
+                        state, &schedule, options, &user,
+                    )
+                    .await
+                    {
+                        Ok(went) => successes.push(format!("{}: {went}", user.username)),
+                        Err(e) => errors.push(format!("{}: {e}", user.username)),
+                    }
                 }
-                Err(e) => errors.push(format!("{}: {e}", user.username)),
             }
+            Err(e) => errors.push(format!("Cannot read the schedule's settings: {e}")),
         }
 
         let outcome = backup_scheduler::outcome(&successes, &errors);

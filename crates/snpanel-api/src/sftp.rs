@@ -309,7 +309,9 @@ pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, S
         let _ = sftp.create_dir(directory).await;
     }
 
-    let bytes = tokio::fs::read(&local_path)
+    // Streamed, not read whole first: an archive is the size of a customer's
+    // sites and databases, and the scheduler sends one for every user.
+    let local = tokio::fs::File::open(&local_path)
         .await
         .map_err(|e| SftpError::Failed(format!("Cannot read the backup file: {e}")))?;
     let mut remote = sftp
@@ -318,8 +320,8 @@ pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, S
         .map_err(|e| SftpError::Failed(format!("Cannot create {remote_file}: {e}")))?;
     {
         use tokio::io::AsyncWriteExt;
-        remote
-            .write_all(&bytes)
+        let mut local = tokio::io::BufReader::with_capacity(256 * 1024, local);
+        tokio::io::copy_buf(&mut local, &mut remote)
             .await
             .map_err(|e| SftpError::Failed(format!("Cannot write {remote_file}: {e}")))?;
         remote

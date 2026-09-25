@@ -161,6 +161,33 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
             own_password BOOLEAN NOT NULL, \
             updated_at DATETIME NOT NULL)",
     ),
+    // S3 backup destinations, beside the SFTP ones - see `s3_targets.rs`.
+    (
+        "rust_0004_s3_backup_targets",
+        "CREATE TABLE IF NOT EXISTS s3_backup_targets (\
+            id INTEGER NOT NULL PRIMARY KEY, \
+            name VARCHAR(64) NOT NULL, \
+            endpoint VARCHAR(255) NOT NULL, \
+            region VARCHAR(64) NOT NULL, \
+            bucket VARCHAR(63) NOT NULL, \
+            prefix VARCHAR(255) DEFAULT '' NOT NULL, \
+            access_key VARCHAR(255) NOT NULL, \
+            secret_key TEXT NOT NULL, \
+            path_style BOOLEAN NOT NULL, \
+            is_active BOOLEAN DEFAULT 1 NOT NULL, \
+            created_at DATETIME NOT NULL)",
+    ),
+    // What a backup schedule has beyond the Python's columns: an S3
+    // destination, and how its archives are named. A table of its own, as C12
+    // requires; a schedule without a row is the Python's.
+    (
+        "rust_0005_backup_schedule_options",
+        "CREATE TABLE IF NOT EXISTS backup_schedule_options (\
+            schedule_id INTEGER NOT NULL PRIMARY KEY \
+                REFERENCES backup_schedules (id) ON DELETE CASCADE, \
+            s3_target_id INTEGER REFERENCES s3_backup_targets (id) ON DELETE SET NULL, \
+            name_style VARCHAR(16) DEFAULT 'timestamp' NOT NULL)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -714,8 +741,10 @@ mod tests {
         assert_eq!(
             added,
             vec![
+                "backup_schedule_options",
                 "ix_passkeys_user_id",
                 "passkeys",
+                "s3_backup_targets",
                 "sftp_accounts",
                 MIGRATIONS_TABLE
             ],

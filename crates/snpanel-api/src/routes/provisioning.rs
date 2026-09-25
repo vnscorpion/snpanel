@@ -2008,7 +2008,13 @@ async fn terminate(
                 // so the archive is taken first. **A failure here must not
                 // block the termination the billing system asked for** — it
                 // is recorded on the row and the deletion goes ahead.
-                last_message = match super::maintenance::build_user_backup(&state, &user).await {
+                last_message = match super::maintenance::build_user_backup(
+                    &state,
+                    &user,
+                    snpanel_db::s3_targets::NameStyle::Timestamp,
+                )
+                .await
+                {
                     Ok(archive) => format!("backup={archive}"),
                     Err(why) => format!("backup failed: {why}"),
                 };

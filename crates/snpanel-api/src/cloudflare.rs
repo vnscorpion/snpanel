@@ -8,10 +8,11 @@
 //! the customer's whole DNS zone, and an error path that printed it would
 //! put it in the journal of every machine that ever failed a renewal.
 //!
-//! This is the panel's only outbound HTTPS call. It is built from what the
-//! workspace already has - `hyper`, `hyper-util`, `rustls`, `tokio-rustls`
-//! and `rustls-pemfile` - rather than pulling in a client stack, and the
-//! roots come from the system bundle the rest of the machine trusts.
+//! It is built from what the workspace already has - `hyper`, `hyper-util`,
+//! `rustls`, `tokio-rustls` and `rustls-pemfile` - rather than pulling in a
+//! client stack, and the roots come from the system bundle the rest of the
+//! machine trusts. The S3 backup destination (`s3.rs`) is built the same way
+//! and shares that trust store, [`system_roots`].
 //!
 //! The shapes below look over-careful for a JSON API that documents its
 //! responses. They are not: every branch here is a verdict the real Python
@@ -191,35 +192,37 @@ async fn fetch(path: &str, token: &str) -> Result<Vec<u8>, CloudflareError> {
     }
 }
 
-/// The trust store, read once.
-fn root_store() -> Result<Arc<rustls::RootCertStore>, CloudflareError> {
+/// The trust store, read once; `None` when the machine has none.
+pub(crate) fn system_roots() -> Option<Arc<rustls::RootCertStore>> {
     static ROOTS: std::sync::OnceLock<Option<Arc<rustls::RootCertStore>>> =
         std::sync::OnceLock::new();
-    let roots = ROOTS.get_or_init(|| {
-        for path in CA_BUNDLES {
-            let Ok(bytes) = std::fs::read(path) else {
-                continue;
-            };
-            let mut store = rustls::RootCertStore::empty();
-            let mut reader = std::io::BufReader::new(&bytes[..]);
-            for cert in rustls_pemfile::certs(&mut reader).flatten() {
-                // A bundle with one unparsable entry is still a bundle:
-                // refusing one certificate must not throw away the hundred
-                // before it.
-                let _ = store.add(cert);
+    ROOTS
+        .get_or_init(|| {
+            for path in CA_BUNDLES {
+                let Ok(bytes) = std::fs::read(path) else {
+                    continue;
+                };
+                let mut store = rustls::RootCertStore::empty();
+                let mut reader = std::io::BufReader::new(&bytes[..]);
+                for cert in rustls_pemfile::certs(&mut reader).flatten() {
+                    // A bundle with one unparsable entry is still a bundle:
+                    // refusing one certificate must not throw away the hundred
+                    // before it.
+                    let _ = store.add(cert);
+                }
+                if !store.is_empty() {
+                    return Some(Arc::new(store));
+                }
             }
-            if !store.is_empty() {
-                return Some(Arc::new(store));
-            }
-        }
-        None
-    });
-    match roots {
-        Some(store) => Ok(store.clone()),
-        // OpenSSL would have raised an `SSLError`, which is an `OSError`,
-        // which is the Python's second arm.
-        None => Err(fault("no system CA bundle found")),
-    }
+            None
+        })
+        .clone()
+}
+
+fn root_store() -> Result<Arc<rustls::RootCertStore>, CloudflareError> {
+    // OpenSSL would have raised an `SSLError`, which is an `OSError`, which
+    // is the Python's second arm.
+    system_roots().ok_or_else(|| fault("no system CA bundle found"))
 }
 
 /// Source: the `if not payload.get("success")` tail of `_get`.

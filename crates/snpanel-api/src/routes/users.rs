@@ -1559,6 +1559,7 @@ async fn forget_user_in_schedules(state: &AppState, user_id: i64) -> Result<(), 
                 tracing::error!("deleting backup schedule {} failed: {e}", schedule.id);
                 return Err(internal_error());
             }
+            super::maintenance::forget_schedule_options(state, schedule.id).await;
             continue;
         }
         if let Err(e) = state

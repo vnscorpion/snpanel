@@ -11,6 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+use snpanel_db::s3_targets::NameStyle;
+
 /// Source: `BACKUP_MANIFEST`.
 const BACKUP_MANIFEST: &str = "manifest.json";
 
@@ -160,16 +162,34 @@ pub fn list_user_backups(
 ///
 /// `unlink(missing_ok=True)`: a file that went between the listing and the
 /// delete is not an error. Two schedules for the same user can overlap.
+///
+/// Not the Python's in one way: only the archives `style` names are counted
+/// and deleted - see [`in_family`]. The Python counted every `*.tar.gz` in
+/// the directory, which made no difference while every one of them was
+/// `user-<name>-<stamp>`; now a schedule may name its archives otherwise, and
+/// a nightly timestamped schedule must not delete a week of `-monday` files.
+/// A style whose names repeat - `None`, `Weekday` - replaces its files
+/// instead, and has nothing to prune.
 pub fn prune_user_backups(
     backup_root: &str,
     username: &str,
+    style: NameStyle,
     keep: i64,
     dry_run: bool,
 ) -> Result<usize, BackupError> {
+    if matches!(style, NameStyle::None | NameStyle::Weekday) {
+        return Ok(0);
+    }
     let keep = keep.max(1) as usize;
-    let archives = list_user_backups(backup_root, username, dry_run)?;
+    let archives = list_user_backups(backup_root, username, dry_run)?
+        .into_iter()
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .is_some_and(|name| in_family(&name.to_string_lossy(), username, style))
+        });
     let mut removed = 0;
-    for old in archives.into_iter().skip(keep) {
+    for old in archives.skip(keep) {
         if std::fs::remove_file(&old).is_ok() {
             removed += 1;
         }
@@ -479,6 +499,75 @@ pub fn describe_user_backup(backup_root: &str, backup_file: &str) -> serde_json:
 
 // --- writing an archive ----------------------------------------------------
 
+/// Day names for [`NameStyle::Weekday`], Monday first as chrono counts.
+const WEEKDAYS: [&str; 7] = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
+
+/// Not in the Python: the name a user backup is written under.
+///
+/// `Timestamp` is the Python's `user-<name>-<UTC stamp>.tar.gz`, a new file
+/// every run. The others are what a schedule may choose instead, and read
+/// the clock the schedule's cron fields are read in - a schedule for 02:00
+/// on Mondays writes `-monday`:
+///
+/// - `None`: `<name>.tar.gz`, replaced by every run;
+/// - `Weekday`: `<name>-monday.tar.gz`, one per day of the week;
+/// - `Date`: `<name>-2026-09-25.tar.gz`, one per day, kept to the
+///   schedule's retention.
+pub fn archive_name(
+    username: &str,
+    style: NameStyle,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    use chrono::Datelike;
+    match style {
+        NameStyle::Timestamp => format!(
+            "user-{username}-{}.tar.gz",
+            now.with_timezone(&chrono::Utc).format("%Y%m%d%H%M%S")
+        ),
+        NameStyle::None => format!("{username}.tar.gz"),
+        NameStyle::Weekday => format!(
+            "{username}-{}.tar.gz",
+            WEEKDAYS[now.weekday().num_days_from_monday() as usize]
+        ),
+        NameStyle::Date => format!("{username}-{}.tar.gz", now.format("%Y-%m-%d")),
+    }
+}
+
+/// Whether `file_name` is one of the archives `style` names for `username`:
+/// what a schedule's retention counts, and so all its prune may delete.
+///
+/// The four families never share a file, whatever the name - `user-` is
+/// only the timestamped prefix, and the others are the name itself, a day
+/// name or an ISO date after it.
+fn in_family(file_name: &str, username: &str, style: NameStyle) -> bool {
+    let Some(stem) = file_name.strip_suffix(".tar.gz") else {
+        return false;
+    };
+    let suffix = || {
+        stem.strip_prefix(username)
+            .and_then(|rest| rest.strip_prefix('-'))
+    };
+    match style {
+        NameStyle::Timestamp => stem
+            .strip_prefix("user-")
+            .and_then(|rest| rest.strip_prefix(username))
+            .is_some_and(|rest| rest.starts_with('-')),
+        NameStyle::None => stem == username,
+        NameStyle::Weekday => suffix().is_some_and(|day| WEEKDAYS.contains(&day)),
+        NameStyle::Date => suffix().is_some_and(|date| {
+            date.len() == 10 && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
+        }),
+    }
+}
+
 /// `datetime.utcnow().strftime("%Y%m%d%H%M%S")`.
 pub fn stamp() -> String {
     chrono::Utc::now().format("%Y%m%d%H%M%S").to_string()
@@ -621,9 +710,16 @@ pub struct ManifestApp {
 ///
 /// The caller does the collecting because it needs the database, and this
 /// does the writing because it needs none of it.
+///
+/// Not the Python's: the archive is written beside its name and renamed onto
+/// it when complete. A name a schedule reuses - `alice.tar.gz` - is then
+/// never a half-written file in place of last night's good one, and no name
+/// is ever an archive that stopped halfway.
+#[allow(clippy::too_many_arguments)]
 pub fn write_user_backup(
     backup_root: &str,
     username: &str,
+    file_name: &str,
     manifest: &serde_json::Value,
     sites: &[ManifestSite],
     databases: &[ManifestDatabase],
@@ -631,10 +727,38 @@ pub fn write_user_backup(
     staging: &Path,
 ) -> Result<String, BackupError> {
     let backup_dir = user_backup_dir(backup_root, username)?;
+    if file_name.contains('/') || file_name.starts_with('.') || !file_name.ends_with(".tar.gz") {
+        return Err(BackupError::Invalid("Invalid backup file name".into()));
+    }
     std::fs::create_dir_all(&backup_dir)
         .map_err(|e| BackupError::Invalid(format!("Cannot make the backup directory: {e}")))?;
-    let archive = backup_dir.join(format!("user-{username}-{}.tar.gz", stamp()));
+    let archive = backup_dir.join(file_name);
+    // Unique, so two runs writing one name cannot share a partial file; and
+    // not `*.tar.gz`, so no listing shows it.
+    let partial = backup_dir.join(format!(
+        ".{file_name}.{}-{}.partial",
+        std::process::id(),
+        crate::file_jobs::new_job_id()
+    ));
+    let written =
+        write_archive(&partial, manifest, sites, databases, apps, staging).and_then(|()| {
+            std::fs::rename(&partial, &archive)
+                .map_err(|e| BackupError::Invalid(format!("Cannot write the archive: {e}")))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written.map(|()| archive.to_string_lossy().into_owned())
+}
 
+fn write_archive(
+    archive: &Path,
+    manifest: &serde_json::Value,
+    sites: &[ManifestSite],
+    databases: &[ManifestDatabase],
+    apps: &[ManifestApp],
+    staging: &Path,
+) -> Result<(), BackupError> {
     // `json.dumps(manifest, ensure_ascii=True, indent=2)`.
     let text = serde_json::to_string_pretty(manifest)
         .map_err(|e| BackupError::Invalid(format!("Cannot write the manifest: {e}")))?;
@@ -645,7 +769,7 @@ pub fn write_user_backup(
     std::fs::write(&manifest_path, ascii_escape(&text))
         .map_err(|e| BackupError::Invalid(format!("Cannot write the manifest: {e}")))?;
 
-    let file = std::fs::File::create(&archive)
+    let file = std::fs::File::create(archive)
         .map_err(|e| BackupError::Invalid(format!("Cannot write the archive: {e}")))?;
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut builder = tar::Builder::new(encoder);
@@ -681,7 +805,7 @@ pub fn write_user_backup(
         .into_inner()
         .and_then(flate2::write::GzEncoder::finish)
         .map_err(|e| BackupError::Invalid(format!("Cannot finish the archive: {e}")))?;
-    Ok(archive.to_string_lossy().into_owned())
+    Ok(())
 }
 
 /// `json.dumps(..., ensure_ascii=True)` — every character above ASCII as a
@@ -716,10 +840,14 @@ mod upload_tests {
         let dir = root.join("users").join("acme");
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..count {
-            // `acme-2026-01-01.tar.gz`, ... — the real names are timestamped
-            // and this keeps the lexicographic order chronological, which is
-            // the assumption the prune rests on.
-            std::fs::write(dir.join(format!("acme-2026-01-{:02}.tar.gz", i + 1)), b"x").unwrap();
+            // `user-acme-20260101020000.tar.gz`, ... — timestamped as the
+            // real names are, so the lexicographic order is chronological,
+            // which is the assumption the prune rests on.
+            std::fs::write(
+                dir.join(format!("user-acme-202601{:02}020000.tar.gz", i + 1)),
+                b"x",
+            )
+            .unwrap();
         }
         (
             root.to_string_lossy().into_owned(),
@@ -743,11 +871,14 @@ mod upload_tests {
     #[test]
     fn pruning_keeps_the_newest_and_deletes_the_oldest() {
         let (root, dir) = seeded("order", 5);
-        let removed = prune_user_backups(&root, "acme", 2, false).unwrap();
+        let removed = prune_user_backups(&root, "acme", NameStyle::Timestamp, 2, false).unwrap();
         assert_eq!(removed, 3);
         assert_eq!(
             names(&dir),
-            ["acme-2026-01-04.tar.gz", "acme-2026-01-05.tar.gz"],
+            [
+                "user-acme-20260104020000.tar.gz",
+                "user-acme-20260105020000.tar.gz"
+            ],
             "the wrong end of the list was deleted"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -758,10 +889,10 @@ mod upload_tests {
     fn a_retention_of_zero_or_less_still_keeps_one() {
         for keep in [0, -1, -100] {
             let (root, dir) = seeded(&format!("zero{keep}"), 3);
-            prune_user_backups(&root, "acme", keep, false).unwrap();
+            prune_user_backups(&root, "acme", NameStyle::Timestamp, keep, false).unwrap();
             assert_eq!(
                 names(&dir),
-                ["acme-2026-01-03.tar.gz"],
+                ["user-acme-20260103020000.tar.gz"],
                 "keep={keep} removed everything"
             );
             let _ = std::fs::remove_dir_all(&root);
@@ -773,7 +904,10 @@ mod upload_tests {
     #[test]
     fn nothing_is_deleted_when_there_is_nothing_to_spare() {
         let (root, dir) = seeded("few", 2);
-        assert_eq!(prune_user_backups(&root, "acme", 7, false).unwrap(), 0);
+        assert_eq!(
+            prune_user_backups(&root, "acme", NameStyle::Timestamp, 7, false).unwrap(),
+            0
+        );
         assert_eq!(names(&dir).len(), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -783,7 +917,10 @@ mod upload_tests {
     #[test]
     fn a_dry_run_deletes_nothing() {
         let (root, dir) = seeded("dry", 5);
-        assert_eq!(prune_user_backups(&root, "acme", 1, true).unwrap(), 0);
+        assert_eq!(
+            prune_user_backups(&root, "acme", NameStyle::Timestamp, 1, true).unwrap(),
+            0
+        );
         assert_eq!(names(&dir).len(), 5);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1032,5 +1169,190 @@ mod upload_tests {
         assert!(!over_upload_limit(MAX_UPLOAD_BYTES));
         assert!(over_upload_limit(MAX_UPLOAD_BYTES + 1));
         assert!(over_upload_limit(u64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+    use chrono::{Datelike, TimeZone};
+
+    /// 02:00 on Monday 28 September 2026, local time.
+    fn monday() -> chrono::DateTime<chrono::Local> {
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 9, 28, 2, 0, 0)
+            .single()
+            .unwrap();
+        assert_eq!(now.weekday(), chrono::Weekday::Mon);
+        now
+    }
+
+    #[test]
+    fn each_style_names_the_archive_its_own_way() {
+        let now = monday();
+        assert_eq!(archive_name("alice", NameStyle::None, now), "alice.tar.gz");
+        assert_eq!(
+            archive_name("alice", NameStyle::Weekday, now),
+            "alice-monday.tar.gz"
+        );
+        assert_eq!(
+            archive_name("alice", NameStyle::Date, now),
+            "alice-2026-09-28.tar.gz"
+        );
+        // The Python's, in UTC as its `utcnow()` is.
+        assert_eq!(
+            archive_name("alice", NameStyle::Timestamp, now),
+            format!(
+                "user-alice-{}.tar.gz",
+                now.with_timezone(&chrono::Utc).format("%Y%m%d%H%M%S")
+            )
+        );
+        let week: Vec<String> = (0..7)
+            .map(|d| archive_name("a.b", NameStyle::Weekday, now + chrono::Duration::days(d)))
+            .collect();
+        assert_eq!(
+            week,
+            [
+                "a.b-monday.tar.gz",
+                "a.b-tuesday.tar.gz",
+                "a.b-wednesday.tar.gz",
+                "a.b-thursday.tar.gz",
+                "a.b-friday.tar.gz",
+                "a.b-saturday.tar.gz",
+                "a.b-sunday.tar.gz",
+            ]
+        );
+    }
+
+    /// A prune deletes only its own family, so no name one style makes may
+    /// be counted by another - whatever the account is called.
+    #[test]
+    fn the_families_never_share_a_file() {
+        let now = monday();
+        for username in [
+            "alice",
+            "user-bob",
+            "acme-2026",
+            "a.b_c-d",
+            "monday",
+            "user",
+            "2026-09-28",
+        ] {
+            for made in NameStyle::ALL {
+                let name = archive_name(username, made, now);
+                for style in NameStyle::ALL {
+                    assert_eq!(
+                        in_family(&name, username, style),
+                        style == made,
+                        "{name} of {username} counted as {style:?}"
+                    );
+                }
+            }
+        }
+        for (name, style) in [
+            ("alice.tar", NameStyle::None),
+            (".alice.tar.gz.1-x.partial", NameStyle::None),
+            ("alice-2026-13-01.tar.gz", NameStyle::Date),
+            ("alice-2026-9-28.tar.gz", NameStyle::Date),
+            ("alice-funday.tar.gz", NameStyle::Weekday),
+            ("user-alice2-20260101020000.tar.gz", NameStyle::Timestamp),
+            ("user-alice.tar.gz", NameStyle::Timestamp),
+        ] {
+            assert!(
+                !in_family(name, "alice", style),
+                "{name} counted as {style:?}"
+            );
+        }
+    }
+
+    fn scratch(tag: &str) -> (String, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bp-naming-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("users").join("acme");
+        std::fs::create_dir_all(&dir).unwrap();
+        (root.to_string_lossy().into_owned(), dir)
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn each_prune_counts_only_its_own_archives() {
+        let (root, dir) = scratch("families");
+        for name in [
+            "user-acme-20260101020000.tar.gz",
+            "user-acme-20260102020000.tar.gz",
+            "user-acme-20260103020000.tar.gz",
+            "acme.tar.gz",
+            "acme-monday.tar.gz",
+            "acme-tuesday.tar.gz",
+            "acme-2026-01-01.tar.gz",
+            "acme-2026-01-02.tar.gz",
+            "acme-2026-01-03.tar.gz",
+            "acme-2026-01-04.tar.gz",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let prune = |style, keep| prune_user_backups(&root, "acme", style, keep, false).unwrap();
+        assert_eq!(prune(NameStyle::None, 1), 0);
+        assert_eq!(prune(NameStyle::Weekday, 1), 0);
+        assert_eq!(prune(NameStyle::Timestamp, 1), 2);
+        assert_eq!(prune(NameStyle::Date, 2), 2);
+        assert_eq!(
+            names(&dir),
+            [
+                "acme-2026-01-03.tar.gz",
+                "acme-2026-01-04.tar.gz",
+                "acme-monday.tar.gz",
+                "acme-tuesday.tar.gz",
+                "acme.tar.gz",
+                "user-acme-20260103020000.tar.gz",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn write(root: &str, name: &str, staging: &Path, n: i64) -> Result<String, BackupError> {
+        let manifest = serde_json::json!({ "kind": "snpanel_user", "version": 1, "n": n });
+        write_user_backup(root, "acme", name, &manifest, &[], &[], &[], staging)
+    }
+
+    /// A name a schedule reuses is replaced by the next archive whole, and
+    /// nothing of the writing is left beside it.
+    #[test]
+    fn a_reused_name_is_replaced_whole() {
+        let (root, dir) = scratch("replace");
+        let staging = dir.join(".staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let first = write(&root, "acme.tar.gz", &staging, 1).unwrap();
+        let second = write(&root, "acme.tar.gz", &staging, 2).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(second, dir.join("acme.tar.gz").to_string_lossy());
+        assert_eq!(names(&dir), [".staging", "acme.tar.gz"]);
+        let manifest = read_backup_manifest(&root, &second).unwrap();
+        assert_eq!(manifest["n"], 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_plain_archive_name_is_refused() {
+        let (root, dir) = scratch("refused");
+        let staging = dir.join(".staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        for bad in ["../x.tar.gz", "a/b.tar.gz", ".hidden.tar.gz", "x.zip", ""] {
+            assert!(
+                write(&root, bad, &staging, 1).is_err(),
+                "{bad:?} was written"
+            );
+        }
+        assert_eq!(names(&dir), [".staging"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
