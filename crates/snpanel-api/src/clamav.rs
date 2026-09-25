@@ -268,9 +268,21 @@ pub fn engine_available(configured_socket: &str) -> bool {
         || responsive_socket_path(configured_socket).is_some()
 }
 
+/// Whether the resident daemon is installed - `clamd`, which is what
+/// `clamav-daemon` adds to the `clamscan` the scanner install brings.
+pub fn clamd_installed() -> bool {
+    which("clamd").is_some()
+}
+
 /// Source: `is_available` — enabled in the settings **and** able to scan.
+///
+/// Not in the Python: **and upload scanning switched on.** Everything that
+/// asks this is the File Manager's upload path; the scheduled and real-time
+/// scans have their own switches and do not come here.
 pub fn is_available(env_default: bool, configured_socket: &str) -> bool {
-    crate::malware::persisted_enabled(env_default) && engine_available(configured_socket)
+    crate::malware::persisted_enabled(env_default)
+        && crate::malware::persisted_upload_scan()
+        && engine_available(configured_socket)
 }
 
 /// Source: `scan_stream` — scan bytes, however the machine can.

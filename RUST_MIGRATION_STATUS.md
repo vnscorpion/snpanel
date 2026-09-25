@@ -914,6 +914,54 @@ not evidence, so they are deleted from the count with the reasoning. The
 fourth was a real gap: a `FOUND` line with no colon in it, which is the
 only thing that separates the two halves of that test.
 
+### Scanning uploads, as a switch (past the Python)
+
+`POST /malware/upload-scan` is new. The Python scanned every File Manager
+upload whenever the scanner was on, which keeps `clamd` and its signature
+database - about a gigabyte - in memory on machines that may want neither.
+The switch is `malware_upload_scan_enabled` in the panel settings, and an
+absent key means **on**, so an upgrade changes nothing until an
+administrator turns it off. Off, uploads are not scanned and the daemon is
+stopped and disabled at boot; ClamAV and Maldet stay installed, and the
+scheduled and real-time scans do not change. On, the daemon is started -
+installed in the background first, when it is missing - and uploads are
+checked with `clamscan` until it answers. It is never installed silently:
+turning the scanner on starts an installed daemon but does not install
+one, and a daemon missing or stopped while uploads are scanned gets a
+button on the page instead. A background install asks the switches again
+when it finishes, because it takes minutes and `clamav-install` enables
+the daemon it brings. A switch turned off meanwhile queues its stop behind
+the install when the helper is reached over its socket, which serves one
+call at a time; through sudo - verbs an install cut over with
+`helper-cutover.sh` does not send over the socket, or any call once the
+socket gives up - the stop runs at once and finds nothing to stop, and
+only that second look catches the daemon the install then enables.
+
+The end-to-end runs found three faults, none of them in the switch:
+
+- **Uploads were staged where the helper could not see them.** The API
+  wrote the file to `/tmp/snpanel-upload-*`, and both services run with
+  `PrivateTmp=true`: over the socket the helper looked in a `/tmp` of its
+  own, and every File Manager upload failed with "staged upload not
+  found". It worked only while the verb went through sudo, in the API's
+  mount namespace. Uploads are staged in `/var/lib/snpanel/upload-stage/`
+  now (`snpanel_ipc::UPLOAD_STAGE_DIR`, the directory `0750`, the file
+  `0600`), as the import staging already was.
+- **Debian's clamd is socket-activated.** `systemctl disable --now
+  clamav-daemon` disables the socket unit too (`Also=`) but stops only the
+  service, so the socket went on listening and the panel's own status check
+  started the daemon again a moment later. The socket unit is now named
+  beside the service, both ways, where the distribution has one.
+- **A removed package counted as installed.** `dpkg_installed` asked
+  `dpkg -s`, as the bash did, and that succeeds for a package removed but
+  not purged (`rc`). Every caller installs what it reports missing, so a
+  package an administrator had `apt remove`d could not be installed again
+  from the panel: `clamav-install` skipped apt, enabled the daemon through
+  the init script the package leaves behind, and reported success with no
+  `clamd` on the machine. It asks `dpkg-query` for the status word now,
+  which must be `installed` for every package - the same fix for the
+  certbot Cloudflare plugin and the ModSecurity module, its other callers.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

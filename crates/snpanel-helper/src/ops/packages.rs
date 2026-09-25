@@ -55,15 +55,32 @@ pub(crate) fn install_packages(names: &[&str]) -> std::io::Result<exec::Output> 
     }
 }
 
-/// Source: `dpkg -s <pkg> >/dev/null 2>&1`.
+/// Source: `dpkg -s <pkg> >/dev/null 2>&1` - but asking for the status
+/// word, which the bash did not.
+///
+/// `dpkg -s` succeeds for a package that was removed but not purged (`rc`,
+/// "deinstall ok config-files"). Every caller installs what this says is
+/// missing, so a package an administrator had `apt remove`d could never be
+/// installed again: `clamav-install` skipped the install as done, enabled
+/// the daemon through the init script the package leaves behind, and
+/// reported success with no `clamd` on the machine.
 ///
 /// Only meaningful on Debian; on EL the caller asks dnf, which is idempotent
-/// anyway. A missing `dpkg` answers "not installed" rather than failing, which
-/// is what the bash's `2>&1` does with it.
+/// anyway. A missing `dpkg-query` answers "not installed" rather than
+/// failing, which is what the bash's `2>&1` does with it.
 pub(crate) fn dpkg_installed(names: &[&str]) -> bool {
-    let mut argv: Vec<&str> = vec!["dpkg", "-s"];
+    let mut argv: Vec<&str> = vec!["dpkg-query", "--show", "--showformat=${Status}\\n", "--"];
     argv.extend_from_slice(names);
-    matches!(exec::run(&argv), Ok(o) if o.ok())
+    matches!(exec::run(&argv), Ok(o) if o.ok() && all_installed(&o.stdout))
+}
+
+/// `dpkg-query --show --showformat='${Status}\n'` says every package is
+/// installed: one `want flag status` line each (more than one for a package
+/// installed for several architectures), and the status word `installed` on
+/// all of them. A name dpkg has never heard of fails the query instead.
+fn all_installed(status: &str) -> bool {
+    let mut lines = status.lines().filter(|l| !l.trim().is_empty()).peekable();
+    lines.peek().is_some() && lines.all(|l| l.split_whitespace().nth(2) == Some("installed"))
 }
 
 /// Source: `deny_debian_only`.
@@ -1918,6 +1935,35 @@ fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Installed means the status word says so, for every package asked
+    /// about. A package removed but not purged is what `dpkg -s` called
+    /// installed.
+    #[test]
+    fn a_removed_package_is_not_installed() {
+        assert!(all_installed("install ok installed\n"));
+        assert!(all_installed(
+            "install ok installed\ninstall ok installed\n"
+        ));
+        // Held back from upgrades, but installed.
+        assert!(all_installed("hold ok installed\n"));
+        for (status, what) in [
+            ("deinstall ok config-files\n", "removed, not purged"),
+            (
+                "install ok installed\ndeinstall ok config-files\n",
+                "one of two removed",
+            ),
+            ("unknown ok not-installed\n", "purged"),
+            ("install ok half-configured\n", "an install that broke"),
+            (
+                "install reinstreq half-installed\n",
+                "an install that broke earlier",
+            ),
+            ("", "nothing"),
+        ] {
+            assert!(!all_installed(status), "{what}: {status:?}");
+        }
+    }
 
     /// The daemon config says what it has to say, and is JSON.
     ///

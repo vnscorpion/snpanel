@@ -1331,6 +1331,27 @@ function App() {
     if (data) { setMalwareScanStatus(data); setNotice(enabled ? t('Real-time protection (level 2) is on.') : t('Real-time protection is off.')); }
   }
 
+  // Uploads through the File Manager, and the ClamAV daemon with them.
+  async function toggleUploadScan(enabled) {
+    const status = malwareScanStatus || {};
+    if (enabled && status.enabled && !status.clamd_installed
+      && !confirm(t('Scanning uploads uses the ClamAV daemon, which is not installed. The panel will install it now; it keeps about a gigabyte of memory in use. Continue?'))) return;
+    const data = await request('/malware/upload-scan', { method: 'POST', body: JSON.stringify({ enabled }) },
+      enabled ? t('Turning on upload scanning...') : t('Turning off upload scanning...'));
+    if (data) {
+      setMalwareScanStatus(data);
+      setNotice(!enabled
+        ? t('Uploads are no longer scanned, and the ClamAV daemon is stopped to free its memory. Scheduled and real-time scans are unchanged.')
+        : !data.enabled
+          ? t('Uploads will be scanned once the malware scanner is on.')
+          : data.clamd_running
+            ? t('Uploads are scanned. The ClamAV daemon is running.')
+            : data.clamd_installed
+              ? t('Starting the ClamAV daemon, which takes a minute while it loads its signatures. Until then, uploads are checked with clamscan.')
+              : t('Installing the ClamAV daemon in the background (a few minutes). Until it runs, uploads are checked with clamscan.'));
+    }
+  }
+
   async function installLmd() {
     const data = await request('/malware/lmd/install', { method: 'POST' }, t('Installing...'));
     if (data) { setMalwareScanStatus(data); setNotice(t('Installing the scanner in the background (1-3 minutes). Press Refresh to see the result.')); }
@@ -4125,6 +4146,7 @@ function App() {
       toggleSelectAllDaBackups,
       toggleSiteCrs,
       toggleUpdateLog,
+      toggleUploadScan,
       toggleWafDefaultRule,
       toggleWebsiteWaf,
       twoFactorCode,

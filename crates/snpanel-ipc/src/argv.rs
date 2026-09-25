@@ -1473,7 +1473,7 @@ mod tests {
                 "alice",
                 "/home/alice/example.com",
                 "index.php",
-                "/tmp/snpanel-upload-x/f",
+                "/var/lib/snpanel/upload-stage/1-x",
             ],
             &[
                 "site-populate",

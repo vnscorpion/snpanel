@@ -3275,26 +3275,37 @@ async fn upload_into(
         return r;
     }
 
-    if let Err(e) = crate::clamav::scan_before_install(
-        state.settings.malware_scan_enabled,
-        &state.settings.clamav_socket_path,
-        &content,
-        &filename,
-    ) {
+    // A scan is a socket round trip to the daemon or, without one, a
+    // `clamscan` that loads the whole signature database first - seconds to
+    // tens of seconds. It runs on the blocking pool, not on a worker every
+    // other request is queued behind; the bytes go there and come back.
+    let env_default = state.settings.malware_scan_enabled;
+    let socket = state.settings.clamav_socket_path.clone();
+    let scan_name = filename.clone();
+    let (verdict, content) = match tokio::task::spawn_blocking(move || {
+        let verdict =
+            crate::clamav::scan_before_install(env_default, &socket, &content, &scan_name);
+        (verdict, content)
+    })
+    .await
+    {
+        Ok(done) => done,
+        Err(e) => {
+            tracing::error!("the upload scan did not finish: {e}");
+            return crate::errors::internal_error();
+        }
+    };
+    if let Err(e) = verdict {
         return bad_request(&e);
     }
 
     let Some(linux_user) = site.linux_user.as_deref().filter(|u| !u.is_empty()) else {
         return bad_request("Website has no runtime user configured");
     };
-    let staged = std::env::temp_dir().join(format!(
-        "snpanel-upload-{}-{}",
-        std::process::id(),
-        crate::file_jobs::new_job_id()
-    ));
-    if let Err(e) = std::fs::write(&staged, &content) {
-        return bad_request(&format!("Cannot stage the upload: {e}"));
-    }
+    let staged = match stage_upload(&content) {
+        Ok(path) => path,
+        Err(e) => return bad_request(&format!("Cannot stage the upload: {e}")),
+    };
     let staged_str = staged.to_string_lossy().into_owned();
     let target_str = target.to_string_lossy().into_owned();
     let root = std::fs::canonicalize(&site.root_path)
@@ -3311,7 +3322,7 @@ async fn upload_into(
     .await;
     // `finally: staged_path.unlink(missing_ok=True)` — the staged copy goes
     // whether or not the install worked, because it is a full copy of a
-    // customer's file sitting in a world-readable directory.
+    // customer's file.
     let _ = std::fs::remove_file(&staged);
     if !result.ok() {
         return bad_request(result.failure_detail("Cannot install the upload").trim());
@@ -3340,6 +3351,37 @@ async fn upload_into(
     } else {
         axum::Json(json!({ "target": target_str })).into_response()
     }
+}
+
+/// Write an upload where `site-file-install` looks for it.
+///
+/// [`snpanel_ipc::UPLOAD_STAGE_DIR`], not `/tmp`: the helper has a `/tmp` of
+/// its own and did not find it there. The directory is made `0750` when an
+/// install predates it, and the file `0600` - it is a customer's file, and
+/// the helper reads it as root.
+fn stage_upload(content: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let dir = std::path::Path::new(snpanel_ipc::UPLOAD_STAGE_DIR);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o750)
+        .create(dir)?;
+    let staged = dir.join(format!(
+        "{}-{}",
+        std::process::id(),
+        crate::file_jobs::new_job_id()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staged)?;
+    if let Err(e) = file.write_all(content) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    Ok(staged)
 }
 
 /// `DELETE /maintenance/files/{website_id}`.

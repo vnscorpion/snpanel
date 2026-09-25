@@ -83,7 +83,7 @@ pub fn nginx_dirs() -> Vec<Dir> {
 }
 
 /// The panel's own data directories, including the DirectAdmin import
-/// staging areas.
+/// staging areas and the upload one.
 ///
 /// All `0750 snpanel:snpanel`. The staging areas hold a customer's database
 /// dumps in plaintext while an import runs, so world-readable would make the
@@ -96,6 +96,7 @@ pub fn data_dirs() -> Vec<Dir> {
         "/home/admin/snpanel_backups/da",
         "/var/lib/snpanel/da-import",
         "/var/lib/snpanel/import-stage",
+        "/var/lib/snpanel/upload-stage",
     ]
     .into_iter()
     .map(|path| Dir {
@@ -334,6 +335,7 @@ mod tests {
         let paths: Vec<&str> = data_dirs().iter().map(|d| d.path).collect();
         assert!(paths.contains(&"/var/lib/snpanel/da-import"));
         assert!(paths.contains(&"/var/lib/snpanel/import-stage"));
+        assert!(paths.contains(&"/var/lib/snpanel/upload-stage"));
         assert!(paths.contains(&"/home/admin/snpanel_backups/da"));
     }
 

@@ -375,19 +375,63 @@ pub fn clamav_status() -> HelperResponse {
     ))
 }
 
-/// `clamav-start` / `clamav-stop`.
+/// `clamav-start` / `clamav-stop`: the resident daemon, now **and at boot**.
+///
+/// `enable --now` and `disable --now`, not `start` and `stop`. The daemon
+/// holds the whole signature database in memory; stopping it is only worth
+/// doing to get that memory back, and a stop the next boot undid would not.
+/// The Python's own fallback for the stop was already `disable --now`.
+///
+/// The daemon is `clamd`, not `clamscan`: with only the scanner installed
+/// there is nothing to stop, which is done rather than an error, and nothing
+/// to start, which says what to do about it.
 pub fn clamav_control(start: bool) -> HelperResponse {
     let service = snpanel_osabi::detect()
         .map(|p| p.clamav_service().to_string())
         .unwrap_or_else(|_| "clamav-daemon".to_string());
-    if which("clamd").is_none() && which("clamscan").is_none() {
-        return HelperResponse::failed(
-            HelperErrorKind::NotFound,
-            "ClamAV is not installed; enable malware scanning in the panel first",
+    if which("clamd").is_none() {
+        if start {
+            return HelperResponse::failed(
+                HelperErrorKind::NotFound,
+                "The ClamAV daemon is not installed; turn on upload scanning in the panel to install it",
+            );
+        }
+        return HelperResponse::with_stdout(
+            "the ClamAV daemon is not installed; nothing to stop\n",
         );
     }
-    let verb = if start { "start" } else { "stop" };
-    exec::respond("systemctl", exec::run(&["systemctl", verb, &service]))
+    let socket_unit = unit_exists(&format!("{service}.socket"));
+    let argv = clamav_control_argv(start, &service, socket_unit);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    exec::respond(&argv.join(" "), exec::run(&argv))
+}
+
+/// The `systemctl` line that starts or stops the daemon.
+///
+/// With its socket unit, where the distribution has one. Debian's clamd is
+/// socket-activated: `clamav-daemon.socket` holds the socket and starts the
+/// service on the first connection. `disable --now` of the service alone
+/// disables both (the service says `Also=` the socket) but stops only the
+/// service, so the socket went on listening and the panel's own status check
+/// brought the daemon - and its gigabyte - straight back. RHEL's
+/// `clamd@scan` has no socket unit, and naming one would fail the call.
+fn clamav_control_argv(start: bool, service: &str, socket_unit: bool) -> Vec<String> {
+    let verb = if start { "enable" } else { "disable" };
+    let mut argv = vec![
+        "systemctl".to_string(),
+        verb.to_string(),
+        "--now".to_string(),
+    ];
+    if socket_unit {
+        argv.push(format!("{service}.socket"));
+    }
+    argv.push(service.to_string());
+    argv
+}
+
+/// Whether systemd has `unit`, wherever it is installed.
+fn unit_exists(unit: &str) -> bool {
+    matches!(exec::run(&["systemctl", "cat", "--", unit]), Ok(o) if o.ok())
 }
 
 fn which(binary: &str) -> Option<std::path::PathBuf> {
@@ -654,10 +698,39 @@ mod tests {
         // that the panel read as "nothing installed" for as long as it did.
     }
 
+    /// The socket goes with the daemon, both ways.
+    #[test]
+    fn the_daemon_goes_with_its_socket() {
+        assert_eq!(
+            clamav_control_argv(false, "clamav-daemon", true),
+            [
+                "systemctl",
+                "disable",
+                "--now",
+                "clamav-daemon.socket",
+                "clamav-daemon"
+            ]
+        );
+        assert_eq!(
+            clamav_control_argv(true, "clamav-daemon", true),
+            [
+                "systemctl",
+                "enable",
+                "--now",
+                "clamav-daemon.socket",
+                "clamav-daemon"
+            ]
+        );
+        assert_eq!(
+            clamav_control_argv(false, "clamd@scan", false),
+            ["systemctl", "disable", "--now", "clamd@scan"]
+        );
+    }
+
     #[test]
     fn starting_clamav_that_is_not_installed_says_what_to_do() {
-        if which("clamd").is_some() || which("clamscan").is_some() {
-            eprintln!("skipped: ClamAV is installed here");
+        if which("clamd").is_some() {
+            eprintln!("skipped: the ClamAV daemon is installed here");
             return;
         }
         let r = clamav_control(true);
@@ -665,6 +738,12 @@ mod tests {
         let msg = r.error.unwrap().message;
         assert!(msg.contains("not installed"));
         assert!(msg.contains("panel"), "should say how to fix it: {msg}");
+
+        // Stopping a daemon that is not there is already done - which is
+        // what turning upload scanning off on a box without one asks for.
+        let r = clamav_control(false);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(r.stdout.contains("nothing to stop"), "{}", r.stdout);
     }
 
     #[test]

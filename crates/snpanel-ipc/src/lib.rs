@@ -31,6 +31,13 @@ pub const SOCKET_PATH: &str = "/run/snpanel/helper.sock";
 /// unbounded - an unbounded read from a socket is a memory-exhaustion bug.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
+/// Where the API stages a File Manager upload for `site-file-install`.
+///
+/// Here rather than in either side so the two cannot drift. It is the panel's
+/// own directory, not `/tmp`: both services run with `PrivateTmp=true`, and a
+/// file the API staged in its `/tmp` does not exist in the helper's.
+pub const UPLOAD_STAGE_DIR: &str = "/var/lib/snpanel/upload-stage";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VhostKind {
@@ -776,9 +783,9 @@ pub enum HelperRequest {
     },
     /// Move a panel-staged upload into a site, as the site's user.
     ///
-    /// `staged` is a path under the panel's upload staging area rather than
-    /// anywhere on disk: the helper re-checks it after resolution, because a
-    /// symlink placed there would otherwise name any file on the machine.
+    /// `staged` is a path under [`UPLOAD_STAGE_DIR`] rather than anywhere on
+    /// disk: the helper re-checks it after resolution, because a symlink
+    /// placed there would otherwise name any file on the machine.
     SiteFileInstall {
         user: PanelUsername,
         root: SitePath,

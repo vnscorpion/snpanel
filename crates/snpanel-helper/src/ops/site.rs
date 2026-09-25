@@ -868,12 +868,21 @@ fn check_staged_tree(source: &str) -> Result<String, String> {
     Ok(resolved_str)
 }
 
-/// Where the panel stages an upload before the helper moves it.
+/// Where the panel stages an upload before the helper moves it: the
+/// directory, and the slash that keeps a sibling such as `upload-stage-old/`
+/// from counting as inside it.
 ///
 /// Checked as a prefix twice: on the path as given and on the path after
 /// resolution. A symlink under this directory would otherwise name anything
 /// on the machine, and the helper runs as root.
-const UPLOAD_STAGE_PREFIX: &str = "/tmp/snpanel-upload-";
+///
+/// It was `/tmp/snpanel-upload-`, which worked only while the helper ran
+/// under sudo, in the API's mount namespace. Over the socket each service has
+/// a `/tmp` of its own, and every File Manager upload failed with "staged
+/// upload not found".
+fn upload_stage_prefix() -> String {
+    format!("{}/", snpanel_ipc::UPLOAD_STAGE_DIR)
+}
 
 /// `site-file-install`: move a staged upload into a site.
 ///
@@ -920,7 +929,7 @@ pub fn file_install(
         );
     }
 
-    let source = match check_staged_upload(staged) {
+    let source = match check_staged_upload(staged, &upload_stage_prefix()) {
         Ok(p) => p,
         Err(message) => return HelperResponse::failed(HelperErrorKind::BadRequest, message),
     };
@@ -1015,8 +1024,10 @@ fn check_upload_relative(relative: &str) -> Result<(), String> {
 /// Returns the resolved path. Every step here is a boundary: without them a
 /// caller names a file outside the staging area, or a symlink to one, or a
 /// file somebody else planted, and the helper copies it into a site as root.
-fn check_staged_upload(staged: &str) -> Result<String, String> {
-    if !staged.starts_with(UPLOAD_STAGE_PREFIX) {
+/// `prefix` is [`upload_stage_prefix`]; the tests hand it a directory of
+/// their own.
+fn check_staged_upload(staged: &str, prefix: &str) -> Result<String, String> {
+    if !staged.starts_with(prefix) {
         return Err(format!("invalid staged upload path: {staged}"));
     }
     let given = Path::new(staged);
@@ -1033,7 +1044,7 @@ fn check_staged_upload(staged: &str) -> Result<String, String> {
     let resolved_str = resolved.to_string_lossy().into_owned();
     // Checked again after resolving: the prefix test above was on the name,
     // and a path can leave the staging area on the way to a real file.
-    if !resolved_str.starts_with(UPLOAD_STAGE_PREFIX) {
+    if !resolved_str.starts_with(prefix) {
         return Err(format!(
             "staged upload escaped the staging area: {resolved_str}"
         ));
@@ -1045,8 +1056,8 @@ fn check_staged_upload(staged: &str) -> Result<String, String> {
             "staged upload is not a regular file: {resolved_str}"
         ));
     }
-    // Owned by the panel, so a file planted in /tmp by somebody else is
-    // refused even when it has the right name.
+    // Owned by the panel, so a file somebody else put there is refused even
+    // when it has the right name.
     let panel_uid = crate::peercred::uid_of(crate::peercred::PANEL_USER)
         .map_err(|e| format!("cannot resolve the panel user: {e}"))?;
     use std::os::unix::fs::MetadataExt;
@@ -1615,10 +1626,58 @@ mod tests {
     }
 
     /// A staged path outside the upload area is refused on its name alone.
+    ///
+    /// Against the real prefix: a sibling whose name only starts the same is
+    /// outside, and so is `/tmp`, where uploads used to be staged.
     #[test]
     fn a_staged_path_outside_the_upload_area_is_refused() {
-        let err = check_staged_upload("/etc/passwd").unwrap_err();
-        assert!(err.contains("invalid staged upload path"), "{err}");
+        let prefix = upload_stage_prefix();
+        assert_eq!(prefix, "/var/lib/snpanel/upload-stage/");
+        for outside in [
+            "/etc/passwd",
+            "/var/lib/snpanel/upload-stage-old/1-x",
+            "/var/lib/snpanel/upload-stage",
+            "/tmp/snpanel-upload-1-x",
+        ] {
+            let err = check_staged_upload(outside, &prefix).unwrap_err();
+            assert!(
+                err.contains("invalid staged upload path"),
+                "{outside}: {err}"
+            );
+        }
+    }
+
+    /// A path that leaves the staging area on the way is refused after
+    /// resolution, where its name alone looked fine.
+    #[test]
+    fn a_staged_path_through_a_symlinked_directory_is_refused() {
+        let (dir, prefix) = upload_dir("escape");
+        std::os::unix::fs::symlink("/etc", dir.join("sub")).unwrap();
+        let err =
+            check_staged_upload(&dir.join("sub/passwd").to_string_lossy(), &prefix).unwrap_err();
+        assert!(err.contains("escaped the staging area"), "{err}");
+    }
+
+    /// A panel-owned file in the staging area is the one thing accepted.
+    ///
+    /// Every other test here is a refusal, and a check that refused
+    /// everything would pass them all - which is what uploads looked like
+    /// from the File Manager while the file was staged where the helper
+    /// could not see it.
+    #[test]
+    fn a_panel_upload_in_the_staging_area_is_accepted() {
+        let (dir, prefix) = upload_dir("accepted");
+        let staged = dir.join("1-x");
+        std::fs::write(&staged, "hello\n").unwrap();
+        let panel_uid = crate::peercred::uid_of(crate::peercred::PANEL_USER)
+            .expect("the panel user must exist for this test to mean anything");
+        if let Err(e) = std::os::unix::fs::chown(&staged, Some(panel_uid), None) {
+            eprintln!("skipped: cannot hand the file to the panel user here: {e}");
+            return;
+        }
+        let resolved = check_staged_upload(&staged.to_string_lossy(), &prefix)
+            .expect("a panel upload in the staging area");
+        assert_eq!(resolved, staged.to_string_lossy());
     }
 
     /// ...and a symlink inside it is refused before it is followed.
@@ -1627,13 +1686,13 @@ mod tests {
     /// helper, running as root, copies it into a site.
     #[test]
     fn a_symlinked_staged_upload_is_refused() {
-        let dir = upload_dir("symlink");
+        let (dir, prefix) = upload_dir("symlink");
         let secret = dir.join("secret");
         std::fs::write(&secret, "a password\n").unwrap();
         let link = dir.join("upload");
         std::os::unix::fs::symlink(&secret, &link).unwrap();
 
-        let err = check_staged_upload(&link.to_string_lossy()).unwrap_err();
+        let err = check_staged_upload(&link.to_string_lossy(), &prefix).unwrap_err();
         assert!(err.contains("cannot be a symlink"), "{err}");
     }
 
@@ -1643,7 +1702,7 @@ mod tests {
     /// than by the panel user - which is exactly the case this rejects.
     #[test]
     fn a_staged_upload_owned_by_someone_else_is_refused() {
-        let dir = upload_dir("owner");
+        let (dir, prefix) = upload_dir("owner");
         let planted = dir.join("upload");
         std::fs::write(&planted, "not from the panel\n").unwrap();
 
@@ -1661,7 +1720,7 @@ mod tests {
              legitimately owned by it and the refusal cannot be observed"
         );
 
-        let err = check_staged_upload(&planted.to_string_lossy())
+        let err = check_staged_upload(&planted.to_string_lossy(), &prefix)
             .expect_err("a file this process owns is not a panel upload");
         assert!(
             err.contains("must be owned by"),
@@ -1672,25 +1731,31 @@ mod tests {
     /// A directory is not an upload.
     #[test]
     fn a_staged_directory_is_refused() {
-        let dir = upload_dir("dir");
+        let (dir, prefix) = upload_dir("dir");
         let inner = dir.join("upload");
         std::fs::create_dir_all(&inner).unwrap();
-        let err = check_staged_upload(&inner.to_string_lossy()).unwrap_err();
+        let err = check_staged_upload(&inner.to_string_lossy(), &prefix).unwrap_err();
         assert!(
             err.contains("not a regular file") || err.contains("must be owned by"),
             "{err}"
         );
     }
 
-    /// A staging directory with the required prefix.
-    fn upload_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::path::PathBuf::from(format!(
-            "{UPLOAD_STAGE_PREFIX}test-{name}-{}",
+    /// A staging directory of the test's own, and the prefix that names it.
+    ///
+    /// Not the real one: that is the panel's, and a test run on a box with
+    /// the panel installed should leave nothing in it. Resolved, because the
+    /// check compares the resolved path with the prefix.
+    fn upload_dir(name: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "snpanel-upload-stage-test-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let prefix = format!("{}/", dir.display());
+        (dir, prefix)
     }
 
     /// The character set, which is the half `SitePath` does not check.

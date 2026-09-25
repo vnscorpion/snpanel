@@ -44,12 +44,13 @@ pub fn nginx_dirs() -> Vec<ManagedDir> {
     ]
 }
 
-/// The panel's own data directories, including the DirectAdmin staging
-/// areas.
+/// The panel's own data directories, including the DirectAdmin and upload
+/// staging areas.
 ///
 /// `0750`: the panel's group can read them and nobody else can. A backup
-/// archive holds a customer's whole account, and the import staging areas
-/// hold their database dumps in plaintext while an import runs.
+/// archive holds a customer's whole account, the import staging areas hold
+/// their database dumps in plaintext while an import runs, and the upload
+/// one a file on its way into their site.
 pub fn data_dirs(app_dir: &'static str, backup_root: &'static str) -> Vec<ManagedDir> {
     [
         app_dir,
@@ -57,6 +58,7 @@ pub fn data_dirs(app_dir: &'static str, backup_root: &'static str) -> Vec<Manage
         "/home/admin/snpanel_backups/da",
         "/var/lib/snpanel/da-import",
         "/var/lib/snpanel/import-stage",
+        "/var/lib/snpanel/upload-stage",
     ]
     .into_iter()
     .map(|path| ManagedDir {
@@ -373,6 +375,7 @@ mod tests {
             .collect();
         assert!(paths.contains(&"/var/lib/snpanel/import-stage"));
         assert!(paths.contains(&"/var/lib/snpanel/da-import"));
+        assert!(paths.contains(&"/var/lib/snpanel/upload-stage"));
         assert!(paths.contains(&"/home/admin/snpanel_backups/da"));
     }
 }
