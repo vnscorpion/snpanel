@@ -437,6 +437,10 @@ impl HelperRequest {
                 };
                 HelperRequest::SiteLogClear { domain, kind }
             }
+            ("site-logs-delete", 1) => match snpanel_core::Domain::parse(&rest[0]) {
+                Ok(domain) => HelperRequest::SiteLogsDelete { domain },
+                Err(e) => return Err(InvocationError::invalid(e.to_string())),
+            },
             ("fix-permissions", 2) | ("site-path-fix", 2) => {
                 let path = match SitePath::parse(&rest[0]) {
                     Ok(p) => p,
@@ -1584,6 +1588,7 @@ mod tests {
             &["site-path-fix", "/home/alice/example.com", "alice"],
             &["site-log-read", "example.com", "access", "50"],
             &["site-log-clear", "example.com", "error"],
+            &["site-logs-delete", "example.com"],
             &[
                 "site-logs-read-many",
                 "access",

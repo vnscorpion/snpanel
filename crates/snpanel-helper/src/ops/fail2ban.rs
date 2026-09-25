@@ -21,6 +21,9 @@ const JAIL_FILE: &str = "/etc/fail2ban/jail.d/snpanel.local";
 const LOGIN_FILTER: &str = "/etc/fail2ban/filter.d/snpanel-login.conf";
 const WORDPRESS_FILTER: &str = "/etc/fail2ban/filter.d/snpanel-wordpress.conf";
 const CLIENT: &str = "fail2ban-client";
+/// Where `fail2ban.conf` sends the server's own log on every distribution the
+/// panel supports, and the file `jail.conf`'s recidive jail reads.
+const DEFAULT_OWN_LOG: &str = "/var/log/fail2ban.log";
 
 /// Cloudflare's published ranges, as cloudflare.com/ips-v4 and /ips-v6 list
 /// them (checked 2026-09).
@@ -100,8 +103,102 @@ journalmatch = SYSLOG_IDENTIFIER=snpanel-auth _UID={panel_uid}
     )
 }
 
+/// Where the server writes its own log - which is what the recidive jail
+/// reads, for the bans the other jails hand out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnLog {
+    /// A file: `/var/log/fail2ban.log`, unless an administrator moved it.
+    File(String),
+    /// The journal, syslog or the service's own output, all of which the
+    /// journal keeps under `fail2ban.service` - the unit the recidive filter
+    /// matches on.
+    Journal,
+}
+
+/// `logtarget`, as the server will read it: `fail2ban.conf`, then
+/// `fail2ban.d`'s `.conf` files, `fail2ban.local`, then `fail2ban.d`'s `.local`
+/// files, the last one winning - and a value in `[Definition]` over one in
+/// `[DEFAULT]`, which is where the distributions put it.
+fn own_log_in(dir: &Path) -> OwnLog {
+    let dropins = |ext: &str| {
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("fail2ban.d"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some(ext))
+            .collect();
+        found.sort();
+        found
+    };
+    let mut files = vec![dir.join("fail2ban.conf")];
+    files.extend(dropins("conf"));
+    files.push(dir.join("fail2ban.local"));
+    files.extend(dropins("local"));
+
+    let (mut default, mut definition) = (None, None);
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut section = String::new();
+        for line in text.lines().map(str::trim) {
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.trim().to_string();
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if key.trim() != "logtarget" {
+                continue;
+            }
+            match section.as_str() {
+                "DEFAULT" => default = Some(value.trim().to_string()),
+                "Definition" => definition = Some(value.trim().to_string()),
+                _ => {}
+            }
+        }
+    }
+    let target = definition
+        .or(default)
+        .unwrap_or_else(|| DEFAULT_OWN_LOG.to_string());
+    // `SYSLOG[format=...]`: what follows the name is how, not where.
+    let target = target.split('[').next().unwrap_or_default().trim();
+    if target.starts_with('/') {
+        OwnLog::File(target.to_string())
+    } else {
+        OwnLog::Journal
+    }
+}
+
+/// The server's own log file, made if it is not there yet.
+///
+/// Only the server's first start makes it. Debian starts the service as the
+/// package goes in; the RHEL family does not, so on a new EL machine the file
+/// is missing when `fail2ban-client --test` runs, the test refuses a recidive
+/// jail with no log to read - measured on AlmaLinux 10 - and the install
+/// stops there. Mode 0640: it is a list of addresses and what they did.
+fn ensure_own_log(own: &OwnLog) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match own {
+        OwnLog::File(path) => std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o640)
+            .open(path)
+            .map(drop),
+        OwnLog::Journal => Ok(()),
+    }
+}
+
 /// The jail file, from the settings and the ports this machine listens on.
-fn render_jail_file(config: &Fail2banConfig, ssh_ports: &[u16], panel_port: u16) -> String {
+fn render_jail_file(
+    config: &Fail2banConfig,
+    ssh_ports: &[u16],
+    panel_port: u16,
+    own_log: &OwnLog,
+) -> String {
     // Normalized like every entry after them, so an entry that repeats
     // loopback is recognised as a repeat.
     let mut exempt: Vec<String> = vec!["127.0.0.0/8".to_string(), "::1/128".to_string()];
@@ -171,8 +268,17 @@ fn render_jail_file(config: &Fail2banConfig, ssh_ports: &[u16], panel_port: u16)
                 let _ = writeln!(out, "ignoreip = {}", web_exempt.join(" "));
             }
             // fail2ban's own: a week, on every port, for an address banned
-            // `maxretry` times in a day.
-            Fail2banJail::Recidive => {}
+            // `maxretry` times in a day. It reads the server's log, which
+            // `jail.conf` assumes is the default file.
+            Fail2banJail::Recidive => match own_log {
+                OwnLog::File(path) if path == DEFAULT_OWN_LOG => {}
+                OwnLog::File(path) => {
+                    let _ = writeln!(out, "logpath = {path}");
+                }
+                OwnLog::Journal => {
+                    let _ = writeln!(out, "backend = systemd");
+                }
+            },
         }
     }
     out
@@ -215,12 +321,17 @@ fn write_files(config: &Fail2banConfig, ctx: &Context) -> Result<(), HelperRespo
             format!("cannot resolve the panel user: {e}"),
         )
     })?;
+    let own_log = own_log_in(Path::new("/etc/fail2ban"));
+    if let Err(e) = ensure_own_log(&own_log) {
+        // Not fatal here: `--test` names the jail if it matters.
+        eprintln!("snpanel-helper: making fail2ban's own log: {e}");
+    }
     for (path, text) in [
         (LOGIN_FILTER, render_login_filter(panel_uid)),
         (WORDPRESS_FILTER, WORDPRESS_FILTER_TEXT.to_string()),
         (
             JAIL_FILE,
-            render_jail_file(config, &ctx.ssh_ports, ctx.panel_port),
+            render_jail_file(config, &ctx.ssh_ports, ctx.panel_port, &own_log),
         ),
     ] {
         super::nginx::write_atomic(Path::new(path), text.as_bytes(), 0o644).map_err(|e| {
@@ -517,6 +628,21 @@ mod tests {
         }
     }
 
+    fn default_log() -> OwnLog {
+        OwnLog::File(DEFAULT_OWN_LOG.to_string())
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "snpanel-f2b-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("fail2ban.d")).unwrap();
+        dir
+    }
+
     /// The part of the file under `[section]`, up to the next section.
     fn section<'a>(file: &'a str, name: &str) -> &'a str {
         let start = file
@@ -529,7 +655,7 @@ mod tests {
 
     #[test]
     fn the_jail_file_says_what_the_page_decided() {
-        let file = render_jail_file(&config(), &[22, 2200], 2222);
+        let file = render_jail_file(&config(), &[22, 2200], 2222, &default_log());
         let default = section(&file, "DEFAULT");
         // Loopback always, each entry once and masked, in the order given.
         assert!(
@@ -553,15 +679,113 @@ mod tests {
         // own, and silence here would leave that in charge.
         assert!(section(&file, "nginx-http-auth").contains("enabled = false\n"));
         assert!(section(&file, "recidive").contains("enabled = false\n"));
-        assert!(!render_jail_file(&config(), &[], 2222).contains("port = ,"));
-        assert!(section(&render_jail_file(&config(), &[], 2222), "sshd").contains("port = ssh\n"));
+        assert!(!render_jail_file(&config(), &[], 2222, &default_log()).contains("port = ,"));
+        assert!(section(
+            &render_jail_file(&config(), &[], 2222, &default_log()),
+            "sshd"
+        )
+        .contains("port = ssh\n"));
+    }
+
+    /// What both distributions ship: `logtarget` in `[DEFAULT]`, and an
+    /// empty `[Definition]` that inherits it.
+    const SHIPPED: &str = "[DEFAULT]\nloglevel = INFO\nlogtarget = /var/log/fail2ban.log\n\n[Definition]\n\n[Thread]\n";
+
+    #[test]
+    fn the_servers_own_log_is_where_the_configuration_says() {
+        let dir = scratch("own-log");
+        assert_eq!(own_log_in(&dir), default_log(), "nothing there at all");
+        std::fs::write(dir.join("fail2ban.conf"), SHIPPED).unwrap();
+        assert_eq!(own_log_in(&dir), default_log(), "as shipped");
+
+        // A drop-in beats the file it drops into, whichever section.
+        std::fs::write(
+            dir.join("fail2ban.d/00-journal.conf"),
+            "[Definition]\nlogtarget = SYSTEMD-JOURNAL\n",
+        )
+        .unwrap();
+        assert_eq!(own_log_in(&dir), OwnLog::Journal);
+        // A `.local` beats every `.conf`, and fail2ban.d's `.local` beats it.
+        std::fs::write(
+            dir.join("fail2ban.local"),
+            "[Definition]\nlogtarget = /var/log/f2b/server.log\n",
+        )
+        .unwrap();
+        assert_eq!(
+            own_log_in(&dir),
+            OwnLog::File("/var/log/f2b/server.log".into())
+        );
+        std::fs::write(
+            dir.join("fail2ban.d/zz.local"),
+            "[Definition]\nlogtarget = SYSLOG[format=\"%(relname)s: %(message)s\"]\n",
+        )
+        .unwrap();
+        assert_eq!(own_log_in(&dir), OwnLog::Journal, "options are not a path");
+
+        // `[Definition]` beats `[DEFAULT]` even in an earlier file.
+        let dir = scratch("own-log-sections");
+        std::fs::write(
+            dir.join("fail2ban.conf"),
+            "[DEFAULT]\nlogtarget = /a.log\n[Definition]\nlogtarget = /b.log\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("fail2ban.local"),
+            "[DEFAULT]\nlogtarget = /c.log\n",
+        )
+        .unwrap();
+        assert_eq!(own_log_in(&dir), OwnLog::File("/b.log".into()));
+        // And another section's `logtarget` is not the server's.
+        std::fs::write(dir.join("fail2ban.local"), "[Thread]\nlogtarget = /d.log\n").unwrap();
+        assert_eq!(own_log_in(&dir), OwnLog::File("/b.log".into()));
+    }
+
+    #[test]
+    fn the_recidive_jail_reads_the_servers_own_log() {
+        let mut every = config();
+        every.jails.push(Fail2banJail::Recidive);
+        let shipped = render_jail_file(&every, &[22], 2222, &default_log());
+        let recidive = section(&shipped, "recidive");
+        assert!(recidive.contains("enabled = true\n"), "{recidive}");
+        // jail.conf's own logpath is right as shipped: nothing is repeated.
+        assert!(
+            !recidive.contains("logpath") && !recidive.contains("backend"),
+            "{recidive}"
+        );
+
+        let moved = render_jail_file(&every, &[22], 2222, &OwnLog::File("/srv/f2b.log".into()));
+        assert!(section(&moved, "recidive").contains("logpath = /srv/f2b.log\n"));
+        let journal = render_jail_file(&every, &[22], 2222, &OwnLog::Journal);
+        let recidive = section(&journal, "recidive");
+        assert!(recidive.contains("backend = systemd\n") && !recidive.contains("logpath"));
+    }
+
+    #[test]
+    fn the_servers_own_log_is_made_when_missing_and_left_alone_when_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("own-log-file");
+        let path = dir.join("fail2ban.log");
+        let own = OwnLog::File(path.to_string_lossy().into_owned());
+        ensure_own_log(&own).unwrap();
+        assert!(path.is_file());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        std::fs::write(&path, "2026-09-25 NOTICE [sshd] Ban 203.0.113.9\n").unwrap();
+        ensure_own_log(&own).unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Ban 203.0.113.9"));
+        assert!(ensure_own_log(&OwnLog::Journal).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Cloudflare is exempt where the address comes from a site's log, and
     /// only there: an SSH or panel attacker's address is their own.
     #[test]
     fn cloudflare_is_never_banned_from_a_site_log() {
-        let file = render_jail_file(&config(), &[22], 2222);
+        let file = render_jail_file(&config(), &[22], 2222, &default_log());
         for web in ["snpanel-wordpress", "nginx-http-auth"] {
             let jail = section(&file, web);
             for range in CLOUDFLARE {
@@ -583,7 +807,7 @@ mod tests {
     /// number or a parsed address, and nothing can start a line of its own.
     #[test]
     fn a_setting_cannot_add_a_line() {
-        let file = render_jail_file(&config(), &[22], 2222);
+        let file = render_jail_file(&config(), &[22], 2222, &default_log());
         for line in file.lines() {
             let key = line.split(" = ").next().unwrap_or_default();
             assert!(

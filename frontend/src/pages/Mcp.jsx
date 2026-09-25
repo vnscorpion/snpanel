@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bot, Check, Copy, KeyRound, Plus, ShieldAlert, Trash2 } from 'lucide-react';
+import { Bot, Boxes, Check, Copy, KeyRound, Plus, ShieldAlert, Trash2 } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 import './Mcp.css';
@@ -59,7 +59,7 @@ export default function McpPage() {
     return <section className="section mcp-page">
       <h2>{t('AI assistants (MCP)')}</h2>
       <EmptyState icon={Bot} message={t('The MCP addon is not installed on this panel.')} />
-      {isAdmin && <div className="mcp-actions"><button onClick={() => navigateToPage('addons')}>{t('Open Addons')}</button></div>}
+      {isAdmin && <div className="addon-missing-actions"><button type="button" onClick={() => navigateToPage('addons')}><Boxes size={14} aria-hidden="true"/> {t('Go to Addons')}</button></div>}
     </section>;
   }
 

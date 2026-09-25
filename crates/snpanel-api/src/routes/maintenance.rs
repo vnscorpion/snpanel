@@ -8753,6 +8753,21 @@ pub(crate) async fn run_scheduled_user_backup(
         let (name, location) =
             super::s3_targets::upload_archive(state, target_id, &archive).await?;
         went.push(format!("{name}:{location}"));
+        // The bucket keeps what the folder keeps. A prune that fails leaves
+        // old copies behind; the new one is there, so the backup worked.
+        if !state.settings.command_dry_run {
+            if let Err(e) = super::s3_targets::prune_archives(
+                state,
+                target_id,
+                &user.username,
+                options.name_style,
+                schedule.retention,
+            )
+            .await
+            {
+                tracing::warn!(user = %user.username, "pruning the S3 destination failed: {e}");
+            }
+        }
     }
     let _ = crate::backups::prune_user_backups(
         &state.settings.backup_root,

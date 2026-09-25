@@ -25,12 +25,14 @@
 
 mod audit;
 mod exec;
+mod locks;
 mod ops;
 mod peercred;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use snpanel_ipc::{Envelope, HelperErrorKind, HelperResponse, SOCKET_PATH};
 
@@ -65,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 149;
+const ANSWERED_VERBS: usize = 150;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -83,9 +85,9 @@ fn print_help(sink: audit::Sink) {
         "                  lock, unlock",
         "  site-*          mkdir, rm, path-fix, file-write, file-install, chmod,",
         "                  file-search,",
-        "                  log-read, log-clear, logs-read-many, document-root-ensure,",
-        "                  populate, archive-extract, runtime-ensure, runtime-move,",
-        "                  runtime-delete",
+        "                  log-read, log-clear, logs-read-many, logs-delete,",
+        "                  document-root-ensure, populate, archive-extract,",
+        "                  runtime-ensure, runtime-move, runtime-delete",
         "  docker-*        status, prune, install;  node-list, node-install",
         "  maldet-scan, malware-scan-server",
         "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
@@ -162,16 +164,78 @@ fn serve() -> ExitCode {
         },
     };
 
-    let ctx = Context::from_system();
+    let ctx = Arc::new(Context::from_system());
     tracing::info!(panel_uid, panel_port = ctx.panel_port, "helper ready");
 
+    // Each connection on a thread of its own, so a long operation - an
+    // install, a pull, a scan - no longer holds up every other request;
+    // `locks` keeps two changes to one shared resource from overlapping.
+    let slots = Arc::new(Slots::new(MAX_IN_FLIGHT));
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => handle(s, panel_uid, &ctx),
+            Ok(s) => {
+                slots.take();
+                let (ctx, done) = (Arc::clone(&ctx), Arc::clone(&slots));
+                let started = std::thread::Builder::new()
+                    .name("helper-request".into())
+                    .spawn(move || {
+                        // Given back even if the operation panics.
+                        let _slot = SlotGuard(&done);
+                        handle(s, panel_uid, &ctx);
+                    });
+                if let Err(e) = started {
+                    slots.give_back();
+                    tracing::warn!("cannot start a thread for a request: {e}");
+                }
+            }
             Err(e) => tracing::warn!("accept failed: {e}"),
         }
     }
     ExitCode::SUCCESS
+}
+
+/// How many requests are worked on at once. The API is the only caller this
+/// answers; the bound is on what a burst of its requests can start, and a
+/// request past it waits to be accepted rather than being refused.
+const MAX_IN_FLIGHT: usize = 32;
+
+/// A counting semaphore: the requests that may still start.
+struct Slots {
+    free: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Slots {
+    fn new(n: usize) -> Self {
+        Self {
+            free: Mutex::new(n),
+            freed: Condvar::new(),
+        }
+    }
+
+    fn take(&self) {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        while *free == 0 {
+            free = self
+                .freed
+                .wait(free)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *free -= 1;
+    }
+
+    fn give_back(&self) {
+        *self.free.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        self.freed.notify_one();
+    }
+}
+
+struct SlotGuard<'a>(&'a Slots);
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        self.0.give_back();
+    }
 }
 
 /// Take the listening socket from systemd, if we were socket-activated.
@@ -277,7 +341,10 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
     let response = match Envelope::decode(line.as_bytes()) {
         Ok(env) => {
             audit::log_request(&env.request, peer.uid, peer.pid);
-            let resp = ops::dispatch(&env.request, ctx);
+            let resp = {
+                let _held = locks::hold(env.request.op_name());
+                ops::dispatch(&env.request, ctx)
+            };
             audit::log_result(env.request.op_name(), &resp);
             resp
         }

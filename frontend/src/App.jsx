@@ -79,7 +79,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [standaloneEditor] = useState(() => editorParamsFromLocation());
-  const [username, setUsername] = useState('admin');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
@@ -3642,8 +3642,9 @@ function App() {
     }
     if (isAuthenticated && page === 'malware' && isAdmin) {
       loadMalwareScanStatus();
-      loadMalwareScanJobs();
-      loadLatestMalwareScanJob();
+      // The latest job is a 404 until the first scan, and the browser logs
+      // every 404 as an error: ask for it once the history shows there is one.
+      loadMalwareScanJobs().then((jobs) => { if (jobs.length) loadLatestMalwareScanJob(); });
       loadMalwareSchedule();
       if (websites.length === 0) loadWebsiteList('', false);
     }
@@ -4468,23 +4469,32 @@ function App() {
             <ThemeToggle theme={theme} onToggle={toggleTheme}/>
           </div>
         </div>
-        <div className="login-form">
-          <input value={username} onChange={e => setUsername(e.target.value)} placeholder={t('Username')} autoComplete="username" />
-          <input value={password} onChange={e => setPassword(e.target.value)} placeholder={t('Password')} type="password" autoComplete="current-password" onKeyDown={e => { if (e.key === 'Enter') login(); }} />
+        {/* A form, so Enter signs in from any field and a password manager
+            knows what it is looking at. Nothing is filled in: customers sign
+            in here too, and the page need not name the administrator. */}
+        <form className="login-form" onSubmit={e => { e.preventDefault(); login(); }}>
+          <label className="field"><span>{t('Username')}</span>
+            <input value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} autoFocus />
+          </label>
+          <label className="field"><span>{t('Password')}</span>
+            <input value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete="current-password" />
+          </label>
           {needsTwoFactor && passkeyStatus === 'waiting' && <div className="login-passkey" role="status">
             <KeyRound size={18} aria-hidden="true"/>
             <span>{t('Confirm with your passkey…')}</span>
             <button type="button" className="link-button" onClick={() => passkeyAbort.current?.abort()}>{t('Use the authenticator code instead')}</button>
           </div>}
           {needsTwoFactor && passkeyStatus === 'failed' && <p className="login-passkey-failed" role="alert">{t('The passkey did not work. Enter the code from your authenticator app instead.')}</p>}
-          {needsTwoFactor && passkeyStatus !== 'waiting' && <input value={otpCode} onChange={e => setOtpCode(e.target.value)} placeholder={t('Authentication code')} inputMode="numeric" autoComplete="one-time-code" autoFocus onKeyDown={e => { if (e.key === 'Enter') login(); }} />}
+          {needsTwoFactor && passkeyStatus !== 'waiting' && <label className="field"><span>{t('Authentication code')}</span>
+            <input value={otpCode} onChange={e => setOtpCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" autoFocus />
+          </label>}
           <label className="login-remember">
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
             {t('Keep me signed in for 30 days')}
           </label>
-          {passkeyStatus !== 'waiting' && <button disabled={!!loading || !username || !password} onClick={() => login()}>{loading ? t('Logging in...') : t('Login')}</button>}
+          {passkeyStatus !== 'waiting' && <button type="submit" disabled={!!loading || !username || !password}>{loading ? t('Logging in...') : t('Login')}</button>}
           {needsTwoFactor && passkeyStatus === 'failed' && <button type="button" className="secondary" disabled={!!loading} onClick={() => login({ otp: '' })}>{t('Try the passkey again')}</button>}
-        </div>
+        </form>
       </section>
       {renderNotifications()}
     </main>;

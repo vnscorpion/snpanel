@@ -54,11 +54,11 @@ pub fn run() -> Result<()> {
             return Ok(()); // EOF
         }
 
-        match dispatch(choice.trim()) {
-            Dispatch::Exit => return Ok(()),
-            Dispatch::Unknown => println!("Invalid choice"),
-            Dispatch::Ran(result) => {
-                if let Err(e) = result {
+        match choose(choice.trim()) {
+            Choice::Exit => return Ok(()),
+            Choice::Unknown => println!("Invalid choice"),
+            Choice::Run(action) => {
+                if let Err(e) = perform(action) {
                     eprintln!("snpanel: {e:#}");
                 }
             }
@@ -74,37 +74,69 @@ fn print_menu() {
     }
 }
 
-enum Dispatch {
-    Ran(Result<()>),
+/// What an entry does - named, so that choosing an entry and doing it are
+/// two steps, and the first can be tested without the second restarting
+/// services or changing the server's IP on the machine running the tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    ShowLoginInfo,
+    Status,
+    Logs,
+    Restart,
+    RepairFirewall,
+    SetPanelUrl,
+    InstallPanelSsl,
+    FixPermissions,
+    ChangeAdminPassword,
+    UpdateFromRelease,
+    ChangeIp,
+    SyncAdminPassword,
+}
+
+enum Choice {
+    Run(Action),
     Exit,
     Unknown,
 }
 
-fn dispatch(choice: &str) -> Dispatch {
+fn choose(choice: &str) -> Choice {
     // The mapping is the bash `case` statement, one for one.
-    match choice {
-        "1" => Dispatch::Ran(ops::show_login_info()),
-        "2" => Dispatch::Ran(ops::status(env_path().as_deref())),
-        "3" => Dispatch::Ran(ops::logs(false, 200)),
-        "4" => Dispatch::Ran(ops::restart()),
-        "5" => Dispatch::Ran(ops::repair_firewall(env_path().as_deref())),
-        "6" => Dispatch::Ran(crate::panel_address::set_panel_url(env_path().as_deref())),
-        "7" => Dispatch::Ran(crate::panel_address::install_panel_ssl(
-            env_path().as_deref(),
-        )),
-        "8" => Dispatch::Ran(crate::permissions::fix_permissions(env_path().as_deref())),
-        "9" => Dispatch::Ran(crate::passwords::change_admin_password(
-            env_path().as_deref(),
-        )),
+    Choice::Run(match choice {
+        "1" => Action::ShowLoginInfo,
+        "2" => Action::Status,
+        "3" => Action::Logs,
+        "4" => Action::Restart,
+        "5" => Action::RepairFirewall,
+        "6" => Action::SetPanelUrl,
+        "7" => Action::InstallPanelSsl,
+        "8" => Action::FixPermissions,
+        "9" => Action::ChangeAdminPassword,
+        "10" => Action::UpdateFromRelease,
+        "11" => Action::ChangeIp,
+        "12" => Action::SyncAdminPassword,
+        "0" => return Choice::Exit,
+        _ => return Choice::Unknown,
+    })
+}
+
+fn perform(action: Action) -> Result<()> {
+    let env = env_path();
+    let env = env.as_deref();
+    match action {
+        Action::ShowLoginInfo => ops::show_login_info(),
+        Action::Status => ops::status(env),
+        Action::Logs => ops::logs(false, 200),
+        Action::Restart => ops::restart(),
+        Action::RepairFirewall => ops::repair_firewall(env),
+        Action::SetPanelUrl => crate::panel_address::set_panel_url(env),
+        Action::InstallPanelSsl => crate::panel_address::install_panel_ssl(env),
+        Action::FixPermissions => crate::permissions::fix_permissions(env),
+        Action::ChangeAdminPassword => crate::passwords::change_admin_password(env),
         // The menu has never offered a tag or a branch, and the entry says
         // "from release".
-        "10" => Dispatch::Ran(ops::run_update(ops::UpdateTarget::Release)),
-        "11" => Dispatch::Ran(ops::change_ip(&[])),
-        "12" => Dispatch::Ran(crate::passwords::sync_admin_root_password(
-            env_path().as_deref(),
-        )),
-        "0" => Dispatch::Exit,
-        _ => Dispatch::Unknown,
+        Action::UpdateFromRelease => ops::run_update(ops::UpdateTarget::Release),
+        Action::ChangeIp => ops::change_ip(&[]),
+        Action::SyncAdminPassword => crate::passwords::sync_admin_root_password(env),
     }
 }
 
@@ -146,22 +178,32 @@ mod tests {
 
     #[test]
     fn zero_exits_and_nonsense_does_not() {
-        assert!(matches!(dispatch("0"), Dispatch::Exit));
+        assert!(matches!(choose("0"), Choice::Exit));
         for bad in ["", "13", "x", "-1", "1 "] {
-            assert!(matches!(dispatch(bad), Dispatch::Unknown), "{bad:?}");
+            assert!(matches!(choose(bad), Choice::Unknown), "{bad:?}");
         }
     }
 
     #[test]
-    fn every_numbered_entry_dispatches_somewhere() {
+    fn every_numbered_entry_has_an_action_of_its_own() {
+        // Only chooses: `perform` is never called here, so nothing is
+        // restarted, repaired or updated on the machine running the tests.
+        let mut seen = Vec::new();
         for (key, label) in ENTRIES {
             if *key == "0" {
                 continue;
             }
-            assert!(
-                !matches!(dispatch(key), Dispatch::Unknown),
-                "menu entry {key} ({label}) has no action"
-            );
+            match choose(key) {
+                Choice::Run(action) => {
+                    assert!(
+                        !seen.contains(&action),
+                        "entry {key} ({label}) repeats {action:?}"
+                    );
+                    seen.push(action);
+                }
+                _ => panic!("menu entry {key} ({label}) has no action"),
+            }
         }
+        assert_eq!(seen.len(), 12);
     }
 }

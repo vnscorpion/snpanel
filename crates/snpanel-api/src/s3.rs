@@ -232,7 +232,12 @@ fn locate(target: &Target<'_>, key: &str) -> Located {
         Located {
             host: endpoint.host.clone(),
             authority: endpoint.authority(&endpoint.host),
-            path: format!("/{}/{encoded}", target.bucket),
+            // No key is the bucket itself, for a listing: `/bucket`.
+            path: if key.is_empty() {
+                format!("/{}", target.bucket)
+            } else {
+                format!("/{}/{encoded}", target.bucket)
+            },
         }
     } else {
         let host = format!("{}.{}", target.bucket, endpoint.host);
@@ -298,23 +303,41 @@ fn xml_text(body: &str, tag: &str) -> Option<String> {
     let close = format!("</{tag}>");
     let start = body.find(&open)? + open.len();
     let end = start + body[start..].find(&close)?;
+    Some(xml_unescape(&body[start..end]))
+}
+
+/// The text of every `<tag>`, in order - the keys of a listing.
+fn xml_all(body: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(&open) {
+        let after = &rest[at + open.len()..];
+        let Some(end) = after.find(&close) else {
+            break;
+        };
+        out.push(xml_unescape(&after[..end]));
+        rest = &after[end + close.len()..];
+    }
+    out
+}
+
+fn xml_unescape(raw: &str) -> String {
     // Some stores - moto among them - send a message as CDATA, which is
     // the text as it is.
-    if let Some(text) = body[start..end]
+    if let Some(text) = raw
         .trim()
         .strip_prefix("<![CDATA[")
         .and_then(|rest| rest.strip_suffix("]]>"))
     {
-        return Some(text.to_string());
+        return text.to_string();
     }
-    Some(
-        body[start..end]
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&"),
-    )
+    raw.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 fn xml_escape(text: &str) -> String {
@@ -690,6 +713,45 @@ async fn send_parts(
     )
     .await?;
     if reply.failed() {
+        return Err(refusal(&reply));
+    }
+    Ok(())
+}
+
+/// How many keys one listing gathers at most: the archives of one family,
+/// where a store that kept answering "there is more" would otherwise keep
+/// this asking.
+const MAX_LISTED: usize = 50_000;
+
+/// Every key that starts with `prefix` - ListObjectsV2, page after page.
+pub async fn list_keys(target: &Target<'_>, prefix: &str) -> Result<Vec<String>, S3Error> {
+    let mut keys = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let current = token.take();
+        let mut query = vec![("list-type", "2"), ("prefix", prefix)];
+        if let Some(next) = current.as_deref() {
+            query.push(("continuation-token", next));
+        }
+        let reply = send_retrying(target, "GET", "", &query, Bytes::new(), CONTROL_TIMEOUT).await?;
+        if reply.failed() {
+            return Err(refusal(&reply));
+        }
+        keys.extend(xml_all(&reply.body, "Key"));
+        let more = xml_text(&reply.body, "IsTruncated").as_deref() == Some("true");
+        match xml_text(&reply.body, "NextContinuationToken").filter(|t| !t.is_empty()) {
+            Some(next) if more && keys.len() < MAX_LISTED => token = Some(next),
+            _ => break,
+        }
+    }
+    Ok(keys)
+}
+
+/// One object removed. A key already gone is not an error: two schedules
+/// can prune the same family.
+pub async fn delete_key(target: &Target<'_>, key: &str) -> Result<(), S3Error> {
+    let reply = send_retrying(target, "DELETE", key, &[], Bytes::new(), CONTROL_TIMEOUT).await?;
+    if reply.failed() && reply.status != 404 {
         return Err(refusal(&reply));
     }
     Ok(())
@@ -1115,6 +1177,96 @@ mod tests {
 
     fn ok() -> (u16, Vec<(&'static str, String)>, String) {
         (200, vec![("etag", "\"e\"".into())], String::new())
+    }
+
+    #[test]
+    fn the_bucket_itself_is_its_name_without_a_slash() {
+        let e = endpoint("http://127.0.0.1:9000");
+        assert_eq!(locate(&target(&e, true), "").path, "/backups");
+        assert_eq!(locate(&target(&e, false), "").path, "/");
+    }
+
+    #[tokio::test]
+    async fn a_listing_follows_its_pages_and_signs_each() {
+        let (endpoint, seen) = fake_store(Arc::new(|request: &Seen, _| {
+            if request.query.contains("continuation-token=") {
+                (
+                    200,
+                    vec![],
+                    "<ListBucketResult><IsTruncated>false</IsTruncated>\
+                    <Contents><Key>panel/user-alice-20260921020000.tar.gz</Key></Contents>\
+                    </ListBucketResult>"
+                        .to_string(),
+                )
+            } else {
+                (
+                    200,
+                    vec![],
+                    "<ListBucketResult><IsTruncated>true</IsTruncated>\
+                    <Contents><Key>panel/user-alice-20260920020000.tar.gz</Key></Contents>\
+                    <Contents><Key>panel/a&amp;b.tar.gz</Key></Contents>\
+                    <NextContinuationToken>t/2=</NextContinuationToken></ListBucketResult>"
+                        .to_string(),
+                )
+            }
+        }))
+        .await;
+        let keys = list_keys(&target(&endpoint, true), "panel/user-alice-")
+            .await
+            .unwrap();
+        assert_eq!(
+            keys,
+            [
+                "panel/user-alice-20260920020000.tar.gz",
+                "panel/a&b.tar.gz",
+                "panel/user-alice-20260921020000.tar.gz"
+            ]
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen
+            .iter()
+            .all(|s| s.method == "GET" && s.path == "/backups" && s.signature_ok));
+        assert_eq!(seen[0].query, "list-type=2&prefix=panel%2Fuser-alice-");
+        assert_eq!(
+            seen[1].query,
+            "list-type=2&prefix=panel%2Fuser-alice-&continuation-token=t%2F2%3D"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delete_is_signed_and_a_key_already_gone_is_fine() {
+        let (endpoint, seen) = fake_store(Arc::new(|request: &Seen, _| {
+            if request.path.ends_with("gone.tar.gz") {
+                (
+                    404,
+                    vec![],
+                    "<Error><Code>NoSuchKey</Code></Error>".to_string(),
+                )
+            } else if request.path.ends_with("locked.tar.gz") {
+                (
+                    403,
+                    vec![],
+                    "<Error><Code>AccessDenied</Code></Error>".to_string(),
+                )
+            } else {
+                (204, vec![], String::new())
+            }
+        }))
+        .await;
+        let t = target(&endpoint, true);
+        delete_key(&t, "panel/old.tar.gz").await.unwrap();
+        delete_key(&t, "panel/gone.tar.gz").await.unwrap();
+        assert_eq!(
+            delete_key(&t, "panel/locked.tar.gz").await.unwrap_err().0,
+            "S3 refused the request: AccessDenied"
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            (seen[0].method.as_str(), seen[0].path.as_str()),
+            ("DELETE", "/backups/panel/old.tar.gz")
+        );
+        assert!(seen.iter().all(|s| s.signature_ok));
     }
 
     #[tokio::test]

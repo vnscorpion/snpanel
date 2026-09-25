@@ -21,7 +21,7 @@ export default function AddonMissingPage() {
           ? t('Your package does not include Applications. Contact the administrator to upgrade.')
           : t('The Application addon is not installed on this server.')}
       />
-      {isAdmin && !applicationAddonInstalled && <div className="site-app-form-actions">
+      {isAdmin && !applicationAddonInstalled && <div className="addon-missing-actions">
         <button disabled={!!loading} onClick={() => navigateToPage('addons')}><Boxes size={14}/> {t('Go to Addons')}</button>
       </div>}
     </section>;

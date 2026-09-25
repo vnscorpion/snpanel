@@ -148,7 +148,7 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .restore-title{margin-top:8px}
 .backup-subtitle{margin-top:10px}
 
-.backup-schedule-form,.sftp-target-form{
+.backup-schedule-form{
   padding:12px;background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg);
   align-items:center;
 }
@@ -156,10 +156,6 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .backup-schedule-form select[multiple]{min-height:88px;padding-block:8px}
 .schedule-toggle{height:40px;padding:0 12px;background:var(--surface);border-color:var(--border);color:var(--brand-navy)}
 .schedule-toggle input{accent-color:var(--primary)}
-.sftp-target-form{grid-template-columns:minmax(150px,1fr) minmax(150px,1fr) 96px minmax(140px,1fr) minmax(140px,1fr) minmax(180px,1.15fr) max-content}
-.sftp-form textarea{grid-column:1 / -2;min-height:88px;background:var(--code-bg);color:var(--code-fg);border-color:var(--code-border)}
-.sftp-form button{align-self:center;height:40px;min-height:40px}
-.sftp-target-form button{min-width:122px}
 
 @media(max-width:1450px){
   .create-site-row{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -170,7 +166,6 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 
 @media(max-width:1320px){
   .resource-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .sftp-target-form{grid-template-columns:repeat(3,minmax(0,1fr)) max-content}
   .cron-form{grid-template-columns:1fr 150px}
   .cron-form .cron-command{grid-column:1 / -1}
   .panel-settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -217,8 +212,7 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
   .backup-admin-panel{padding:12px;border-left-width:3px}
   .backup-panel-heading{display:grid;align-items:start;gap:10px}
   .backup-toolbar button,.backup-toolbar .upload-button,.backup-run-row button,.backup-subactions button{min-width:0;width:100%}
-  .backup-run-row,.user-backup-row,.backup-schedule-form,.sftp-target-form{grid-template-columns:1fr}
-  .sftp-form textarea{grid-column:1;min-height:96px}
+  .backup-run-row,.user-backup-row,.backup-schedule-form{grid-template-columns:1fr}
   .backups-page .backup-item{grid-template-columns:1fr;align-items:stretch}
   .backups-page .backup-item .actions{display:grid;grid-template-columns:1fr 1fr 42px;gap:6px}
   .backups-page .backup-item .actions button{width:100%;height:38px;min-height:38px}
@@ -290,6 +284,8 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .site-app-form label span{font-size:var(--text-sm);color:var(--text-muted)}
 .site-app-form input{width:100%;min-width:0}
 .site-app-form-actions{display:flex;align-items:end;gap:8px}
+/* The way to the Addons page, under a page's "not installed" message. */
+.addon-missing-actions{display:flex;justify-content:center}
 .site-app-form-actions button{white-space:nowrap}
 .custom-nginx-block{display:grid;gap:8px;margin-top:10px}
 .custom-nginx-block h3{font-size:var(--text-md);margin:0;color:var(--text)}
@@ -488,7 +484,7 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .addon-head code{font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);color:var(--text-muted)}
 .addon-summary{margin:0;font-size:var(--text-base);line-height:1.55;color:var(--text-secondary)}
 .addon-details{margin:0;padding-left:18px;display:grid;gap:4px;font-size:var(--text-sm);line-height:1.5;color:var(--text-secondary)}
-.addon-notes{display:grid;gap:5px;padding:8px 10px;border:1px solid var(--danger-border);border-radius:var(--radius-sm);background:var(--danger-bg);color:var(--danger-text);font-size:var(--text-sm);line-height:1.5}
+.addon-notes{display:grid;gap:5px;padding:8px 10px;border:1px solid var(--warning-border);border-radius:var(--radius-sm);background:var(--warning-bg);color:var(--warning-text);font-size:var(--text-sm);line-height:1.5}
 .addon-notes strong{display:flex;align-items:center;gap:5px;font-size:var(--text-xs);letter-spacing:.03em;text-transform:uppercase}
 .addon-notes ul{margin:0;padding-left:16px;display:grid;gap:3px;font-weight:600}
 .addon-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}

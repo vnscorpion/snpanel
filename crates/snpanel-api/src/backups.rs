@@ -547,7 +547,10 @@ pub fn archive_name(
 /// The four families never share a file, whatever the name - `user-` is
 /// only the timestamped prefix, and the others are the name itself, a day
 /// name or an ISO date after it.
-fn in_family(file_name: &str, username: &str, style: NameStyle) -> bool {
+///
+/// Exact, not a prefix: in a bucket every account's archives may share one
+/// folder, and `user-alice-` must not claim `user-alice-bob-...`.
+pub(crate) fn in_family(file_name: &str, username: &str, style: NameStyle) -> bool {
     let Some(stem) = file_name.strip_suffix(".tar.gz") else {
         return false;
     };
@@ -559,13 +562,60 @@ fn in_family(file_name: &str, username: &str, style: NameStyle) -> bool {
         NameStyle::Timestamp => stem
             .strip_prefix("user-")
             .and_then(|rest| rest.strip_prefix(username))
-            .is_some_and(|rest| rest.starts_with('-')),
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|stamp| stamp.len() == 14 && stamp.bytes().all(|b| b.is_ascii_digit())),
         NameStyle::None => stem == username,
         NameStyle::Weekday => suffix().is_some_and(|day| WEEKDAYS.contains(&day)),
         NameStyle::Date => suffix().is_some_and(|date| {
             date.len() == 10 && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
         }),
     }
+}
+
+/// Where one family's names start - what a listing of a folder other
+/// accounts share is narrowed to. `None` for the styles whose names repeat:
+/// they replace their files and have nothing to prune.
+pub fn family_start(username: &str, style: NameStyle) -> Option<String> {
+    match style {
+        NameStyle::Timestamp => Some(format!("user-{username}-")),
+        NameStyle::Date => Some(format!("{username}-")),
+        NameStyle::None | NameStyle::Weekday => None,
+    }
+}
+
+/// The keys past a schedule's retention in a remote folder: of the archives
+/// `style` names for `username` directly in `folder`, all but the newest
+/// `keep` - the rule the local folder is pruned by, newest first because the
+/// stamps and dates sort as text.
+pub fn past_retention(
+    keys: &[String],
+    folder: &str,
+    username: &str,
+    style: NameStyle,
+    keep: i64,
+) -> Vec<String> {
+    if family_start(username, style).is_none() {
+        return Vec::new();
+    }
+    let lead = if folder.is_empty() {
+        String::new()
+    } else {
+        format!("{folder}/")
+    };
+    let mut family: Vec<&String> = keys
+        .iter()
+        .filter(|key| {
+            key.strip_prefix(lead.as_str())
+                .is_some_and(|name| !name.contains('/') && in_family(name, username, style))
+        })
+        .collect();
+    family.sort_by(|a, b| b.cmp(a));
+    family.dedup();
+    family
+        .into_iter()
+        .skip(keep.max(1) as usize)
+        .cloned()
+        .collect()
 }
 
 /// `datetime.utcnow().strftime("%Y%m%d%H%M%S")`.
@@ -1354,5 +1404,92 @@ mod naming_tests {
         }
         assert_eq!(names(&dir), [".staging"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod remote_retention_tests {
+    use super::*;
+
+    fn keys(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn a_timestamped_family_keeps_its_newest_and_no_one_elses() {
+        let listed = keys(&[
+            "nightly/user-alice-20260920020000.tar.gz",
+            "nightly/user-alice-20260922020000.tar.gz",
+            "nightly/user-alice-20260921020000.tar.gz",
+            "nightly/user-alice-20260919020000.tar.gz",
+            "nightly/user-alice-bob-20260901020000.tar.gz",
+            "nightly/alice-2026-09-01.tar.gz",
+            "nightly/old/user-alice-20250101020000.tar.gz",
+            "nightly/.snpanel-write-test",
+            "elsewhere/user-alice-20250101020000.tar.gz",
+        ]);
+        assert_eq!(
+            past_retention(&listed, "nightly", "alice", NameStyle::Timestamp, 2),
+            keys(&[
+                "nightly/user-alice-20260920020000.tar.gz",
+                "nightly/user-alice-20260919020000.tar.gz"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_dated_family_at_the_bucket_root() {
+        let listed = keys(&[
+            "alice-2026-09-20.tar.gz",
+            "alice-2026-09-22.tar.gz",
+            "alice-2026-09-21.tar.gz",
+            "alice-monday.tar.gz",
+            "alice.tar.gz",
+            "alice-bob-2026-09-01.tar.gz",
+        ]);
+        assert_eq!(
+            past_retention(&listed, "", "alice", NameStyle::Date, 1),
+            keys(&["alice-2026-09-21.tar.gz", "alice-2026-09-20.tar.gz"])
+        );
+    }
+
+    #[test]
+    fn the_names_that_repeat_have_nothing_to_prune_and_zero_keeps_one() {
+        let listed = keys(&[
+            "alice.tar.gz",
+            "alice-monday.tar.gz",
+            "alice-tuesday.tar.gz",
+        ]);
+        assert!(past_retention(&listed, "", "alice", NameStyle::None, 1).is_empty());
+        assert!(past_retention(&listed, "", "alice", NameStyle::Weekday, 1).is_empty());
+        let dated = keys(&["alice-2026-09-20.tar.gz", "alice-2026-09-21.tar.gz"]);
+        assert_eq!(
+            past_retention(&dated, "", "alice", NameStyle::Date, 0),
+            keys(&["alice-2026-09-20.tar.gz"])
+        );
+    }
+
+    #[test]
+    fn a_timestamp_is_fourteen_digits_exactly() {
+        assert!(in_family(
+            "user-alice-20260920020000.tar.gz",
+            "alice",
+            NameStyle::Timestamp
+        ));
+        assert!(!in_family(
+            "user-alice-bob-20260920020000.tar.gz",
+            "alice",
+            NameStyle::Timestamp
+        ));
+        assert!(!in_family(
+            "user-alice-2026092002.tar.gz",
+            "alice",
+            NameStyle::Timestamp
+        ));
+        assert!(!in_family(
+            "user-alice-2026092002000x.tar.gz",
+            "alice",
+            NameStyle::Timestamp
+        ));
     }
 }

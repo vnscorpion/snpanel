@@ -428,6 +428,39 @@ pub(crate) async fn upload_archive(
     target_id: i64,
     archive: &str,
 ) -> Result<(String, String), String> {
+    let (row, secret, endpoint) = open(state, target_id).await?;
+    let target = target_of(&row, &secret, &endpoint);
+    let uploaded = crate::s3::upload(archive, &target).await.map_err(|e| e.0)?;
+    Ok((row.name, uploaded.location))
+}
+
+/// The bucket kept to a schedule's retention, as the local folder is: of the
+/// archives `style` names for `username`, the newest `keep` stay. How many
+/// went. The styles whose names repeat replace their object instead.
+pub(crate) async fn prune_archives(
+    state: &AppState,
+    target_id: i64,
+    username: &str,
+    style: snpanel_db::s3_targets::NameStyle,
+    keep: i64,
+) -> Result<usize, String> {
+    let Some(start) = crate::backups::family_start(username, style) else {
+        return Ok(0);
+    };
+    let (row, secret, endpoint) = open(state, target_id).await?;
+    let target = target_of(&row, &secret, &endpoint);
+    let listed = crate::s3::list_keys(&target, &crate::s3::object_key(&row.prefix, &start))
+        .await
+        .map_err(|e| e.0)?;
+    let old = crate::backups::past_retention(&listed, &row.prefix, username, style, keep);
+    for key in &old {
+        crate::s3::delete_key(&target, key).await.map_err(|e| e.0)?;
+    }
+    Ok(old.len())
+}
+
+/// A destination that may be used: its row, its secret, its endpoint.
+async fn open(state: &AppState, target_id: i64) -> Result<(S3Target, String, Endpoint), String> {
     let row = match state.db.s3_targets().by_id(target_id).await {
         Ok(Some(row)) if row.is_active => row,
         Ok(_) => return Err("S3 destination not found".to_string()),
@@ -435,17 +468,23 @@ pub(crate) async fn upload_archive(
     };
     let secret = secret_of(state, target_id).await?;
     let endpoint = crate::s3::parse_endpoint(&row.endpoint)?;
-    let target = crate::s3::Target {
-        endpoint: &endpoint,
+    Ok((row, secret, endpoint))
+}
+
+fn target_of<'a>(
+    row: &'a S3Target,
+    secret: &'a str,
+    endpoint: &'a Endpoint,
+) -> crate::s3::Target<'a> {
+    crate::s3::Target {
+        endpoint,
         region: &row.region,
         bucket: &row.bucket,
         prefix: &row.prefix,
         access_key: &row.access_key,
-        secret_key: &secret,
+        secret_key: secret,
         path_style: row.path_style,
-    };
-    let uploaded = crate::s3::upload(archive, &target).await.map_err(|e| e.0)?;
-    Ok((row.name, uploaded.location))
+    }
 }
 
 /// Whether a destination a request names is there to upload to.

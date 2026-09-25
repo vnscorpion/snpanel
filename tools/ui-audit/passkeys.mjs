@@ -118,8 +118,8 @@ try {
   const signIn = async () => {
     await context.clearCookies();
     await page.goto(`${LOCAL}/`, { waitUntil: 'networkidle' });
-    await page.getByPlaceholder('Username').fill(USERNAME);
-    await page.getByPlaceholder('Password').fill(PASSWORD);
+    await page.getByLabel('Username').fill(USERNAME);
+    await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
     await page.getByRole('button', { name: 'Login' }).click();
   };
   await signIn();
@@ -134,7 +134,7 @@ try {
   await page.locator('.login-passkey').waitFor({ timeout: 15000 });
   await page.screenshot({ path: `${OUT}/login-waiting-light-en.png`, fullPage: true });
   await page.getByRole('button', { name: 'Use the authenticator code instead' }).click();
-  const code = page.getByPlaceholder('Authentication code');
+  const code = page.getByLabel('Authentication code');
   await code.waitFor({ timeout: 10000 });
   await code.fill(totp(secret));
   await page.getByRole('button', { name: 'Login' }).click();
@@ -154,8 +154,8 @@ try {
   await signIn();
   await page.locator('.login-passkey-failed').waitFor({ timeout: 20000 });
   await page.screenshot({ path: `${OUT}/login-failed-light-en.png`, fullPage: true });
-  check(await page.getByPlaceholder('Authentication code').isVisible(), 'a refused passkey says so and asks for the code');
-  await page.getByPlaceholder('Authentication code').fill(totp(secret));
+  check(await page.getByLabel('Authentication code').isVisible(), 'a refused passkey says so and asks for the code');
+  await page.getByLabel('Authentication code').fill(totp(secret));
   await page.getByRole('button', { name: 'Login' }).click();
   await page.waitForSelector('.dash-group', { timeout: 20000 });
   check(true, 'and the code signs in');

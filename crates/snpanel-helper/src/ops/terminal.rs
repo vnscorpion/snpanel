@@ -404,13 +404,10 @@ fn run_as(
     argv.extend(program.iter().cloned());
 
     let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-    // `umask 022` before the command: files a tool creates are readable by the
-    // web server, which is what a site needs, and not group-writable.
-    let previous = unsafe { libc::umask(0o022) };
-    let result = exec::run_in_dir(&borrowed, cwd);
-    unsafe {
-        libc::umask(previous);
-    }
+    // `umask 022` for the command: files a tool creates are readable by the
+    // web server, which is what a site needs, and not group-writable. Set in
+    // the child only - the helper's own mask is shared by every request.
+    let result = exec::run_in_dir_with_umask(&borrowed, cwd, 0o022);
 
     match result {
         Ok(out) => HelperResponse {

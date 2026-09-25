@@ -769,6 +769,14 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// A deleted site's access and error logs, with logrotate's copies.
+    ///
+    /// Sent once the vhost is gone and nginx has reloaded. The name is free
+    /// again, and a later site taking it - perhaps another customer's - must
+    /// not open its log viewer on the previous owner's traffic.
+    SiteLogsDelete {
+        domain: Domain,
+    },
     /// Run WP-CLI as the web user.
     ///
     /// `args` is a vector, not a string: there is no shell here to quote for.
@@ -1202,6 +1210,7 @@ impl HelperRequest {
             Self::SiteFixPermissions { .. } => "fix-permissions",
             Self::SiteLogRead { .. } => "site-log-read",
             Self::SiteLogClear { .. } => "site-log-clear",
+            Self::SiteLogsDelete { .. } => "site-logs-delete",
             Self::SiteLogsReadMany { .. } => "site-logs-read-many",
             Self::SiteDocumentRootEnsure { .. } => "site-document-root-ensure",
             Self::SiteFileInstall { .. } => "site-file-install",

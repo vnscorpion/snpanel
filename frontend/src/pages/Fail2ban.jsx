@@ -78,7 +78,7 @@ export default function Fail2banPage() {
     return <section className="section">
       <div className="section-title"><div><h2>{t('Fail2ban')}</h2></div></div>
       <EmptyState icon={ShieldBan} message={t('The Fail2ban addon is not installed on this server.')} />
-      <div className="site-app-form-actions">
+      <div className="addon-missing-actions">
         <button type="button" disabled={!!loading} onClick={() => navigateToPage('addons')}><Boxes size={14} aria-hidden="true"/> {t('Go to Addons')}</button>
       </div>
     </section>;

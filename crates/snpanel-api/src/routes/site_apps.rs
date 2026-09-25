@@ -327,13 +327,10 @@ async fn validate_compose(State(state): State<AppState>, req: Request) -> Respon
             String::new()
         }
     };
-    let web_port = match crate::errors::read_int_entry("web_port", payload.get("web_port")) {
-        Ok(value) => value,
-        Err(entry) => {
-            entries.push(entry);
-            None
-        }
-    };
+    // `web_port: Optional[int] = None`: the page sends a null when no port
+    // was chosen, and that asks for the plan without one - it is not a
+    // wrong type.
+    let web_port = read_optional_int(&payload, "web_port", &mut entries);
     if let Some(port) = web_port {
         if let Some(entry) = crate::errors::range_entry("web_port", port, 1, 65535) {
             entries.push(entry);

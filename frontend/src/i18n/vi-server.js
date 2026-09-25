@@ -884,6 +884,7 @@ export default {
   "Removed {total} orphaned item(s): {0}.": "Đã xoá {total} mục mồ côi: {0}.",
   "removing /etc/snpanel/ipv6-enabled: {e}": "xoá /etc/snpanel/ipv6-enabled: {e}",
   "removing the empty {0}: {e}": "xoá {0} rỗng: {e}",
+  "removing the logs of {domain}: {0}": "xoá log của {domain}: {0}",
   "Removing UFW ...": "Đang gỡ UFW ...",
   "renaming {0} to {1}: {e}": "đổi tên {0} thành {1}: {e}",
   "Renewing certificate: {name}": "Đang gia hạn chứng chỉ: {name}",

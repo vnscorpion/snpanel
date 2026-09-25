@@ -47,6 +47,8 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 - A schedule names its archives by date and time (every run kept, pruned to
   its retention), by the user name alone (each run replaces the last), by
   the day of the week (a week of copies) or by the date (one a day, pruned)
+- An S3 bucket keeps as many of a schedule's archives as the server does; an
+  SFTP server keeps every copy
 - iptables + ipset firewall with protected panel/web/mail ports, per-IP allow/deny rules,
   and URL blocklists loaded straight into an ipset
 - Update controls for apt-based OS packages and SNPanel source updates

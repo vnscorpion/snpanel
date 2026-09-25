@@ -3427,10 +3427,15 @@ pub(super) async fn release_site_certificates(
 
 /// Source: `nginx.delete_wordpress_vhost`.
 ///
-/// The file, then the customer's include, then a reload. The reload is last
-/// and its failure is not reported: the vhost is already gone from disk, so
-/// the site is down either way and a 500 here would leave the administrator
-/// thinking the deletion did not happen.
+/// The file, then the customer's include, then a reload. The reload's failure
+/// is not reported: the vhost is already gone from disk, so the site is down
+/// either way and a 500 here would leave the administrator thinking the
+/// deletion did not happen.
+///
+/// Then the site's logs, which the Python left behind for good - logrotate
+/// stops rotating a log once it is empty. Every caller is a real deletion
+/// (the site, its owner, a terminated account), the name is free again, and
+/// a later site taking it must not open its log viewer on this one's traffic.
 pub(super) async fn delete_website_vhost(state: &AppState, domain: &str) {
     if state.settings.command_dry_run {
         return;
@@ -3444,6 +3449,13 @@ pub(super) async fn delete_website_vhost(state: &AppState, domain: &str) {
     }
     let _ = shell::privileged(false, "nginx-custom-delete", &[domain], None, None).await;
     let _ = shell::privileged(false, "nginx-reload", &[], None, None).await;
+    let result = shell::privileged(false, "site-logs-delete", &[domain], None, None).await;
+    if !result.ok() {
+        tracing::warn!(
+            "removing the logs of {domain} failed: {}",
+            result.stderr.trim()
+        );
+    }
 }
 
 /// The sentence the toast shows.

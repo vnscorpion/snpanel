@@ -78,7 +78,6 @@ export default function BackupsPage() {
     importDaBackup,
     isAdmin,
     listDaBackups,
-    listUserBackups,
     loadRestoreBackups,
     loadS3Targets,
     loadSftpTargets,
@@ -115,8 +114,8 @@ export default function BackupsPage() {
   } = usePanel();
   const t = useT();
   const busy = !!loading;
+  const setSftp = (key) => (e) => setNewSftpTarget((prev) => ({ ...prev, [key]: e.target.value }));
 
-  const selectedBackupUser = users.find((user) => String(user.id) === String(selectedBackupUserId));
   const userNameById = (id) => users.find((user) => String(user.id) === String(id))?.username || t('User #{id}', { id });
   const scheduleUserLabel = (item) => {
     if (item.all_users) return t('All users');
@@ -198,7 +197,7 @@ export default function BackupsPage() {
     {isAdmin && activeBackupTab === 'user' && <div className="backup-tab-panel">
       <div className="backup-panel-title">
         <div><h3>{t('Backup user')}</h3><p className="hint">{t('Includes the panel user, all owned websites and databases, source files, database dumps, and restore metadata.')}</p></div>
-        <button disabled={busy} onClick={refreshUserBackupArea}><RefreshCw size={14}/> {t('Reload')}</button>
+        <button className="secondary-light" disabled={busy} onClick={refreshUserBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="bk-form bk-user-form">
         <div className="bk-field">
@@ -216,10 +215,6 @@ export default function BackupsPage() {
           <button disabled={!selectedBackupUserId || busy} onClick={createUserBackup}><Archive size={14}/> {t('Create backup')}</button>
         </div>
       </div>
-      {selectedBackupUser && <p className="hint">{t('Current user: {name}', { name: <strong>{selectedBackupUser.username}</strong> })}</p>}
-      <div className="actions backup-subactions">
-        <button disabled={!selectedBackupUserId || busy} onClick={() => listUserBackups()}><RefreshCw size={14}/> {t('Refresh list')}</button>
-      </div>
       {selectedBackupUserId && userBackups.length === 0 && <EmptyState icon={Archive} message={t('No user backups found.')} />}
       <div className="backup-list">
         {userBackups.map((file) => <div className="backup-item" key={file}>
@@ -236,7 +231,7 @@ export default function BackupsPage() {
         <div><h3>{t('Restore folder')}</h3><p className="hint">{restoreBackupDir || '/var/backups/snpanel/users/restore'}</p></div>
         <div className="actions">
           <button className="secondary-light" disabled={busy} onClick={loadRestoreBackups}><RefreshCw size={14}/> {t('Refresh')}</button>
-          <label className="upload-button">
+          <label className="upload-button secondary-light">
             <Upload size={14}/> {t('Upload backups')}
             <input type="file" multiple accept=".tar.gz,application/gzip" onChange={(e) => { uploadUserBackups(e.target.files); e.target.value = ''; }} />
           </label>
@@ -296,7 +291,9 @@ export default function BackupsPage() {
           <small className="hint" id="bk-schedule-keep-hint">{t('files per user, here')}</small>
         </div>}
         <div className="bk-actions bk-span-all">
-          {newBackupSchedule.destination && keepsNewest && <p className="hint bk-note">{t('Copies at the destination are not deleted: remove old ones there, or give the bucket an expiry rule.')}</p>}
+          {newBackupSchedule.destination && keepsNewest && <p className="hint bk-note">{String(newBackupSchedule.destination).startsWith('s3:')
+            ? t('The bucket keeps the same number: older copies there are removed after each upload.')
+            : t('Copies on the SFTP server are not deleted: remove old ones there.')}</p>}
           <button disabled={!scheduleReady || busy} onClick={createBackupSchedule}><Clock size={14}/> {t('Add schedule')}</button>
         </div>
       </div>
@@ -330,16 +327,40 @@ export default function BackupsPage() {
 
       <section className="bk-destination" aria-labelledby="bk-sftp-title">
         <h4 id="bk-sftp-title">{t('SFTP servers')}</h4>
-        <div className="sftp-form sftp-target-form">
-          <input value={newSftpTarget.name} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, name: e.target.value }))} placeholder={t('Target name')} aria-label={t('Target name')} />
-          <input value={newSftpTarget.host} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, host: e.target.value }))} placeholder={t('Host')} aria-label={t('Host')} />
-          <input value={newSftpTarget.port} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, port: e.target.value }))} placeholder="22" inputMode="numeric" aria-label={t('Port')} />
-          <input value={newSftpTarget.username} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, username: e.target.value }))} placeholder={t('Username')} aria-label={t('Username')} />
-          <input value={newSftpTarget.password} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, password: e.target.value }))} placeholder={t('Password')} aria-label={t('Password')} type="password" autoComplete="new-password" />
-          <input value={newSftpTarget.remote_path} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, remote_path: e.target.value }))} placeholder="/backups/snpanel" aria-label={t('Remote folder')} />
-          <textarea value={newSftpTarget.private_key} onChange={(e) => setNewSftpTarget((prev) => ({ ...prev, private_key: e.target.value }))} placeholder={t('Private key (optional)')} aria-label={t('Private key (optional)')} rows={4} />
-          <button disabled={busy || !newSftpTarget.name || !newSftpTarget.host || !newSftpTarget.username || (!newSftpTarget.password && !newSftpTarget.private_key)} onClick={createSftpTarget}><Plus size={14}/> {t('Save target')}</button>
-        </div>
+        <form className="bk-form bk-sftp-form" aria-label={t('SFTP servers')} onSubmit={(e) => { e.preventDefault(); createSftpTarget(); }}>
+          <div className="bk-field">
+            <label htmlFor="sftp-name">{t('Target name')}</label>
+            <input id="sftp-name" value={newSftpTarget.name} onChange={setSftp('name')} autoComplete="off" />
+          </div>
+          <div className="bk-field bk-span-2">
+            <label htmlFor="sftp-host">{t('Host')}</label>
+            <input id="sftp-host" value={newSftpTarget.host} onChange={setSftp('host')} placeholder="backup.example.com" autoComplete="off" spellCheck={false} />
+          </div>
+          <div className="bk-field">
+            <label htmlFor="sftp-port">{t('Port')}</label>
+            <input id="sftp-port" value={newSftpTarget.port} onChange={setSftp('port')} placeholder="22" inputMode="numeric" />
+          </div>
+          <div className="bk-field">
+            <label htmlFor="sftp-user">{t('Username')}</label>
+            <input id="sftp-user" value={newSftpTarget.username} onChange={setSftp('username')} autoComplete="off" spellCheck={false} />
+          </div>
+          <div className="bk-field">
+            <label htmlFor="sftp-password">{t('Password')}</label>
+            <input id="sftp-password" type="password" value={newSftpTarget.password} onChange={setSftp('password')} autoComplete="new-password" />
+          </div>
+          <div className="bk-field bk-span-2">
+            <label htmlFor="sftp-path">{t('Remote folder')}</label>
+            <input id="sftp-path" value={newSftpTarget.remote_path} onChange={setSftp('remote_path')} placeholder="/backups/snpanel" spellCheck={false} />
+          </div>
+          <div className="bk-field bk-span-all">
+            <label htmlFor="sftp-key">{t('Private key (optional)')}</label>
+            <textarea id="sftp-key" value={newSftpTarget.private_key} onChange={setSftp('private_key')} rows={4} spellCheck={false} aria-describedby="sftp-key-hint" />
+          </div>
+          <div className="bk-actions bk-span-all">
+            <p className="hint bk-note" id="sftp-key-hint">{t('Sign in with a password, a private key, or both.')}</p>
+            <button type="submit" disabled={busy || !newSftpTarget.name || !newSftpTarget.host || !newSftpTarget.username || (!newSftpTarget.password && !newSftpTarget.private_key)}><Plus size={14}/> {t('Save target')}</button>
+          </div>
+        </form>
         {sftpTargets.length === 0 && <EmptyState icon={Network} message={t('No SFTP destinations yet.')} />}
         <div className="backup-list">
           {sftpTargets.map((target) => <div className="backup-item" key={target.id}>

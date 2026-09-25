@@ -1506,6 +1506,79 @@ pub fn log_clear(domain: &Domain, kind: LogKind) -> HelperResponse {
     }
 }
 
+/// `site-logs-delete`: a deleted site's logs, and logrotate's copies of them.
+///
+/// Sent once the vhost is gone and nginx has reloaded, so nothing writes to
+/// them any more. Deleted rather than truncated, because the name is free
+/// again: a later site - perhaps another customer's - may take the domain,
+/// and its log viewer must not open on the previous owner's traffic. Left
+/// alone, they would not age out either: logrotate stops rotating a log once
+/// it is empty, and the copies behind it stay where they are.
+pub fn logs_delete(domain: &Domain) -> HelperResponse {
+    logs_delete_in(Path::new(LOG_DIR), domain)
+}
+
+fn logs_delete_in(dir: &Path, domain: &Domain) -> HelperResponse {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HelperResponse::ok(),
+        Err(e) => {
+            return HelperResponse::failed(
+                HelperErrorKind::Internal,
+                format!("reading {}: {e}", dir.display()),
+            )
+        }
+    };
+    let mut removed = 0usize;
+    let mut failures = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !is_site_log(name, domain) {
+            continue;
+        }
+        // `file_type` does not follow a link, and removing one removes the
+        // link: nothing outside this directory is touched.
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => failures.push(format!("{name}: {e}")),
+        }
+    }
+    if failures.is_empty() {
+        HelperResponse::with_stdout(format!("removed {removed}\n"))
+    } else {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("removing the logs of {domain}: {}", failures.join("; ")),
+        )
+    }
+}
+
+/// Whether `name` is one of `domain`'s logs: `<domain>.access.log` or
+/// `<domain>.error.log`, bare or with what logrotate appends - `.1` and
+/// `.2.gz` on Debian, `-20260925` and `-20260925.gz` under the RHEL family's
+/// `dateext`. Nothing looser, so `a.co` never touches `a.com`, and
+/// `www.a.com` is its own site.
+fn is_site_log(name: &str, domain: &Domain) -> bool {
+    [LogKind::Access, LogKind::Error].iter().any(|kind| {
+        let Some(rest) = name.strip_prefix(&format!("{domain}.{}.log", kind.suffix())) else {
+            return false;
+        };
+        let rest = [".gz", ".xz", ".bz2", ".zst"]
+            .iter()
+            .find_map(|ext| rest.strip_suffix(ext))
+            .unwrap_or(rest);
+        match rest.strip_prefix('.').or_else(|| rest.strip_prefix('-')) {
+            Some(counter) => !counter.is_empty() && counter.bytes().all(|b| b.is_ascii_digit()),
+            None => rest.is_empty() && name.ends_with(".log"),
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogKind {
     Access,
@@ -1530,12 +1603,17 @@ fn log_path(domain: &Domain, kind: LogKind) -> std::path::PathBuf {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    // A name no other write can be using: requests run side by side, and two
+    // saves of one file must not share a half-written temporary.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = path.parent().unwrap_or(Path::new("/"));
     let tmp = dir.join(format!(
-        ".{}.tmp",
+        ".{}.{}-{}.tmp",
         path.file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("snpanel")
+            .unwrap_or("snpanel"),
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     {
         let mut f = std::fs::File::create(&tmp)?;
@@ -2217,6 +2295,103 @@ mod tests {
             log_path(&d, LogKind::Error).to_str().unwrap(),
             "/var/log/nginx/example.com.error.log"
         );
+    }
+
+    #[test]
+    fn a_sites_logs_are_its_own_and_logrotates_copies_of_them() {
+        let d = Domain::parse("a.com").unwrap();
+        for name in [
+            "a.com.access.log",
+            "a.com.error.log",
+            "a.com.access.log.1",
+            "a.com.access.log.14.gz",
+            "a.com.error.log-20260925",
+            "a.com.error.log-20260925.gz",
+            "a.com.access.log.3.zst",
+        ] {
+            assert!(is_site_log(name, &d), "{name} is a.com's");
+        }
+        for name in [
+            // Another site's, however close the name.
+            "a.co.access.log",
+            "a.com.au.access.log",
+            "www.a.com.access.log",
+            "b-a.com.error.log",
+            // A name that only starts like one.
+            "a.com.access.log.bak",
+            "a.com.access.log.1.old",
+            "a.com.access.log.",
+            "a.com.access.log-",
+            "a.com.access.log.gz",
+            "a.com.access.logs",
+            "a.com.other.log",
+            "access.log",
+        ] {
+            assert!(!is_site_log(name, &d), "{name} is not a.com's");
+        }
+        // The other way round: a.co's logs are not a.com's prefix.
+        let short = Domain::parse("a.co").unwrap();
+        assert!(!is_site_log("a.com.access.log", &short));
+    }
+
+    #[test]
+    fn deleting_a_sites_logs_leaves_every_other_file() {
+        let dir = tempdir("logs-delete");
+        let d = Domain::parse("a.com").unwrap();
+        let theirs = [
+            "a.com.access.log",
+            "a.com.access.log.1",
+            "a.com.access.log.2.gz",
+            "a.com.error.log",
+            "a.com.error.log-20260925.gz",
+        ];
+        let others = [
+            "a.co.access.log",
+            "www.a.com.access.log",
+            "a.com.au.error.log.1",
+            "access.log",
+            "error.log",
+        ];
+        for name in theirs.iter().chain(others.iter()) {
+            std::fs::write(dir.join(name), "GET /\n").unwrap();
+        }
+        // A link is removed as a link: its target is somebody else's file.
+        let outside = tempdir("logs-delete-outside");
+        std::fs::write(outside.join("keep.txt"), "mine").unwrap();
+        std::os::unix::fs::symlink(outside.join("keep.txt"), dir.join("a.com.access.log.3"))
+            .unwrap();
+        // And a directory with a matching name is not a log.
+        std::fs::create_dir(dir.join("a.com.error.log.4")).unwrap();
+
+        let r = logs_delete_in(&dir, &d);
+        assert!(r.ok, "{r:?}");
+        assert_eq!(r.stdout, "removed 6\n");
+        for name in theirs {
+            assert!(!dir.join(name).exists(), "{name} should be gone");
+        }
+        assert!(std::fs::symlink_metadata(dir.join("a.com.access.log.3")).is_err());
+        for name in others {
+            assert!(dir.join(name).exists(), "{name} should be left");
+        }
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "mine"
+        );
+        assert!(dir.join("a.com.error.log.4").is_dir());
+
+        // Again, with nothing left of its own: nothing to do is not a failure.
+        let again = logs_delete_in(&dir, &d);
+        assert!(again.ok);
+        assert_eq!(again.stdout, "removed 0\n");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn deleting_logs_from_a_directory_that_is_not_there_succeeds() {
+        let d = Domain::parse("a.com").unwrap();
+        let r = logs_delete_in(Path::new("/nonexistent/snpanel/nginx-logs"), &d);
+        assert!(r.ok, "{r:?}");
     }
 
     #[test]

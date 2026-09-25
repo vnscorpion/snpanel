@@ -43,7 +43,7 @@ export default function AddonsPage() {
             {addon.details.map((line, index) => <li key={index}>{serverText(line)}</li>)}
           </ul>}
           {addon.notes?.length > 0 && <div className="addon-notes">
-            <strong><AlertCircle size={13}/> {t('Before you turn it on')}</strong>
+            <strong><AlertCircle size={13}/> {addon.installed ? t('Keep in mind') : t('Before you turn it on')}</strong>
             <ul>{addon.notes.map((line, index) => <li key={index}>{serverText(line)}</li>)}</ul>
           </div>}
           {addons.can_manage && <div className="addon-actions">

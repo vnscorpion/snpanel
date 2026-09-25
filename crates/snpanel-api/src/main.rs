@@ -111,6 +111,10 @@ async fn main() -> std::process::ExitCode {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        // Colour for a person at a terminal only: under systemd stdout is the
+        // journal, and escape codes there make `journalctl` harder to read
+        // and a grep miss.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     match run().await {

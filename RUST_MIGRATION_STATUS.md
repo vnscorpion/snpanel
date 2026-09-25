@@ -1000,8 +1000,34 @@ should know about:
   requested through `fail2ban-client`.
 
 fail2ban expands log globs only when it reads its settings, so adding or
-deleting a site re-applies them in the background. A deleted site's log files
-stay behind, and stay matched; nothing writes to them.
+deleting a site re-applies them in the background. A deleted site's logs are
+deleted with it (under "What the review left over", below), so the glob has
+nothing of it left to match.
+
+**On AlmaLinux 10 the install failed**, which running it there showed: the
+recidive jail reads fail2ban's own log, `/var/log/fail2ban.log`, and only the
+server's first start makes that file. Debian starts the service as the
+package goes in; the RHEL family does not, so `fail2ban-client --test` - run
+before the first start - refused a jail with no log to read, and the install
+stopped there. The helper now reads `logtarget` as fail2ban will
+(`fail2ban.conf`, `fail2ban.d`'s `.conf` files, `fail2ban.local`,
+`fail2ban.d`'s `.local` files; `[Definition]` over `[DEFAULT]`) and makes the
+file when it is one. An administrator who moved the log gets that `logpath`
+in the recidive jail; one who sent it to the journal gets `backend = systemd`,
+which the stock filter already matches on `fail2ban.service`.
+
+`tools/el-check/fail2ban.sh` repeats the run: a throwaway AlmaLinux 10 under
+systemd-nspawn - the official image, fetched from Docker Hub with curl - and
+the static helper binary driving it through 35 checks: EPEL's
+`fail2ban-server` in without firewalld's actions or sendmail; the jails
+running, sshd read from the journal as `sshd.service`, the sign-in jail
+pinned to the panel's uid; three failures from that uid banned and three
+forged as root not; an SSH client on the host banned after three failed
+sign-ins, refused by nftables, and let back in by `fail2ban-unban`; recidive
+counting both bans from the log made for it; configure, a manual ban on
+every port, and stop lifting them all. The machine is removed afterwards,
+pass or fail. SELinux is not enforcing in a container, so that part of EL
+is still untried.
 
 ### SFTP logins per user (past the Python)
 
@@ -1098,9 +1124,9 @@ name in its archives' names.
   pruned every `*.tar.gz` in the user's directory, which made no difference
   while all of them were timestamped; now a nightly timestamped schedule
   would have deleted a week of `-monday` files. `none` and `weekday` replace
-  their files instead and prune nothing. Copies at the destination are not
-  pruned, as the Python's SFTP copies never were; the form says so, and a
-  bucket's lifecycle rule is the tool for it.
+  their files instead and prune nothing. A bucket keeps the same number
+  (under "What the review left over", below); an SFTP server's copies are
+  not pruned, as the Python's never were, and the form says so.
 
 Three things found on the way:
 
@@ -1123,8 +1149,8 @@ no two styles ever count the same file, whatever the user is called; each
 prune; a replaced archive; the repository. Fourteen checks removed one at a
 time, each caught. And `tools/ui-audit/s3backup.mjs` on the Debian 13 box
 against moto with its signature checking on, so botocore verifies every
-request: 35 checks - a 20 MB backup in two parts, byte for byte; each name
-style here and in the bucket, and its pruning; the scheduler's SFTP upload,
+request: 33 checks - a 20 MB backup in two parts, byte for byte; each name
+style here and in the bucket, and its pruning here; the scheduler's SFTP upload,
 streamed and pinned; the forms, in both themes and languages and on a
 phone. The Backups page is in the translation now. Not tried against AWS,
 R2 or B2 themselves, nor virtual-hosted addressing outside unit tests.
@@ -1301,6 +1327,85 @@ and 390 px in both languages for anything wider than the window.
 The accessibility snapshots in English differ from the ones before only
 where the list above says: the new labels, the Services actions, the WAF
 facts, the stray 0, the duplicated Access Logs title.
+
+### What the review left over, and the rest of the pages (past the Python)
+
+- **The helper answers more than one call at a time.** It served one
+  connection after another, so a 12-second `terminal-exec` held a
+  `service-status` behind it for 11.24 s. It runs a thread per connection
+  now, at most 32 at once, and each operation takes the locks of what it
+  changes - packages, accounts, systemd, PHP, nginx, the firewall, cron, the
+  malware scanner - always in that order, so no two can wait on each other.
+  Reads take none; an operation the table does not know takes all of them.
+  The same call, measured on the box: 0.05 s. Two things were process-wide
+  and had to stop being so first: the terminal set the helper's `umask`
+  around its child and now sets the child's own (`pre_exec`), and
+  `write_atomic` named its temporary file after the target alone, which two
+  saves of one file would have shared - the pid and a counter are in the
+  name now. Tests: every operation the protocol has is in the table (read
+  from `op_name` itself) and nothing else is; two writes to one resource
+  take turns while a read does not wait; the order is one order.
+- **The CLI's menu test ran the menu.** It called each entry, so `cargo
+  test` tried real operations on the machine it ran on. `choose` maps what
+  was typed to an `Action` and `perform` runs one; the test checks that each
+  numbered entry has an action of its own and performs none.
+- **A bucket keeps the number a schedule keeps.** After each scheduled
+  upload the panel lists the folder - ListObjectsV2, every page, signed like
+  the rest, stopping at 50,000 keys - and deletes the family's older copies:
+  the names the local pruning counts, so another account's archives and
+  another style's are never touched, and a timestamped family's stamp is
+  exactly fourteen digits. A deletion that fails stops the pruning and is
+  logged; the backup still counts, and the next run tries again. moto
+  cannot check this, as it refuses botocore's own signed
+  ListObjectsV2. `tools/ui-audit/s3garage.mjs` runs it against Garage, a
+  store that checks every signature, listings included (`garage-setup.sh`
+  starts a one-node one): 11 checks - the destination saved and tested, a
+  20 MB archive in parts and back byte for byte, an older copy of the family
+  gone and another account's left, and a minute later a retention of one
+  keeping only the newest.
+- **A deleted site's nginx logs go with it.** They stayed in
+  `/var/log/nginx` for good - logrotate stops rotating an empty log, and the
+  copies behind it stay - and a later site taking the name, perhaps another
+  customer's, opened its log viewer on the previous owner's traffic. The
+  helper has `site-logs-delete <domain>`: the access and error logs and
+  logrotate's copies of them (`.1`, `.2.gz`, and EL's `-20260925.gz`),
+  matched exactly, so `a.co` never touches `a.com`. Everything that removes
+  a vhost for good sends it once nginx has reloaded: deleting a site, its
+  owner, or a terminated account. `tools/ui-audit/site-logs.mjs` checks it on
+  the box with two sites whose names nest: 10 checks.
+- **`web_port: null` was a 422.** The Applications form sends it for a
+  Compose project with no web service chosen, and `read_int` refused the
+  null the Python's `Optional[int]` takes - as it had `target_id`. Every
+  other `read_int` on a field the frontend can send as null was checked; none
+  was.
+- **The journal had colour codes in it.** tracing wrote ANSI escapes to
+  stdout under systemd; they are on only when stdout is a terminal.
+- **The Malware page asked for a job that could not exist.**
+  `/api/malware/jobs/latest` is a 404 until the first scan, and a browser
+  logs every 404 as an error. The page asks for it only when the history it
+  already loaded has a job; the endpoint keeps its 404 for API clients.
+- **The pages the first review did not reach** - sign-in, every Backups and
+  Users tab, Applications, Addons, AI assistants and the WAF site page, in
+  both themes at 1440 and 390 px: nothing wider than the window, no console
+  errors, no failed requests. What changed:
+  - Sign-in is a form with labelled fields, so Enter works from either and a
+    password manager knows what it is filling. The username is no longer
+    filled in as `admin`: customers sign in here too, and the page need not
+    name the administrator.
+  - Backups: the user tab had three ways to reload, two of them primary; it
+    has one, secondary, since choosing a user lists their backups already.
+    The restore folder's upload is secondary like the website tab's. The
+    SFTP destination is a labelled form laid out like the S3 one above it,
+    where it had placeholders only and a black code box for the key in the
+    light theme.
+  - Addons: caveats are in the warning colour, not the error one, and an
+    installed addon's say "Keep in mind", not "Before you turn it on".
+  - The three "addon not installed" pages - Applications, Fail2ban, AI
+    assistants - say it the same way, with the way to Addons under it.
+
+  The English accessibility snapshots differ from the previous capture on
+  sign-in and Addons as above, and on Access Logs by the rows the fail2ban
+  test wrote into a site's log.
 
 ### The billing system's half of `provisioning`
 

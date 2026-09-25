@@ -22,6 +22,9 @@
 //     others' files.
 //   - The scheduler uploads to an SFTP target again, and pins its host key.
 //   - A destination a schedule uses cannot be deleted.
+//
+// The bucket's retention is s3garage.mjs's: it needs a listing, and moto's
+// signature check refuses every ListObjectsV2, botocore's own included.
 import { chromium } from 'playwright';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
