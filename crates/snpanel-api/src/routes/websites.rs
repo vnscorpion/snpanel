@@ -5368,6 +5368,16 @@ async fn apply_owner(
             tracing::error!("moving {} to another owner failed: {e}", website.domain);
             internal_error()
         })?;
+    // Not in the Python: its databases go with it, so they are in the new
+    // owner's backup and on their Databases page rather than the old one's.
+    if let Err(e) = state
+        .db
+        .databases()
+        .move_with_site(website.id, owner_id)
+        .await
+    {
+        tracing::error!("moving the databases of {} failed: {e}", website.domain);
+    }
     website.owner_id = owner_id;
     website.root_path = new_root_path;
     website.linux_user = Some(new_linux_user);

@@ -44,7 +44,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/databases/{database_id}",
-            axum::routing::delete(delete_database).fallback(crate::fallback),
+            axum::routing::delete(delete_database)
+                .patch(set_owner)
+                .fallback(crate::fallback),
         )
         .route(
             "/databases/{database_id}/password",
@@ -101,12 +103,168 @@ async fn list(
     };
 
     match state.db.databases().list(owner, &search).await {
-        Ok(rows) => axum::Json(rows.iter().map(to_json).collect::<Vec<_>>()).into_response(),
+        Ok(rows) => axum::Json(named(&state, &rows).await).into_response(),
         Err(e) => {
             tracing::error!("listing databases failed: {e}");
             internal_error()
         }
     }
+}
+
+/// Not in the Python: each row with its owner's name and its site's domain,
+/// which is what the page shows - an id is not something a person reads.
+async fn named(state: &AppState, rows: &[snpanel_db::DatabaseAccount]) -> Vec<Value> {
+    let users: HashMap<i64, String> = state
+        .db
+        .users()
+        .list_all()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|user| (user.id, user.username))
+        .collect();
+    let sites: HashMap<i64, String> = state
+        .db
+        .websites()
+        .all_domains()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    rows.iter()
+        .map(|row| {
+            let mut out = to_json(row);
+            out["owner"] = json!(users.get(&row.owner_id));
+            out["website"] = json!(row.website_id.and_then(|id| sites.get(&id)));
+            out
+        })
+        .collect()
+}
+
+/// Not in the Python: an owner a database may be given, and the site it may
+/// be put on - an existing user, and one of their sites or none.
+///
+/// A site of somebody else's is refused rather than taken along: the site
+/// decides whose backup its database is in, and the two disagreeing is the
+/// state this whole switch exists to end.
+async fn owner_and_site(
+    state: &AppState,
+    owner_id: i64,
+    website_id: Option<i64>,
+) -> Result<(), Response> {
+    let unprocessable =
+        |message: &str| crate::errors::error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, message);
+    match state.db.users().by_id(owner_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(unprocessable("No such user")),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return Err(internal_error());
+        }
+    }
+    if let Some(id) = website_id {
+        match state.db.websites().by_id(id).await {
+            Ok(Some(site)) if site.owner_id == owner_id => {}
+            Ok(Some(_)) => return Err(unprocessable("That website belongs to another user")),
+            Ok(None) => return Err(unprocessable("No such website")),
+            Err(e) => {
+                tracing::error!("website lookup failed: {e}");
+                return Err(internal_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `website_id` as a request gives it: absent or null is no site.
+fn website_in(body: &Value) -> Result<Option<i64>, Response> {
+    match body.get("website_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+            crate::errors::error(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "website_id must be a website's id, or null",
+            )
+        }),
+    }
+}
+
+/// `PATCH /api/databases/{database_id}` `{owner_id, website_id}` - not in
+/// the Python. Administrators only.
+///
+/// Whose a database is decides whose backup it is in: a database made by an
+/// administrator for a customer belonged to the administrator, and, on no
+/// site, to nobody's backup at all.
+async fn set_owner(
+    State(state): State<AppState>,
+    Path(database_id): Path<i64>,
+    req: Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+        return not_enough_permissions();
+    }
+    let body = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(owner_id) = body.get("owner_id").and_then(Value::as_i64) else {
+        return crate::errors::error(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "owner_id must be a user's id",
+        );
+    };
+    let website_id = match website_in(&body) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let item = match state.db.databases().by_id(database_id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => return not_found("Database not found"),
+        Err(e) => {
+            tracing::error!("database lookup failed: {e}");
+            return internal_error();
+        }
+    };
+    if let Err(r) = owner_and_site(&state, owner_id, website_id).await {
+        return r;
+    }
+    if let Err(e) = state
+        .db
+        .databases()
+        .set_owner(item.id, owner_id, website_id)
+        .await
+    {
+        tracing::error!("changing the owner of {} failed: {e}", item.db_name);
+        return internal_error();
+    }
+    let updated = match state.db.databases().by_id(item.id).await {
+        Ok(Some(row)) => row,
+        _ => return internal_error(),
+    };
+    let row = named(&state, std::slice::from_ref(&updated))
+        .await
+        .into_iter()
+        .next()
+        .unwrap_or(Value::Null);
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "database_owner",
+        &updated.db_name,
+        &format!(
+            "owner={} website={}",
+            row["owner"].as_str().unwrap_or("?"),
+            row["website"].as_str().unwrap_or("none")
+        ),
+    )
+    .await;
+    axum::Json(row).into_response()
 }
 
 /// Source: `get_accessible_database`.
@@ -562,6 +720,26 @@ async fn create_database(State(state): State<AppState>, req: Request) -> Respons
     };
     let db_password = given_password.unwrap_or_else(|| crate::mariadb::random_password(24));
 
+    // Not in the Python: an administrator may make a database for somebody
+    // else, and put it on one of their sites; anyone else makes their own.
+    // Checked before MariaDB is touched, so a refusal leaves nothing behind.
+    let owner_id = match payload.get("owner_id").and_then(Value::as_i64) {
+        Some(id) if id != current.user.id => {
+            if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
+                return not_enough_permissions();
+            }
+            id
+        }
+        _ => current.user.id,
+    };
+    let website_id = match website_in(&payload) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = owner_and_site(&state, owner_id, website_id).await {
+        return r;
+    }
+
     // Two separate 409s, because the caller has to know which name to change.
     match state.db.databases().by_name(&db_name).await {
         Ok(Some(_)) => {
@@ -612,7 +790,7 @@ async fn create_database(State(state): State<AppState>, req: Request) -> Respons
     let id = match state
         .db
         .databases()
-        .create(current.user.id, None, &db_name, &db_user, &encrypted)
+        .create(owner_id, website_id, &db_name, &db_user, &encrypted)
         .await
     {
         Ok(id) => id,
@@ -624,8 +802,8 @@ async fn create_database(State(state): State<AppState>, req: Request) -> Respons
 
     axum::Json(json!({
         "id": id,
-        "owner_id": current.user.id,
-        "website_id": Value::Null,
+        "owner_id": owner_id,
+        "website_id": website_id,
         "db_name": db_name,
         "db_user": db_user,
         "db_password": db_password,
@@ -636,6 +814,28 @@ async fn create_database(State(state): State<AppState>, req: Request) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `website_id` absent or null is no site; a number is one; anything
+    /// else is refused rather than read as no site.
+    #[test]
+    fn a_website_is_given_as_an_id_or_null() {
+        assert!(matches!(website_in(&json!({})), Ok(None)));
+        assert!(matches!(
+            website_in(&json!({ "website_id": null })),
+            Ok(None)
+        ));
+        assert!(matches!(
+            website_in(&json!({ "website_id": 7 })),
+            Ok(Some(7))
+        ));
+        for bad in [
+            json!({ "website_id": "7" }),
+            json!({ "website_id": 7.5 }),
+            json!({ "website_id": [7] }),
+        ] {
+            assert!(website_in(&bad).is_err(), "{bad}");
+        }
+    }
 
     /// The validators run **before** the pattern, not after.
     ///

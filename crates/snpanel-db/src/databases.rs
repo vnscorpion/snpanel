@@ -184,6 +184,43 @@ impl<'a> DatabaseRepo<'a> {
             .await?)
     }
 
+    /// Not in the Python: a database handed to another panel user, and to
+    /// one of their sites or to none.
+    ///
+    /// Which user owns a database decides whose backup it is in, which is
+    /// what makes this worth a page: a database made by an administrator on
+    /// a customer's behalf belonged to the administrator, and to nobody's
+    /// backup at all.
+    pub async fn set_owner(
+        &self,
+        id: i64,
+        owner_id: i64,
+        website_id: Option<i64>,
+    ) -> Result<bool, DbError> {
+        let done =
+            sqlx::query("UPDATE database_accounts SET owner_id = ?, website_id = ? WHERE id = ?")
+                .bind(owner_id)
+                .bind(website_id)
+                .bind(id)
+                .execute(self.pool)
+                .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Not in the Python: a site's databases go with it to its new owner.
+    ///
+    /// Moving a site left them with the old one, who could still see - and
+    /// delete - the database of a site that was no longer theirs, while the
+    /// new owner could not.
+    pub async fn move_with_site(&self, website_id: i64, owner_id: i64) -> Result<u64, DbError> {
+        let done = sqlx::query("UPDATE database_accounts SET owner_id = ? WHERE website_id = ?")
+            .bind(owner_id)
+            .bind(website_id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
     /// Every database account one panel user owns.
     ///
     /// Source: `db.query(DatabaseAccount).filter(owner_id == ...).all()`,
@@ -250,6 +287,32 @@ impl<'a> DatabaseRepo<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_database_is_handed_to_another_owner_and_site() {
+        let pool = scratch().await;
+        let repo = DatabaseRepo::new(&pool);
+        assert!(repo.set_owner(1, 2, Some(5)).await.unwrap());
+        let moved = repo.by_id(1).await.unwrap().unwrap();
+        assert_eq!((moved.owner_id, moved.website_id), (2, Some(5)));
+        // And back to standing on its own.
+        assert!(repo.set_owner(1, 2, None).await.unwrap());
+        assert_eq!(repo.by_id(1).await.unwrap().unwrap().website_id, None);
+        // Nothing else moved; a database that is not there says so.
+        assert_eq!(repo.by_id(3).await.unwrap().unwrap().owner_id, 1);
+        assert!(!repo.set_owner(99, 2, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_sites_databases_follow_it_to_its_new_owner() {
+        let pool = scratch().await;
+        let repo = DatabaseRepo::new(&pool);
+        assert_eq!(repo.move_with_site(5, 7).await.unwrap(), 1);
+        assert_eq!(repo.by_id(2).await.unwrap().unwrap().owner_id, 7);
+        // Databases on no site, or on another, stay where they are.
+        assert_eq!(repo.by_id(1).await.unwrap().unwrap().owner_id, 1);
+        assert_eq!(repo.move_with_site(6, 7).await.unwrap(), 0);
+    }
 
     async fn scratch() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();

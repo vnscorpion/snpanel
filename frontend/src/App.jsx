@@ -102,7 +102,7 @@ function App() {
   const [databases, setDatabases] = useState([]);
   const [dbSearch, setDbSearch] = useState('');
   const [dbSearching, setDbSearching] = useState(false);
-  const [newDatabase, setNewDatabase] = useState({ db_name: '', db_user: '', db_password: '' });
+  const [newDatabase, setNewDatabase] = useState({ db_name: '', db_user: '', db_password: '', owner_id: '', website_id: '' });
   const [createdDbInfo, setCreatedDbInfo] = useState(null);
   const [copiedField, setCopiedField] = useState(null);
   const [users, setUsers] = useState([]);
@@ -802,7 +802,7 @@ function App() {
     const query = String(search || '').trim();
     const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
     setDbSearching(true);
-    const data = await request(`/databases${suffix}`, {}, showLoading ? 'Loading databases...' : '');
+    const data = await request(`/databases${suffix}`, {}, showLoading ? t('Loading databases...') : '');
     setDbSearching(false);
     if (data) setDatabases(data);
   }
@@ -2091,18 +2091,32 @@ function App() {
   }
 
   async function changeDbPassword(id) {
-    const newPass = prompt('Enter a new database password, minimum 12 characters:');
+    const newPass = prompt(t('A new password for the database, at least 12 characters:'));
     if (!newPass) return;
-    await request(`/databases/${id}/password`, { method: 'POST', body: JSON.stringify({ password: newPass }) }, 'Changing database password...');
+    await request(`/databases/${id}/password`, { method: 'POST', body: JSON.stringify({ password: newPass }) }, t('Changing the database password...'));
   }
 
   async function deleteDatabase(id, dbName) {
-    if (!confirm(`Delete database "${dbName}"? This action cannot be undone.`)) return;
-    const data = await request(`/databases/${id}`, { method: 'DELETE' }, 'Deleting database...');
+    if (!confirm(t('Delete the database {name}? This cannot be undone.', { name: dbName }))) return;
+    const data = await request(`/databases/${id}`, { method: 'DELETE' }, t('Deleting the database...'));
     if (data) {
-      setNotice(`Database "${dbName}" deleted successfully.`);
+      setNotice(t('The database {name} is deleted.', { name: dbName }));
       await refreshAll();
     }
+  }
+
+  // Not in the Python: whose a database is - which decides whose backup it
+  // is in - and which of their sites it is on.
+  async function setDatabaseOwner(db, ownerId, websiteId) {
+    const data = await request(`/databases/${db.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ owner_id: Number(ownerId), website_id: websiteId ? Number(websiteId) : null }),
+    }, t('Moving {name}...', { name: db.db_name }));
+    if (data) {
+      setNotice(t('{name} now belongs to {owner}.', { name: db.db_name, owner: data.owner || '' }));
+      await loadDatabases(dbSearch);
+    }
+    return !!data;
   }
 
   function generateRandomPassword(length = 20) {
@@ -2117,20 +2131,24 @@ function App() {
     const dbName = newDatabase.db_name.trim();
     const dbUser = newDatabase.db_user.trim();
     const dbPass = newDatabase.db_password.trim();
-    if (!dbName) { setError('Please enter a database name.'); return; }
-    if (!validDbName.test(dbName)) { setError('Database name can only contain letters, numbers and underscores (no spaces or special characters).'); return; }
-    if (dbUser && !validDbName.test(dbUser)) { setError('Database user can only contain letters, numbers and underscores (no spaces or special characters).'); return; }
-    if (dbPass && dbPass.length < 12) { setError('Password must be at least 12 characters.'); return; }
-    if (dbPass && /[^\x20-\x7E]/.test(dbPass)) { setError('Password contains invalid characters. Use only ASCII characters.'); return; }
+    if (!dbName) { setError(t('Type a name for the database.')); return; }
+    if (!validDbName.test(dbName)) { setError(t('A database name is letters, digits and underscores only.')); return; }
+    if (dbUser && !validDbName.test(dbUser)) { setError(t('A database user is letters, digits and underscores only.')); return; }
+    if (dbPass && dbPass.length < 12) { setError(t('The password must be at least 12 characters.')); return; }
+    if (dbPass && /[^\x20-\x7E]/.test(dbPass)) { setError(t('The password can only use plain ASCII characters.')); return; }
     const body = {
       db_name: dbName,
       db_user: dbUser || null,
       db_password: dbPass || null,
+      // Not in the Python: an administrator may make it for somebody else,
+      // and put it on one of their sites.
+      ...(isAdmin && newDatabase.owner_id ? { owner_id: Number(newDatabase.owner_id) } : {}),
+      website_id: newDatabase.website_id ? Number(newDatabase.website_id) : null,
     };
-    const data = await request('/databases', { method: 'POST', body: JSON.stringify(body) }, 'Creating database...');
+    const data = await request('/databases', { method: 'POST', body: JSON.stringify(body) }, t('Creating the database...'));
     if (data) {
       setCreatedDbInfo({ db_name: data.db_name, db_user: data.db_user, db_password: data.db_password });
-      setNewDatabase({ db_name: '', db_user: '', db_password: '' });
+      setNewDatabase({ db_name: '', db_user: '', db_password: '', owner_id: newDatabase.owner_id, website_id: '' });
       await refreshAll();
     }
   }
@@ -2837,7 +2855,7 @@ function App() {
 
   async function downloadDatabase(databaseId, databaseName) {
     try {
-      setError(''); setLoading('Downloading database...');
+      setError(''); setLoading(t('Downloading the database...'));
       const res = await fetch(`${API}/databases/${databaseId}/download`, { credentials: 'include' });
       if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Download failed.')); return; }
       const blob = await res.blob();
@@ -2846,8 +2864,8 @@ function App() {
       link.href = url; link.download = `${databaseName || 'database'}.sql`;
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
-      setNotice('Database SQL downloaded.');
-    } catch (err) { setError('Database download failed.'); }
+      setNotice(t('The database SQL is downloaded.'));
+    } catch (err) { setError(t('The database download failed.')); }
     finally { setLoading(''); }
   }
 
@@ -3438,6 +3456,11 @@ function App() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [isAuthenticated, page, websiteSearch]);
+
+  // The owners an administrator can pick from.
+  useEffect(() => {
+    if (isAuthenticated && page === 'databases' && isAdmin) loadUsers();
+  }, [isAuthenticated, page, isAdmin]);
 
   useEffect(() => {
     if (!isAuthenticated || page !== 'databases') return undefined;
@@ -4132,6 +4155,7 @@ function App() {
       setCronCommand,
       setCronSchedule,
       setDaReplaceExisting,
+      setDatabaseOwner,
       setDbSearch,
       setDomain,
       setEditingPackageForm,

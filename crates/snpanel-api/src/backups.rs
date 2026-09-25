@@ -601,6 +601,14 @@ pub struct ManifestSite {
     pub sql_file: Option<PathBuf>,
 }
 
+/// Not in the Python: a database the user owns that no site entry carries -
+/// one made on the Databases page, or a site's second - the same way.
+pub struct ManifestDatabase {
+    /// Where the dump goes in the archive: `databases/owned/...`.
+    pub member: String,
+    pub sql_file: PathBuf,
+}
+
 /// One application, the same way.
 pub struct ManifestApp {
     pub name: String,
@@ -618,6 +626,7 @@ pub fn write_user_backup(
     username: &str,
     manifest: &serde_json::Value,
     sites: &[ManifestSite],
+    databases: &[ManifestDatabase],
     apps: &[ManifestApp],
     staging: &Path,
 ) -> Result<String, BackupError> {
@@ -655,6 +664,11 @@ pub fn write_user_backup(
                 .append_path_with_name(sql, format!("databases/{}.sql", site.domain))
                 .map_err(|e| BackupError::Invalid(format!("Cannot add the dump: {e}")))?;
         }
+    }
+    for database in databases.iter().filter(|db| db.sql_file.exists()) {
+        builder
+            .append_path_with_name(&database.sql_file, &database.member)
+            .map_err(|e| BackupError::Invalid(format!("Cannot add the dump: {e}")))?;
     }
     for app in apps {
         if let Some(payload) = app.payload.as_ref().filter(|path| path.exists()) {

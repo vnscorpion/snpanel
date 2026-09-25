@@ -535,3 +535,23 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .login-passkey-failed{margin:0;padding:var(--space-2) var(--space-3);background:var(--warning-bg);border:1px solid var(--warning-border);border-radius:var(--radius-md);color:var(--warning-text);font-size:var(--text-sm);font-weight:600}
 /* Malware: the upload switch's daemon line. */
 .malware-daemon-state{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);margin:var(--space-2) 0 0}
+/* Databases: whose each one is and which site it is on - which decides whose
+   backup it is in - and the editor that changes it. */
+.db-entry{display:grid;gap:6px;min-width:0}
+.db-create{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:var(--space-2)}
+.db-create-password{display:flex;gap:6px;min-width:0}
+.db-create-password input{flex:1;min-width:0}
+.db-create-password button{flex:none}
+.db-row{grid-template-columns:minmax(0,1fr) repeat(5,auto)}
+.db-name{display:grid;gap:3px;min-width:0}
+.db-where{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--text-muted);font-size:var(--text-sm)}
+.db-where span{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow-wrap:anywhere}
+.db-owner-editor{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-2);align-items:end;padding:12px;border:1px dashed var(--border);border-radius:var(--radius-lg);background:var(--surface-sunken)}
+.db-owner-editor .hint{grid-column:1 / -1;margin:0}
+.db-owner-editor label{display:grid;gap:6px;min-width:0;color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
+.db-owner-actions{display:flex;justify-content:flex-end;gap:var(--space-2)}
+@media (max-width:760px){
+  .db-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .db-row .db-name{grid-column:1 / -1}
+  .db-create{grid-template-columns:1fr}
+}

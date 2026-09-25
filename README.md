@@ -379,6 +379,11 @@ Cross-panel notes:
   `Match Group snpanel-sftp` block for password-based SFTP access. SSH shells,
   TTYs and forwarding are disabled for these users.
 - New websites are created under `/home/<panel-user>/<domain>/public_html`.
+- Every database has an owner, and a full user backup holds every database
+  its user owns - on one of their sites or on none - and a restore brings them
+  back. On the Databases page an administrator can make a database for any
+  user and change a database's owner and site; moving a site to another user
+  takes its databases with it.
 - If an admin creates a website without impersonating another user, the website
   belongs to the admin account.
 - Admins can quick-login as another panel user before creating websites for

@@ -6604,6 +6604,17 @@ mod app_file_tests {
 mod tests {
     use super::*;
 
+    /// A database's name in an archive member is a path component, whatever
+    /// an import called the database.
+    #[test]
+    fn a_database_name_becomes_a_safe_member_name() {
+        assert_eq!(member_safe("shop_db"), "shop_db");
+        assert_eq!(member_safe("wp-blog_2"), "wp-blog_2");
+        assert_eq!(member_safe("../etc/passwd"), "___etc_passwd");
+        assert_eq!(member_safe("ba ng/ô"), "ba_ng__");
+        assert!(!member_safe("a/b\\c.d e").contains(['/', '\\', '.', ' ']));
+    }
+
     /// The tree the corpus was generated over, rebuilt locally.
     ///
     /// Rebuilt rather than shipped, because what is being compared is what the
@@ -7227,12 +7238,13 @@ async fn run_user_restore(state: &AppState, backup_file: &str) -> Result<Value, 
     // The staging tree is a full copy of a customer's files; it goes whether
     // or not the restore worked.
     let _ = std::fs::remove_dir_all(&stage);
-    let (websites, applications) = outcome?;
+    let (websites, databases, applications) = outcome?;
 
     Ok(json!({
         "created_user": created_user,
         "username": username,
         "websites": websites,
+        "databases": databases,
         "applications": applications,
     }))
 }
@@ -7314,7 +7326,7 @@ async fn ensure_restored_user(
     Ok((id, true))
 }
 
-/// Every site, then every application.
+/// Every site, then the databases no site carried, then every application.
 async fn restore_everything(
     state: &AppState,
     archive: &std::path::Path,
@@ -7323,7 +7335,7 @@ async fn restore_everything(
     user_id: i64,
     panel_user: &snpanel_core::types::PanelUsername,
     stage: &std::path::Path,
-) -> Result<(Vec<Value>, Vec<Value>), String> {
+) -> Result<(Vec<Value>, Vec<Value>, Vec<Value>), String> {
     let mut restored = Vec::new();
     let empty: Vec<Value> = Vec::new();
     let sites = manifest
@@ -7334,9 +7346,122 @@ async fn restore_everything(
     for site in &sites {
         restored.push(restore_one_site(state, archive, site, user_id, panel_user, stage).await?);
     }
+    // After the sites: a database goes back onto its site when that came
+    // back too.
+    let databases = restore_owned_databases(state, archive, manifest, user_id, stage).await;
     let applications =
         restore_applications(state, archive, manifest, username, user_id, stage).await;
-    Ok((restored, applications))
+    Ok((restored, databases, applications))
+}
+
+/// Not in the Python: the databases the user owned beyond their sites' own
+/// - see `collect_owned_databases`.
+///
+/// One that fails is reported and the rest go on: a standalone database is
+/// not a reason to abandon a restore whose sites are already back in place.
+async fn restore_owned_databases(
+    state: &AppState,
+    archive: &std::path::Path,
+    manifest: &Value,
+    user_id: i64,
+    stage: &std::path::Path,
+) -> Vec<Value> {
+    let entries = manifest
+        .get("databases")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for entry in &entries {
+        let db_name = text_or(entry.get("db_name"), "");
+        match restore_owned_database(state, archive, stage, user_id, entry).await {
+            Ok(()) => out.push(json!({ "db_name": db_name, "restored": true })),
+            Err(message) => out.push(json!({ "db_name": db_name, "error": message })),
+        }
+    }
+    out
+}
+
+async fn restore_owned_database(
+    state: &AppState,
+    archive: &std::path::Path,
+    stage: &std::path::Path,
+    user_id: i64,
+    entry: &Value,
+) -> Result<(), String> {
+    let db_name = text_or(entry.get("db_name"), "");
+    let db_user = text_or(entry.get("db_user"), "");
+    if db_name.is_empty() || db_user.is_empty() {
+        return Err("The entry names no database".to_string());
+    }
+    let db_password = match entry
+        .get("db_password")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => text.to_string(),
+        None => crate::mariadb::random_password(16),
+    };
+    let existing = state
+        .db
+        .databases()
+        .by_name(&db_name)
+        .await
+        .map_err(|e| format!("Could not read the databases: {e}"))?;
+    if let Some(row) = &existing {
+        if row.owner_id != user_id {
+            return Err(format!(
+                "Database name already belongs to another account: {db_name}"
+            ));
+        }
+    }
+    let dry = state.settings.command_dry_run;
+    // `allow_existing_user`, as a site's: the MariaDB user may still be there
+    // from before the row went.
+    crate::mariadb::create_database_credentials(&db_name, &db_user, &db_password, None, true)
+        .await
+        .map_err(|e| e.to_string())?;
+    let member = text_or(entry.get("sql_member"), "");
+    if !member.is_empty() {
+        if let Some(dump) = crate::restore::extract_member_to_file(archive, &member, stage)? {
+            crate::mariadb::import_database(dry, &db_name, &dump.to_string_lossy())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // Back on its site, when that site is this user's now.
+    let website_id = match entry.get("website").and_then(Value::as_str) {
+        Some(domain) => state
+            .db
+            .websites()
+            .by_domain(domain)
+            .await
+            .ok()
+            .flatten()
+            .filter(|site| site.owner_id == user_id)
+            .map(|site| site.id),
+        None => None,
+    };
+    let encrypted = snpanel_core::crypto::fernet::encrypt(&state.settings.secret_key, &db_password);
+    let databases = state.db.databases();
+    match existing {
+        Some(row) => {
+            databases
+                .restore_write(row.id, user_id, &db_name, &db_user, &encrypted)
+                .await
+                .map_err(|e| format!("Could not update the database row: {e}"))?;
+            databases
+                .set_owner(row.id, user_id, website_id)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("Could not update the database row: {e}"))
+        }
+        None => databases
+            .create(user_id, website_id, &db_name, &db_user, &encrypted)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Could not write the database row: {e}")),
+    }
 }
 
 async fn restore_one_site(
@@ -8593,6 +8718,8 @@ async fn collect_user_backup(
 
     let mut sites = Vec::new();
     let mut site_entries = Vec::new();
+    // The databases a site entry carries, so the list below takes the rest.
+    let mut in_sites = std::collections::HashSet::new();
     for website in &websites {
         let aliases = state
             .db
@@ -8631,6 +8758,7 @@ async fn collect_user_backup(
             .await
             .unwrap_or_default();
         if let Some(account) = accounts.first() {
+            in_sites.insert(account.id);
             let name = format!("{}.sql", website.domain);
             let path = staging.join(&name);
             crate::mariadb::export_database(&account.db_name, &path.to_string_lossy())
@@ -8668,6 +8796,12 @@ async fn collect_user_backup(
         });
     }
 
+    // Not in the Python: every other database the user owns. One made on the
+    // Databases page belongs to no site, and a site's second had no place in
+    // its entry; both were left out of the user's backup.
+    let (owned_entries, owned_files) =
+        collect_owned_databases(state, user, staging, &in_sites).await?;
+
     let manifest = json!({
         "kind": "snpanel_user",
         "version": 1,
@@ -8682,6 +8816,7 @@ async fn collect_user_backup(
             "storage_limit_mb": user.storage_limit_mb,
         },
         "websites": site_entries,
+        "databases": owned_entries,
         "applications": app_entries,
     });
 
@@ -8690,10 +8825,89 @@ async fn collect_user_backup(
         &user.username,
         &manifest,
         &sites,
+        &owned_files,
         &apps,
         staging,
     )
     .map_err(|e| e.to_string())
+}
+
+/// A database's name as it may appear in an archive member's name.
+///
+/// The panel's own names are letters, digits and underscores already; one an
+/// import brought in may not be, and a member name is a path.
+fn member_safe(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Not in the Python: the user's databases that no site entry carries -
+/// dumped, and described for `restore_owned_databases`.
+async fn collect_owned_databases(
+    state: &AppState,
+    user: &snpanel_db::User,
+    staging: &std::path::Path,
+    in_sites: &std::collections::HashSet<i64>,
+) -> Result<(Vec<Value>, Vec<crate::backups::ManifestDatabase>), String> {
+    let owned = state
+        .db
+        .databases()
+        .for_owner(user.id)
+        .await
+        .map_err(|e| format!("Could not read the databases: {e}"))?;
+    let domains: std::collections::HashMap<i64, String> = state
+        .db
+        .websites()
+        .all_domains()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut entries = Vec::new();
+    let mut files = Vec::new();
+    for account in owned.iter().filter(|a| !in_sites.contains(&a.id)) {
+        // The id as well: two names that differ only in characters the
+        // member name cannot carry would otherwise land on one file.
+        let file = format!("{}-{}.sql", account.id, member_safe(&account.db_name));
+        let path = staging.join(format!("owned-{file}"));
+        crate::mariadb::export_database(&account.db_name, &path.to_string_lossy())
+            .await
+            .map_err(|e| e.to_string())?;
+        if state.settings.command_dry_run && !path.exists() {
+            let _ = std::fs::write(
+                &path,
+                format!("-- DRY RUN database dump for {}\n", account.db_name),
+            );
+        }
+        // As a site's: a password the panel can no longer decrypt is
+        // recorded as empty, and the restore makes a new one.
+        let db_password = snpanel_core::crypto::fernet::decrypt(
+            &state.settings.secret_key,
+            Some(&account.db_password),
+            state.settings.strict_decrypt,
+        )
+        .unwrap_or_default();
+        let member = format!("databases/owned/{file}");
+        entries.push(json!({
+            "db_name": account.db_name,
+            "db_user": account.db_user,
+            "db_password": db_password,
+            "sql_member": member,
+            "website": account.website_id.and_then(|id| domains.get(&id)),
+        }));
+        files.push(crate::backups::ManifestDatabase {
+            member,
+            sql_file: path,
+        });
+    }
+    Ok((entries, files))
 }
 
 /// Source: `_collect_applications`.

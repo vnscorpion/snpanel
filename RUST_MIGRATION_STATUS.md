@@ -1033,6 +1033,29 @@ upgrade changes nothing until an administrator does something.
 What to connect to comes from a new helper verb, `ssh-ports`, read from
 `sshd -T` on every call rather than from the helper's start.
 
+### Database owners (past the Python)
+
+A full user backup took a database only through a site: the first one on
+each of the user's sites, and nothing else. A database made on the Databases
+page belongs to no site, and a site's second one had no place in its entry,
+so both were left out of every backup - and a database an administrator made
+for a customer was the administrator's, on no site, in nobody's backup at
+all.
+
+- `PATCH /api/databases/{id}` `{owner_id, website_id}` (administrators)
+  gives a database to a user and to one of their sites or none; a site of
+  somebody else's is refused. Creating one takes the same two, for an
+  administrator. The list carries each row's `owner` and `website` names.
+- A user backup lists every other database the user owns in the manifest's
+  `databases`, dumped under `databases/owned/`, and a restore recreates each
+  with its password and data, back on its site when that site came back
+  with them. A name that belongs to another account is refused and reported,
+  and the restore goes on. The manifest stays version 1: a reader that does
+  not know the key has nothing to misread.
+- Moving a site to another user moves its databases with it. They stayed
+  with the old owner, who could still see and delete the database of a site
+  that was no longer theirs.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an
