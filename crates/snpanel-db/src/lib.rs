@@ -36,6 +36,7 @@ pub mod packages;
 pub mod passkeys;
 pub mod provisioning;
 pub mod schema;
+pub mod sftp_accounts;
 pub mod site_apps;
 mod users;
 pub mod websites;
@@ -193,6 +194,10 @@ impl Database {
 
     pub fn passkeys(&self) -> PasskeyRepo<'_> {
         PasskeyRepo::new(&self.pool)
+    }
+
+    pub fn sftp_accounts(&self) -> sftp_accounts::SftpAccountRepo<'_> {
+        sftp_accounts::SftpAccountRepo::new(&self.pool)
     }
 
     pub fn provisioning(&self) -> ProvisioningRepo<'_> {

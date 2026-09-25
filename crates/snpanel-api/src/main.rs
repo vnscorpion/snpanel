@@ -66,6 +66,7 @@ mod ratelimit;
 mod restore;
 mod routes;
 mod sftp;
+mod sftp_access;
 mod shell;
 mod shlex;
 mod site_apps;

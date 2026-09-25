@@ -1000,6 +1000,39 @@ fail2ban expands log globs only when it reads its settings, so adding or
 deleting a site re-applies them in the background. A deleted site's log files
 stay behind, and stay matched; nothing writes to them.
 
+### SFTP logins per user (past the Python)
+
+Every panel user's Linux account was already their SFTP login, chrooted to
+their home, with the panel password copied into it on every change and
+nothing on any page saying so. So the panel password - behind two-step
+verification - was also an SFTP password, behind nothing. It is an account of
+its own now, shown on the Users page and on the user's own Account security
+page.
+
+`sftp_accounts` (the third Rust migration, `CREATE TABLE IF NOT EXISTS` as
+C12 requires) records a decision when one is made. A user with no row keeps
+the Python's behaviour exactly - on, following the panel password - so an
+upgrade changes nothing until an administrator does something.
+
+- **Off** locks the Linux account (`usermod -L`, which keeps the hash).
+- **On** always sets a password, typed or generated and shown once, and the
+  login keeps a password of its own from then on. Unlocking would bring back
+  whatever the panel last copied in, from before it was switched off.
+- **Following the panel password** happens only while the login is on and
+  has no password of its own: the four places a panel password changes (an
+  administrator's reset, the user's own change, the billing API, the CLI)
+  all go through `sftp_access::follow_panel_password`. Setting the password
+  while SFTP is off would unlock the account and switch it back on.
+- **Suspension** locks every account of the user's and unlocks them only
+  while their SFTP is on. It locks their own account too, which the per-site
+  loop it replaces missed: a user with no sites kept their SFTP login
+  through a suspension, on both the Users page and the billing API.
+- **A user's own SFTP password** changes after their current panel password
+  and authenticator code, as a panel password change does.
+
+What to connect to comes from a new helper verb, `ssh-ports`, read from
+`sshd -T` on every call rather than from the helper's start.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

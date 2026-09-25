@@ -149,6 +149,18 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
         "rust_0002_passkeys_by_user",
         "CREATE INDEX IF NOT EXISTS ix_passkeys_user_id ON passkeys (user_id)",
     ),
+    // SFTP: what the panel decided about a user's SFTP login, when it has
+    // decided anything - see `sftp_accounts.rs`. The username, as passkeys
+    // keep it, for the same reason.
+    (
+        "rust_0003_sftp_accounts",
+        "CREATE TABLE IF NOT EXISTS sftp_accounts (\
+            user_id INTEGER NOT NULL PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE, \
+            username VARCHAR(64) NOT NULL, \
+            enabled BOOLEAN NOT NULL, \
+            own_password BOOLEAN NOT NULL, \
+            updated_at DATETIME NOT NULL)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -701,8 +713,14 @@ mod tests {
         added.sort();
         assert_eq!(
             added,
-            vec!["ix_passkeys_user_id", "passkeys", MIGRATIONS_TABLE],
-            "only the passkeys table, its index and the bookkeeping table are new"
+            vec![
+                "ix_passkeys_user_id",
+                "passkeys",
+                "sftp_accounts",
+                MIGRATIONS_TABLE
+            ],
+            "only the passkeys table and its index, the SFTP decisions and the \
+             bookkeeping table are new"
         );
     }
 

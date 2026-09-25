@@ -920,8 +920,10 @@ mod tests {
             "the helper answers none of: {unknown:?}"
         );
 
+        // Six since suspension's lock and unlock became two literal calls in
+        // `sftp_access::set_locked`: both were chosen at runtime before.
         assert_eq!(
-            computed, 8,
+            computed, 6,
             "the number of call sites that choose a verb at runtime changed; \
              each one is a name this test cannot check"
         );

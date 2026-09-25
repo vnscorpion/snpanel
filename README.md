@@ -366,9 +366,15 @@ Cross-panel notes:
 
 ## User and website ownership
 
-- Each panel user also has a Linux user with the same normalized username.
-- The panel password is synced to the Linux password so the same account can
-  log in with chrooted SFTP, for example `admin` -> `/home/admin`.
+- Each panel user also has a Linux user with the same normalized username,
+  and that account is their SFTP login, chrooted to their home - for example
+  `admin` -> `/home/admin`.
+- By default the SFTP login uses the panel password and follows it when it
+  changes. On the Users page an administrator can switch a user's SFTP off, or
+  give it a password of its own - typed, or generated and shown once - after
+  which a panel password change no longer reaches it. Each user sees their
+  SFTP details on the Account security page and can change their own SFTP
+  password there, after their current panel password and authenticator code.
 - Panel Linux users are members of `snpanel-sftp`; the installer adds an SSHD
   `Match Group snpanel-sftp` block for password-based SFTP access. SSH shells,
   TTYs and forwarding are disabled for these users.

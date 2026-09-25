@@ -459,6 +459,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::Fail2banBan { jail, address } => fail2ban::ban(*jail, *address),
         HelperRequest::Fail2banUnban { address } => fail2ban::unban(*address),
         HelperRequest::Fail2banStop => fail2ban::stop(),
+        // Afresh, not `ctx.ssh_ports`: that was read when the helper started,
+        // and a port changed since is the one somebody will connect to.
+        HelperRequest::SshPorts => HelperResponse::with_stdout(format!(
+            "{}\n",
+            serde_json::json!({ "ports": sshd_ports() })
+        )),
         HelperRequest::MaldetStatus => packages::maldet_status(),
     }
 }

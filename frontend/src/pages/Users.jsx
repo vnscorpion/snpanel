@@ -1,6 +1,7 @@
 import { Ban, Globe, HardDrive, LogIn, Pencil, Play, Plus, RefreshCw, Save, Trash2, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
+import SftpAccess from '../components/SftpAccess.jsx';
 
 export default function UsersPage() {
   const {
@@ -93,6 +94,7 @@ export default function UsersPage() {
               <span className="badge">{roleLabel(user.role)}</span>
               <span className="badge">{user.package_name || t('Custom')}</span>
               {user.totp_enabled && <span className="badge ok">2FA</span>}
+              {user.sftp && <span className={`badge ${user.sftp.enabled ? 'ok' : ''}`}>{user.sftp.enabled ? t('SFTP') : t('SFTP off')}</span>}
             </div>
             {/* The list arrives without this figure and each user's follows on
                 its own (see loadUsers), so a slow account holds up only its cell. */}
@@ -143,6 +145,9 @@ export default function UsersPage() {
                 <div className="user-edit-actions">
                   <button disabled={!!loading || !editingUserForm.new_password || editingUserForm.new_password.length < 12} onClick={() => submitPasswordChange(user)}>{t('Set password')}</button>
                 </div>
+              </div>
+              <div className="user-edit-section">
+                <SftpAccess user={user} self={user.id === currentUser?.id} />
               </div>
               <div className="user-edit-actions">
                 <button className="secondary-light" onClick={cancelEditingUser}>{t('Cancel')}</button>

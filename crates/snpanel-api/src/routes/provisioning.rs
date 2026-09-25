@@ -1411,8 +1411,8 @@ async fn suspend(
                 tracing::error!("suspending the vhost for {} failed", website.domain);
                 let _ = e;
             }
-            lock_site_user(&state, website.linux_user.as_deref(), true).await;
         }
+        lock_accounts(&state, user_id, &websites, true).await;
     }
 
     if let Err(e) = state
@@ -1511,8 +1511,8 @@ async fn unsuspend(
                 tracing::error!("restoring the vhost for {} failed", website.domain);
                 let _ = e;
             }
-            lock_site_user(&state, website.linux_user.as_deref(), false).await;
         }
+        lock_accounts(&state, user_id, &websites, false).await;
     }
 
     if let Err(e) = state
@@ -1584,25 +1584,33 @@ pub fn unsuspend_rewrite_mode(app_type: &str, stored: &str) -> Option<&'static s
 /// A site with no runtime user, or a helper that refuses, does not stop the
 /// suspension: the vhost is already serving nothing, which is what actually
 /// blocks the customer. The shell account is a second lock, not the first.
-async fn lock_site_user(state: &AppState, linux_user: Option<&str>, lock: bool) {
-    let Some(user) = linux_user.filter(|u| !u.is_empty()) else {
-        return;
+///
+/// Every account of the user's, once - their own too, which the per-site
+/// loop missed for a user with no sites - and unlocked only while their SFTP
+/// is on. See `sftp_access::set_locked`.
+async fn lock_accounts(
+    state: &AppState,
+    user_id: i64,
+    websites: &[snpanel_db::Website],
+    lock: bool,
+) {
+    let username = match state.db.users().by_id(user_id).await {
+        Ok(Some(user)) => user.username,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::error!("loading user {user_id} failed: {e}");
+            return;
+        }
     };
-    let Ok(safe) = snpanel_core::types::PanelUsername::parse(user) else {
-        return;
-    };
-    let verb = if lock {
-        "panel-user-lock"
-    } else {
-        "panel-user-unlock"
-    };
-    let flag = if lock { "-L" } else { "-U" };
-    let _ = crate::shell::privileged(
+    let site_accounts: Vec<Option<String>> =
+        websites.iter().map(|w| w.linux_user.clone()).collect();
+    crate::sftp_access::set_locked(
+        &state.db,
         state.settings.command_dry_run,
-        verb,
-        &[safe.as_str()],
-        None,
-        Some(&["usermod", flag, safe.as_str()]),
+        user_id,
+        &username,
+        &site_accounts,
+        lock,
     )
     .await;
 }
@@ -1664,21 +1672,18 @@ async fn change_password(
         tracing::error!("bumping the token version failed: {e}");
         return crate::errors::internal_error();
     }
-    // Source: `site_users.set_panel_user_password`. The secret goes on
-    // stdin, never in argv — `/proc/<pid>/cmdline` is world-readable.
-    let result = crate::shell::privileged(
+    // Source: `site_users.set_panel_user_password` - while the SFTP login
+    // still follows the panel password.
+    if let Err(detail) = crate::sftp_access::follow_panel_password(
+        &state.db,
         state.settings.command_dry_run,
-        "panel-user-password",
-        &[user.username.as_str()],
-        Some(&format!("{password}\n")),
-        Some(&["true"]),
+        user.id,
+        &user.username,
+        &password,
     )
-    .await;
-    if !result.ok() {
-        tracing::error!(
-            "setting the system password failed: {}",
-            result.failure_detail("panel-user-password")
-        );
+    .await
+    {
+        tracing::error!("setting the system password failed: {detail}");
         return crate::errors::internal_error();
     }
     if let Err(e) = state

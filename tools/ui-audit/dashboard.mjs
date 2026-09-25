@@ -75,7 +75,7 @@ const readGroups = (page) => page.$$eval('.dash-group', (groups) => groups.map((
   check((addonGroup?.tiles.length || 0) === installed.length,
     `one Addons tile per installed addon (${installed.map((a) => a.slug).join(', ') || 'none installed'}; tiles: ${addonGroup?.tiles.length || 0})`);
 
-  const expectFirst = { Hosting: 'Websites', Security: 'Two-step verification', Server: 'PHP config', Administration: 'Panel users' };
+  const expectFirst = { Hosting: 'Websites', Security: 'Account security', Server: 'PHP config', Administration: 'Panel users' };
   for (const [title, first] of Object.entries(expectFirst)) {
     const g = groups.find((x) => x.title === title);
     check(g && g.tiles[0].label === first, `the ${title} group starts with ${first}`);

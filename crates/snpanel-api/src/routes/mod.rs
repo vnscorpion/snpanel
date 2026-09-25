@@ -18,6 +18,7 @@ pub mod passkeys;
 pub mod provisioning;
 pub mod refresh;
 pub mod services;
+pub mod sftp;
 pub mod site_apps;
 pub mod terminal;
 pub mod updates;
@@ -40,6 +41,7 @@ pub fn api_router() -> Router<AppState> {
         .nest("/services", services::router())
         .merge(packages::router())
         .merge(users::router())
+        .merge(sftp::router())
         .merge(firewall::router())
         .merge(fail2ban::router())
         .merge(databases::router())

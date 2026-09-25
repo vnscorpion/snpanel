@@ -1,0 +1,24 @@
+/* A panel user's SFTP login: in the Users page's editor and on the Account
+   security page. See components/SftpAccess.jsx. */
+
+.sftp-access{display:grid;gap:var(--space-3)}
+.sftp-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3)}
+.sftp-head>div{display:grid;gap:2px;min-width:0}
+.sftp-head h2{margin:0}
+.sftp-head small{color:var(--text-secondary);font-size:var(--text-sm)}
+
+.sftp-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-2);margin:0}
+.sftp-details>div{display:grid;gap:2px;min-width:0;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-sunken)}
+.sftp-details dt{color:var(--text-secondary);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sftp-details dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.sftp-details dd .hint{margin:0;font-size:var(--text-xs)}
+
+/* The password the server made, shown this once. */
+.sftp-shown{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:10px 12px;border:1px solid var(--success-border);border-radius:var(--radius-md);background:var(--success-bg);color:var(--success-text)}
+.sftp-shown code{font-size:var(--text-md);font-weight:600;letter-spacing:.02em;user-select:all;overflow-wrap:anywhere}
+.sftp-shown small{flex-basis:100%}
+
+.sftp-password{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-2);align-items:end}
+.sftp-field{display:grid;gap:6px;min-width:0}
+.sftp-field>label{color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
+.sftp-actions{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:var(--space-2)}

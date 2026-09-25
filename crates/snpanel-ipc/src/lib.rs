@@ -1111,6 +1111,10 @@ pub enum HelperRequest {
     /// go with it; the package and the settings stay.
     Fail2banStop,
 
+    /// `ssh-ports` - the ports sshd listens on, as JSON on stdout: what a
+    /// user connects to for SFTP. Read afresh each time, from `sshd -T`.
+    SshPorts,
+
     // --- terminal ---
     TerminalExec {
         user: PanelUsername,
@@ -1282,6 +1286,7 @@ impl HelperRequest {
             Self::Fail2banBan { .. } => "fail2ban-ban",
             Self::Fail2banUnban { .. } => "fail2ban-unban",
             Self::Fail2banStop => "fail2ban-stop",
+            Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
         }
     }

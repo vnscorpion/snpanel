@@ -748,6 +748,7 @@ impl HelperRequest {
                 address: address_of(&rest[0])?,
             },
             ("fail2ban-stop", 0) => HelperRequest::Fail2banStop,
+            ("ssh-ports", 0) => HelperRequest::SshPorts,
 
             ("cron-list", 0) => HelperRequest::CronList { user: None },
             ("cron-list", 1) => match PanelUsername::parse(&rest[0]) {
@@ -1354,7 +1355,7 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
-        for verb in ["fail2ban-status", "fail2ban-stop"] {
+        for verb in ["fail2ban-status", "fail2ban-stop", "ssh-ports"] {
             let req =
                 HelperRequest::from_argv(&argv(&[verb]), || panic!("{verb} read stdin")).unwrap();
             assert_eq!(req.op_name(), verb);

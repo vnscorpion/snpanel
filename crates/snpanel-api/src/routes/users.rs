@@ -144,6 +144,10 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
     };
     let (used_bytes, limit_bytes, percent) =
         storage_fields(used, &user.role, user.storage_limit_mb);
+    // Not in the Python: the SFTP login, for the list's badge.
+    let sftp = crate::sftp_access::access(&state.db, user.id, &user.username)
+        .await
+        .unwrap_or(snpanel_db::sftp_accounts::SftpAccess::DEFAULT);
 
     json!({
         "id": user.id,
@@ -159,6 +163,7 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
         "storage_limit_bytes": limit_bytes,
         "storage_percent": percent,
         "totp_enabled": user.totp_enabled,
+        "sftp": { "enabled": sftp.enabled, "own_password": sftp.own_password },
     })
 }
 
@@ -751,25 +756,21 @@ async fn set_password(
     // the panel name lowercased, and parsing is what validates it. Not
     // `Domain::linux_user()`, which derives a name for a *domain* and would
     // send the password to an account that does not exist.
-    let linux_user = match snpanel_core::types::PanelUsername::parse(
-        user.username.trim().to_lowercase().as_str(),
-    ) {
-        Ok(u) => u,
-        Err(e) => return bad_request(&format!("invalid username: {e}")),
-    };
-    let result = crate::shell::privileged(
+    if let Err(message) = crate::sftp_access::linux_account(&user.username) {
+        return bad_request(&message);
+    }
+    // Into the Linux account too, while the SFTP login still follows the
+    // panel password - not when it is off, or has a password of its own.
+    if let Err(detail) = crate::sftp_access::follow_panel_password(
+        &state.db,
         state.settings.command_dry_run,
-        "panel-user-password",
-        &[linux_user.as_str()],
-        Some(&format!("{password}\n")),
-        Some(&["true"]),
+        user.id,
+        &user.username,
+        &password,
     )
-    .await;
-    if !result.ok() {
-        tracing::error!(
-            "setting the system password failed: {}",
-            result.failure_detail("panel-user-password")
-        );
+    .await
+    {
+        tracing::error!("setting the system password failed: {detail}");
         return internal_error();
     }
 
@@ -934,33 +935,21 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
             // customer blocked with some of their sites still serving.
             tracing::error!("rewriting the vhost for {} failed: {e}", website.domain);
         }
-
-        let linux_user = website.linux_user.as_deref().unwrap_or_default();
-        if !linux_user.is_empty() && !state.settings.command_dry_run {
-            let result = crate::shell::privileged(
-                false,
-                if suspending {
-                    "panel-user-lock"
-                } else {
-                    "panel-user-unlock"
-                },
-                &[linux_user],
-                None,
-                Some(&["true"]),
-            )
-            .await;
-            if !result.ok() {
-                // `except Exception: pass` - a Linux account removed by hand
-                // is not a reason to leave the other sites unsuspended.
-                tracing::warn!(
-                    "could not {} {}: {}",
-                    if suspending { "lock" } else { "unlock" },
-                    linux_user,
-                    result.failure_detail("no detail").trim()
-                );
-            }
-        }
     }
+    // Every Linux account of theirs, once: their own - which a user with no
+    // sites kept unlocked through a suspension - and their sites'. Unlocked
+    // again only while their SFTP is on.
+    let site_accounts: Vec<Option<String>> =
+        websites.iter().map(|w| w.linux_user.clone()).collect();
+    crate::sftp_access::set_locked(
+        &state.db,
+        state.settings.command_dry_run,
+        user.id,
+        &user.username,
+        &site_accounts,
+        suspending,
+    )
+    .await;
 
     let action = if suspending {
         "suspend_user"

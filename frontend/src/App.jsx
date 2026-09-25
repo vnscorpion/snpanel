@@ -388,7 +388,13 @@ function App() {
     setNotice(message);
   }
 
+  // A wrong current password or code, on a form that asks for one, is a 401
+  // too - and it is not the session ending. The person is still signed in and
+  // is told what they typed was wrong, rather than being signed out for it.
+  const STEP_UP_REFUSALS = new Set(['Current password is incorrect', 'Invalid authentication code', 'Two-factor authentication code required']);
+
   function handleAuthExpired(status, detail = '') {
+    if (status === 401 && STEP_UP_REFUSALS.has(detail)) return false;
     if (status === 401 || detail === 'Could not validate credentials' || detail === 'Not authenticated') {
       clearSession();
       return true;
@@ -2998,6 +3004,31 @@ function App() {
     if (data) { setFail2ban(data); setNotice(t('{address} can connect again.', { address })); }
   }
 
+  // A user's SFTP login - see components/SftpAccess.jsx.
+  async function loadSftpAccess(userId) {
+    return await request(`/users/${userId}/sftp`);
+  }
+
+  async function switchSftpAccess(user, enabled, choice = {}) {
+    if (!enabled && !confirm(t('Turn SFTP off for {name}?\n\nThey can no longer sign in over SFTP. Turning it on again sets a new password.', { name: user.username }))) return null;
+    const data = await request(`/users/${user.id}/sftp`, { method: 'PUT', body: JSON.stringify({ enabled, ...choice }) },
+      enabled ? t('Turning SFTP on...') : t('Turning SFTP off...'));
+    if (data) {
+      setNotice(enabled ? t('SFTP is on for {name}.', { name: user.username }) : t('SFTP is off for {name}.', { name: user.username }));
+      if (page === 'users') loadUsers();
+    }
+    return data;
+  }
+
+  async function setSftpPassword(user, body) {
+    const data = await request(`/users/${user.id}/sftp/password`, { method: 'POST', body: JSON.stringify(body) }, t('Setting the SFTP password...'));
+    if (data) {
+      setNotice(t('The SFTP password is set.'));
+      if (page === 'users') loadUsers();
+    }
+    return data;
+  }
+
   async function runFirewallAction(path, options = {}, label = t('Updating firewall...')) {
     const data = await request(path, options, label);
     if (data) { setNotice((data.stdout || data.stderr || t('Firewall updated.')).trim()); await loadFirewall(); }
@@ -3548,7 +3579,7 @@ function App() {
 
   const settingsNavItems = [
     ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
-    ['security', t('Two-step verification'), Shield],
+    ['security', t('Account security'), Shield],
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
@@ -3968,6 +3999,7 @@ function App() {
       loadPhpConfig,
       loadPhpTune,
       loadRestoreBackups,
+      loadSftpAccess,
       loadSftpTargets,
       loadSiteApps,
       loadSiteRuntimes,
@@ -4136,6 +4168,7 @@ function App() {
       setScanTargetWebsiteId,
       setSelectedBackupUserId,
       setSelectedSftpTargetId,
+      setSftpPassword,
       setSharedSource,
       setSiteAppDraft,
       setSiteAppEdit,
@@ -4176,6 +4209,7 @@ function App() {
       submitPasswordChange,
       suggestSiteAppPort,
       suspendUser,
+      switchSftpAccess,
       terminalViewer,
       toggleAllFiles,
       toggleDaBackupSelect,

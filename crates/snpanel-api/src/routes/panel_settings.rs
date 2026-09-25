@@ -1285,26 +1285,21 @@ async fn update_admin_account(State(state): State<AppState>, req: Request) -> Re
         let password = password.clone().unwrap_or_default();
         // The system account first, as `set_panel_user_password` does: a
         // panel password that changed while SFTP kept the old one is the
-        // confusing half.
-        let linux_user = match snpanel_core::types::PanelUsername::parse(
-            current.user.username.trim().to_lowercase().as_str(),
-        ) {
-            Ok(u) => u,
-            Err(e) => return bad_request(&format!("invalid username: {e}")),
-        };
-        let result = crate::shell::privileged(
+        // confusing half. Unless the SFTP login no longer follows it - off,
+        // or with a password of its own.
+        if let Err(message) = crate::sftp_access::linux_account(&current.user.username) {
+            return bad_request(&message);
+        }
+        if let Err(detail) = crate::sftp_access::follow_panel_password(
+            &state.db,
             state.settings.command_dry_run,
-            "panel-user-password",
-            &[linux_user.as_str()],
-            Some(&format!("{password}\n")),
-            Some(&["true"]),
+            current.user.id,
+            &current.user.username,
+            &password,
         )
-        .await;
-        if !result.ok() {
-            tracing::error!(
-                "setting the system password failed: {}",
-                result.failure_detail("panel-user-password")
-            );
+        .await
+        {
+            tracing::error!("setting the system password failed: {detail}");
             return crate::errors::internal_error();
         }
 

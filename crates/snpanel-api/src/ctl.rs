@@ -59,26 +59,16 @@ pub(crate) async fn set_admin_password(
     };
 
     // Source: `site_users.set_panel_user_password(user.username, password)`.
-    // On stdin, as the helper takes it.
-    let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&admin.username) else {
+    // On stdin, as the helper takes it - while the SFTP login still follows
+    // the panel password.
+    if snpanel_core::types::PanelUsername::parse(&admin.username).is_err() {
         anyhow::bail!("{} is not a usable Linux account name", admin.username);
-    };
-    let set = crate::shell::privileged(
-        dry_run,
-        "panel-user-password",
-        &[panel_user.as_str()],
-        Some(&format!("{password}\n")),
-        // Source: `fallback=["true"]` — a developer's machine with no
-        // helper still changes the panel password.
-        Some(&["true"]),
-    )
-    .await;
-    if !set.ok() {
-        anyhow::bail!(
-            "{}",
-            set.failure_detail("Could not set the admin system password")
-                .trim()
-        );
+    }
+    if let Err(detail) =
+        crate::sftp_access::follow_panel_password(db, dry_run, admin.id, &admin.username, password)
+            .await
+    {
+        anyhow::bail!("Could not set the admin system password: {detail}");
     }
 
     let hash = snpanel_core::crypto::password::hash_password(password)
@@ -153,6 +143,9 @@ mod tests {
             .await
             .unwrap();
         db.create_fresh_schema().await.unwrap();
+        // As every start does before `--set-admin-password` can run: the
+        // password change reads the SFTP settings a Rust migration adds.
+        db.apply_rust_migrations().await.unwrap();
         db.users()
             .create(&snpanel_db::NewUser {
                 username: ADMIN_USERNAME,

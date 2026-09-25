@@ -65,7 +65,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 147;
+const ANSWERED_VERBS: usize = 148;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -90,6 +90,7 @@ fn print_help(sink: audit::Sink) {
         "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
         "  fail2ban-*      install, configure (settings on stdin), status, ban,",
         "                  unban, stop",
+        "  ssh-ports       the ports sshd listens on, as JSON",
         "  updates-panel-run, nginx-upgrade-map-ensure",
         "  site-app-*      write (node, docker), control, logs, delete, dir-ensure,",
         "                  rename, pull, install-deps, export, import, volume-usage,",
