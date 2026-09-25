@@ -156,11 +156,18 @@ pub struct Owned {
 /// runs as `snpanel` — so it would start and then fail to write anything it
 /// owns. This runs after every update for that reason.
 ///
-/// The two modes are the ones that must not drift: `.my.cnf` is `0600`
+/// The modes are the ones that must not drift: `.my.cnf` is `0600`
 /// because it is the credential for an account with `GRANT OPTION` on
-/// everything, and `.env` is `0640` because it holds the `SECRET_KEY`.
+/// everything, and `.env` is `0640` because it holds the `SECRET_KEY`. And
+/// the two directories above them: the sync gives both the source tree's
+/// mode, and a `backend` others can enter is a database others can read.
 pub fn owned_paths(app_dir: &Path) -> Vec<Owned> {
     vec![
+        Owned {
+            path: app_dir.to_path_buf(),
+            recursive: false,
+            mode: Some(crate::panel_user::APP_DIR_MODE),
+        },
         Owned {
             path: app_dir.join("backend"),
             recursive: true,
@@ -195,6 +202,12 @@ pub fn owned_paths(app_dir: &Path) -> Vec<Owned> {
             path: app_dir.join("backend/.env"),
             recursive: false,
             mode: Some(0o640),
+        },
+        // The directory itself, after the tree under it has been given back.
+        Owned {
+            path: app_dir.join("backend"),
+            recursive: false,
+            mode: Some(crate::panel_user::APP_BACKEND_DIR_MODE),
         },
     ]
 }
@@ -347,14 +360,41 @@ mod tests {
         }
     }
 
-    /// Only those two get a mode; the rest are ownership alone, because
-    /// forcing a mode on a whole tree would flatten the distinction between
-    /// a directory and a file.
+    /// Only those two and the two directories above them get a mode; the
+    /// rest are ownership alone, because forcing a mode on a whole tree would
+    /// flatten the distinction between a directory and a file.
     #[test]
-    fn only_the_credential_files_have_their_mode_set() {
+    fn only_the_credential_files_and_their_directories_have_their_mode_set() {
         let owned = owned_paths(Path::new("/opt/snpanel"));
         let with_mode: Vec<&Owned> = owned.iter().filter(|o| o.mode.is_some()).collect();
-        assert_eq!(with_mode.len(), 2);
+        assert_eq!(with_mode.len(), 4);
         assert!(with_mode.iter().all(|o| !o.recursive));
+    }
+
+    /// An update gave `backend` the source tree's `0775`, with the database
+    /// `0644` inside it. Put back as the install made them: the app directory
+    /// passable and not listable, `backend` closed to everyone else.
+    #[test]
+    fn the_sync_does_not_decide_who_can_read_the_database() {
+        let owned = owned_paths(Path::new("/opt/snpanel"));
+        let mode_of = |path: &str| {
+            owned
+                .iter()
+                .find(|o| o.path == Path::new(path) && o.mode.is_some())
+                .unwrap_or_else(|| panic!("{path}"))
+                .mode
+                .unwrap()
+        };
+        assert_eq!(mode_of("/opt/snpanel"), 0o711);
+        assert_eq!(mode_of("/opt/snpanel/backend"), 0o750);
+        // And the mode comes after the ownership of the tree below it.
+        let backend: Vec<usize> = owned
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.path == Path::new("/opt/snpanel/backend"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(owned[backend[0]].recursive && owned[backend[0]].mode.is_none());
+        assert_eq!(owned[backend[1]].mode, Some(0o750));
     }
 }

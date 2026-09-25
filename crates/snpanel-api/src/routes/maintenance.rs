@@ -1479,20 +1479,64 @@ async fn restore_backup(State(state): State<AppState>, req: axum::extract::Reque
     let destination = std::fs::canonicalize(&website.root_path)
         .unwrap_or_else(|_| std::path::PathBuf::from(&website.root_path));
 
+    // A site with its own Linux user - every site the installer has made -
+    // belongs to that user, so this process cannot write into it: unpacking
+    // straight into it answered "Permission denied" on every such site. The
+    // archive goes through the same filter into the panel's staging area, and
+    // the helper moves it in as root, the way the user restore and the
+    // importer already do. The site's tree becomes the backup's.
+    let linux_user = website.linux_user.clone().filter(|u| !u.is_empty());
+    let stage = match &linux_user {
+        Some(_) => match crate::da_import::make_import_stage() {
+            Some(stage) => Some(stage),
+            None => return bad_request("Could not make the staging directory"),
+        },
+        None => None,
+    };
+    let unpack_into = stage
+        .as_ref()
+        .map(|s| s.join("site"))
+        .unwrap_or_else(|| destination.clone());
     let archive_for_task = archive.clone();
-    let destination_for_task = destination.clone();
+    let unpack_for_task = unpack_into.clone();
     // Reading and writing a whole site is blocking and can take minutes, so
     // it does not run on a tokio worker other requests are waiting on.
     let extracted = tokio::task::spawn_blocking(move || {
-        extract_site_backup(&archive_for_task, &destination_for_task)
+        std::fs::create_dir_all(&unpack_for_task).map_err(|e| e.to_string())?;
+        extract_site_backup(&archive_for_task, &unpack_for_task)
     })
     .await;
-    match extracted {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return bad_request(&e),
+    let failed = match extracted {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(bad_request(&e)),
         Err(e) => {
             tracing::error!("the restore task failed: {e}");
-            return crate::errors::internal_error();
+            Some(crate::errors::internal_error())
+        }
+    };
+    if let Some(response) = failed {
+        if let Some(stage) = &stage {
+            let _ = std::fs::remove_dir_all(stage);
+        }
+        return response;
+    }
+    if let (Some(user), Some(stage)) = (&linux_user, &stage) {
+        let populated = shell::privileged(
+            state.settings.command_dry_run,
+            "site-populate",
+            &[user, &website.root_path, &unpack_into.to_string_lossy()],
+            None,
+            None,
+        )
+        .await;
+        // A full copy of a customer's files; it goes whether or not this worked.
+        let _ = std::fs::remove_dir_all(stage);
+        if !populated.ok() {
+            return bad_request(
+                populated
+                    .failure_detail("Could not restore the website files")
+                    .trim(),
+            );
         }
     }
 
@@ -3937,7 +3981,12 @@ async fn install_php_version(
     let result =
         shell::privileged(false, "php-install", &[&php_version], None, Some(&fallback)).await;
     if !result.ok() {
-        return internal_error();
+        // The helper's own words: "not available on this system", a package
+        // that failed - which the administrator can act on, where a bare
+        // "Internal server error" gave them nothing to go on.
+        let detail = result.failure_detail("PHP install failed");
+        tracing::error!("installing PHP {php_version} failed: {}", detail.trim());
+        return crate::errors::error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, detail.trim());
     }
     axum::Json(json!({
         "status": if already { "ensured" } else { "installed" },

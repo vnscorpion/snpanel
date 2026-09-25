@@ -14,8 +14,8 @@
 //! Plan §4.3.
 
 use crate::{
-    AppAction, AppRuntime, ArchiveKind, CrsMode, FileMode, HelperRequest, LogKind, NodeExec,
-    Protocol, ServiceAction, ServiceName,
+    AppAction, AppRuntime, ArchiveKind, AutoUpdateMode, CrsMode, FileMode, HelperRequest, LogKind,
+    NodeExec, Protocol, ServiceAction, ServiceName,
 };
 use snpanel_core::{AppName, DockerImage, IpOrCidr, PanelUsername, Port, SitePath};
 
@@ -226,6 +226,11 @@ impl Default for AppFlags<'_> {
             cpus: "1",
         }
     }
+}
+
+/// `on`, `1` or `true`: the ways the bash read a switch.
+fn switch(word: &str) -> bool {
+    matches!(word, "on" | "1" | "true")
 }
 
 impl HelperRequest {
@@ -495,8 +500,27 @@ impl HelperRequest {
                 Ok(service) => HelperRequest::ServiceStatus { service },
                 Err(e) => return Err(InvocationError::invalid(e.to_string())),
             },
+            // `on|off [security|all on|off]`. The Updates page has always sent
+            // all three - `on security off` - and with only the one-argument
+            // arm here every one of its calls was an unknown command: the
+            // switch did nothing, on every distribution.
             ("updates-os-auto", 1) => HelperRequest::UpdatesOsAuto {
-                enable: rest[0] == "on" || rest[0] == "1" || rest[0] == "true",
+                enable: switch(&rest[0]),
+                mode: AutoUpdateMode::Security,
+                auto_reboot: false,
+            },
+            ("updates-os-auto", 3) => HelperRequest::UpdatesOsAuto {
+                enable: switch(&rest[0]),
+                mode: match rest[1].as_str() {
+                    "security" => AutoUpdateMode::Security,
+                    "all" => AutoUpdateMode::All,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "invalid automatic update mode: {other}"
+                        )))
+                    }
+                },
+                auto_reboot: switch(&rest[2]),
             },
             ("waf-crs-mode", 1) => {
                 let mode = match rest[0].as_str() {
@@ -817,10 +841,19 @@ impl HelperRequest {
                         )))
                     }
                 };
+                // The user was only used to find the path, so every file this
+                // wrote was root's: `wp-config.php` at 0640 root:root is a
+                // file PHP-FPM, running as the site's user, cannot open, and
+                // every WordPress site answered 500.
+                let user = match PanelUsername::parse(&rest[0]) {
+                    Ok(u) => u,
+                    Err(e) => return Err(InvocationError::invalid(e.to_string())),
+                };
                 HelperRequest::SiteFileWrite {
                     path,
                     content: stdin_bytes(stdin),
                     mode,
+                    user: Some(user),
                 }
             }
             ("site-chmod", 4) => {
@@ -1322,6 +1355,38 @@ mod tests {
     /// The settings come from stdin and are checked before a request exists;
     /// a jail or an address is checked the same way.
     #[test]
+    fn a_site_file_write_carries_the_sites_user() {
+        let req = HelperRequest::from_argv(
+            &argv(&[
+                "site-file-write",
+                "alice",
+                "/home/alice/example.com",
+                "public_html/wp-config.php",
+                "0640",
+            ]),
+            || b"<?php".to_vec(),
+        )
+        .unwrap();
+        match req {
+            HelperRequest::SiteFileWrite { user, mode, .. } => {
+                assert_eq!(user.as_ref().map(PanelUsername::as_str), Some("alice"));
+                assert_eq!(mode, FileMode::SENSITIVE);
+            }
+            other => panic!("mapped to {other:?}"),
+        }
+        // A request serialized before the field existed still reads.
+        let old = serde_json::json!({
+            "op": "site-file-write",
+            "path": "/home/alice/example.com/public_html/x.txt",
+            "content": [104, 105],
+            "mode": 420,
+        });
+        if let Ok(HelperRequest::SiteFileWrite { user, .. }) = serde_json::from_value(old) {
+            assert!(user.is_none());
+        }
+    }
+
+    #[test]
     fn the_fail2ban_verbs_map() {
         let config = crate::Fail2banConfig::defaults(Some("203.0.113.7".parse().unwrap()));
         let json = serde_json::to_vec(&config).unwrap();
@@ -1589,6 +1654,9 @@ mod tests {
             &["site-log-read", "example.com", "access", "50"],
             &["site-log-clear", "example.com", "error"],
             &["site-logs-delete", "example.com"],
+            &["updates-os-auto", "on"],
+            &["updates-os-auto", "on", "security", "off"],
+            &["updates-os-auto", "off", "all", "on"],
             &[
                 "site-logs-read-many",
                 "access",

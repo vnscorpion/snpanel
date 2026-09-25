@@ -419,6 +419,13 @@ NODE
   npm --version
 }
 
+# One archive serves every PHP version: it is fetched for the first and kept
+# here for the rest of this install, and a download that has already failed
+# is not tried again for the next version - on a slow CDN each try costs
+# minutes, and the loader is optional.
+IONCUBE_ARCHIVE_CACHE=""
+IONCUBE_DOWNLOAD_FAILED="no"
+
 install_ioncube_loader() {
   local version="$1" arch url tmp archive loader target_dir target loader_ini_dir php_bin
   if command -v dpkg >/dev/null 2>&1; then
@@ -445,8 +452,17 @@ install_ioncube_loader() {
   # a timeout fatal instead meant one 29MB download from a third party could
   # end an install that had already configured nginx, PHP and the database.
   # It is a commercial-code loader; nothing in the panel needs it.
+  if [[ "$IONCUBE_DOWNLOAD_FAILED" == "yes" ]]; then
+    rm -rf -- "$tmp"
+    echo "Skipping ionCube Loader for PHP ${version}: the download already failed during this install"
+    return 0
+  fi
   local attempt
+  if [[ -n "$IONCUBE_ARCHIVE_CACHE" && -s "$IONCUBE_ARCHIVE_CACHE" ]]; then
+    cp -- "$IONCUBE_ARCHIVE_CACHE" "$archive"
+  fi
   for attempt in 1 2 3; do
+    [[ -s "$archive" ]] && break
     # --speed-limit/--speed-time abort a transfer that has stalled rather
     # than spending the whole budget on a connection delivering a few KB/s.
     # Without them three attempts at 300s each is fifteen minutes of an
@@ -458,6 +474,7 @@ install_ioncube_loader() {
     fi
     if [ "$attempt" -eq 3 ]; then
       rm -rf -- "$tmp"
+      IONCUBE_DOWNLOAD_FAILED="yes"
       echo "Skipping ionCube Loader: download failed after ${attempt} attempts"
       return 0
     fi
@@ -468,6 +485,10 @@ install_ioncube_loader() {
     rm -rf -- "$tmp"
     echo "Skipping ionCube Loader: the downloaded archive could not be unpacked"
     return 0
+  fi
+  if [[ -z "$IONCUBE_ARCHIVE_CACHE" ]]; then
+    IONCUBE_ARCHIVE_CACHE="$(mktemp /tmp/snpanel-ioncube-XXXXXX.tar.gz)" \
+      && cp -- "$archive" "$IONCUBE_ARCHIVE_CACHE" || IONCUBE_ARCHIVE_CACHE=""
   fi
   loader="${tmp}/ioncube/ioncube_loader_lin_${version}.so"
   if [[ ! -f "$loader" ]]; then
@@ -542,6 +563,19 @@ setup_php_compat_shim() {
 
   # `php8.4 -v` is used by the installer and by the panel's PHP tuning page.
   ln -sfn "$(php_binary "$version")" "/usr/local/bin/php${version}"
+
+  # The default pool keeps sessions, the WSDL cache and the opcache file cache
+  # in directories Remi gives to the apache group, for the account the pool
+  # ran as before it was moved to the web user - so phpMyAdmin, which this
+  # pool serves, could not start a session: "Cannot start signon session" on
+  # every sign-on. An ACL rather than chgrp, because the package puts the
+  # group back on every update and an ACL survives that.
+  local dir
+  for dir in session wsdlcache opcache; do
+    if [[ -d "/var/opt/remi/php${compact}/lib/php/${dir}" ]]; then
+      setfacl -m "g:${WEB_GROUP}:rwx" "/var/opt/remi/php${compact}/lib/php/${dir}"
+    fi
+  done
 }
 
 # Remi's default pool runs as apache and listens on a Remi-specific socket
@@ -790,8 +824,11 @@ build_frontend() {
   if [[ ! -f dist/index.html ]]; then
     fail "Frontend build failed: ${APP_DIR}/frontend/dist/index.html is missing"
   fi
-  # Nginx (as ${WEB_USER}) needs to read the bundle. The frontend is public anyway.
-  chmod o+rX "${APP_DIR}" "${APP_DIR}/frontend" 2>/dev/null || true
+  # Nginx (as ${WEB_USER}) needs to read the bundle. The frontend is public
+  # anyway; the app directory above it is passed through, not listed (0711,
+  # setup_panel_user).
+  chmod o+x "${APP_DIR}" 2>/dev/null || true
+  chmod o+rX "${APP_DIR}/frontend" 2>/dev/null || true
   chmod -R o+rX "${APP_DIR}/frontend/dist"
   echo "Frontend built: $(grep -oE 'index-[a-zA-Z0-9_-]+\.js' dist/index.html | head -n1 || echo 'unknown')"
 }
@@ -818,7 +855,16 @@ setup_panel_user() {
   chmod g+s /etc/nginx/snpanel/custom 2>/dev/null || true
 
   # Make the panel data dirs writable by snpanel.
-  install -d -o snpanel -g snpanel -m 0750 "$APP_DIR"
+  #
+  # The app directory is 0711, not 0750: the Node runtimes applications run
+  # on live under it (/opt/snpanel/node), and they run as the site's own
+  # user, who at 0750 could not reach them - every application failed with
+  # "Permission denied" on a fresh install. Traversal is all that grants: the
+  # directory cannot be listed, and the panel's secrets - .env and the
+  # database - are in backend/, which is 0750.
+  install -d -o snpanel -g snpanel -m 0711 "$APP_DIR"
+  install -d -o snpanel -g snpanel -m 0750 "$APP_DIR/backend"
+  chmod 0750 "$APP_DIR/backend"
   install -d -o snpanel -g snpanel -m 0750 "$BACKUP_ROOT"
   # DirectAdmin import staging dirs
   install -d -o snpanel -g snpanel -m 0750 /home/admin/snpanel_backups/da
@@ -1246,6 +1292,26 @@ setup_firewall() {
   return 0
 }
 
+# The sign-on endpoint redeems each token over 127.0.0.1, in whatever scheme
+# the panel serves. `setup_phpmyadmin_sso` writes it before the certificate
+# exists and can only follow ENABLE_SSL - which is "no" on this path, and "no"
+# still gets the self-signed certificate below. The endpoint then asked
+# http:// of a port that speaks only TLS, and every phpMyAdmin sign-on on the
+# box answered "Expired token".
+#
+# `snpanel-install phpmyadmin-signon` is what update.sh runs after it writes
+# the tools vhost: the address, the cookie's `secure` flag and
+# `PmaAbsoluteUri`, all from the certificate the panel now has. Never fatal:
+# phpMyAdmin is optional, and the panel itself is up by now.
+point_phpmyadmin_sso_at_panel() {
+  PANEL_PORT="$PANEL_PORT" PANEL_DOMAIN="${PANEL_DOMAIN:-}" \
+  SERVER_IP="${SERVER_IP:-$(detect_server_ip)}" \
+  PANEL_SSL_CERT="${PANEL_SSL_CERT:-}" PANEL_SSL_KEY="${PANEL_SSL_KEY:-}" \
+  PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" PHPMYADMIN_CONF_DIR="$PHPMYADMIN_CONF_DIR" \
+    "${RUST_BIN_DIR}/snpanel-install" phpmyadmin-signon \
+    || echo "WARNING: could not point phpMyAdmin's single sign-on at the panel" >&2
+}
+
 setup_selfsigned_ssl() {
   # No domain, or Let's Encrypt declined. The panel still takes an admin
   # password, so it gets a certificate of its own rather than answering in the
@@ -1283,6 +1349,7 @@ setup_selfsigned_ssl() {
   systemctl restart snpanel-api
   for _ in {1..20}; do
     if curl -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:${PANEL_PORT}/api/health" >/dev/null 2>&1; then
+      point_phpmyadmin_sso_at_panel
       return 0
     fi
     sleep 1
@@ -1300,6 +1367,7 @@ setup_selfsigned_ssl() {
     -e "s#^ALLOWED_ORIGINS=.*#ALLOWED_ORIGINS=${PANEL_URL}#" \
     "${APP_DIR}/backend/.env"
   systemctl restart snpanel-api
+  point_phpmyadmin_sso_at_panel
 }
 
 setup_ssl() {
@@ -1414,6 +1482,8 @@ cleanup_rust_binaries() {
 }
 
 cleanup_release_source() {
+  # The ionCube archive kept for the PHP versions after the first.
+  [[ -n "$IONCUBE_ARCHIVE_CACHE" ]] && rm -f -- "$IONCUBE_ARCHIVE_CACHE"
   [[ "${CLEAN_RELEASE_SOURCE:-true}" == "true" ]] || return 0
   [[ "$PROJECT_ROOT" == "/opt/snpanel-source" ]] || return 0
   [[ ! -d "${PROJECT_ROOT}/.git" ]] || return 0

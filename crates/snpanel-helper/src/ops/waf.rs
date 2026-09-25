@@ -112,7 +112,31 @@ fn count_site_rules() -> usize {
         .unwrap_or(0)
 }
 
-/// `waf-crs-mode`.
+/// Source: `CRS_AUDIT_LOG`. Where a CRS verdict and every rule behind it
+/// land - the nginx error log is the wrong place to look.
+const CRS_AUDIT_LOG: &str = "/var/log/nginx/snpanel-modsec-audit.log";
+
+/// Source: `crs_setup_file` - beside the rules or one level up, and the
+/// `.example` when the package ships only that.
+const CRS_SETUP_FILES: &[&str] = &[
+    "/etc/modsecurity/crs/crs-setup.conf",
+    "/usr/share/modsecurity-crs/crs-setup.conf",
+    "/etc/modsecurity/crs/crs-setup.conf.example",
+    "/usr/share/modsecurity-crs/crs-setup.conf.example",
+];
+
+/// The marker the port wrote instead of `CRS_MODE_FILE`, which nothing reads.
+const STRAY_MODE_MARKER: &str = "/etc/nginx/modsec/crs-mode";
+
+/// `waf-crs-mode`: the OWASP rule set off, or on in detect or block mode.
+///
+/// Source: `set_waf_crs_mode`, `install_waf_crs` and `write_crs_conf`. The
+/// port kept only the mode, and wrote it to `crs-mode`, a file nothing reads,
+/// while `snpanel-crs.conf`, the include every CRS site names, was never
+/// written at all. On every box installed since, the page said detect or
+/// block and nothing ran, and switching CRS on for a site pointed its rules at
+/// a file that did not exist: nginx refused it, and the rollback left the
+/// vhost naming a rules file that was gone.
 pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
     if let Err(e) = std::fs::create_dir_all(WAF_DIR) {
         return HelperResponse::failed(
@@ -120,14 +144,200 @@ pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
             format!("creating {WAF_DIR}: {e}"),
         );
     }
-    let marker = Path::new(WAF_DIR).join("crs-mode");
-    if let Err(e) = std::fs::write(&marker, format!("{}\n", mode.as_str())) {
+    let _ = std::fs::remove_file(STRAY_MODE_MARKER);
+    // Off must always work, whatever the machine has: it is the way out of a
+    // bad state.
+    if mode == CrsMode::Off {
+        match std::fs::remove_file(CRS_CONF) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return HelperResponse::failed(
+                    HelperErrorKind::Internal,
+                    format!("removing {CRS_CONF}: {e}"),
+                )
+            }
+        }
+        if let Err(resp) = write_crs_mode(mode) {
+            return resp;
+        }
+        let mut resp = HelperResponse::with_stdout("OWASP CRS disabled\n");
+        resp.data = Some(serde_json::json!({ "crs_mode": mode.as_str() }));
+        return resp;
+    }
+    if !engine_present() {
         return HelperResponse::failed(
-            HelperErrorKind::Internal,
-            format!("writing {}: {e}", marker.display()),
+            HelperErrorKind::BadRequest,
+            "cannot turn the OWASP rule set on: nginx has no ModSecurity module on this server, \
+             so the rules would not run. Recording the setting anyway would show a protection \
+             in the panel that is not there.",
         );
     }
-    HelperResponse::with_data(serde_json::json!({ "crs_mode": mode.as_str() }))
+    let mut out = String::new();
+    if crs_rules_dir().is_none() {
+        if let Ok(o) = super::packages::update_index() {
+            out.push_str(&o.stdout);
+        }
+        match super::packages::install_packages(&["modsecurity-crs"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            _ => {
+                return HelperResponse::failed(
+                    HelperErrorKind::CommandFailed,
+                    "could not install modsecurity-crs from this system's repositories",
+                )
+            }
+        }
+    }
+    let Some(rules) = crs_rules_dir() else {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            "modsecurity-crs installed but no rules directory found",
+        );
+    };
+    let setup = first_existing(CRS_SETUP_FILES);
+
+    // The worker opens the audit log, so it has to exist and be the web
+    // account's before the configuration names it.
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(CRS_AUDIT_LOG);
+    if let Err(e) = opened {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {CRS_AUDIT_LOG}: {e}"),
+        );
+    }
+    let owner = format!("{}:adm", web_account());
+    let _ = exec::run(&["chown", &owner, CRS_AUDIT_LOG]);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(CRS_AUDIT_LOG, std::fs::Permissions::from_mode(0o640));
+    }
+
+    let text = crs_conf_text(mode, &rules, setup.as_deref());
+    if let Err(e) = crate::ops::nginx::write_atomic(Path::new(CRS_CONF), text.as_bytes(), 0o644) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {CRS_CONF}: {e}"),
+        );
+    }
+    if let Err(resp) = write_crs_mode(mode) {
+        return resp;
+    }
+    out.push_str(&format!("OWASP CRS mode: {}\n", mode.as_str()));
+    let mut resp = HelperResponse::with_stdout(out);
+    resp.data = Some(serde_json::json!({ "crs_mode": mode.as_str() }));
+    resp
+}
+
+fn write_crs_mode(mode: CrsMode) -> Result<(), HelperResponse> {
+    crate::ops::nginx::write_atomic(
+        Path::new(CRS_MODE_FILE),
+        format!("{}\n", mode.as_str()).as_bytes(),
+        0o644,
+    )
+    .map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {CRS_MODE_FILE}: {e}"),
+        )
+    })
+}
+
+/// Source: `write_crs_conf`, line for line.
+///
+/// CRS scores a request across many rules and acts only when the total
+/// crosses a threshold. Detect mode puts the threshold out of reach, so the
+/// blocking rule never refuses anything, and adds two rules of the panel's
+/// own that read the same scores and only log - raising the threshold alone
+/// silences the logging too, so detect mode would observe nothing.
+fn crs_conf_text(mode: CrsMode, rules: &Path, setup: Option<&Path>) -> String {
+    let mut lines = vec![
+        "# SNPanel OWASP CRS include - generated, do not edit".to_string(),
+        format!("# mode: {}", mode.as_str()),
+        // CRS without request bodies sees only the URL.
+        "SecRequestBodyAccess On".to_string(),
+        "SecRequestBodyLimit 13107200".to_string(),
+        "SecRequestBodyNoFilesLimit 131072".to_string(),
+        // Over the limit is inspected as far as it goes and then passed:
+        // refusing would turn every large media upload into a 413.
+        "SecRequestBodyLimitAction ProcessPartial".to_string(),
+        "SecAuditEngine RelevantOnly".to_string(),
+        "SecAuditLogParts ABIJDEFHZ".to_string(),
+        "SecAuditLogType Serial".to_string(),
+        format!("SecAuditLog {CRS_AUDIT_LOG}"),
+    ];
+    if let Some(setup) = setup {
+        lines.push(format!("Include {}", setup.display()));
+    }
+    let (inbound, outbound) = if mode == CrsMode::Detect {
+        (1_000_000, 1_000_000)
+    } else {
+        (5, 4)
+    };
+    lines.push(format!(
+        "SecAction \"id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold={inbound},setvar:tx.outbound_anomaly_score_threshold={outbound}\""
+    ));
+    lines.push(
+        "SecAction \"id:900000,phase:1,nolog,pass,t:none,setvar:tx.blocking_paranoia_level=1\""
+            .to_string(),
+    );
+    lines.push(format!("Include {}/*.conf", rules.display()));
+    if mode == CrsMode::Detect {
+        // After the rules, so the score is final; 5 and 4 are block mode's
+        // thresholds, so this reports exactly what block mode would refuse.
+        lines.push("SecRule TX:ANOMALY_SCORE \"@ge 5\" \"id:1009001,phase:2,pass,log,auditlog,msg:'SNPanel CRS detect: inbound score %{tx.anomaly_score}, block mode would have refused this request'\"".to_string());
+        lines.push("SecRule TX:OUTBOUND_ANOMALY_SCORE \"@ge 4\" \"id:1009002,phase:4,pass,log,auditlog,msg:'SNPanel CRS detect: outbound score %{tx.outbound_anomaly_score}, block mode would have refused this response'\"".to_string());
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// Source: `waf_engine_present` - does nginx have the ModSecurity module?
+///
+/// Asked of nginx rather than of the distribution, three ways: Debian's load
+/// file, a static build's configure line, and a `load_module` in the files
+/// nginx itself includes at the top level.
+fn engine_present() -> bool {
+    if Path::new("/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf").exists() {
+        return true;
+    }
+    if let Ok(o) = exec::run(&["nginx", "-V"]) {
+        if format!("{}{}", o.stdout, o.stderr)
+            .to_lowercase()
+            .contains("modsecurity")
+        {
+            return true;
+        }
+    }
+    let mut files = vec![std::path::PathBuf::from("/etc/nginx/nginx.conf")];
+    for dir in ["/etc/nginx/modules-enabled", "/usr/share/nginx/modules"] {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            files.extend(
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|x| x == "conf")),
+            );
+        }
+    }
+    files.iter().any(|f| {
+        std::fs::read_to_string(f).is_ok_and(|text| {
+            text.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with("load_module") && l.to_lowercase().contains("modsecurity")
+            })
+        })
+    })
+}
+
+/// The account nginx's workers run as: `www-data` or `nginx`.
+fn web_account() -> String {
+    snpanel_osabi::detect()
+        .map(|p| p.web_user().to_string())
+        .unwrap_or_else(|_| "www-data".to_string())
 }
 
 /// `waf-crs-status`.
@@ -314,6 +524,7 @@ pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
     }
     // The domain is a Domain, so the filename cannot traverse.
     let path = Path::new(WAF_SITE_DIR).join(format!("{domain}.conf"));
+    let previous = std::fs::read(&path).ok();
     if let Err(e) = std::fs::write(&path, content) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -321,20 +532,37 @@ pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
         );
     }
     // A bad rule file stops nginx from starting, so it is validated before it
-    // is allowed to stay.
+    // is allowed to stay - and a rejected one gives way to the one it
+    // replaced, as the bash's backup did. Removing it instead left a site
+    // whose vhost names this file with no file there, which fails `nginx -t`
+    // for the whole machine until something rewrites it.
     let checked = exec::run(&["nginx", "-t"]);
-    if matches!(&checked, Ok(o) if o.ok()) {
-        return HelperResponse::ok();
+    if !matches!(&checked, Ok(o) if o.ok()) {
+        let (restored, what) = match &previous {
+            Some(bytes) => (std::fs::write(&path, bytes), "previous rules restored"),
+            None => (std::fs::remove_file(&path), "file removed"),
+        };
+        let mut resp = exec::respond("nginx -t", checked);
+        if let Some(err) = resp.error.as_mut() {
+            err.message = format!(
+                "WAF rules for {domain} rejected, {}: {}",
+                if restored.is_ok() {
+                    what
+                } else {
+                    "and could not be undone"
+                },
+                err.message
+            );
+        }
+        return resp;
     }
-    let _ = std::fs::remove_file(&path);
-    let mut resp = exec::respond("nginx -t", checked);
-    if let Some(err) = resp.error.as_mut() {
-        err.message = format!(
-            "WAF rules for {domain} rejected, file removed: {}",
-            err.message
-        );
+    // Rules are read when nginx loads its configuration, so without a reload
+    // a saved change waited for whatever reloaded nginx next.
+    let reloaded = exec::run(&["systemctl", "reload", "nginx"]);
+    if !matches!(&reloaded, Ok(o) if o.ok()) {
+        return exec::respond("systemctl reload nginx", reloaded);
     }
-    resp
+    HelperResponse::with_stdout(format!("WAF site rules saved: {domain}\n"))
 }
 
 /// `waf-site-delete`.
@@ -621,6 +849,48 @@ pub(crate) fn rewrite_rule_engine(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CRS include as `write_crs_conf` wrote it, for both modes.
+    #[test]
+    fn the_crs_include_is_the_bashs() {
+        let rules = Path::new("/usr/share/modsecurity-crs/rules");
+        let setup = Path::new("/etc/modsecurity/crs/crs-setup.conf");
+        let detect = crs_conf_text(CrsMode::Detect, rules, Some(setup));
+        let lines: Vec<&str> = detect.lines().collect();
+        assert_eq!(
+            lines[0],
+            "# SNPanel OWASP CRS include - generated, do not edit"
+        );
+        assert_eq!(lines[1], "# mode: detect");
+        assert!(detect.contains("\nSecAuditLog /var/log/nginx/snpanel-modsec-audit.log\nInclude /etc/modsecurity/crs/crs-setup.conf\n"));
+        assert!(detect.contains("tx.inbound_anomaly_score_threshold=1000000,setvar:tx.outbound_anomaly_score_threshold=1000000\""));
+        // The rules, then the two logging rules after them.
+        let rules_at = detect
+            .find("Include /usr/share/modsecurity-crs/rules/*.conf")
+            .unwrap();
+        assert!(detect.find("id:1009001").unwrap() > rules_at);
+        assert!(detect.find("id:1009002").unwrap() > rules_at);
+        assert!(detect.ends_with("would have refused this response'\"\n"));
+
+        let block = crs_conf_text(CrsMode::Block, rules, None);
+        assert!(block.contains("# mode: block\n"));
+        assert!(block.contains(
+            "inbound_anomaly_score_threshold=5,setvar:tx.outbound_anomaly_score_threshold=4\""
+        ));
+        assert!(!block.contains("1009001") && !block.contains("crs-setup"));
+        assert!(block.ends_with("Include /usr/share/modsecurity-crs/rules/*.conf\n"));
+        // Every rule id appears once: a duplicate id refuses the whole set.
+        for text in [&detect, &block] {
+            let mut ids: Vec<&str> = text
+                .match_indices("id:")
+                .map(|(i, _)| &text[i..i + 10])
+                .collect();
+            let before = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), before, "{text}");
+        }
+    }
 
     /// This file has three authors — the installer, this, and the panel's
     /// own per-site copy — and the first two are meant to be byte-identical.

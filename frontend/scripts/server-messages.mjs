@@ -99,6 +99,7 @@ const IGNORED = new Set([
   "{0} does not look like the panel's database (no users/websites table)",
   'Would {action} php{php_version} and SNPanel extensions',
   'request is {0} bytes, over the limit', 'request is malformed: {0}', 'protocol version {got}, but this helper speaks {expected}',
+  'Automatic updates (dnf-automatic):', 'when needed', 'LocalSocket /run/clamd.scan/clamd.sock', 'apt-get install unattended-upgrades', 'dnf install dnf-automatic', 'curl docker-ce.repo', 'apt-get install ca-certificates curl gnupg', 'curl docker gpg key',
 ]);
 
 function walk(dir) {

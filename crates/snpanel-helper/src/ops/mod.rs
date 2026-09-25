@@ -217,7 +217,8 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             path,
             content,
             mode,
-        } => site::file_write(path, content, *mode),
+            user,
+        } => site::file_write(path, content, *mode, user.as_ref()),
         HelperRequest::SiteChmod {
             path,
             mode,
@@ -356,7 +357,11 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::ServiceStatus { service } => misc::service_status(service),
         HelperRequest::UpdatesStatus => misc::updates_status(),
         HelperRequest::UpdatesOsRun => misc::updates_os_run(),
-        HelperRequest::UpdatesOsAuto { enable } => misc::updates_os_auto(*enable),
+        HelperRequest::UpdatesOsAuto {
+            enable,
+            mode,
+            auto_reboot,
+        } => misc::updates_os_auto(*enable, *mode, *auto_reboot),
 
         // --- waf / malware ---
         HelperRequest::WafStatus => waf::status(),
@@ -555,8 +560,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // Two units carry an ExecStart today. A refactor that stopped this
-        // test finding them would leave it passing while checking nothing.
-        assert_eq!(checked, 2, "expected to check two ExecStart lines");
+        // Three units carry an ExecStart today - the firewall's boot unit is
+        // the third. A refactor that stopped this test finding them would
+        // leave it passing while checking nothing.
+        assert_eq!(checked, 3, "expected to check three ExecStart lines");
     }
 }

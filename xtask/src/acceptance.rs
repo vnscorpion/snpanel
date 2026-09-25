@@ -237,7 +237,18 @@ pub fn waf_agreement(helper_says: Option<bool>, engine_present: bool) -> Result<
 
 /// What the panel's `/api/waf/status` body has to say, given the machine.
 pub fn waf_status_verdict(body: &str, engine_present: bool) -> Result<&'static str, &'static str> {
-    let claims_absent = body.to_ascii_lowercase().contains("not installed");
+    // The body is the helper's command result, and its stdout is the helper's
+    // JSON now - `"installed": false`, not the words the shell printed. Read
+    // only for the words, a machine without the module was called a liar for
+    // saying so correctly.
+    let from_json = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("stdout").and_then(|s| s.as_str()).map(str::to_string))
+        .and_then(|stdout| helper_engine_installed(&stdout));
+    let claims_absent = match from_json {
+        Some(installed) => !installed,
+        None => body.to_ascii_lowercase().contains("not installed"),
+    };
     match (engine_present, claims_absent) {
         (false, true) => Ok("the panel reports it as not installed, which is true"),
         (false, false) => Err("the panel claims an engine this machine does not have"),
@@ -993,6 +1004,13 @@ mod tests {
         assert!(waf_status_verdict("{\"engine\":\"ModSecurity 3\"}", true).is_ok());
         assert!(waf_status_verdict("{\"engine\":\"ModSecurity 3\"}", false).is_err());
         assert!(waf_status_verdict("{\"engine\":\"not installed\"}", true).is_err());
+        // The command result the API returns now, with the helper's JSON in it.
+        let absent = r#"{"command":"waf-status","returncode":0,"stdout":"{\n  \"installed\": false,\n  \"crs_mode\": \"off\"\n}\n","stderr":""}"#;
+        let present = r#"{"command":"waf-status","returncode":0,"stdout":"{\n  \"installed\": true\n}\n","stderr":""}"#;
+        assert!(waf_status_verdict(absent, false).is_ok());
+        assert!(waf_status_verdict(absent, true).is_err());
+        assert!(waf_status_verdict(present, true).is_ok());
+        assert!(waf_status_verdict(present, false).is_err());
     }
 
     #[test]

@@ -617,6 +617,12 @@ fn phase_phpmyadmin_signon() -> Result<(), String> {
             signon_edits::rewrite_absolute_uri(text, scheme, host)
         });
     }
+    // A box installed before the directory was made here has it `0755` on EL,
+    // and phpMyAdmin's sign-on fails there until this runs. Only where the
+    // shim is: no phpMyAdmin, nothing to keep a session for.
+    if shim.is_file() {
+        session_dir()?;
+    }
     Ok(())
 }
 
@@ -696,7 +702,17 @@ fn phase_phpmyadmin_sso() -> Result<(), String> {
     let api_base = phpmyadmin::api_base(secure, panel_port);
     write_conf(&signon, &phpmyadmin::signon_php(&api_base, secure))?;
     set_mode(&signon, phpmyadmin::SIGNON_MODE)?;
-    Ok(())
+    session_dir()
+}
+
+/// `install -d -o root -g root -m 1733 /var/lib/php/sessions`: the directory
+/// both sign-on files keep the session in, as Debian's `php-common` makes it.
+/// On the Debian family it is already exactly that and nothing changes; on
+/// EL no package makes it, and this is what does.
+fn session_dir() -> Result<(), String> {
+    let dir = phpmyadmin::SESSION_DIR;
+    std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {dir}: {e}"))?;
+    set_owner_and_mode(dir, "root", "root", phpmyadmin::SESSION_DIR_MODE)
 }
 
 /// `chown <owner>:<group> <path>` then `chmod <mode> <path>`.

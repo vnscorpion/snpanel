@@ -130,6 +130,14 @@ pub fn apply(ruleset: &FirewallRuleset) -> HelperResponse {
     let loaded = exec::run(&["nft", "-f", RULESET_PATH]);
     let mut resp = exec::respond("nft -f", loaded);
     if resp.ok {
+        // A ruleset lives in the running kernel only. Without the unit that
+        // loads it at boot, every machine installed since the port came back
+        // from its first reboot with no firewall at all, while the panel went
+        // on saying "enabled".
+        if let Err(e) = write_boot_unit() {
+            resp.stdout
+                .push_str(&format!("warning: the boot unit was not written: {e}\n"));
+        }
         resp.data = Some(serde_json::json!({
             "rules": ruleset.rules.len(),
             "protected_ports": ruleset.protected_ports,
@@ -142,6 +150,58 @@ pub fn apply(ruleset: &FirewallRuleset) -> HelperResponse {
         }));
     }
     resp
+}
+
+/// Source: `firewall_write_boot_unit`.
+pub const BOOT_UNIT_PATH: &str = "/etc/systemd/system/snpanel-firewall.service";
+
+/// The unit that loads the ruleset at boot, before the network and nginx.
+///
+/// `SUDO_USER` because that is who the helper records as its caller when it
+/// is run by hand; systemd runs it as root and nobody else.
+pub const BOOT_UNIT: &str = "[Unit]
+Description=SNPanel firewall (nftables)
+After=network-pre.target
+Wants=network-pre.target
+Before=network.target nginx.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=SUDO_USER=snpanel
+ExecStart=/usr/local/sbin/snpanel-helper firewall-apply
+ExecStop=/usr/local/sbin/snpanel-helper firewall-flush
+
+[Install]
+WantedBy=multi-user.target
+";
+
+/// Write the boot unit when it differs, and enable it - not `--now`: the
+/// ruleset was just loaded, and starting the unit would load it again.
+fn write_boot_unit() -> Result<(), String> {
+    let current = std::fs::read_to_string(BOOT_UNIT_PATH).unwrap_or_default();
+    if current != BOOT_UNIT {
+        super::nginx::write_atomic(
+            std::path::Path::new(BOOT_UNIT_PATH),
+            BOOT_UNIT.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("writing {BOOT_UNIT_PATH}: {e}"))?;
+        let _ = exec::run(&["systemctl", "daemon-reload"]);
+    }
+    let enabled = exec::run(&[
+        "systemctl",
+        "is-enabled",
+        "--quiet",
+        "snpanel-firewall.service",
+    ]);
+    if !matches!(&enabled, Ok(o) if o.ok()) {
+        let out = exec::run(&["systemctl", "enable", "snpanel-firewall.service"]);
+        if !matches!(&out, Ok(o) if o.ok()) {
+            return Err("systemctl enable snpanel-firewall.service failed".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Remove SNPanel's table entirely. This is `firewall-flush`, and it is what
@@ -695,6 +755,21 @@ pub(crate) fn blocklist_status_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What brings the firewall back at boot: the helper's own apply, before
+    /// the network and nginx, and its flush when the unit is stopped.
+    #[test]
+    fn the_boot_unit_loads_the_ruleset_before_the_network() {
+        assert!(BOOT_UNIT.contains("\nExecStart=/usr/local/sbin/snpanel-helper firewall-apply\n"));
+        assert!(BOOT_UNIT.contains("\nExecStop=/usr/local/sbin/snpanel-helper firewall-flush\n"));
+        assert!(BOOT_UNIT.contains("\nBefore=network.target nginx.service\n"));
+        assert!(BOOT_UNIT.contains("\nType=oneshot\nRemainAfterExit=yes\n"));
+        assert!(BOOT_UNIT.contains("\nWantedBy=multi-user.target\n"));
+        assert_eq!(
+            BOOT_UNIT_PATH,
+            "/etc/systemd/system/snpanel-firewall.service"
+        );
+    }
 
     /// The URL check is `^https?://[^[:space:]]+$` and nothing more.
     ///

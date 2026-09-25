@@ -52,23 +52,51 @@ pub fn nginx_dirs() -> Vec<ManagedDir> {
 /// their database dumps in plaintext while an import runs, and the upload
 /// one a file on its way into their site.
 pub fn data_dirs(app_dir: &'static str, backup_root: &'static str) -> Vec<ManagedDir> {
-    [
-        app_dir,
-        backup_root,
-        "/home/admin/snpanel_backups/da",
-        "/var/lib/snpanel/da-import",
-        "/var/lib/snpanel/import-stage",
-        "/var/lib/snpanel/upload-stage",
-    ]
-    .into_iter()
-    .map(|path| ManagedDir {
-        path,
-        owner: "snpanel",
-        group: "snpanel",
-        mode: 0o750,
-    })
-    .collect()
+    // The app directory itself is traversable - the Node runtimes applications
+    // run on live under it, and they run as the site's own user - and its
+    // secrets are one level down, in `backend`, which is not.
+    let mut dirs = vec![
+        ManagedDir {
+            path: app_dir,
+            owner: "snpanel",
+            group: "snpanel",
+            mode: APP_DIR_MODE,
+        },
+        ManagedDir {
+            path: APP_BACKEND_DIR,
+            owner: "snpanel",
+            group: "snpanel",
+            mode: APP_BACKEND_DIR_MODE,
+        },
+    ];
+    dirs.extend(
+        [
+            backup_root,
+            "/home/admin/snpanel_backups/da",
+            "/var/lib/snpanel/da-import",
+            "/var/lib/snpanel/import-stage",
+            "/var/lib/snpanel/upload-stage",
+        ]
+        .into_iter()
+        .map(|path| ManagedDir {
+            path,
+            owner: "snpanel",
+            group: "snpanel",
+            mode: 0o750,
+        }),
+    );
+    dirs
 }
+
+/// Where `.env` and the panel's database live: the one part of the app
+/// directory nobody but the panel may enter.
+pub const APP_BACKEND_DIR: &str = "/opt/snpanel/backend";
+
+/// The app directory: passed through by everyone, listed by nobody else.
+/// Every update puts it back, because the sync gives it the source tree's.
+pub const APP_DIR_MODE: u32 = 0o711;
+/// [`APP_BACKEND_DIR`]: the panel's and its group's, nobody else's.
+pub const APP_BACKEND_DIR_MODE: u32 = 0o750;
 
 /// `openssl rand -base64 32 | tr -d '/+=' | cut -c1-32`.
 ///
@@ -362,9 +390,17 @@ mod tests {
     #[test]
     fn nothing_the_panel_stores_is_world_readable() {
         for dir in data_dirs("/opt/snpanel", "/var/backups/snpanel") {
-            assert_eq!(dir.mode & 0o007, 0, "{} is world-readable", dir.path);
+            // The app directory may be passed through, never read: its
+            // secrets are in `backend`, which is held to the rule.
+            let allowed = if dir.path == "/opt/snpanel" { 0o001 } else { 0 };
+            assert_eq!(dir.mode & 0o007, allowed, "{} is world-readable", dir.path);
             assert_eq!(dir.owner, "snpanel", "{}", dir.path);
         }
+        let backend = data_dirs("/opt/snpanel", "/var/backups/snpanel")
+            .into_iter()
+            .find(|d| d.path == APP_BACKEND_DIR)
+            .expect("backend is among them");
+        assert_eq!(backend.mode, 0o750);
     }
 
     #[test]

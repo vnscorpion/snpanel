@@ -4,7 +4,7 @@ Tracks `RUST_MIGRATION_PLAN.md`. The plan estimates 8–9 months with two
 engineers; this records exactly how far along that road the tree is, so nobody
 has to infer it from the code.
 
-**Where we are: Phases 0-2 landed. Phase 3 is running in front of the live panel - Rust holds the certificate on the public port, serves eleven routers natively in whole or in part, and proxies the rest.**
+**Where we are: every phase has landed. The panel is Rust from end to end - API, helper, installer and command line - and no Python runs on a machine it installs. A clean install has been checked on Ubuntu 24.04, Debian 13 and AlmaLinux 10; the last section records how, and what that found.**
 
 The plan's definition of done for Phase 2 is "the current Python runs with the Rust helper in place of the bash one". That has happened, on the container installation, and it is the first point in this work where Rust is serving real requests rather than being tested beside them.
 
@@ -2819,24 +2819,21 @@ routers that sit on them.
 ## Running it
 
 ```bash
-cargo test --workspace          # 280 tests
-cargo run -p xtask -- golden-nginx
-cargo build --release           # target/release/snpanel, ~930 KB
-cargo build --release --target x86_64-unknown-linux-musl -p snpanel-cli
-                                # fully static, 1.1 MB, no glibc dependency
-./target/release/snpanel doctor
+cargo test --workspace          # 1,773 tests
+cargo build --release --target x86_64-unknown-linux-musl --workspace
+                                # the static binaries install.sh prefers
+                                # to a release download
+./target/x86_64-unknown-linux-musl/release/snpanel doctor
+sudo ./target/x86_64-unknown-linux-musl/release/xtask acceptance
+                                # on an installed server
+sudo bash tools/os-check/run.sh make ub24t   # and install, check - see the
+                                # script's header, and the last section
 ```
 
-Regenerating the compatibility fixtures needs the backend's own dependency set:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
-.venv/bin/python tests/fixtures/generate.py
-```
-
-`bcrypt.json` and `fernet.json` change on every run (random salt, random IV).
-Everything else is deterministic, and CI fails if it drifts.
+The compatibility fixtures were recorded from the production Python by
+`tests/fixtures/generate.py`, which needs `backend/requirements.txt` - gone
+with the Python. They are fixed inputs now: nothing regenerates them, and CI
+fails if the Rust stops agreeing with them.
 
 ---
 
@@ -4420,3 +4417,236 @@ assuming.
 Not needed for any of this. The release pipeline builds Rust for one target
 and the crate holding the installer's logic already exists; a second
 toolchain would buy nothing and add a build to keep green.
+
+---
+
+## Three distributions, from a clean install
+
+Everything above was verified by the tests and on one installation - the
+Debian 13 container the panel runs on. The README promises three
+distributions. This is the first time all three were installed from nothing
+and put through the same checks, and it found twenty bugs that one machine
+and the tests had not.
+
+### The method
+
+Each distribution got a fresh systemd-nspawn machine: Ubuntu 24.04 and
+Debian 13 from `debootstrap`, AlmaLinux 10.2 from its official image.
+`installer/install.sh` ran as the one-line installer runs it, answering no
+prompts, with `ENABLE_SSL=no` so the panel made its own certificate. Then
+four checks, on each:
+
+* `xtask acceptance` - the installation's own check, 30 of them;
+* `tools/os-check/smoke.mjs` - every feature driven through the API the way
+  its page drives it: a site on each PHP version and a switch between them,
+  WordPress, databases and phpMyAdmin's sign-on, certificates, backups and a
+  restore, the file manager, cron, SFTP, the firewall, Fail2ban, the WAF, the
+  MCP addon, Node applications, the terminal, automatic updates, and adding a
+  PHP version from the panel;
+* `tools/ui-audit/ui-errors.mjs` - every page opened as the administrator in
+  a real browser, failing on any console error or any 4xx or 5xx;
+* a reboot, and the firewall and the panel checked again.
+
+`tools/os-check/run.sh` makes the machines and runs the first two. It is how
+to repeat this for a release.
+
+### Results
+
+| | Ubuntu 24.04 | Debian 13 | AlmaLinux 10.2 |
+| --- | --- | --- | --- |
+| install | exit 0, 1358 s | exit 0, 1511 s ¹ | exit 0, 1961 s |
+| acceptance, `main` as it was | 29 of 29 | 28 of 28 | 26 of 28 ² |
+| smoke, `main` as it was | 65 pass, 15 fail | 72 pass, 8 fail | 75 pass, 2 fail ² |
+| acceptance, fixed | 30 of 30 | 30 of 30 | 30 of 30 |
+| smoke, fixed | 82 of 82 | 82 of 82 | 79 of 79 ³ |
+| every page in a browser | 24 of 24 clean | 24 of 24 clean | 24 of 24 clean |
+| after a reboot | firewall loaded, panel 200 | firewall loaded, panel 200 | firewall loaded, panel 200 |
+| `update.sh` from this tree | exit 0, acceptance 30 of 30 | exit 0, acceptance 30 of 30 | exit 0, acceptance 30 of 30, smoke 79 of 79 |
+| smoke with ClamAV, LMD and Docker | 88 of 88 | 88 of 88 | 85 of 85 ³ |
+
+¹ With the container workaround for MariaDB below.
+² AlmaLinux was installed from the tree with the first round of fixes in it,
+  not from `main`; these are what that round left.
+³ The three ModSecurity checks do not apply: AlmaLinux has no module for
+  nginx, and the page says so.
+
+The last row is the part that needs memory the host could not give three
+machines at once, so it ran one machine at a time: Docker CE installed from
+the panel and running, LMD installed by switching the scanner on and a
+site scanned with it, and `clamd` installed by switching upload scanning on,
+with the EICAR file refused and a clean one let through. On AlmaLinux that
+is the first time the EL installs of all three had run anywhere.
+
+The smoke test had that section wrong twice before it passed, and both are
+worth knowing about beyond the test:
+
+* It switched upload scanning on with the scanner off. That records the
+  wish and installs nothing - "Uploads will be scanned once the malware
+  scanner is on" - and the test waited twenty minutes for a daemon nothing
+  had been asked to install. The panel is right; the test now turns the
+  scanner on first. But turning the scanner on afterwards does not install
+  the daemon either, although upload scanning is on by default: uploads are
+  then scanned with one-shot `clamscan`, which works and is slow, until
+  upload scanning is switched off and on again. The doc comment on
+  `upload_scan_plan` says "the daemon starts when the scanner does"; it
+  does not.
+* It started a scan as soon as the status said `installed`, which is true
+  the moment the scanner's install has pulled in ClamAV, while LMD is still
+  arriving. The scan took the ClamAV path and failed with "ClamAV daemon is
+  not running". Both halves - the status and the engine choice - are ported
+  from the Python as they were, and an administrator who clicks Scan in
+  that minute will see the same.
+
+### What it found on every distribution
+
+These were on `main`, and the first run on Ubuntu found all of them.
+
+1. **Automatic updates did nothing.** The Updates page sends three words -
+   `on security off`, the switch, what to apply and whether to reboot - and
+   the helper's argv mapping had only the one-word arm, so every call was an
+   unknown command. Behind that, the operation switched one unit: Debian's
+   timers ran and upgraded nothing without `20auto-upgrades`, and a machine
+   without the package had nothing to switch. It now writes `20auto-upgrades`
+   and the panel's own policy - security or every origin, reboot or not - on
+   the Debian family, and `dnf-automatic`'s `[commands]` on EL, installing
+   the package where it is missing.
+2. **Every WordPress site answered 500.** `site-file-write` used the site's
+   user to find the path and then dropped it, so `wp-config.php` was written
+   `0640 root:root`: a file PHP-FPM, running as the site's user, cannot open.
+   It is the user's and the sites group's now, set on the temporary before
+   the rename, so there is no moment in which the file is root's.
+3. **The OWASP rule set never ran.** The port kept only the mode and wrote it
+   to a file nothing reads; `snpanel-crs.conf`, the include every CRS site
+   names, was never written. The page said detect or block while nothing ran,
+   and switching CRS on for a site pointed nginx at a file that was not
+   there. `waf-crs-mode` is now the bash's three functions in full, and a
+   site's rules that fail `nginx -t` give way to the ones they replaced
+   instead of leaving the vhost naming nothing.
+4. **The firewall did not survive a reboot.** A ruleset lives in the running
+   kernel. The bash wrote a unit that loads it at boot; the port did not, so
+   every machine installed since came back from its first reboot with no
+   firewall while the panel went on saying "enabled".
+   `snpanel-firewall.service` is written and enabled whenever the ruleset is
+   applied and the unit is not already what it should be.
+5. **No Node application could deploy.** The helper's unit had
+   `MemoryDenyWriteExecute`, a seccomp filter every child inherits, and V8
+   cannot run without pages that are written and then executed:
+   `Check failed: 12 == errno`. It is gone, and `update.sh` now refreshes the
+   helper's units, which only a fresh install used to write.
+6. **Then they failed with "Permission denied".** `/opt/snpanel` was `0750`,
+   the Node runtimes live under it, and applications run as the site's user.
+   The directory is `0711` - passable, not listable - and `.env` and the
+   database are in `backend/`, which is `0750`.
+7. **Restoring a site's backup failed for every site with its own user** -
+   every site the installer makes - because the API unpacked straight into a
+   tree it cannot write. The archive goes through the same filter into the
+   staging area, and the helper moves it in as root, as the user restore and
+   the importer already did.
+8. **phpMyAdmin's sign-on answered "Expired token"** on every machine
+   installed without a domain. Its endpoint is written before the
+   certificate exists and followed `ENABLE_SSL=no`, so it asked `http://` of
+   a port that speaks only TLS. `install.sh` now runs
+   `snpanel-install phpmyadmin-signon` once the certificate is there, as
+   `update.sh` already did.
+9. **Adding a PHP version was a bare 500 whenever `downloads.ioncube.com` was
+   slow** - which, measured from two networks, is often. The optional loader
+   is skipped when it cannot be had, in the helper and in `install.sh`, which
+   also fetches the archive once per install rather than once per version;
+   and the helper's own reason reaches the page instead of "Internal server
+   error".
+
+### What it found on AlmaLinux
+
+The EL paths had been written against a survey of the distribution and never
+run.
+
+10. **Pending updates:** the report asked `apt` and systemd about programs EL
+    does not have, and showed nothing pending on a machine with fifty. It
+    reads `dnf list --upgrades` and `dnf-automatic.timer` there.
+11. **ClamAV:** the install asked for Debian's packages and Debian's unit
+    and failed. EPEL's packages are
+    `clamav clamd clamav-freshclam`, the daemon is `clamd@scan`, `scan.conf`
+    ships its socket commented out - twice, the same line - clamd will not
+    start without a database, and the socket's directory is
+    `0710 clamscan:virusgroup`, which kept the panel out: every upload would
+    have gone unscanned. The EL install deals with all four; the API looks
+    for `/run/clamd.scan/clamd.sock`, and a server scan names the family's
+    daemon and its config.
+12. **Node** refused on EL outright - "only available on Debian and Ubuntu" -
+    and the only Debian thing in it was asking `dpkg` for the architecture.
+    The helper is a static binary built for the machine it runs on, so it
+    answers that itself.
+13. **Docker** refused on EL the same way, knowing only Docker's apt
+    repository. On EL it adds Docker's `.repo`; the packages, `daemon.json`
+    and the firewall guard are the same on both.
+14. **PHP versions from the panel** were refused on EL. They are Remi's
+    packages now - `platform.sh`'s list, name for name - with the same
+    Debian-shaped layout, pool and `php.ini` phases the installer gives its
+    own versions.
+15. **Services:** the page listed `redis-server`, which EL does not have, and
+    read "could not be found" for a server that was running. It lists the
+    machine's own unit, `valkey`, which the helper now accepts and, like
+    `redis-server`, refuses to stop.
+16. **phpMyAdmin, once:** Remi gives its session, WSDL and opcache directories
+    to `apache`, and the pool runs as `nginx`. The installer and the helper
+    add an ACL for the web group - an ACL, because the package puts the group
+    back on every update.
+17. **phpMyAdmin, twice:** both sign-on files keep the session in
+    `/var/lib/php/sessions`, which Debian's `php-common` ships `1733` root and
+    nothing on EL ships at all. The first site's session directory brought it
+    into being as a plain `0755` parent, and every sign-on answered "Cannot
+    start signon session". `phpmyadmin-sso` and `phpmyadmin-signon` make it
+    as Debian does, so an update mends a machine installed before.
+18. **`update.sh`** corrected the sign-on shim at Debian's
+    `/usr/share/phpmyadmin`; EL's is `/usr/share/phpMyAdmin`, and nothing was
+    corrected there.
+
+### And in the check itself
+
+19. `xtask acceptance` read the WAF status for the words the bash printed.
+    The helper answers in JSON now, so a machine without ModSecurity was
+    called a liar for saying so correctly.
+
+### And in the update that follows
+
+20. **An update decided who could read the panel's database.** `update.sh`
+    syncs `backend/` with `rsync -a` from the source tree, which gives the
+    directory the tree's own mode - `0775` from a checkout, `0755` from an
+    archive - and `snpanel.db` inside it is `0644`. After an update from a
+    checkout, `backend/` was `0775` and the database readable by every
+    account on the machine, and `chmod o+rX` had made the app directory
+    listable (`0715`). Every update now puts back what `setup_panel_user`
+    gave - `0711` and `0750`, one pair of constants in `panel_user` for both
+    - and nothing grants `o+r` on the app directory any more: not
+    `install.sh`, not `update.sh`, not the CLI's permission repair. The live
+    installation has `backend/` at `0750` today; until this, whether an
+    update kept it there was up to the tree the update came from.
+
+The update was run as an administrator runs it from a checkout -
+`update.sh --skip-pull` from this tree - on the installed AlmaLinux and
+Debian machines: exit 0 on both, acceptance 30 of 30 after, the helper's
+unit refreshed, and on AlmaLinux, where the first run had left `0715` and
+`0775`, the second put back `0711` and `0750`.
+
+The smoke test was wrong about the panel several times on the way - a
+certificate for a site's aliases, HTTP redirected to HTTPS once a site has
+one, firewall rule ids that are positions, `/32` on an address, `passwd -S`
+saying `LK` on EL. Those were fixed in the test, and are listed here so that
+nobody takes them for bugs in the panel.
+
+### What this does not cover
+
+* **MariaDB under systemd-nspawn.** The package's postinst creates the system
+  tables as root dropping to `mysql`, which fails in a container: Ubuntu's
+  install carried on without them and Debian's stopped.
+  `tools/os-check/mariadb-nspawn-fix.sh` makes them as `mysql`, and the
+  installer runs again. A real host needs neither, and EL is not affected.
+* **SELinux.** A container cannot enforce it and this environment has no
+  virtualisation, so AlmaLinux ran without it. Enforcing mode needs a real
+  machine; the two things this work added to EL - `/var/lib/php/sessions`
+  and the `/run/clamd.scan` override - are where to look first.
+* **ModSecurity on EL**, which has no module for nginx. The WAF's rate
+  limiting and blocklists run; the rule set does not, and the page says so.
+* **Debian 12**, which the README lists and nobody installed here.
+* One empty-body 400 while creating and deleting a WordPress site on Ubuntu,
+  seen once and not again in any later run.

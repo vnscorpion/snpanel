@@ -76,7 +76,12 @@ pub fn mkdir(path: &SitePath) -> HelperResponse {
 ///
 /// Only 644 and 640 are accepted, matching the bash: this writes site content,
 /// never an executable.
-pub fn file_write(path: &SitePath, content: &[u8], mode: FileMode) -> HelperResponse {
+pub fn file_write(
+    path: &SitePath,
+    content: &[u8],
+    mode: FileMode,
+    user: Option<&PanelUsername>,
+) -> HelperResponse {
     if mode.0 != FILE_MODE && mode.0 != SECRET_MODE {
         return HelperResponse::failed(
             HelperErrorKind::BadRequest,
@@ -102,7 +107,10 @@ pub fn file_write(path: &SitePath, content: &[u8], mode: FileMode) -> HelperResp
         }
     }
 
-    match write_atomic(path.as_path(), content, mode.0) {
+    // The site's user and the sites group, set on the temporary before it
+    // replaces the file, so there is no moment in which the file is root's.
+    let owner = user.map(|u| format!("{}:{SITES_GROUP}", u.as_str()));
+    match write_atomic_owned(path.as_path(), content, mode.0, owner.as_deref()) {
         Ok(()) => HelperResponse::ok(),
         Err(e) => HelperResponse::failed(HelperErrorKind::Internal, format!("writing {path}: {e}")),
     }
@@ -1602,7 +1610,19 @@ fn log_path(domain: &Domain, kind: LogKind) -> std::path::PathBuf {
     std::path::Path::new(LOG_DIR).join(format!("{domain}.{}.log", kind.suffix()))
 }
 
+#[cfg(test)]
 fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    write_atomic_owned(path, bytes, mode, None)
+}
+
+/// [`write_atomic`], with the temporary given to `owner` (`user:group`)
+/// before it takes the file's place.
+fn write_atomic_owned(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    owner: Option<&str>,
+) -> std::io::Result<()> {
     // A name no other write can be using: requests run side by side, and two
     // saves of one file must not share a half-written temporary.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1620,6 +1640,14 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
         f.write_all(bytes)?;
         f.sync_all()?;
         f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    if let Some(owner) = owner {
+        let tmp_path = tmp.to_string_lossy();
+        let chowned = exec::run(&["chown", "--", owner, &tmp_path]);
+        if !matches!(&chowned, Ok(o) if o.ok()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(std::io::Error::other(format!("chown {owner} failed")));
+        }
     }
     std::fs::rename(&tmp, path)
 }
@@ -2227,7 +2255,7 @@ mod tests {
     fn only_644_and_640_may_be_written() {
         let (_b, sp) = tmp_site();
         for bad in [0o755u32, 0o600, 0o777, 0o4644] {
-            let r = file_write(&sp, b"x", FileMode(bad));
+            let r = file_write(&sp, b"x", FileMode(bad), None);
             assert!(!r.ok, "mode {bad:o} should be refused");
         }
     }

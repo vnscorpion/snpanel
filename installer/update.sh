@@ -841,12 +841,15 @@ install_panel_runtime() {
   rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf 2>/dev/null || true
   rm -f /etc/nginx/sites-enabled/snpanel.conf /etc/nginx/sites-available/snpanel.conf 2>/dev/null || true
   write_tools_nginx_config
-  if [[ -f /usr/share/phpmyadmin/snpanel-signon.php ]]; then
+  # The platform's phpMyAdmin: EL's is /usr/share/phpMyAdmin, where the fixed
+  # Debian path found nothing and the sign-on URL was never corrected.
+  local signon="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}/snpanel-signon.php"
+  if [[ -f "$signon" ]]; then
     local scheme="http"
     if [[ -n "$(env_get PANEL_SSL_CERT)" && -n "$(env_get PANEL_SSL_KEY)" ]]; then
       scheme="https"
     fi
-    sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" /usr/share/phpmyadmin/snpanel-signon.php || true
+    sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" "$signon" || true
   fi
 }
 
@@ -913,6 +916,13 @@ ensure_panel_runtime_ownership() {
   [[ -d /var/lib/snpanel ]] && chown snpanel:snpanel /var/lib/snpanel 2>/dev/null || true
   [[ -d /var/lib/snpanel/geoip ]] && chown -R snpanel:snpanel /var/lib/snpanel/geoip 2>/dev/null || true
   [[ -d /var/lib/snpanel/assets ]] && chown -R snpanel:snpanel /var/lib/snpanel/assets 2>/dev/null || true
+  # The two directory modes setup_panel_user gives. `rsync -a` hands both the
+  # source tree's own - a release archive's 0755, a checkout's 0775 - and the
+  # database inside backend/ is 0644: a backend/ others can enter is a
+  # database others can read. The app directory is passed through, never
+  # listed: the Node runtimes applications run on live under it.
+  if [[ -d "$APP_DIR/backend" ]]; then chmod 0750 "$APP_DIR/backend"; fi
+  if [[ -d "$APP_DIR" ]]; then chmod 0711 "$APP_DIR"; fi
   [[ -f "$APP_DIR/backend/.env" ]] && chmod 0640 "$APP_DIR/backend/.env"
 }
 
@@ -1175,6 +1185,18 @@ if [[ -f "$SOURCE_DIR/installer/files/snpanel-sudoers" ]]; then
     # left here is the sudoers file that decides who may call it.
     install -m 0440 -o root -g root  "$SOURCE_DIR/installer/files/snpanel-sudoers"   /etc/sudoers.d/snpanel
     visudo -c -f /etc/sudoers.d/snpanel >/dev/null
+    # And the helper's own units, which only a fresh install used to write:
+    # a change to its sandbox - MemoryDenyWriteExecute, which stopped every
+    # Node application from deploying - never reached a box installed before
+    # it. Socket-activated, so stopping the service is enough; the next call
+    # starts it under the new unit.
+    for unit in snpanel-helper.service snpanel-helper.socket; do
+      if [[ -f "$SOURCE_DIR/installer/files/${unit}" ]]; then
+        install -m 0644 -o root -g root "$SOURCE_DIR/installer/files/${unit}" "/etc/systemd/system/${unit}"
+      fi
+    done
+    systemctl daemon-reload
+    systemctl stop snpanel-helper.service 2>/dev/null || true
     sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper wp --info >/dev/null
     # The retune output is a function of the helper's logic and this machine's
     # RAM/CPU; neither moves between two updates of the same release. Skip the
@@ -1498,8 +1520,10 @@ else
   step_mark_done frontend "${FRONTEND_INPUTS[@]}"
 fi
 
-# Make sure nginx (as ${WEB_USER}) can read the built bundle.
-chmod o+rX "$APP_DIR" "$APP_DIR/frontend" 2>/dev/null || true
+# Make sure nginx (as ${WEB_USER}) can read the built bundle. The app
+# directory above it only needs passing through, which its 0711 allows; o+r
+# on it let anyone list it.
+chmod o+rX "$APP_DIR/frontend" 2>/dev/null || true
 chmod -R o+rX "$APP_DIR/frontend/dist" 2>/dev/null || true
 
 # The API scans dist/assets at start, so a fresh bundle (new hashed filenames)

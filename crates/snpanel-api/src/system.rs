@@ -22,6 +22,16 @@ pub const PHP_VERSION_ORDER: [&str; 8] = ["5.6", "7.4", "8.0", "8.1", "8.2", "8.
 /// Source: `SUPPORTED_ACTIONS`.
 pub const SUPPORTED_ACTIONS: [&str; 5] = ["start", "stop", "restart", "reload", "status"];
 
+/// The Redis-compatible unit on this machine: `redis-server` on the Debian
+/// family, `valkey` on AlmaLinux. The Services page listed `redis-server`
+/// everywhere, so on EL its row read "could not be found" for a server that
+/// was running.
+pub fn redis_service() -> &'static str {
+    snpanel_osabi::detect()
+        .map(|p| p.redis_service())
+        .unwrap_or("redis-server")
+}
+
 /// Source: `PROTECTED_SERVICE_ACTIONS`, messages included - the panel shows
 /// them to the operator verbatim.
 pub fn protected_reason(name: &str, action: &str) -> Option<&'static str> {
@@ -32,6 +42,7 @@ pub fn protected_reason(name: &str, action: &str) -> Option<&'static str> {
         ("redis-server", "stop") => {
             Some("Stopping redis-server would disable production login rate limiting")
         }
+        ("valkey", "stop") => Some("Stopping valkey would disable production login rate limiting"),
         _ => None,
     }
 }
@@ -81,7 +92,9 @@ fn php_sort_key(service: &str) -> (usize, Vec<u32>) {
 pub fn list_services() -> Vec<String> {
     let mut out: Vec<String> = BASE_SERVICES[..2].iter().map(|s| s.to_string()).collect();
     out.extend(installed_php_services());
-    out.extend(BASE_SERVICES[2..].iter().map(|s| s.to_string()));
+    out.push(BASE_SERVICES[2].to_string());
+    // The machine's own Redis-compatible unit in the Python's last place.
+    out.push(redis_service().to_string());
     out
 }
 
@@ -454,7 +467,7 @@ mod tests {
         let list = list_services();
         assert_eq!(list.first().unwrap(), "snpanel-api");
         assert_eq!(list.get(1).unwrap(), "nginx");
-        assert_eq!(list.last().unwrap(), "redis-server");
+        assert_eq!(list.last().unwrap(), redis_service());
 
         let nginx = list.iter().position(|s| s == "nginx").unwrap();
         let mariadb = list.iter().position(|s| s == "mariadb").unwrap();
@@ -497,6 +510,7 @@ mod tests {
             protected_reason("redis-server", "stop"),
             Some("Stopping redis-server would disable production login rate limiting")
         );
+        assert!(protected_reason("valkey", "stop").is_some());
         // Restarting is allowed; only stop is protected.
         assert!(protected_reason("snpanel-api", "restart").is_none());
         assert!(protected_reason("nginx", "stop").is_none());

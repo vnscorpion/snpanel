@@ -179,12 +179,14 @@ fn repair_directories(env: &Path) {
 
     // nginx serves the built SPA straight off disk as its own user, so the
     // path to it has to be traversable and the files readable. `o+rX` and not
-    // `o+rw`: readable, never writable.
+    // `o+rw`: readable, never writable. The app directory itself only `o+x`:
+    // it is passed through, and listing it is nobody's business.
     let dist = format!("{app}/frontend/dist");
     if Path::new(&dist).is_dir() {
-        for path in [app.clone(), format!("{app}/frontend")] {
-            let _ = Command::new("chmod").args(["o+rX", &path]).status();
-        }
+        let _ = Command::new("chmod").args(["o+x", &app]).status();
+        let _ = Command::new("chmod")
+            .args(["o+rX", &format!("{app}/frontend")])
+            .status();
         let _ = Command::new("chmod").args(["-R", "o+rX", &dist]).status();
     }
 }

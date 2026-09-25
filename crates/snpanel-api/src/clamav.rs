@@ -45,6 +45,8 @@ pub const DEFAULT_SOCKET_PATHS: &[&str] = &[
     "/run/clamav/clamd.ctl",
     "/var/run/clamav/clamd.sock",
     "/var/run/clamav/clamd.ctl",
+    // EPEL's `clamd@scan` on the RHEL family.
+    "/run/clamd.scan/clamd.sock",
 ];
 
 /// Source: `_parse_scan_response`.
@@ -555,7 +557,12 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap_or(""))
             .collect();
-        assert_eq!(defaults, DEFAULT_SOCKET_PATHS.to_vec());
+        // The Python's list, then EL's `clamd@scan`, which it never looked for.
+        assert_eq!(defaults, DEFAULT_SOCKET_PATHS[..defaults.len()].to_vec());
+        assert_eq!(
+            DEFAULT_SOCKET_PATHS[defaults.len()..],
+            ["/run/clamd.scan/clamd.sock"]
+        );
 
         let configured = socket_candidates("/custom/clamd.sock");
         assert_eq!(configured[0], "/custom/clamd.sock");

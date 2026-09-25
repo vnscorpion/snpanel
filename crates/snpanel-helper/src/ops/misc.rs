@@ -285,11 +285,16 @@ pub fn updates_status() -> HelperResponse {
         Err(_) => out.push_str("No update status file found.\n"),
     }
 
+    // The package manager's two sections. Debian's are the bash's, byte for
+    // byte; EL asked apt and systemd about programs it does not have, and the
+    // page showed no pending updates on a box with fifty.
+    let (pending_label, pending_argv, automatic_label, automatic_unit) = status_sources();
     out.push('\n');
-    out.push_str("APT upgradable packages:\n");
-    // `apt list --upgradable | sed -n '1,60p'` - the first 60 lines, so a box
-    // with 400 pending packages does not push everything else off the page.
-    if let Ok(o) = exec::run(&["apt", "list", "--upgradable"]) {
+    out.push_str(pending_label);
+    out.push('\n');
+    // The first 60 lines, so a box with 400 pending packages does not push
+    // everything else off the page.
+    if let Ok(o) = exec::run(pending_argv) {
         for line in o.stdout.lines().take(60) {
             out.push_str(line);
             out.push('\n');
@@ -297,9 +302,10 @@ pub fn updates_status() -> HelperResponse {
     }
 
     out.push('\n');
-    out.push_str("Unattended upgrades:\n");
+    out.push_str(automatic_label);
+    out.push('\n');
     for verb in ["is-enabled", "is-active"] {
-        if let Ok(o) = exec::run(&["systemctl", verb, "unattended-upgrades.service"]) {
+        if let Ok(o) = exec::run(&["systemctl", verb, automatic_unit]) {
             out.push_str(&o.stdout);
         }
     }
@@ -339,6 +345,30 @@ pub fn updates_status() -> HelperResponse {
 
 /// Source: `/var/log/snpanel-panel-update.log`.
 const PANEL_UPDATE_LOG: &str = "/var/log/snpanel-panel-update.log";
+
+/// Where the Updates report reads pending packages and the automatic-update
+/// state from: the section labels, the listing command, and the unit.
+fn status_sources() -> (
+    &'static str,
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+) {
+    match super::packages::family() {
+        snpanel_osabi::Family::Rhel => (
+            "DNF upgradable packages:",
+            &["dnf", "-q", "list", "--upgrades"],
+            "Automatic updates (dnf-automatic):",
+            "dnf-automatic.timer",
+        ),
+        _ => (
+            "APT upgradable packages:",
+            &["apt", "list", "--upgradable"],
+            "Unattended upgrades:",
+            "unattended-upgrades.service",
+        ),
+    }
+}
 
 /// `sed 's/^inactive$/idle/'`, applied per line.
 pub(crate) fn idle_for_inactive(text: &str) -> String {
@@ -392,27 +422,230 @@ pub fn updates_os_run() -> HelperResponse {
     exec::respond("package upgrade", exec::run(&upgrade))
 }
 
-/// `updates-os-auto`: switch unattended upgrades on or off.
-pub fn updates_os_auto(enable: bool) -> HelperResponse {
-    let Ok(platform) = snpanel_osabi::detect() else {
-        return HelperResponse::failed(HelperErrorKind::Internal, "unsupported operating system");
+/// Debian's switch for the periodic run: without `Unattended-Upgrade "1"` here
+/// the timers fire and upgrade nothing, whatever the service says.
+const APT_PERIODIC: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+/// The panel's own policy, read after the distribution's `50unattended-upgrades`.
+const APT_POLICY: &str = "/etc/apt/apt.conf.d/52snpanel-unattended-upgrades";
+/// dnf-automatic's one configuration file; the package marks it
+/// `%config(noreplace)`, so the keys set here survive its updates.
+const DNF_AUTOMATIC: &str = "/etc/dnf/automatic.conf";
+
+/// `updates-os-auto`: automatic OS updates as the Updates page asks for
+/// them - on or off, security fixes or everything, and whether the machine
+/// may reboot on its own when an update needs it.
+///
+/// It used to switch one unit and nothing else: on Debian the timers ran and
+/// upgraded nothing without `20auto-upgrades`, a box without the package had
+/// no unit to switch, and on EL `dnf-automatic` was never installed or told
+/// to apply anything. Mode and reboot never reached the helper at all.
+pub fn updates_os_auto(
+    enable: bool,
+    mode: snpanel_ipc::AutoUpdateMode,
+    auto_reboot: bool,
+) -> HelperResponse {
+    let result = match super::packages::family() {
+        snpanel_osabi::Family::Rhel => dnf_automatic(enable, mode, auto_reboot),
+        _ => unattended_upgrades(enable, mode, auto_reboot),
     };
-    let (unit, verb) = match platform.family() {
-        snpanel_osabi::Family::Debian => (
-            "unattended-upgrades",
-            if enable { "enable" } else { "disable" },
-        ),
-        snpanel_osabi::Family::Rhel => (
-            "dnf-automatic.timer",
-            if enable { "enable" } else { "disable" },
-        ),
-    };
-    let out = exec::run(&["systemctl", verb, "--now", unit]);
-    let mut resp = exec::respond("systemctl", out);
-    if resp.ok {
-        resp.data = Some(serde_json::json!({ "unit": unit, "enabled": enable }));
+    match result {
+        Ok((unit, mut out)) => {
+            out.push_str(&format!(
+                "automatic updates {}: {} updates, reboot {}\n",
+                if enable { "on" } else { "off" },
+                match mode {
+                    snpanel_ipc::AutoUpdateMode::Security => "security",
+                    snpanel_ipc::AutoUpdateMode::All => "all",
+                },
+                if auto_reboot { "when needed" } else { "never" }
+            ));
+            let mut resp = HelperResponse::with_stdout(out);
+            resp.data = Some(serde_json::json!({
+                "unit": unit,
+                "enabled": enable,
+                "mode": mode,
+                "auto_reboot": auto_reboot,
+            }));
+            resp
+        }
+        Err(resp) => resp,
     }
-    resp
+}
+
+fn unattended_upgrades(
+    enable: bool,
+    mode: snpanel_ipc::AutoUpdateMode,
+    auto_reboot: bool,
+) -> Result<(&'static str, String), HelperResponse> {
+    let unit = "unattended-upgrades";
+    let mut out = String::new();
+    if enable && !super::packages::dpkg_installed(&["unattended-upgrades"]) {
+        if let Ok(o) = super::packages::update_index() {
+            out.push_str(&o.stdout);
+        }
+        match super::packages::install_packages(&["unattended-upgrades"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            other => return Err(exec::respond("apt-get install unattended-upgrades", other)),
+        }
+    }
+    for (path, text) in [
+        (APT_PERIODIC, apt_periodic(enable)),
+        (APT_POLICY, apt_policy(mode, auto_reboot)),
+    ] {
+        super::nginx::write_atomic(Path::new(path), text.as_bytes(), 0o644).map_err(|e| {
+            HelperResponse::failed(HelperErrorKind::Internal, format!("writing {path}: {e}"))
+        })?;
+    }
+    if enable {
+        for step in [
+            vec![
+                "systemctl",
+                "enable",
+                "--now",
+                "apt-daily.timer",
+                "apt-daily-upgrade.timer",
+            ],
+            vec!["systemctl", "enable", "--now", unit],
+        ] {
+            let result = exec::run(&step);
+            if !matches!(&result, Ok(o) if o.ok()) {
+                return Err(exec::respond(&step.join(" "), result));
+            }
+        }
+    } else {
+        // Nothing to stop on a box that never had the package.
+        let _ = exec::run(&["systemctl", "disable", "--now", unit]);
+    }
+    Ok((unit, out))
+}
+
+fn dnf_automatic(
+    enable: bool,
+    mode: snpanel_ipc::AutoUpdateMode,
+    auto_reboot: bool,
+) -> Result<(&'static str, String), HelperResponse> {
+    let unit = "dnf-automatic.timer";
+    let mut out = String::new();
+    if !enable {
+        let _ = exec::run(&["systemctl", "disable", "--now", unit]);
+        return Ok((unit, out));
+    }
+    let installed = matches!(exec::run(&["rpm", "-q", "dnf-automatic"]), Ok(o) if o.ok());
+    if !installed {
+        match super::packages::install_packages(&["dnf-automatic"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            other => return Err(exec::respond("dnf install dnf-automatic", other)),
+        }
+    }
+    let current = std::fs::read_to_string(DNF_AUTOMATIC).unwrap_or_default();
+    let text = set_ini_keys(&current, "commands", &dnf_automatic_keys(mode, auto_reboot));
+    super::nginx::write_atomic(Path::new(DNF_AUTOMATIC), text.as_bytes(), 0o644).map_err(|e| {
+        HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {DNF_AUTOMATIC}: {e}"),
+        )
+    })?;
+    let step = ["systemctl", "enable", "--now", unit];
+    let result = exec::run(&step);
+    if !matches!(&result, Ok(o) if o.ok()) {
+        return Err(exec::respond(&step.join(" "), result));
+    }
+    Ok((unit, out))
+}
+
+/// `20auto-upgrades`: the index refreshed daily, and the upgrade run switched
+/// on or off.
+fn apt_periodic(enable: bool) -> String {
+    format!(
+        "// Written by SNPanel from its Updates page.\n\
+         APT::Periodic::Update-Package-Lists \"1\";\n\
+         APT::Periodic::Unattended-Upgrade \"{}\";\n",
+        u8::from(enable)
+    )
+}
+
+/// The panel's policy on top of the distribution's. Security is what
+/// `50unattended-upgrades` already allows; "all" adds every origin, which
+/// includes the PHP and Node repositories the installer added.
+fn apt_policy(mode: snpanel_ipc::AutoUpdateMode, auto_reboot: bool) -> String {
+    let mut text = String::from(
+        "// Written by SNPanel from its Updates page, and rewritten whenever it is saved.\n",
+    );
+    if mode == snpanel_ipc::AutoUpdateMode::All {
+        text.push_str("Unattended-Upgrade::Origins-Pattern { \"origin=*\"; };\n");
+    }
+    text.push_str(&format!(
+        "Unattended-Upgrade::Automatic-Reboot \"{auto_reboot}\";\n"
+    ));
+    text
+}
+
+/// dnf-automatic's `[commands]`: download and apply, security fixes or all,
+/// and reboot only when an update says it needs one.
+fn dnf_automatic_keys(
+    mode: snpanel_ipc::AutoUpdateMode,
+    auto_reboot: bool,
+) -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "upgrade_type",
+            match mode {
+                snpanel_ipc::AutoUpdateMode::Security => "security",
+                snpanel_ipc::AutoUpdateMode::All => "default",
+            },
+        ),
+        ("download_updates", "yes"),
+        ("apply_updates", "yes"),
+        ("reboot", if auto_reboot { "when-needed" } else { "never" }),
+    ]
+}
+
+/// `key = value` lines of one INI section set, the rest of the file as it
+/// was: a key already there is rewritten in place, one that is not goes at
+/// the end of the section, and a missing section is added.
+fn set_ini_keys(text: &str, section: &str, keys: &[(&str, &str)]) -> String {
+    let header = format!("[{section}]");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let start = lines.iter().position(|l| l.trim() == header);
+    let Some(start) = start else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&header);
+        out.push('\n');
+        for (k, v) in keys {
+            out.push_str(&format!("{k} = {v}\n"));
+        }
+        return out;
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let mut missing = Vec::new();
+    for (k, v) in keys {
+        let found = (start + 1..end).find(|&i| {
+            lines[i].split_once('=').is_some_and(|(name, _)| {
+                name.trim() == *k && !lines[i].trim_start().starts_with('#')
+            })
+        });
+        match found {
+            Some(i) => lines[i] = format!("{k} = {v}"),
+            None => missing.push(format!("{k} = {v}")),
+        }
+    }
+    // After the section's last non-blank line, so the keys stay inside it.
+    let mut insert_at = end;
+    while insert_at > start + 1 && lines[insert_at - 1].trim().is_empty() {
+        insert_at -= 1;
+    }
+    for (offset, line) in missing.into_iter().enumerate() {
+        lines.insert(insert_at + offset, line);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
 }
 
 fn web_user() -> String {
@@ -625,6 +858,69 @@ mod tests {
     /// neither service state, neither journal. Nothing failed and nothing
     /// said so.
     #[test]
+    fn automatic_updates_are_written_as_asked() {
+        use snpanel_ipc::AutoUpdateMode::{All, Security};
+        assert!(apt_periodic(true).contains("APT::Periodic::Unattended-Upgrade \"1\";"));
+        assert!(apt_periodic(false).contains("APT::Periodic::Unattended-Upgrade \"0\";"));
+        // The lists stay fresh either way: the Updates page reads them.
+        assert!(apt_periodic(false).contains("Update-Package-Lists \"1\";"));
+
+        let security = apt_policy(Security, false);
+        assert!(!security.contains("Origins-Pattern"), "{security}");
+        assert!(security.contains("Automatic-Reboot \"false\";"));
+        let all = apt_policy(All, true);
+        assert!(all.contains("\"origin=*\""), "{all}");
+        assert!(all.contains("Automatic-Reboot \"true\";"));
+
+        assert_eq!(
+            dnf_automatic_keys(Security, false),
+            vec![
+                ("upgrade_type", "security"),
+                ("download_updates", "yes"),
+                ("apply_updates", "yes"),
+                ("reboot", "never"),
+            ]
+        );
+        assert!(dnf_automatic_keys(All, true).contains(&("upgrade_type", "default")));
+        assert!(dnf_automatic_keys(All, true).contains(&("reboot", "when-needed")));
+    }
+
+    #[test]
+    fn ini_keys_are_set_in_their_section_and_nothing_else_moves() {
+        let shipped = "[commands]\n# What kind of upgrade to perform\nupgrade_type = default\nrandom_sleep = 0\n\n\
+                       download_updates = yes\napply_updates = no\n\n[emitters]\nemit_via = stdio\napply_updates = no\n";
+        let out = set_ini_keys(
+            shipped,
+            "commands",
+            &[
+                ("upgrade_type", "security"),
+                ("apply_updates", "yes"),
+                ("reboot", "never"),
+            ],
+        );
+        assert!(
+            out.contains("upgrade_type = security\nrandom_sleep = 0\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("apply_updates = yes\nreboot = never\n\n[emitters]"),
+            "{out}"
+        );
+        // Another section's key of the same name is not this one.
+        assert!(
+            out.contains("[emitters]\nemit_via = stdio\napply_updates = no\n"),
+            "{out}"
+        );
+        // A comment that names the key is left as a comment.
+        assert!(out.contains("# What kind of upgrade to perform\n"));
+        // Again, and nothing changes.
+        assert_eq!(set_ini_keys(&out, "commands", &[("reboot", "never")]), out);
+        // No section at all: it is added.
+        let fresh = set_ini_keys("", "commands", &[("apply_updates", "yes")]);
+        assert_eq!(fresh, "[commands]\napply_updates = yes\n");
+    }
+
+    #[test]
     fn the_updates_report_carries_all_six_sections_in_order() {
         let r = updates_status();
         assert!(r.ok);
@@ -633,16 +929,17 @@ mod tests {
             "this verb answers on stdout - `data` is what the bug put it in"
         );
 
-        const SECTIONS: &[&str] = &[
+        let (pending, _, automatic, _) = status_sources();
+        let sections: &[&str] = &[
             "SNPanel release status:",
-            "APT upgradable packages:",
-            "Unattended upgrades:",
+            pending,
+            automatic,
             "OS update service:",
             "Panel update service:",
             "Panel update log:",
         ];
         let mut cursor = 0usize;
-        for section in SECTIONS {
+        for section in sections {
             let found = r.stdout[cursor..]
                 .find(section)
                 .unwrap_or_else(|| panic!("{section:?} missing or out of order in:\n{}", r.stdout));

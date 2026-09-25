@@ -4,8 +4,8 @@ Lightweight hosting management panel for Ubuntu, Debian and AlmaLinux. SNPanel h
 WordPress and PHP websites from a single clean web UI with user
 ownership, quotas, backups, SSL, services, and firewall tools built in.
 
-> **SNPanel is a fork of [BPanel](https://github.com/BNIX-VN/bpanel), being
-> rewritten in Rust, and it is not an upgrade of it.**
+> **SNPanel is a fork of [BPanel](https://github.com/BNIX-VN/bpanel), rewritten
+> in Rust, and it is not an upgrade of it.**
 >
 > A server running BPanel cannot update into SNPanel. The two install to
 > different places, run under different system users and service names, and
@@ -32,7 +32,8 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 > direction for that mistake to fail in.
 
 - Dashboard resource monitoring for CPU, RAM, disk, and network throughput
-- WordPress one-click installer (PHP 8.4 default, 8.3/8.4 supported) with WP-CLI
+- WordPress one-click installer (PHP 8.4 default, 8.3 beside it; more versions
+  can be installed from the panel) with WP-CLI
 - WordPress and PHP sites with editable full Nginx vhosts
 - Panel users map to Linux/SFTP users; website source lives in `/home/<panel-user>/<domain>/public_html`
 - Admin quick-login for creating sites as a selected user, plus one-owner assignment per website
@@ -49,9 +50,10 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
   the day of the week (a week of copies) or by the date (one a day, pruned)
 - An S3 bucket keeps as many of a schedule's archives as the server does; an
   SFTP server keeps every copy
-- iptables + ipset firewall with protected panel/web/mail ports, per-IP allow/deny rules,
-  and URL blocklists loaded straight into an ipset
-- Update controls for apt-based OS packages and SNPanel source updates
+- nftables firewall with protected panel/web/mail ports, per-IP allow/deny rules,
+  and URL blocklists loaded straight into nftables sets; reloaded at every boot
+- OS package updates through apt or dnf - now, or automatically (security fixes
+  or everything, with an optional reboot) - and SNPanel release updates
 - Nginx ModSecurity/WAF engine installed by default, using lightweight WordPress/Laravel/PHP rules, per-site toggles, and HTTP Flood limits
 - PHP-FPM config editor per version
 - Cron job manager with whitelisted WP-CLI commands
@@ -60,23 +62,36 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
   32 tools over the websites, files, logs, backups, firewall and WAF, each
   assistant with a token of the account it acts for (read-only unless made to
   allow actions), every action in the audit log
-- Google Authenticator compatible 2FA
+- Two-step sign-in with passkeys, and an authenticator-app code (TOTP) as the
+  fallback
+- A Fail2ban addon: SSH, panel sign-ins, WordPress sign-ins, password-protected
+  folders and repeat offenders, banned in nftables; Cloudflare's addresses are
+  never banned from a site's log
+- Malware scanning: ClamAV checks uploads as they arrive (a switch in the file
+  manager), Linux Malware Detect scans a site, every site or the whole machine,
+  on demand or on a schedule
+- An SFTP account per panel user, with its own switch and password
+- Database owners: a database can belong to a panel user and travels with them
+  in their backups
+- An Applications addon: Node.js apps, Docker containers and Compose projects,
+  each on its own internal port with its own memory limit, served on a domain
+  through nginx
 - English and Vietnamese, switched from the header - the pages and the server's
   messages alike; English is the source, Vietnamese its translation
 
 ## Tech stack
 
-- Front door: Rust - axum, rustls, sqlx, tokio. Terminates TLS on the panel
-  port, serves the routers it has ported, and forwards the rest to the Python
-  process on loopback (the strangler pattern; see `RUST_MIGRATION_STATUS.md`)
-- Backend: FastAPI, SQLAlchemy, SQLite (default), Pydantic v2
+- Panel: Rust - axum, rustls, sqlx (SQLite), tokio. One static binary serves
+  the API and the web UI with TLS on the panel port.
+- Privileged helper: Rust, root, reached over a Unix socket that checks its
+  caller's uid (`SO_PEERCRED`); it answers a fixed list of operations and
+  nothing else.
 - Frontend: React 18, Vite, lucide-react
-- Server: Nginx, OpenSSH/SFTP, ModSecurity/WAF, systemd, MariaDB, Redis, PHP-FPM, certbot
+- Server: Nginx, OpenSSH/SFTP, ModSecurity/WAF, nftables, systemd, MariaDB,
+  Redis (Valkey on AlmaLinux), PHP-FPM, certbot
 
-Both implementations share one SQLite file, one Redis, and one `SECRET_KEY`,
-so a session started through either is valid through the other. The Rust side
-is being grown router by router; nothing is switched over until it answers
-byte-for-byte the same as the Python it replaces.
+The Python backend this began as is gone. `RUST_MIGRATION_STATUS.md` records
+how the port was done and how each part was checked.
 
 ## Versioning
 
@@ -88,7 +103,7 @@ of this file for why that matters.
 
 ## System requirements
 
-- Ubuntu 24.04 LTS, Debian 12 / 13, or AlmaLinux 10 (clean install recommended)
+- Ubuntu 24.04 LTS, Debian 13, or AlmaLinux 10 (clean install recommended)
   - **Debian 13 carries the most PHP versions.** Its packages come from
     packages.sury.org, which publishes 7.4 through 8.5 for trixie, so the panel
     can offer more versions there than anywhere else.
@@ -99,10 +114,14 @@ of this file for why that matters.
     first honest test happened on somebody's server. This will be revisited
     when the PPA publishes for the release.
   - On AlmaLinux the installer enables EPEL and Remi, and PHP comes from
-    Remi's `php83`/`php84` packages. Two panel features are unavailable
-    there and say so rather than failing quietly: the nginx ModSecurity
-    rule engine, which the distribution does not package at all, and
-    installing an additional PHP version from the panel.
+    Remi's `php83`/`php84` packages; the panel installs further versions from
+    Remi too. One feature is unavailable there and says so rather than failing
+    quietly: the nginx ModSecurity rule engine, which neither the distribution
+    nor EPEL packages - the WAF page offers HTTP flood limits and bot blocking
+    only. SELinux is not configured by the installer and has not been tested
+    in enforcing mode.
+  - Debian 12 is accepted by the installer but has not been installed and
+    checked the way the three above have.
 - Root access
 - Optional: a domain pointing to the server's public IP (for SSL on the panel)
 - 1 vCPU / 1 GB RAM minimum, 2 vCPU / 2 GB RAM recommended
@@ -123,9 +142,9 @@ runtime root so the panel shows the installed release, not the fallback.
 
 The installer will:
 
-1. Install git, Nginx, MariaDB, Redis, OpenSSH/SFTP, PHP 8.4 default (8.3/8.4 supported), Node.js 22,
-   certbot, phpMyAdmin, WP-CLI, iptables, ipset.
-2. Copy source to `/opt/snpanel`, build the frontend, set up the Python venv.
+1. Install git, Nginx, MariaDB, Redis, OpenSSH/SFTP, PHP 8.4 default (8.3 beside it), Node.js,
+   certbot, phpMyAdmin, WP-CLI, nftables.
+2. Put the Rust binaries in place, copy the source to `/opt/snpanel` and build the frontend.
 3. Create the `snpanel` service account and the `admin` Linux/SFTP account.
 4. Create the systemd service `snpanel-api`.
 5. Configure phpMyAdmin SSO.
@@ -156,46 +175,17 @@ both list the hostnames that work. `PANEL_URL` only decides which certificate
 a browser gets when it asks for a name that has none of its own, and which
 address the installer prints.
 
-## The Rust front door
-
-SNPanel is being rewritten in Rust one router at a time, using the strangler
-pattern: a Rust process holds the panel port and the TLS certificate, answers
-the routes it has ported, and forwards everything else to the Python process
-on loopback. Both share one SQLite file, one Redis and one `SECRET_KEY`, so a
-session started through either is valid through the other.
-
-**`installer/install.sh` sets up the Python panel only.** Turning the Rust
-front door on is a second, deliberate step - it is not done for you, and the
-panel is fully functional without it.
+## Checking an installation
 
 ```bash
-# Build the static binaries (on a build host, not the server)
-cargo build --release --target x86_64-unknown-linux-musl -p snpanel-api -p xtask
-
-# Copy them to the server, then switch the front door over
-install -m755 snpanel-api /usr/local/bin/snpanel-api-rust
-install -m755 xtask       /usr/local/bin/xtask-rust
-bash installer/files/api-cutover.sh
+xtask acceptance      # the platform checks, as root, on the installed box
 ```
 
-The cutover moves Python to `127.0.0.1:8000`, starts `snpanel-rust` on the
-panel port, and checks that the new front door answers before it returns. If
-anything fails it rolls back to the Python front door by itself, and
-`api-cutover.sh rollback` does the same on demand.
-
-Two checks come with it and are worth running after any change:
-
-```bash
-bash installer/files/api-shadow-check.sh    # both implementations, same requests
-bash installer/files/api-browser-check.sh   # the flow a browser actually performs
-```
-
-The shadow check sends the same request to the Rust and the Python side and
-compares the answers. Any difference is a bug in the Rust side, never a new
-API: the frontend cannot tell which one served it, and it must not be able to.
-
-`RUST_MIGRATION_STATUS.md` records which routers have moved, which have moved
-only in part, and why the remaining ones are waiting.
+It asks the machine rather than assuming a distribution - the web server's
+account, the Redis unit, phpMyAdmin's paths - creates one throwaway website,
+checks that PHP runs through nginx and that the panel reports its WAF
+honestly, and removes the site again. Every supported distribution passes it
+on a fresh install.
 
 ## SSH rescue menu
 
@@ -227,29 +217,27 @@ snpanel-rescue-firewall
 
 ## Firewall
 
-IP filtering runs on **iptables + ipset**. The panel never writes rules by
-hand at request time: `/var/lib/snpanel/firewall/rules.tsv` is the source of
-truth, and every change rebuilds the `SNPANEL-INPUT` chain and reloads the
-ipsets from disk. `snpanel-firewall.service` replays the same apply at boot, so
-no `iptables-save` state can drift.
+IP filtering runs on **nftables**, in one table of the panel's own
+(`inet snpanel`). The panel never writes rules by hand at request time:
+`/var/lib/snpanel/firewall/rules.tsv` is the source of truth, and every change
+renders the whole table, checks it with `nft --check` and loads it atomically.
+`snpanel-firewall.service` loads the same table at boot, before the network
+and nginx.
 
 - **Protected ports** (SSH from `sshd -T`, the panel port, 80/443/465/587) are
   always allowed and cannot be deleted from the panel.
-- **Allow/deny IP** rules go into `hash:net` sets; rules with a port go into
-  `hash:net,port` sets. Allow rules are evaluated before deny rules.
-- **URL blocklists** are fetched daily into `snpanel-block4` / `snpanel-block6`.
-  A million-entry list costs one hash lookup per packet instead of a million
+- **Allow/deny IP** rules, with or without a port, are elements of nftables
+  sets. Allow rules are evaluated before deny rules.
+- **URL blocklists** are fetched daily into their own sets, IPv4 and IPv6. A
+  million-entry list costs one set lookup per packet instead of a million
   Nginx `geo` entries or UFW rules.
-- The chain uses `RETURN` (not `ACCEPT`) for allowed traffic, so fail2ban and
-  any other `INPUT` rules still see the packet.
-- Disabling the firewall removes the jump from `INPUT`; it does not change the
-  `INPUT` policy, so nothing else on the box is affected.
+- Allowed traffic is accepted with `return`, not `accept`, so fail2ban's table
+  and any other rules on the box still see the packet.
+- Disabling the firewall removes the panel's table and nothing else.
 
-Upgrades from a SNPanel release that used UFW/Nginx run `snpanel-helper
-firewall-migrate`, which imports surviving UFW user rules, purges UFW and its
-config, removes the Nginx `geo` blocklist (`snpanel-ip-blocklist.conf`,
-`ip-blocklist-geo.conf`, and the per-vhost `include`), then applies the new
-chain.
+Upgrades from a SNPanel release that used UFW, iptables or the Nginx `geo`
+blocklist run `snpanel-helper firewall-migrate`, which imports the surviving
+rules, removes what the old firewall left behind, then applies the table.
 
 The migration inherits the previous enforcement state rather than assuming it:
 if UFW was active, or blocklist URLs were configured, the new firewall is
@@ -323,8 +311,8 @@ snpanel/
 `modules/servers/snpanel/` is a single WHMCS server module used against **both
 SNPanel and OPanel**. The module is the fixed side of this contract: SNPanel
 matches what the module already expects, rather than the module being adapted
-per panel. `backend/app/tests/test_provisioning_module_contract.py` pins the
-response keys it reads.
+per panel. `an_account_is_described_the_way_python_describes_it` in
+`crates/snpanel-api/src/routes/provisioning.rs` pins the account it reads.
 
 It authenticates with a Bearer token (created under **API Tokens**, pasted into
 the server's Access Hash). Every hook maps to one endpoint:
@@ -528,14 +516,15 @@ snpanel sync-admin-root-password
 ## Security model
 
 The panel daemon does **not** run as root. The installer creates a system user
-`snpanel` and a single root-owned helper script that does all privileged work.
+`snpanel` and a single root-owned helper binary that does all privileged work.
 
 ```
-snpanel-api  (uvicorn, user=snpanel, hardened systemd unit)
+snpanel-api  (Rust, user=snpanel, hardened systemd unit)
    |
-   |  sudo -n /usr/local/sbin/snpanel-helper <subcommand> ...
+   |  /run/snpanel/helper.sock - typed requests, caller checked by SO_PEERCRED
+   |  (sudo -n /usr/local/sbin/snpanel-helper <operation> as the fallback)
    v
-snpanel-helper  (root, runs only whitelisted operations)
+snpanel-helper  (root, answers only its own list of operations)
 ```
 
 What the helper allows:
@@ -544,7 +533,7 @@ What the helper allows:
 - `nginx -t`, `nginx reload`
 - `certbot --nginx ...` for a single validated domain
 - create/delete panel Linux users, sync their SFTP password, and manage per-user PHP-FPM pools
-- `firewall-status/enable/disable/allow-port/allow-ip/deny-ip/delete` (iptables + ipset)
+- `firewall-status/enable/disable/allow-port/allow-ip/deny-ip/delete` (nftables)
 - fix ownership/ACLs for managed site paths under `/home/<panel-user>/<domain>`
 - `rm -rf <managed site path>`
 - WP-CLI and crontab management as the website's Linux user
@@ -553,7 +542,7 @@ What the helper allows:
 ### Website terminal
 
 The per-site terminal runs commands as the website's own Linux user through
-`snpanel-helper terminal-exec`. Commands are split into argv in Python (no shell
+`snpanel-helper terminal-exec`. Commands are split into argv by the panel (no shell
 is involved, so `;`, `|`, backticks and globs are ordinary arguments) and the
 executable must be on the allowlist, which covers the PHP toolchain
 (`php`, `composer`, `artisan`, `wp`, `phpunit`), the JS toolchain
@@ -619,7 +608,7 @@ Additional hardening on the systemd unit:
   `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`,
   `ProtectClock`, `ProtectHostname`, and `ProtectProc=invisible`.
 - Uses `RestrictNamespaces`, `RestrictRealtime`, `LockPersonality`,
-  `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, and
+  `SystemCallArchitectures=native`, and
   `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`.
 - Drops ambient capabilities with `CapabilityBoundingSet=~`.
 
@@ -637,8 +626,9 @@ There is no path back to root via the API process.
 ## Security notes
 
 - Login is rate-limited in Redis (8 attempts / minute, lockout after 20 fails),
-  so counters are shared across uvicorn workers.
-- Google Authenticator compatible TOTP 2FA can be enabled per account.
+  so the counters survive a restart of the panel.
+- Two-step sign-in per account: a passkey, with an authenticator-app code
+  (TOTP) as the fallback.
 - Constant-time login path: bcrypt is verified even when the user does not
   exist, to avoid username enumeration via timing.
 - DB and WordPress passwords are passed via stdin / `--prompt`, never as

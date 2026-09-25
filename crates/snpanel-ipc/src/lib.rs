@@ -185,6 +185,16 @@ pub enum CrsMode {
     Block,
 }
 
+/// What automatic OS updates apply: security fixes only, or every update the
+/// configured repositories offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutoUpdateMode {
+    #[default]
+    Security,
+    All,
+}
+
 /// File mode as an octal value, e.g. 0o644.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -209,6 +219,8 @@ pub const ALLOWED_SERVICES: &[&str] = &[
     "nginx",
     "mariadb",
     "redis-server",
+    // The Redis-compatible server on AlmaLinux 10, which ships no Redis.
+    "valkey",
     "php8.3-fpm",
     "php8.4-fpm",
     "snpanel-api",
@@ -218,7 +230,7 @@ pub const ALLOWED_SERVICES: &[&str] = &[
 /// removes the means to bring it back.
 ///
 /// Source: the explicit refusal in the bash `systemctl` arm.
-pub const UNSTOPPABLE_SERVICES: &[&str] = &["snpanel-api", "redis-server"];
+pub const UNSTOPPABLE_SERVICES: &[&str] = &["snpanel-api", "redis-server", "valkey"];
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ServiceError {
@@ -683,6 +695,12 @@ pub enum HelperRequest {
         path: SitePath,
         content: Vec<u8>,
         mode: FileMode,
+        /// The site's own account, which the written file belongs to - with
+        /// the sites group, as the bash's `chown "$user:$SNPANEL_SITES_GROUP"`
+        /// made it. Optional only so a request from before it was carried
+        /// still reads.
+        #[serde(default)]
+        user: Option<PanelUsername>,
     },
     SiteChmod {
         path: SitePath,
@@ -883,6 +901,13 @@ pub enum HelperRequest {
     UpdatesOsRun,
     UpdatesOsAuto {
         enable: bool,
+        /// Defaulted, so a request from before the page sent it still reads:
+        /// that page always meant security updates without a reboot.
+        #[serde(default)]
+        mode: AutoUpdateMode,
+        /// Reboot on its own when an update needs one.
+        #[serde(default)]
+        auto_reboot: bool,
     },
 
     // --- waf / malware ---

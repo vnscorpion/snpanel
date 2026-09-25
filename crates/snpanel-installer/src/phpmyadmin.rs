@@ -36,6 +36,20 @@ pub const CONFIG_MODE: u32 = 0o640;
 /// secret of its own.
 pub const SIGNON_MODE: u32 = 0o644;
 
+/// Where both files keep the sign-on session: `SessionSavePath` in the one,
+/// `session_save_path()` in the other.
+///
+/// Debian's `php-common` ships it, and nothing on EL does. There the first
+/// site's session directory brought it into being as a plain `0755` parent,
+/// the web user could not create a session file in it, and every phpMyAdmin
+/// sign-on on AlmaLinux answered "Cannot start signon session".
+pub const SESSION_DIR: &str = "/var/lib/php/sessions";
+/// `1733`, root - Debian's own: anyone may create a session file, nobody may
+/// list the directory, and the sticky bit keeps each file its creator's. PHP
+/// refuses to read a session file another uid made, so a file planted under a
+/// guessed name is not a session.
+pub const SESSION_DIR_MODE: u32 = 0o1733;
+
 /// The phpMyAdmin configuration that turns on sign-on auth.
 ///
 /// `AllowNoPassword` is `false` and stays that way: with `signon` auth an
@@ -343,6 +357,16 @@ mod tests {
         assert!(config.contains("['AllowNoPassword'] = false;"));
         let php = signon_php(&api_base(true, 2222), true);
         assert!(php.contains("empty($data['db_password'])"));
+    }
+
+    #[test]
+    fn both_files_keep_the_session_where_the_directory_is_made() {
+        let config = config_php("s", "h", true);
+        let signon = signon_php("https://127.0.0.1:2222", true);
+        assert!(config.contains(&format!("$cfg['SessionSavePath'] = '{SESSION_DIR}';")));
+        assert!(signon.contains(&format!("session_save_path('{SESSION_DIR}');")));
+        // What `php-common` gives it on Debian and Ubuntu.
+        assert_eq!(SESSION_DIR_MODE, 0o1733);
     }
 
     #[test]

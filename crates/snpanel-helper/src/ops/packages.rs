@@ -125,6 +125,9 @@ pub fn certbot_dns_cloudflare_install() -> HelperResponse {
 /// signature database that takes minutes, and holding the request open for it
 /// would time out the panel while the install itself succeeded.
 pub fn clamav_install() -> HelperResponse {
+    if family() == Family::Rhel {
+        return clamav_install_el();
+    }
     let mut out = String::new();
     if let Ok(o) = update_index() {
         out.push_str(&o.stdout);
@@ -145,6 +148,138 @@ pub fn clamav_install() -> HelperResponse {
     let _ = exec::run(&["freshclam"]);
     out.push_str("ClamAV installed and clamav-daemon enabled.\n");
     HelperResponse::with_stdout(out)
+}
+
+/// clamd's configuration on EL, and the tmpfiles rule for its socket directory.
+const EL_CLAMD_CONF: &str = "/etc/clamd.d/scan.conf";
+const EL_FRESHCLAM_CONF: &str = "/etc/freshclam.conf";
+const EL_CLAMD_SOCKET: &str = "/run/clamd.scan/clamd.sock";
+/// Same name as the package's `/usr/lib/tmpfiles.d/clamd.scan.conf`, which
+/// is what makes it replace that file rather than add to it.
+const EL_CLAMD_TMPFILES: &str = "/etc/tmpfiles.d/clamd.scan.conf";
+
+/// `clamav-install` on the RHEL family: EPEL's ClamAV, as `clamd@scan`.
+///
+/// Four things differ from Debian, all measured on AlmaLinux 10.2:
+///
+/// - the packages are `clamav clamd clamav-freshclam`;
+/// - `scan.conf` ships with its socket commented out - twice, the same line -
+///   so the daemon would start listening on nothing;
+/// - clamd will not start without a signature database, so `freshclam` runs
+///   first rather than after;
+/// - the socket is `0666` but its directory is `0710 clamscan:virusgroup`, so
+///   the panel, which is in neither, was refused before it reached the socket
+///   and every upload went unscanned. `0711` lets it through to a socket that
+///   was already world-writable - where Debian's `/run/clamav` is `0755`.
+fn clamav_install_el() -> HelperResponse {
+    let mut out = String::new();
+    let installed = matches!(
+        exec::run(&["rpm", "-q", "clamav", "clamd", "clamav-freshclam"]),
+        Ok(o) if o.ok()
+    );
+    if !installed {
+        match install_packages(&["clamav", "clamd", "clamav-freshclam"]) {
+            Ok(o) if o.ok() => out.push_str(&o.stdout),
+            other => return exec::respond("dnf install clamav clamd clamav-freshclam", other),
+        }
+    }
+    for (path, edit) in [
+        (EL_CLAMD_CONF, clamd_conf_for_panel as fn(&str) -> String),
+        (EL_FRESHCLAM_CONF, without_example as fn(&str) -> String),
+    ] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return HelperResponse::failed(
+                HelperErrorKind::NotFound,
+                format!("{path} is missing after installing ClamAV"),
+            );
+        };
+        let edited = edit(&text);
+        if edited != text {
+            if let Err(e) = super::nginx::write_atomic(Path::new(path), edited.as_bytes(), 0o644) {
+                return HelperResponse::failed(
+                    HelperErrorKind::Internal,
+                    format!("writing {path}: {e}"),
+                );
+            }
+        }
+    }
+    let rule = "# Written by SNPanel: the panel scans uploads through this socket, and\n\
+                # the package's 0710 kept it out of the directory. The socket is 0666.\n\
+                d /run/clamd.scan 0711 clamscan virusgroup -\n";
+    if let Err(e) = super::nginx::write_atomic(Path::new(EL_CLAMD_TMPFILES), rule.as_bytes(), 0o644)
+    {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {EL_CLAMD_TMPFILES}: {e}"),
+        );
+    }
+    let _ = exec::run(&["systemd-tmpfiles", "--create", EL_CLAMD_TMPFILES]);
+
+    // The database first: clamd refuses to start without one.
+    if let Ok(o) = exec::run(&["freshclam"]) {
+        out.push_str(&o.stdout);
+    }
+    for unit in ["clamav-freshclam", "clamd@scan"] {
+        let enabled = exec::run(&["systemctl", "enable", "--now", unit]);
+        if !matches!(&enabled, Ok(o) if o.ok()) {
+            return exec::respond(&format!("systemctl enable --now {unit}"), enabled);
+        }
+    }
+    out.push_str(&format!(
+        "ClamAV installed and clamd@scan listening on {EL_CLAMD_SOCKET}.\n"
+    ));
+    HelperResponse::with_stdout(out)
+}
+
+/// `scan.conf` with its local socket on and no `Example` line: the first
+/// commented `LocalSocket` is switched on - EPEL ships the same one twice -
+/// unless one is on already, and one is added when there is none at all.
+fn clamd_conf_for_panel(text: &str) -> String {
+    let text = without_example(text);
+    let active = text
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some("LocalSocket"));
+    if active {
+        return text;
+    }
+    let mut switched = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.trim_start_matches('#').split_whitespace().collect();
+        if !switched && line.starts_with('#') && words.first() == Some(&"LocalSocket") {
+            out.push(format!(
+                "LocalSocket {}",
+                words.get(1).copied().unwrap_or(EL_CLAMD_SOCKET)
+            ));
+            switched = true;
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !switched {
+        out.push(format!("LocalSocket {EL_CLAMD_SOCKET}"));
+    }
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
+}
+
+/// A config with its `Example` line - which makes ClamAV refuse the whole
+/// file - commented out. Older packages shipped it live.
+fn without_example(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.trim() == "Example" {
+            out.push(format!("#{line}"));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        joined.push('\n');
+    }
+    joined
 }
 
 /// `maldet-update-sigs`.
@@ -309,26 +444,19 @@ pub fn node_install(major: &str) -> HelperResponse {
             format!("invalid node major version: {major}"),
         );
     }
-    if let Some(refusal) = debian_only("Node install") {
-        return refusal;
-    }
     let root = format!("/opt/snpanel/node/{major}");
     if is_executable(&format!("{root}/bin/node")) {
         return HelperResponse::with_stdout(format!("Node {major} is already installed\n"));
     }
 
-    let arch = match exec::run(&["dpkg", "--print-architecture"]) {
-        Ok(o) if o.ok() => match o.stdout.trim() {
-            "amd64" => "x64",
-            "arm64" => "arm64",
-            _ => {
-                return HelperResponse::failed(
-                    HelperErrorKind::BadRequest,
-                    "unsupported architecture for Node install".to_string(),
-                )
-            }
-        },
-        other => return exec::respond("dpkg --print-architecture", other),
+    // The helper's own architecture is the machine's - it is a static binary
+    // built for the one it runs on - so there is no package manager to ask.
+    // Asking dpkg was the only Debian thing here, and it made EL refuse.
+    let Some(arch) = node_arch(std::env::consts::ARCH) else {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "unsupported architecture for Node install".to_string(),
+        );
     };
 
     // The bash pipes the release index through `python3`. Parsing it here is
@@ -646,11 +774,16 @@ pub fn malware_scan_server(job: &str) -> HelperResponse {
             "clamdscan is not installed".to_string(),
         );
     }
-    let active = exec::run(&["systemctl", "is-active", "--quiet", "clamav-daemon"]);
+    // The family's daemon: `clamd@scan` on EL, where asking for Debian's
+    // `clamav-daemon` refused every server scan.
+    let daemon = snpanel_osabi::detect()
+        .map(|p| p.clamav_service().to_string())
+        .unwrap_or_else(|_| "clamav-daemon".to_string());
+    let active = exec::run(&["systemctl", "is-active", "--quiet", &daemon]);
     if !matches!(&active, Ok(o) if o.ok()) {
         return HelperResponse::failed(
             HelperErrorKind::BadRequest,
-            "clamav-daemon is not running".to_string(),
+            format!("{daemon} is not running"),
         );
     }
     if let Err(e) = std::fs::create_dir_all(MALWARE_JOBS_DIR) {
@@ -702,7 +835,7 @@ pub fn malware_scan_server(job: &str) -> HelperResponse {
     // reads files its own user cannot. Niced hard: a scan must never be the
     // reason a website goes slow.
     let file_list = format!("--file-list={list}");
-    let scanned = exec::run(&[
+    let mut scan_argv = vec![
         "nice",
         "-n",
         "19",
@@ -712,8 +845,15 @@ pub fn malware_scan_server(job: &str) -> HelperResponse {
         "--fdpass",
         "--stdout",
         "--no-summary",
-        &file_list,
-    ]);
+    ];
+    // clamdscan finds the daemon through a config file; on EL the daemon's
+    // is `scan.conf`, which is not where clamdscan looks by default.
+    let config = format!("--config-file={EL_CLAMD_CONF}");
+    if family() == Family::Rhel {
+        scan_argv.push(&config);
+    }
+    scan_argv.push(&file_list);
+    let scanned = exec::run(&scan_argv);
     let code = match &scanned {
         Ok(o) => {
             // `>>"$log"` - appended after the total line.
@@ -886,6 +1026,15 @@ fn default_interface() -> Option<String> {
         .map(str::to_string)
 }
 
+/// nodejs.org's name for an architecture Rust names `arch`.
+fn node_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("x64"),
+        "aarch64" => Some("arm64"),
+        _ => None,
+    }
+}
+
 /// `docker-install`.
 pub fn docker_install() -> HelperResponse {
     if have("docker") {
@@ -899,77 +1048,13 @@ pub fn docker_install() -> HelperResponse {
         install_docker_firewall_guard();
         return HelperResponse::with_stdout("Docker is already installed\n".to_string());
     }
-    if let Some(refusal) = debian_only("Docker install") {
-        return refusal;
-    }
-
-    // `. /etc/os-release` in the bash. `OsRelease` keeps only the fields the
-    // platform table needs, and the codename is not one of them, so this
-    // reads the file for both rather than taking `ID` from one place and the
-    // codename from another.
-    let os = os_release_fields();
-    let distro = match os_field(&os, "ID").as_str() {
-        "ubuntu" => "ubuntu",
-        "debian" => "debian",
-        other => {
-            return HelperResponse::failed(
-                HelperErrorKind::BadRequest,
-                format!(
-                    "unsupported distribution for Docker install: {}",
-                    if other.is_empty() { "unknown" } else { other }
-                ),
-            )
-        }
-    };
-    let codename = os_field(&os, "VERSION_CODENAME");
-    if codename.is_empty() {
-        return HelperResponse::failed(
-            HelperErrorKind::BadRequest,
-            "cannot determine distribution codename".to_string(),
-        );
-    }
-    let arch = match exec::run(&["dpkg", "--print-architecture"]) {
-        Ok(o) if o.ok() => o.stdout.trim().to_string(),
-        other => return exec::respond("dpkg --print-architecture", other),
-    };
-
     let mut out = String::new();
-    if let Ok(o) = update_index() {
-        out.push_str(&o.stdout);
-    }
-    match install_packages(&["ca-certificates", "curl", "gnupg"]) {
-        Ok(o) if o.ok() => out.push_str(&o.stdout),
-        other => return exec::respond("apt-get install ca-certificates curl gnupg", other),
-    }
-
-    let _ = std::fs::create_dir_all("/etc/apt/keyrings");
-    let key_url = format!("https://download.docker.com/linux/{distro}/gpg");
-    let fetched = exec::run(&[
-        "curl",
-        "-fsSL",
-        &key_url,
-        "-o",
-        "/etc/apt/keyrings/docker.asc",
-    ]);
-    if !matches!(&fetched, Ok(o) if o.ok()) {
-        return exec::respond("curl docker gpg key", fetched);
-    }
-    // `chmod a+r` - apt runs the fetch as root and reads it as _apt.
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(
-        "/etc/apt/keyrings/docker.asc",
-        std::fs::Permissions::from_mode(0o644),
-    );
-
-    let source = format!(
-        "deb [arch={arch} signed-by=/etc/apt/keyrings/docker.asc] \
-         https://download.docker.com/linux/{distro} {codename} stable\n"
-    );
-    if let Err(e) = std::fs::write("/etc/apt/sources.list.d/docker.list", source) {
-        return HelperResponse::failed(
-            HelperErrorKind::Internal,
-            format!("writing /etc/apt/sources.list.d/docker.list: {e}"),
-        );
+    let repository = match family() {
+        Family::Rhel => docker_repository_el(),
+        _ => docker_repository_debian(&mut out),
+    };
+    if let Err(refusal) = repository {
+        return refusal;
     }
     if let Ok(o) = update_index() {
         out.push_str(&o.stdout);
@@ -982,7 +1067,7 @@ pub fn docker_install() -> HelperResponse {
         "docker-compose-plugin",
     ]) {
         Ok(o) if o.ok() => out.push_str(&o.stdout),
-        other => return exec::respond("apt-get install docker-ce", other),
+        other => return exec::respond("installing docker-ce", other),
     }
 
     if let Err(e) = write_docker_daemon_config() {
@@ -998,6 +1083,99 @@ pub fn docker_install() -> HelperResponse {
     install_docker_firewall_guard();
     out.push_str("Docker installed\n");
     HelperResponse::with_stdout(out)
+}
+
+/// Docker's own repository for the RHEL family: its `.repo` file, which names
+/// `$releasever` and the signing key dnf imports on first use.
+fn docker_repository_el() -> Result<(), HelperResponse> {
+    let fetched = exec::run(&[
+        "curl",
+        "-fsSL",
+        "https://download.docker.com/linux/rhel/docker-ce.repo",
+        "-o",
+        "/etc/yum.repos.d/docker-ce.repo",
+    ]);
+    if !matches!(&fetched, Ok(o) if o.ok()) {
+        return Err(exec::respond("curl docker-ce.repo", fetched));
+    }
+    Ok(())
+}
+
+/// Docker's own apt repository, signed by its key.
+fn docker_repository_debian(out: &mut String) -> Result<(), HelperResponse> {
+    // `. /etc/os-release` in the bash. `OsRelease` keeps only the fields the
+    // platform table needs, and the codename is not one of them, so this
+    // reads the file for both rather than taking `ID` from one place and the
+    // codename from another.
+    let os = os_release_fields();
+    let distro = match os_field(&os, "ID").as_str() {
+        "ubuntu" => "ubuntu",
+        "debian" => "debian",
+        other => {
+            return Err(HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                format!(
+                    "unsupported distribution for Docker install: {}",
+                    if other.is_empty() { "unknown" } else { other }
+                ),
+            ))
+        }
+    };
+    let codename = os_field(&os, "VERSION_CODENAME");
+    if codename.is_empty() {
+        return Err(HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "cannot determine distribution codename".to_string(),
+        ));
+    }
+    let arch = match exec::run(&["dpkg", "--print-architecture"]) {
+        Ok(o) if o.ok() => o.stdout.trim().to_string(),
+        other => return Err(exec::respond("dpkg --print-architecture", other)),
+    };
+
+    if let Ok(o) = update_index() {
+        out.push_str(&o.stdout);
+    }
+    match install_packages(&["ca-certificates", "curl", "gnupg"]) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        other => {
+            return Err(exec::respond(
+                "apt-get install ca-certificates curl gnupg",
+                other,
+            ))
+        }
+    }
+
+    let _ = std::fs::create_dir_all("/etc/apt/keyrings");
+    let key_url = format!("https://download.docker.com/linux/{distro}/gpg");
+    let fetched = exec::run(&[
+        "curl",
+        "-fsSL",
+        &key_url,
+        "-o",
+        "/etc/apt/keyrings/docker.asc",
+    ]);
+    if !matches!(&fetched, Ok(o) if o.ok()) {
+        return Err(exec::respond("curl docker gpg key", fetched));
+    }
+    // `chmod a+r` - apt runs the fetch as root and reads it as _apt.
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(
+        "/etc/apt/keyrings/docker.asc",
+        std::fs::Permissions::from_mode(0o644),
+    );
+
+    let source = format!(
+        "deb [arch={arch} signed-by=/etc/apt/keyrings/docker.asc] \
+         https://download.docker.com/linux/{distro} {codename} stable\n"
+    );
+    if let Err(e) = std::fs::write("/etc/apt/sources.list.d/docker.list", source) {
+        return Err(HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing /etc/apt/sources.list.d/docker.list: {e}"),
+        ));
+    }
+    Ok(())
 }
 
 /// `/etc/os-release` as `KEY=value` pairs, quotes stripped.
@@ -1594,6 +1772,170 @@ const PHP_EXTENSIONS: &[&str] = &[
     "bcmath", "redis", "imagick",
 ];
 
+/// Remi's packages for one PHP version: `platform.sh`'s `php_ext_packages`
+/// for EL, name for name. They are not Debian's list with another prefix -
+/// `mysql` is `mysqlnd`, `sqlite3` is inside `pdo`, and `zip`, `redis` and
+/// `imagick` are PECL builds.
+const REMI_PHP_PACKAGES: &[&str] = &[
+    "fpm",
+    "cli",
+    "common",
+    "mysqlnd",
+    "pdo",
+    "gd",
+    "xml",
+    "mbstring",
+    "opcache",
+    "intl",
+    "bcmath",
+    "soap",
+    "pecl-zip",
+    "pecl-redis6",
+    "pecl-imagick-im7",
+];
+
+/// Where the installer's phase runner lives on a box it installed.
+const SNPANEL_INSTALL: &str = "/usr/local/sbin/snpanel-install";
+
+/// `php-install` on the RHEL family, as `install.sh` sets up the versions it
+/// installs: Remi's packages, the Debian-shaped paths the panel uses
+/// (`setup_php_compat_shim`), the pool on `/run/php` and the panel's php.ini
+/// settings (`snpanel-install php-fpm-pool` and `php-ini`, the same phases),
+/// the ionCube loader where there is one, and the service.
+fn php_install_remi(version: PhpVersion) -> HelperResponse {
+    let v = version.dotted();
+    let c = v.replace('.', "");
+    let mut out = String::new();
+
+    let fpm = format!("php{c}-php-fpm");
+    let known = matches!(exec::run(&["dnf", "-q", "info", &fpm]), Ok(o) if o.ok());
+    if !known {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!(
+                "PHP {v} is not available on this system: the Remi repository has no {fpm}. \
+                 Nothing was changed."
+            ),
+        );
+    }
+
+    out.push_str(&format!("Installing PHP {v} from Remi...\n"));
+    let packages: Vec<String> = REMI_PHP_PACKAGES
+        .iter()
+        .map(|p| format!("php{c}-php-{p}"))
+        .collect();
+    // `strict=0`: a module this version does not build is skipped, as the
+    // installer's `pkg_exists` loop skips it, rather than failing the rest.
+    let mut argv: Vec<&str> = vec!["dnf", "-y", "install", "--setopt=strict=0"];
+    argv.extend(packages.iter().map(String::as_str));
+    match exec::run(&argv) {
+        Ok(o) if o.ok() => out.push_str(&o.stdout),
+        other => return exec::respond(&format!("dnf install {fpm}"), other),
+    }
+    let etc = format!("/etc/opt/remi/php{c}");
+    if !Path::new(&format!("{etc}/php-fpm.d")).is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::CommandFailed,
+            format!("{fpm} installed, but {etc}/php-fpm.d is not there"),
+        );
+    }
+
+    if let Err(e) = remi_layout_shim(&v, &c) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("linking PHP {v} into the panel's paths: {e}"),
+        );
+    }
+    let _ = exec::run(&["systemctl", "daemon-reload"]);
+
+    let socket = format!("/run/php/php{v}-fpm.sock");
+    for (what, step) in [
+        (
+            "the PHP-FPM pool",
+            vec![
+                SNPANEL_INSTALL.to_string(),
+                "php-fpm-pool".into(),
+                format!("{etc}/php-fpm.d/www.conf"),
+                socket,
+            ],
+        ),
+        (
+            "the panel's php.ini settings",
+            vec![
+                SNPANEL_INSTALL.to_string(),
+                "php-ini".into(),
+                format!("{etc}/php.ini"),
+            ],
+        ),
+    ] {
+        let argv: Vec<&str> = step.iter().map(String::as_str).collect();
+        let result = exec::run(&argv);
+        if !matches!(&result, Ok(o) if o.ok()) {
+            return exec::respond(&format!("writing {what} for PHP {v}"), result);
+        }
+    }
+
+    match install_ioncube_loader(version) {
+        Ok(text) => out.push_str(&text),
+        Err(resp) => return resp,
+    }
+
+    let enabled = exec::run(&["systemctl", "enable", "--now", &fpm]);
+    if !matches!(&enabled, Ok(o) if o.ok()) {
+        return exec::respond(&format!("systemctl enable --now {fpm}"), enabled);
+    }
+    out.push_str(&format!("PHP {v} installed successfully\n"));
+    HelperResponse::with_stdout(out)
+}
+
+/// `setup_php_compat_shim`: Debian's names for Remi's paths, so a version the
+/// panel installs is reached the way the installer's are.
+///
+/// `conf.d` and `pool.d` inside Remi's tree, `/etc/php/<v>/fpm` pointing at
+/// it, `php<v>-fpm.service` as an alias of Remi's unit, and `php<v>` on PATH.
+fn remi_layout_shim(v: &str, c: &str) -> std::io::Result<()> {
+    let etc = format!("/etc/opt/remi/php{c}");
+    replace_symlink("php.d", &format!("{etc}/conf.d"))?;
+    replace_symlink("php-fpm.d", &format!("{etc}/pool.d"))?;
+    std::fs::create_dir_all(format!("/etc/php/{v}"))?;
+    replace_symlink(&etc, &format!("/etc/php/{v}/fpm"))?;
+    let unit = format!("/usr/lib/systemd/system/php{c}-php-fpm.service");
+    if Path::new(&unit).is_file() {
+        replace_symlink(&unit, &format!("/etc/systemd/system/php{v}-fpm.service"))?;
+    }
+    replace_symlink(
+        &format!("/opt/remi/php{c}/root/usr/bin/php"),
+        &format!("/usr/local/bin/php{v}"),
+    )?;
+    // The pool runs as the web user, whose group is not the one Remi gives
+    // these directories; an ACL survives the package's updates, a chgrp not.
+    let web_group = snpanel_osabi::detect()
+        .map(|p| p.web_group().to_string())
+        .unwrap_or_else(|_| "nginx".to_string());
+    for dir in ["session", "wsdlcache", "opcache"] {
+        let path = format!("/var/opt/remi/php{c}/lib/php/{dir}");
+        if Path::new(&path).is_dir() {
+            let _ = exec::run(&["setfacl", "-m", &format!("g:{web_group}:rwx"), &path]);
+        }
+    }
+    Ok(())
+}
+
+/// `ln -sfn target link`: a link already there is replaced, a directory is not.
+fn replace_symlink(target: &str, link: &str) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() || m.is_file() => std::fs::remove_file(link)?,
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{link} is a directory"),
+            ))
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(target, link)
+}
+
 /// Source: `apt_installable`.
 ///
 /// "Not `apt-cache show`: that succeeds for a name the archive merely
@@ -1699,17 +2041,13 @@ fn ondrej_ppa_configured() -> bool {
 pub fn php_install(version: PhpVersion) -> HelperResponse {
     let v = version.dotted();
 
-    // "Adding a version here would need both [the Remi package names and the
-    // layout shim], and doing only the first is worse than refusing: the
-    // packages would install, the panel would list the version, and every
-    // tuning action against it would fail on a path that does not exist."
+    // Both halves on EL: Remi's package names, and the layout shim that makes
+    // every path the panel uses reach them. Doing only the first would be
+    // worse than refusing - the version would be listed and every tuning
+    // action against it would fail on a path that does not exist - which is
+    // why this refused until the shim was here too.
     if family() == Family::Rhel {
-        return HelperResponse::failed(
-            HelperErrorKind::BadRequest,
-            "installing additional PHP versions from the panel is not supported on rhel yet; \
-             PHP 8.3 and 8.4 are set up by the installer"
-                .to_string(),
-        );
+        return php_install_remi(version);
     }
 
     let mut out = String::new();
@@ -1847,22 +2185,23 @@ fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse>
     };
     let archive = format!("{temp}/ioncube_loaders.tar.gz");
 
+    // A loader that cannot be fetched is skipped, not a failed install: the
+    // PHP it was for is installed and running by now, and the installer skips
+    // it the same way. Failing here reported a working PHP as a 500 whenever
+    // downloads.ioncube.com was slow - which, measured from two networks
+    // while this was checked, is often.
     const URL: &str =
         "https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz";
     if !matches!(
         exec::run(&["curl", "-fsSL", "--connect-timeout", "10", "--max-time", "300", URL, "-o", &archive]),
         Ok(o) if o.ok()
     ) {
-        return Err(cleanup(HelperResponse::failed(
-            HelperErrorKind::CommandFailed,
-            "failed to download ionCube Loader".to_string(),
-        )));
+        let _ = cleanup(HelperResponse::ok());
+        return Ok("Skipping ionCube Loader: the download failed\n".to_string());
     }
     if !matches!(exec::run(&["tar", "-xzf", &archive, "-C", &temp]), Ok(o) if o.ok()) {
-        return Err(cleanup(HelperResponse::failed(
-            HelperErrorKind::CommandFailed,
-            "failed to unpack ionCube Loader".to_string(),
-        )));
+        let _ = cleanup(HelperResponse::ok());
+        return Ok("Skipping ionCube Loader: the archive could not be unpacked\n".to_string());
     }
 
     let loader = format!("{temp}/ioncube/ioncube_loader_lin_{v}.so");
@@ -1919,12 +2258,12 @@ fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse>
             .map(|o| format!("{}{}", o.stdout, o.stderr))
             .unwrap_or_default();
         if !reported.to_lowercase().contains("ioncube") {
+            // Taken out again, so the PHP it was for keeps working, and said.
             for ini in &inis {
                 let _ = std::fs::remove_file(ini);
             }
-            return Err(HelperResponse::failed(
-                HelperErrorKind::CommandFailed,
-                format!("ionCube Loader failed to load for PHP {v}"),
+            return Ok(format!(
+                "Skipping ionCube Loader: it did not load for PHP {v}, so it was left disabled\n"
             ));
         }
     }
@@ -1934,6 +2273,76 @@ fn install_ioncube_loader(version: PhpVersion) -> Result<String, HelperResponse>
 
 #[cfg(test)]
 mod tests {
+    /// EPEL's `scan.conf` as shipped on AlmaLinux 10.2, the lines that matter.
+    const EPEL_SCAN_CONF: &str =
+        "##\n#Example\n\n# Path to a local socket file the daemon will listen on.\n\
+        #LocalSocket /run/clamd.scan/clamd.sock\n#LocalSocket /run/clamd.scan/clamd.sock\n\n\
+        #LocalSocketGroup virusgroup\n#LocalSocketMode 660\nUser clamscan\n";
+
+    #[test]
+    fn epels_clamd_gets_one_socket_and_keeps_the_rest() {
+        let out = clamd_conf_for_panel(EPEL_SCAN_CONF);
+        let live: Vec<&str> = out
+            .lines()
+            .filter(|l| l.split_whitespace().next() == Some("LocalSocket"))
+            .collect();
+        assert_eq!(
+            live,
+            vec!["LocalSocket /run/clamd.scan/clamd.sock"],
+            "{out}"
+        );
+        // The second copy stays a comment; the group and mode stay unset.
+        assert!(out.contains(
+            "LocalSocket /run/clamd.scan/clamd.sock\n#LocalSocket /run/clamd.scan/clamd.sock\n"
+        ));
+        assert!(out.contains("#LocalSocketMode 660\nUser clamscan\n"));
+        // Twice is once.
+        assert_eq!(clamd_conf_for_panel(&out), out);
+        // A config with no socket line at all gets one.
+        assert!(clamd_conf_for_panel("User clamscan\n")
+            .ends_with("LocalSocket /run/clamd.scan/clamd.sock\n"));
+    }
+
+    #[test]
+    fn a_live_example_line_is_commented_and_nothing_else_is() {
+        assert_eq!(
+            without_example("Example\nUser clamscan\n"),
+            "#Example\nUser clamscan\n"
+        );
+        assert_eq!(
+            without_example("#Example\nExampleThing yes\n"),
+            "#Example\nExampleThing yes\n"
+        );
+        assert_eq!(without_example(""), "\n");
+    }
+
+    /// The versions the panel installs on EL get the packages the installer
+    /// gives its own: `platform.sh`'s `php_ext_packages` for rhel, in order.
+    #[test]
+    fn remi_packages_are_the_installers() {
+        const PLATFORM: &str = include_str!("../../../../installer/platform.sh");
+        let rhel = PLATFORM
+            .split("rhel)")
+            .find(|part| part.contains("for pkg in fpm cli"))
+            .expect("platform.sh's rhel package list");
+        let list = rhel
+            .split("for pkg in ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("the `for pkg in ...;` line");
+        let theirs: Vec<&str> = list.split_whitespace().collect();
+        assert_eq!(theirs, REMI_PHP_PACKAGES.to_vec());
+    }
+
+    #[test]
+    fn node_architectures_are_nodejs_orgs_names() {
+        assert_eq!(node_arch("x86_64"), Some("x64"));
+        assert_eq!(node_arch("aarch64"), Some("arm64"));
+        assert_eq!(node_arch("riscv64"), None);
+        // The one this helper runs as has a name, or every Node install refuses.
+        assert!(node_arch(std::env::consts::ARCH).is_some());
+    }
+
     use super::*;
 
     /// Installed means the status word says so, for every package asked
