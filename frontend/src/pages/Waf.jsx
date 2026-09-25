@@ -33,6 +33,13 @@ export default function WafPage() {
 
   function renderWaf() {
     const statusText = wafRules.status?.stdout || wafRules.status?.stderr || t('Click Refresh to load WAF status.');
+    // The helper reports the engine as JSON; shown as facts, not as JSON.
+    const wafStatus = (() => {
+      try {
+        const value = JSON.parse(wafRules.status?.stdout || '');
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+      } catch { return null; }
+    })();
     // The effective list, not the site's own: a site with nothing of its own
     // still enforces the global list, and reporting "No bots" for it was a lie.
     const rowFor = id => botBlocks?.websites?.find(w => w.website_id === id);
@@ -47,9 +54,15 @@ export default function WafPage() {
               ? t('Engine status and per-website protection. Open a website to configure its rules, flood limits and blocked bots.')
               : t('Protection for your websites. Open one to configure its rules and blocked bots.')}</p>
           </div>
-          <button disabled={!!loading} onClick={() => { loadBotBlocks(); if (isAdmin) { loadWafRules(); loadCrs(); } }}><RefreshCw size={14}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => { loadBotBlocks(); if (isAdmin) { loadWafRules(); loadCrs(); } }}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
-        {isAdmin && <div className="info-box firewall-status"><strong>{t('Status')}</strong><pre>{statusText}</pre></div>}
+        {isAdmin && <div className="info-box firewall-status"><strong>{t('Status')}</strong>{wafStatus
+          ? <div className="waf-status-facts">
+            <span className={wafStatus.installed ? 'badge ok' : 'badge bad'}>{wafStatus.installed ? t('Engine installed') : t('Engine not installed')}</span>
+            <span className="badge">{t('{count} website(s) with rules', { count: Number(wafStatus.sites_with_rules) || 0 })}</span>
+            {wafStatus.rules_dir && <span className="hint">{t('Rules in {path}', { path: <code>{wafStatus.rules_dir}</code> })}</span>}
+          </div>
+          : <pre>{statusText}</pre>}</div>}
       </section>
 
       {isAdmin && <section className="section">
@@ -60,7 +73,7 @@ export default function WafPage() {
               {t('SNPanel\'s own rules block known bad paths. CRS inspects the payload - SQL injection, XSS, command injection - and scores each request instead of refusing on a single match. Off by default because CRS needs tuning against real traffic before it can be trusted to block.')}
             </p>
           </div>
-          <button disabled={!!loading} onClick={loadCrs}><RefreshCw size={14}/> {t('Check')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={loadCrs}><RefreshCw size={14}/> {t('Check')}</button>
         </div>
         {!crs && <p className="hint">{t('Click Check to read the current state.')}</p>}
         {crs && <>
@@ -130,7 +143,7 @@ export default function WafPage() {
                   title={ownCountFor(site.id) > 0 ? t('{value} set on this site, the rest from the global list', { value: ownCountFor(site.id) }) : t('All from the global list')}
                 >{bots > 0 ? t('{bots} bot(s)', { bots }) : t('No bots')}</span>
               </div>
-              <button disabled={!!loading} onClick={() => openWafSite(site.id)}><SettingsIcon size={14}/> {t('Configure')}</button>
+              <button className="secondary-light" disabled={!!loading} onClick={() => openWafSite(site.id)}><SettingsIcon size={14}/> {t('Configure')}</button>
             </div>;
           })}
         </div>
@@ -146,7 +159,7 @@ export default function WafPage() {
                 : t('Blocked on every website on this server. A site can add more of its own from its page. Nothing blocked globally yet.')}
             </p>
           </div>
-          <button disabled={!!loading} onClick={() => setBulkBotOpen(open => !open)}>{bulkBotOpen ? t('Hide') : t('Edit')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => setBulkBotOpen(open => !open)}>{bulkBotOpen ? t('Hide') : t('Edit')}</button>
         </div>
 
         {bulkBotOpen && <div className="global-bots">

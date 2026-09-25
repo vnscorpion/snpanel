@@ -33,7 +33,7 @@ export default function WafAccessLogsPage() {
       </div>
       <div className="access-log-panel">
         <div className="access-log-toolbar">
-          <div className="access-log-toolbar-label"><strong>{t('Access Logs')}</strong><span>{entryLabel}</span></div>
+          <div className="access-log-toolbar-label"><span>{entryLabel}</span></div>
           <button className="secondary-light" disabled={rows.length === 0} onClick={exportWafAccessLogs}><Download size={14}/> {t('Export')}</button>
           <button className="danger light" disabled={!!loading || websites.length === 0} onClick={clearWafAccessLogs}><Trash2 size={14}/> {t('Clear')}</button>
           <select value={wafAccessLogFilters.websiteId} onChange={e => updateWafAccessLogFilters({ websiteId: e.target.value }, true)}>

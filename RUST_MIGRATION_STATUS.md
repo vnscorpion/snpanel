@@ -1268,6 +1268,40 @@ card, the malware status line, the IPv6 line. In Vietnamese a scan of them
 for English prose finds technical terms and brand names only - Node.js,
 Docker Compose, OWASP Core Rule Set, SQL injection, build cache.
 
+### The review, page by page (past the Python)
+
+Every page captured in light and dark at 1440x900, and swept at 1440, 1024
+and 390 px in both languages for anything wider than the window.
+
+- Access Logs was 1658 px wide at 1440: its toolbar was a fixed nine-column
+  grid, and the panel let the table's width through. The toolbar wraps now,
+  the table scrolls inside its own box and fits at 1440, and a request is one
+  line on a wide screen. Services ran out of its cards in Vietnamese.
+  `tools/ui-audit/overflow-all.mjs` finds neither now, at any of the three
+  widths, in either language.
+- One primary action to a section. Refresh, the database row's actions, the
+  WAF page's per-site Configure, the file manager's Up / Folder / File, the
+  backups' Upload and the PHP versions to install are secondary; an icon no
+  longer shrinks to a dot in a crowded button, and a title's button no longer
+  gives way to a long paragraph beside it.
+- Services offers what applies - Restart and Stop for a running service,
+  Start for a stopped one - and says once, not on every card, that it
+  refreshes itself.
+- The Websites and Cron forms have labels: their inputs had none, so a screen
+  reader named them by their placeholder. Create website comes after the
+  options it creates with, and the password field says a blank one gets a
+  random password.
+- The WAF engine's status reads as facts, not as the helper's JSON; Updates
+  no longer prints a stray 0 (`progress_percent && ...` on a progress of 0);
+  the Dashboard's bars turn amber from 75% and red from 90%, and the network
+  card, which has no bar, no longer sits lower than the others.
+- Colours and type - Inter with its Vietnamese subset, the tokens from the
+  redesign - read well in both themes, and nothing there had to change.
+
+The accessibility snapshots in English differ from the ones before only
+where the list above says: the new labels, the Services actions, the WAF
+facts, the stray 0, the duplicated Access Logs title.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

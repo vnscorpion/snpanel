@@ -273,7 +273,7 @@ export default function WebsitesPage() {
           <option value={1000}>{t('1000 lines')}</option>
           <option value={2000}>{t('2000 lines')}</option>
         </select>
-        <button disabled={!!loading} onClick={() => loadWebsiteLog(logViewer.id, logViewer.kind, logViewer.lines, logViewer.domain)}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <button className="secondary-light" disabled={!!loading} onClick={() => loadWebsiteLog(logViewer.id, logViewer.kind, logViewer.lines, logViewer.domain)}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <pre className="log-output">{logViewer.exists ? (logViewer.content || t('Log is empty.')) : t('Log file has not been created yet.')}</pre>
     </section>;
@@ -292,26 +292,25 @@ export default function WebsitesPage() {
         <h2>{createTitle}</h2>
         {createHint && <p className="hint">{createHint}</p>}
         <div className="form-row create-site-row">
-          <input value={domain} onChange={e => setDomain(e.target.value)} placeholder="domain.com" />
-          <select value={siteType} onChange={e => setSiteType(e.target.value)}>
+          <label className="field"><span>{t('Domain')}</span><input value={domain} onChange={e => setDomain(e.target.value)} placeholder="domain.com" /></label>
+          <label className="field"><span>{t('Website mode')}</span><select value={siteType} onChange={e => setSiteType(e.target.value)}>
             {WEBSITE_MODES.map(([value, label]) => <option
               key={value}
               value={value}
               disabled={value === 'application' && !appsFeatureEnabled}
             >{t(label)}</option>)}
-          </select>
+          </select></label>
           {siteType === 'application'
-            ? <select value={createSiteAppId} onChange={e => setCreateSiteAppId(e.target.value)}>
+            ? <label className="field"><span>{t('Application')}</span><select value={createSiteAppId} onChange={e => setCreateSiteAppId(e.target.value)}>
               <option value="">{t('Select an application')}</option>
               {siteApps.items.map(app => <option key={app.id} value={app.id}>{app.name} · {t(SITE_APP_KIND_LABELS[app.kind] || app.kind)} · :{app.port}</option>)}
-            </select>
-            : <select value={phpVersion} onChange={e => setPhpVersion(e.target.value)}>
+            </select></label>
+            : <label className="field"><span>{t('PHP version')}</span><select value={phpVersion} onChange={e => setPhpVersion(e.target.value)}>
               {phpVersions.installed.map(v => <option key={v} value={v}>PHP {v}</option>)}
-            </select>}
-          {wpFieldsEnabled && <input value={adminEmail} onChange={e => setAdminEmail(e.target.value)} placeholder="admin@domain.com" />}
-          {wpFieldsEnabled && <input value={wpAdminUser} onChange={e => setWpAdminUser(e.target.value)} placeholder={t('WP admin user')} />}
-          {wpFieldsEnabled && <input value={wpAdminPassword} onChange={e => setWpAdminPassword(e.target.value)} placeholder={t('WP admin password')} type="password" />}
-          <button disabled={!!loading || !domain} onClick={createWordPress}><Plus size={15}/> {t('Create')}</button>
+            </select></label>}
+          {wpFieldsEnabled && <label className="field"><span>{t('Admin email')}</span><input value={adminEmail} onChange={e => setAdminEmail(e.target.value)} placeholder="admin@domain.com" /></label>}
+          {wpFieldsEnabled && <label className="field"><span>{t('Admin user')}</span><input value={wpAdminUser} onChange={e => setWpAdminUser(e.target.value)} placeholder={t('WP admin user')} /></label>}
+          {wpFieldsEnabled && <label className="field"><span>{t('Admin password')}</span><input value={wpAdminPassword} onChange={e => setWpAdminPassword(e.target.value)} placeholder={t('Leave blank for a random one')} type="password" /></label>}
         </div>
         {siteType === 'application' && siteApps.items.length === 0 && <p className="hint">
           {t('No applications installed yet. Install one on the {page} page first.', { page: <button type="button" className="link-button" onClick={() => navigateToPage('applications')}>{t('Applications')}</button> })}
@@ -345,11 +344,12 @@ export default function WebsitesPage() {
           : siteType === 'application'
             ? t('Nginx will forward this domain to the selected application on 127.0.0.1, including WebSocket upgrades.')
             : t('A PHP-FPM vhost will be created with public_html/ folder. Upload your PHP, HTML, or static files via File Manager.')}</p>
+        <div className="create-site-actions"><button disabled={!!loading || !domain} onClick={createWordPress}><Plus size={15}/> {t('Create website')}</button></div>
       </section>
       <section className="section">
         <div className="section-title">
           <div><h2>{t('Website list')}</h2><p className="hint">{searchActive ? t('{count} result(s)', { count: visibleWebsites.length }) : t('{count} website(s)', { count: visibleWebsites.length })}</p></div>
-          <button disabled={!!loading || websiteSearching} onClick={() => loadWebsiteList(websiteSearch, true)}><RefreshCw size={15} className={websiteSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={!!loading || websiteSearching} onClick={() => loadWebsiteList(websiteSearch, true)}><RefreshCw size={15} className={websiteSearching ? 'spin' : ''}/> {t('Refresh')}</button>
         </div>
         <div className="website-search-bar">
           <Search size={16}/>

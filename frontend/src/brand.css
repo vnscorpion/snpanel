@@ -172,7 +172,7 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
   .resource-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .sftp-target-form{grid-template-columns:repeat(3,minmax(0,1fr)) max-content}
   .cron-form{grid-template-columns:1fr 150px}
-  .cron-form input:nth-of-type(2){grid-column:1 / -1}
+  .cron-form .cron-command{grid-column:1 / -1}
   .panel-settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .panel-settings-grid button{width:100%}
   .panel-settings-compact .panel-ssl-status{width:100%;box-sizing:border-box}
@@ -189,7 +189,7 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
   .mobile-nav-toggle{display:flex;align-items:center;justify-content:center}
   button.sidebar-close{display:flex;align-items:center;justify-content:flex-end}
   .panel-settings-grid,.panel-ssl-grid,.cron-form{grid-template-columns:1fr}
-  .cron-form input:nth-of-type(2){grid-column:auto}
+  .cron-form .cron-command{grid-column:auto}
   .cron-item,.backup-job{grid-template-columns:auto minmax(0,1fr);align-items:start}
   .cron-item button,.backup-job>.badge{grid-column:1 / -1;width:100%}
   .brand-asset-grid{grid-template-columns:1fr}
@@ -349,16 +349,18 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 .access-logs-title{align-items:center}
 .access-log-icon-actions{display:flex;gap:8px;align-items:center}
 .icon-button{width:36px;height:36px;min-height:36px;padding:0;display:inline-grid;place-items:center}
-.access-log-panel{display:grid;gap:12px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;background:var(--surface)}
-.access-log-toolbar{display:grid;grid-template-columns:max-content max-content max-content minmax(170px,.8fr) minmax(150px,.7fr) minmax(220px,1.5fr) minmax(120px,.6fr) minmax(140px,.7fr) max-content;gap:8px;align-items:center}
+.access-log-panel{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;background:var(--surface)}
+.access-log-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.access-log-toolbar select{flex:0 1 170px}
+.access-log-toolbar input{flex:1 1 220px}
 .access-log-toolbar-label{display:flex;align-items:center;gap:9px;min-width:0;white-space:nowrap}
 .access-log-toolbar-label strong{font-size:var(--text-md);color:var(--text)}
 .access-log-toolbar-label span{padding:5px 10px;border:1px solid var(--border);border-radius:999px;color:var(--text-muted);font-size:var(--text-sm);font-weight:600;background:var(--surface-alt)}
 .access-log-toolbar input,.access-log-toolbar select{width:100%;min-width:0}
 .access-log-table-wrap{overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface)}
-.access-log-table{width:100%;border-collapse:collapse;min-width:1140px;font-size:var(--text-base)}
+.access-log-table{width:100%;border-collapse:collapse;min-width:960px;font-size:var(--text-base)}
 .access-log-table th{position:sticky;top:0;z-index:1;background:var(--surface-alt);color:var(--text-secondary);text-align:left;text-transform:uppercase;font-size:var(--text-xs);letter-spacing:0;font-weight:800;padding:12px 10px;border-bottom:1px solid var(--border)}
-.access-log-table td{padding:12px 10px;border-bottom:1px solid var(--border);vertical-align:top;color:var(--text)}
+.access-log-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top;color:var(--text)}
 .access-log-table tr:last-child td{border-bottom:0}
 .access-log-table td small{display:block;margin-top:5px;color:var(--text-muted);font-size:var(--text-sm);font-weight:600}
 .access-log-table code{display:block;max-width:520px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:transparent;color:var(--text);font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm)}
@@ -378,8 +380,8 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
 
 @media(max-width:950px){
   .site-card,.site-stack,.waf-rules-grid,.waf-website-selector,.website-settings-grid,.site-app-form{grid-template-columns:1fr}
-  .access-log-toolbar{grid-template-columns:1fr 1fr}
-  .access-log-toolbar-label,.access-log-toolbar input{grid-column:1/-1}
+  .access-log-toolbar>*{flex:1 1 calc(50% - 8px)}
+  .access-log-toolbar-label,.access-log-toolbar input{flex-basis:100%}
   .access-log-table{min-width:0}
   .access-log-table thead{display:none}
   .access-log-table,.access-log-table tbody,.access-log-table tr,.access-log-table td{display:block;width:100%}
@@ -555,3 +557,31 @@ button:disabled,.upload-button.disabled{background:var(--disabled-bg);color:var(
   .db-row .db-name{grid-column:1 / -1}
   .db-create{grid-template-columns:1fr}
 }
+
+/* The review in #26. */
+/* An icon keeps its size in a crowded button. */
+button svg,.button-link svg,.upload-button svg{flex:none}
+/* A card without a bar keeps its figure level with the others; a bar warns. */
+.resource-card{align-content:start}
+.resource-track.warn span{background:var(--warning)}
+.resource-track.danger span{background:var(--danger)}
+/* A service's actions wrap rather than run out of the card. */
+.service-actions{flex-wrap:wrap}
+.service-actions button{flex:1 1 auto}
+/* A labelled field in a form row. */
+label.field{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+label.field>span{font-size:var(--text-sm);color:var(--text-muted)}
+.create-site-row{grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
+@media(max-width:950px){.create-site-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.create-site-row{grid-template-columns:1fr}}
+.create-site-actions{display:flex}
+/* The SSL action is a button, not a banner. */
+.ssl-issue{justify-self:start}
+.waf-status-facts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* One line a request on a wide screen: the duration beside the time. */
+@media(min-width:951px){
+  .access-log-table td .access-log-time{display:inline}
+  .access-log-table td .access-log-time+small{display:inline;margin:0 0 0 6px}
+}
+/* A title's own buttons keep their size beside a long paragraph. */
+.section-title>button,.section-title>.actions{flex:none}

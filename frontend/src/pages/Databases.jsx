@@ -61,7 +61,7 @@ export default function DatabasesPage() {
   return <section className="section">
     <div className="section-title">
       <h2>{t('Databases')}</h2>
-      <button disabled={!!loading || dbSearching} onClick={() => loadDatabases(dbSearch, true)}><RefreshCw size={15} className={dbSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+      <button className="secondary-light" disabled={!!loading || dbSearching} onClick={() => loadDatabases(dbSearch, true)}><RefreshCw size={15} className={dbSearching ? 'spin' : ''}/> {t('Refresh')}</button>
     </div>
     <div className="website-search-bar">
       <Search size={16}/>
@@ -113,9 +113,9 @@ export default function DatabasesPage() {
               <span title={t('Website')}><Globe size={12} aria-hidden="true"/> {db.website || t('No website')}</span>
             </small>
           </span>
-          <button disabled={!!loading} onClick={() => openPhpMyAdmin(db.id)}>phpMyAdmin</button>
-          <button disabled={!!loading} onClick={() => downloadDatabase(db.id, db.db_name)}><Download size={14}/> SQL</button>
-          <button disabled={!!loading} onClick={() => changeDbPassword(db.id)}><KeyRound size={14}/> {t('Password')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => openPhpMyAdmin(db.id)}>phpMyAdmin</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => downloadDatabase(db.id, db.db_name)}><Download size={14}/> SQL</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => changeDbPassword(db.id)}><KeyRound size={14}/> {t('Password')}</button>
           {isAdmin && <button className="secondary-light" disabled={!!loading} aria-expanded={moving?.id === db.id}
             onClick={() => setMoving(moving?.id === db.id ? null : { id: db.id, owner_id: String(db.owner_id), website_id: db.website_id ? String(db.website_id) : '' })}>
             <UserCog size={14}/> {t('Owner')}

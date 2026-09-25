@@ -176,8 +176,8 @@ export default function BackupsPage() {
       <WebsiteSelect />
       <div className="actions backup-toolbar">
         <button disabled={!selectedWebsiteId || busy} onClick={createBackup}><Plus size={14}/> {t('Create backup')}</button>
-        <button disabled={!selectedWebsiteId || busy} onClick={refreshBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
-        <label className="upload-button">
+        <button className="secondary-light" disabled={!selectedWebsiteId || busy} onClick={refreshBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <label className="upload-button secondary-light">
           <Upload size={14}/> {t('Upload backup')}
           <input type="file" accept=".tar.gz,application/gzip" onChange={(e) => { uploadBackup(e.target.files?.[0]); e.target.value = ''; }} />
         </label>
@@ -235,7 +235,7 @@ export default function BackupsPage() {
       <div className="section-title restore-title backup-panel-heading backup-subtitle">
         <div><h3>{t('Restore folder')}</h3><p className="hint">{restoreBackupDir || '/var/backups/snpanel/users/restore'}</p></div>
         <div className="actions">
-          <button disabled={busy} onClick={loadRestoreBackups}><RefreshCw size={14}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={busy} onClick={loadRestoreBackups}><RefreshCw size={14}/> {t('Refresh')}</button>
           <label className="upload-button">
             <Upload size={14}/> {t('Upload backups')}
             <input type="file" multiple accept=".tar.gz,application/gzip" onChange={(e) => { uploadUserBackups(e.target.files); e.target.value = ''; }} />
@@ -259,7 +259,7 @@ export default function BackupsPage() {
     {isAdmin && activeBackupTab === 'schedule' && <div className="backup-tab-panel">
       <div className="backup-panel-title">
         <div><h3>{t('Scheduled backups')}</h3><p className="hint">{t('Full user backups on a timetable, kept here and optionally copied to a destination.')}</p></div>
-        <button disabled={busy} onClick={refreshScheduledBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <button className="secondary-light" disabled={busy} onClick={refreshScheduledBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="bk-form bk-schedule-form">
         <div className="bk-field bk-users">
@@ -319,7 +319,7 @@ export default function BackupsPage() {
     {isAdmin && activeBackupTab === 'destination' && <div className="backup-tab-panel">
       <div className="backup-panel-title">
         <div><h3>{t('Destinations')}</h3><p className="hint">{t('Where backups are copied off this server: an SFTP server or an S3 bucket.')}</p></div>
-        <button disabled={busy} onClick={() => { loadSftpTargets(); loadS3Targets(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <button className="secondary-light" disabled={busy} onClick={() => { loadSftpTargets(); loadS3Targets(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
 
       <section className="bk-destination" aria-labelledby="bk-s3-title">
@@ -353,7 +353,7 @@ export default function BackupsPage() {
     {isAdmin && activeBackupTab === 'da-import' && <div className="backup-tab-panel">
       <div className="backup-panel-title">
         <div><h3>{t('DirectAdmin Import')}</h3><p className="hint">{t('Import websites, databases, and users from a DirectAdmin backup archive.')}</p></div>
-        <button disabled={busy} onClick={() => listDaBackups()}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <button className="secondary-light" disabled={busy} onClick={() => listDaBackups()}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="da-toolbar">
         <label className="upload-button">

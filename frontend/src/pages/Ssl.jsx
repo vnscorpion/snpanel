@@ -51,7 +51,7 @@ export default function SslPage() {
         <button className={sslMode === 'shared' ? 'active' : ''} onClick={() => setSslMode('shared')}><Copy size={14}/> {t('Use existing')}</button>
       </div>
       {sslMode === 'letsencrypt' && <>
-        <button disabled={!selectedWebsiteId || !!loading} onClick={() => enableSsl(selectedWebsiteId)} style={{marginTop:8}}><Lock size={15}/> {t('Install / Renew SSL')}</button>
+        <button className="ssl-issue" disabled={!selectedWebsiteId || !!loading} onClick={() => enableSsl(selectedWebsiteId)}><Lock size={15}/> {t('Install / Renew SSL')}</button>
         <p className="hint">{t('The domain must point to the correct VPS IP before issuing SSL.')}</p>
       </>}
       {sslMode === 'wildcard' && <div className="ssl-sub-form">

@@ -83,7 +83,7 @@ export default function UsersPage() {
       {activeUserTab === 'list' && <div className="user-tab-panel" id="users-tab-list" role="tabpanel" aria-labelledby="users-tab-button-list">
         <div className="section-title user-panel-title">
           <div><h2>{t('Panel user list')}</h2><p className="hint">{t('Current panel users and service limits.')}</p></div>
-          <button disabled={!!loading} onClick={loadUsers}><RefreshCw size={14}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={loadUsers}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
         {users.length === 0 && <EmptyState icon={Users} message={t('No users found.')} />}
         <div className="table">
@@ -175,7 +175,7 @@ export default function UsersPage() {
       {activeUserTab === 'packages' && <div className="user-tab-panel" id="users-tab-packages" role="tabpanel" aria-labelledby="users-tab-button-packages">
         <div className="section-title user-panel-title">
           <div><h2>{t('Packages')}</h2><p className="hint">{t('Create, edit, delete, and review reusable user limits.')}</p></div>
-          <button disabled={!!loading} onClick={loadPackages}><RefreshCw size={14}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={loadPackages}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
         <div className="user-create-card package-create-card">
           <label><span>{t('Package name')}</span><input value={newPackage.name} onChange={e => setNewPackage(prev => ({ ...prev, name: e.target.value }))} placeholder={t('Starter')} /></label>

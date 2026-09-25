@@ -3885,7 +3885,7 @@ function App() {
     return <article className="resource-card">
       <div className="resource-head"><span className="resource-icon"><Icon size={16}/></span><span>{label}</span></div>
       <strong>{value}</strong>
-      {safePercent !== null && <div className="resource-track"><span style={{ width: `${safePercent}%` }}></span></div>}
+      {safePercent !== null && <div className={`resource-track${safePercent >= 90 ? ' danger' : safePercent >= 75 ? ' warn' : ''}`}><span style={{ width: `${safePercent}%` }}></span></div>}
       <small>{detail}</small>
     </article>;
   }

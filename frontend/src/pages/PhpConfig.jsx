@@ -94,7 +94,7 @@ export default function PhpConfigPage() {
       {notInstalled.length > 0 && <div className="user-create-card" style={{ marginTop: 16 }}>
         <h3>{t('Install PHP')}</h3>
         <div className="php-install-grid">
-          {notInstalled.map(v => <button key={v} disabled={!!loading} onClick={() => installPhpVersion(v)}>+ {t('PHP {version}', { version: v })}</button>)}
+          {notInstalled.map(v => <button key={v} className="secondary-light" disabled={!!loading} onClick={() => installPhpVersion(v)}>+ {t('PHP {version}', { version: v })}</button>)}
         </div>
       </div>}
     </section>;

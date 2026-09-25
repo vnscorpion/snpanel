@@ -34,12 +34,12 @@ export default function CronPage() {
     return <section className="section">
       <div className="section-title">
         <div><h2>{t('Cron manager')}</h2></div>
-        <button disabled={!selectedWebsiteId || !!loading} onClick={listCron}><RefreshCw size={14}/> {t('Refresh')}</button>
+        <button className="secondary-light" disabled={!selectedWebsiteId || !!loading} onClick={listCron}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="cron-form">
-        <WebsiteSelect />
-        <input value={cronSchedule} onChange={e => setCronSchedule(e.target.value)} placeholder="*/15 * * * *" />
-        <input value={cronCommand} onChange={e => setCronCommand(e.target.value)} placeholder="php -q cron.php >/dev/null 2>&1" />
+        <label className="field"><span>{t('Website')}</span><WebsiteSelect /></label>
+        <label className="field"><span>{t('Schedule')}</span><input value={cronSchedule} onChange={e => setCronSchedule(e.target.value)} placeholder="*/15 * * * *" /></label>
+        <label className="field cron-command"><span>{t('Command')}</span><input value={cronCommand} onChange={e => setCronCommand(e.target.value)} placeholder="php -q cron.php >/dev/null 2>&1" /></label>
         <button disabled={!selectedWebsiteId || !!loading} onClick={addCron}><Plus size={14}/> {t('Add cron')}</button>
       </div>
       {selectedWebsiteId && <p className="hint">{t('Cron runs as {user} for the selected website.', { user: <strong>{cronUser || currentSite?.linux_user || 'www-data'}</strong> })}</p>}

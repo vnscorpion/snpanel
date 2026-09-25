@@ -63,7 +63,7 @@ export default function ApplicationsPage() {
               {siteApps.limit > 0 && <> {t('Using {used} of {limit} allowed.', { used: siteApps.used, limit: siteApps.limit })}</>}
             </p>
           </div>
-          <button disabled={!!loading} onClick={() => { loadSiteApps(); loadSiteRuntimes(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => { loadSiteApps(); loadSiteRuntimes(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
         <div className="site-runtime-strip">
           <span>{t('Docker: {value}', { value: <strong>{dockerReady ? (siteRuntimes.docker.version || t('installed')) : t('not installed')}</strong> })}</span>
