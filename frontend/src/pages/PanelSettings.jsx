@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Copy, Image, KeyRound, Lock, Plus, RefreshCw, Settings as SettingsIcon, SlidersHorizontal, Trash2, Upload, UserCog } from 'lucide-react';
 import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
-import { msg, useT } from '../i18n/index.jsx';
+import { msg, serverText, useT } from '../i18n/index.jsx';
 import './PanelSettings.css';
 
 // One page, four tabs. API tokens were a page of their own; they live here
@@ -103,7 +103,7 @@ export default function PanelSettingsPage() {
             ? <button className="secondary-light" disabled={busy} onClick={() => toggleIpv6(false)}>{t('Turn off IPv6')}</button>
             : <button className="secondary-light" disabled={busy || !panelSettings.ipv6?.available} onClick={() => toggleIpv6(true)}>{t('Turn on IPv6')}</button>}
         </div>
-        <span className="hint">{panelSettings.ipv6?.detail}</span>
+        <span className="hint">{serverText(panelSettings.ipv6?.detail)}</span>
       </div>
     </section>}
 

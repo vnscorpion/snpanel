@@ -1,8 +1,10 @@
 import { AlertCircle, Archive, ArchiveRestore, Check, Clock, Copy, Download, FileText, FolderOpen, Lock, MoveRight, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { PERMISSION_BITS, PERMISSION_CLASSES, PERMISSION_PRESETS, octalToPermissionBits, permissionBitsToOctal, permissionSymbols } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
+import { serverText, useT } from '../i18n/index.jsx';
 
 export default function FilesPage() {
+  const t = useT();
   const {
     FileTargetSelect,
     applyChmod,
@@ -60,25 +62,25 @@ export default function FilesPage() {
     }));
     const title = targets.length === 1 ? targets[0].name : `${targets.length} selected items`;
     return <div className="chmod-backdrop" role="presentation" onClick={() => setChmodTarget(null)}>
-      <div className="chmod-dialog" role="dialog" aria-modal="true" aria-label="Change permissions" onClick={e => e.stopPropagation()}>
+      <div className="chmod-dialog" role="dialog" aria-modal="true" aria-label={t('Change permissions')} onClick={e => e.stopPropagation()}>
         <div className="chmod-head">
           <div>
-            <h3><Lock size={15}/> Permissions</h3>
+            <h3><Lock size={15}/> {t('Permissions')}</h3>
             <p>{title}</p>
           </div>
-          <button className="mini secondary-light" onClick={() => setChmodTarget(null)} aria-label="Close"><X size={14}/></button>
+          <button className="mini secondary-light" onClick={() => setChmodTarget(null)} aria-label={t('Close')}><X size={14}/></button>
         </div>
         <table className="chmod-grid">
           <thead>
-            <tr><th scope="col"></th>{PERMISSION_BITS.map(bit => <th scope="col" key={bit.key}>{bit.label}</th>)}</tr>
+            <tr><th scope="col"></th>{PERMISSION_BITS.map(bit => <th scope="col" key={bit.key}>{t(bit.label)}</th>)}</tr>
           </thead>
           <tbody>
             {PERMISSION_CLASSES.map(group => <tr key={group.key}>
-              <th scope="row">{group.label}</th>
+              <th scope="row">{t(group.label)}</th>
               {PERMISSION_BITS.map(bit => <td key={bit.key}>
                 <input
                   type="checkbox"
-                  aria-label={`${group.label} ${bit.label}`}
+                  aria-label={`${t(group.label)} ${t(bit.label)}`}
                   checked={!!(bits[group.key] & bit.value)}
                   onChange={() => setBit(group.key, bit.value)}
                 />
@@ -88,7 +90,7 @@ export default function FilesPage() {
         </table>
         <div className="chmod-value">
           <label>
-            <span>Octal</span>
+            <span>{t('Octal')}</span>
             <input value={chmodMode} inputMode="numeric" maxLength={4} onChange={e => setChmodMode(e.target.value.replace(/[^0-7]/g, '').slice(0, 4))} />
           </label>
           <code>{permissionSymbols(chmodMode)}</code>
@@ -99,7 +101,7 @@ export default function FilesPage() {
             type="button"
             className={`mini ${chmodMode === preset ? '' : 'secondary-light'}`}
             onClick={() => setChmodMode(preset)}
-          >{preset} <small>{label}</small></button>)}
+          >{preset} <small>{t(label)}</small></button>)}
         </div>
         {onlyDirs && <label className="chmod-setgid">
           <input
@@ -107,19 +109,19 @@ export default function FilesPage() {
             checked={bits.special === 2}
             onChange={() => setChmodMode(permissionBitsToOctal({ ...bits, special: bits.special === 2 ? 0 : 2 }))}
           />
-          <span>Setgid — new files inside keep the folder's group. SNPanel sets this on site folders; leave it on unless you know otherwise.</span>
+          <span>{t('Setgid — new files inside keep the folder\'s group. SNPanel sets this on site folders; leave it on unless you know otherwise.')}</span>
         </label>}
         {worldWritable && <p className="chmod-note warn">
-          <AlertCircle size={13}/> World-writable: anyone with an account on the server can change
-          {hasFiles ? ' these files' : ' what is inside these folders'}. Use 755 unless something really needs it.
+          <AlertCircle size={13}/> {hasFiles
+            ? t('World-writable: anyone with an account on the server can change these files. Use 755 unless something really needs it.')
+            : t('World-writable: anyone with an account on the server can change what is inside these folders. Use 755 unless something really needs it.')}
         </p>}
         <p className="chmod-note">
-          Any permission combination is allowed. The setuid and sticky bits are not — setgid on a folder is the
-          only special bit the panel sets.
+          {t('Any permission combination is allowed. The setuid and sticky bits are not — setgid on a folder is the only special bit the panel sets.')}
         </p>
         <div className="chmod-actions">
-          <button className="secondary-light" disabled={!!loading} onClick={() => setChmodTarget(null)}>Cancel</button>
-          <button disabled={!!loading} onClick={applyChmod}><Check size={14}/> Apply {chmodMode}</button>
+          <button className="secondary-light" disabled={!!loading} onClick={() => setChmodTarget(null)}>{t('Cancel')}</button>
+          <button disabled={!!loading} onClick={applyChmod}><Check size={14}/> {t('Apply {mode}', { mode: chmodMode })}</button>
         </div>
       </div>
     </div>;
@@ -139,8 +141,8 @@ export default function FilesPage() {
     return <section className="section">
       {renderChmodDialog()}
       <div className="section-title">
-        <div><h2>File manager</h2></div>
-        <button disabled={!hasFileTarget() || !!loading} onClick={() => listFiles(fileListPath)}><RefreshCw size={14}/> Refresh</button>
+        <div><h2>{t('File manager')}</h2></div>
+        <button disabled={!hasFileTarget() || !!loading} onClick={() => listFiles(fileListPath)}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="file-manager">
         <div className="file-panel">
@@ -148,53 +150,53 @@ export default function FilesPage() {
             <FileTargetSelect />
             {activeFileApp
               ? <div className="file-meta">
-                <span>Application: <strong>{activeFileApp.name}</strong></span>
-                <span>Root: <strong>{activeFileApp.directory}{fileListPath ? `/${fileListPath}` : ''}</strong></span>
-                {currentUser && !isAdmin && <span>Storage: <strong>{storageUsageText(currentUser)}</strong></span>}
+                <span>{t('Application: {name}', { name: <strong>{activeFileApp.name}</strong> })}</span>
+                <span>{t('Root: {path}', { path: <strong>{activeFileApp.directory}{fileListPath ? `/${fileListPath}` : ''}</strong> })}</span>
+                {currentUser && !isAdmin && <span>{t('Storage: {usage}', { usage: <strong>{storageUsageText(currentUser)}</strong> })}</span>}
               </div>
               : currentSite && <div className="file-meta">
-                <span>Website: <strong>{currentSite.domain}</strong></span>
-                <span>Root: <strong>{currentSite.root_path}{fileListPath ? `/${fileListPath}` : ''}</strong></span>
-                {currentUser && !isAdmin && <span>Storage: <strong>{storageUsageText(currentUser)}</strong></span>}
+                <span>{t('Website: {domain}', { domain: <strong>{currentSite.domain}</strong> })}</span>
+                <span>{t('Root: {path}', { path: <strong>{currentSite.root_path}{fileListPath ? `/${fileListPath}` : ''}</strong> })}</span>
+                {currentUser && !isAdmin && <span>{t('Storage: {usage}', { usage: <strong>{storageUsageText(currentUser)}</strong> })}</span>}
               </div>}
             <div className="path-pill breadcrumb-line">
               <button className="crumb" disabled={!hasFileTarget() || fileListPath === ''} onClick={() => listFiles('')}>root</button>
               {fileBreadcrumbs(fileListPath).map(crumb => <button className="crumb" key={crumb.path} onClick={() => listFiles(crumb.path)}>{crumb.label}</button>)}
             </div>
             <div className="file-toolbar">
-              <button disabled={!hasFileTarget() || fileListPath === '' || !!loading} onClick={() => listFiles(parentFilePath(fileListPath))}>Up</button>
-              <button disabled={!hasFileTarget() || !!loading} onClick={makeFileDirectory}><Plus size={14}/> Folder</button>
-              <button disabled={!hasFileTarget() || !!loading} onClick={makeFile}><FileText size={14}/> File</button>
+              <button disabled={!hasFileTarget() || fileListPath === '' || !!loading} onClick={() => listFiles(parentFilePath(fileListPath))}>{t('Up')}</button>
+              <button disabled={!hasFileTarget() || !!loading} onClick={makeFileDirectory}><Plus size={14}/> {t('Folder')}</button>
+              <button disabled={!hasFileTarget() || !!loading} onClick={makeFile}><FileText size={14}/> {t('File')}</button>
               <label className={`upload-button ${(!hasFileTarget() || !!loading) ? 'disabled' : ''}`}>
-                <Upload size={14}/> Upload
+                <Upload size={14}/> {t('Upload')}
                 <input type="file" disabled={!hasFileTarget() || !!loading} onChange={e => { uploadSiteFile(e.target.files?.[0]); e.target.value = ''; }} />
               </label>
               <select value={archiveFormat} onChange={e => setArchiveFormat(e.target.value)} disabled={!hasFileTarget() || !!loading}>
                 <option value="zip">zip</option>
                 <option value="tar.gz">tar.gz</option>
               </select>
-              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={copySelectedFiles}><Copy size={14}/> Copy</button>
-              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={moveSelectedFiles}><MoveRight size={14}/> Move</button>
-              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={archiveSelectedFiles}><Archive size={14}/> Archive</button>
-              <button disabled={!selectedArchiveFile || !!loading} onClick={() => extractArchiveFile(selectedArchiveFile.path)}><ArchiveRestore size={14}/> Extract</button>
-              <button disabled={selectedChmodItems.length === 0 || !!loading} onClick={() => openChmodDialog(selectedChmodItems)}><Lock size={14}/> Permissions</button>
-              <button className="danger" disabled={selectedFilePaths.length === 0 || !!loading} onClick={deleteSelectedFiles}><Trash2 size={14}/> Delete</button>
+              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={copySelectedFiles}><Copy size={14}/> {t('Copy')}</button>
+              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={moveSelectedFiles}><MoveRight size={14}/> {t('Move')}</button>
+              <button disabled={selectedFilePaths.length === 0 || !!loading} onClick={archiveSelectedFiles}><Archive size={14}/> {t('Archive')}</button>
+              <button disabled={!selectedArchiveFile || !!loading} onClick={() => extractArchiveFile(selectedArchiveFile.path)}><ArchiveRestore size={14}/> {t('Extract')}</button>
+              <button disabled={selectedChmodItems.length === 0 || !!loading} onClick={() => openChmodDialog(selectedChmodItems)}><Lock size={14}/> {t('Permissions')}</button>
+              <button className="danger" disabled={selectedFilePaths.length === 0 || !!loading} onClick={deleteSelectedFiles}><Trash2 size={14}/> {t('Delete')}</button>
             </div>
             {visibleFileJobs.length > 0 && <div className="file-job-list">
               {visibleFileJobs.map(job => <div className={`file-job ${job.status}`} key={job.job_id}>
                 <Clock size={14}/>
-                <span><strong>{job.archive_path?.split('/').pop() || 'Archive'}</strong> {job.status === 'error' ? 'failed' : job.status}</span>
-                {job.error && <small>{job.error}</small>}
-                <button className="file-job-dismiss" onClick={() => dismissFileJob(job.job_id)} aria-label="Dismiss"><X size={13}/></button>
+                <span><strong>{job.archive_path?.split('/').pop() || t('Archive')}</strong> {job.status === 'error' ? t('failed') : job.status}</span>
+                {job.error && <small>{serverText(job.error)}</small>}
+                <button className="file-job-dismiss" onClick={() => dismissFileJob(job.job_id)} aria-label={t('Dismiss')}><X size={13}/></button>
               </div>)}
             </div>}
           </div>
           <div className="file-list-header">
-            <label><input type="checkbox" checked={allSelected} onChange={toggleAllFiles} disabled={files.length === 0} /> Select</label>
-            <span>{files.length} item(s)</span>
+            <label><input type="checkbox" checked={allSelected} onChange={toggleAllFiles} disabled={files.length === 0} /> {t('Select')}</label>
+            <span>{t('{count} item(s)', { count: files.length })}</span>
           </div>
           <div className="file-list">
-            {files.length === 0 && <div className="empty-box">No files in this folder.</div>}
+            {files.length === 0 && <div className="empty-box">{t('No files in this folder.')}</div>}
             {files.map(item => <div className={`file-item ${selectedFilePaths.includes(item.path) ? 'selected' : ''}`} key={item.path}>
               <input type="checkbox" checked={selectedFilePaths.includes(item.path)} onChange={() => toggleFileSelection(item.path)} />
               <button className="file-name" onClick={() => item.is_dir ? listFiles(item.path) : (isTextEditable(item) ? openFileEditorTab(item.path) : downloadFile(item.path))}>
@@ -204,15 +206,15 @@ export default function FilesPage() {
                 className="file-mode"
                 type="button"
                 disabled={!!loading}
-                title={`Permissions ${item.mode || '---'} (${permissionSymbols(item.mode)}) - click to change`}
+                title={t('Permissions {value} ({value2}) - click to change', { value: item.mode || '---', value2: permissionSymbols(item.mode) })}
                 onClick={() => openChmodDialog(item)}
               >{item.mode || '---'}</button>
-              <span className="file-size">{item.is_dir ? 'Folder' : formatBytes(item.size)}</span>
+              <span className="file-size">{item.is_dir ? t('Folder') : formatBytes(item.size)}</span>
               <div className="file-row-actions">
                 {!item.is_dir && <button className="mini secondary-light" disabled={!!loading} onClick={() => downloadFile(item.path)}><Download size={13}/></button>}
-                {isArchiveFile(item) && <button className="mini secondary-light" disabled={!!loading} onClick={() => extractArchiveFile(item.path)}><ArchiveRestore size={13}/> Extract</button>}
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => openChmodDialog(item)}><Lock size={13}/> Perms</button>
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => renameFileItem(item)}>Rename</button>
+                {isArchiveFile(item) && <button className="mini secondary-light" disabled={!!loading} onClick={() => extractArchiveFile(item.path)}><ArchiveRestore size={13}/> {t('Extract')}</button>}
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => openChmodDialog(item)}><Lock size={13}/> {t('Perms')}</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => renameFileItem(item)}>{t('Rename')}</button>
               </div>
             </div>)}
           </div>

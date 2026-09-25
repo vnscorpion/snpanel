@@ -391,33 +391,36 @@ pub fn recommendations(facts: &ServerFacts, jit: &JitStatus) -> Vec<Value> {
         rows.push(json!({
             "key": "opcache.jit",
             "value": "tracing",
-            "reason": "Biên dịch sang mã máy các đoạn chạy nhiều lần. Có lợi rõ với tính toán nặng; với WordPress phần lớn thời gian là chờ database nên lợi ít.",
+            "reason": "Compiles code that runs many times to machine code. A clear gain for heavy computation; WordPress spends most of its time waiting on the database, so it gains little.",
         }));
         rows.push(json!({
             "key": "opcache.jit_buffer_size",
             "value": format!("{}M", t.jit_buffer_mb),
             "reason": format!(
-                "Vùng nhớ riêng cho mã JIT sinh ra, ngoài {} MB của opcache. Đặt 0 là tắt JIT.",
+                "Memory for the code JIT generates, on top of opcache's {} MB. 0 turns JIT off.",
                 t.opcache_mb
             ),
         }));
     } else if jit.supported {
-        let blocker = if jit.blocked_by.is_empty() {
-            "một extension khác"
+        // Two sentences rather than a name put into one: the panel shows
+        // this in Vietnamese, and "another extension" is words, not a name.
+        let reason = if jit.blocked_by.is_empty() {
+            "Another extension takes over the opcode handlers, so PHP cannot run JIT. Turned off completely so PHP-FPM stops warning about it at every start.".to_string()
         } else {
-            &jit.blocked_by
+            format!(
+                "{} takes over the opcode handlers, so PHP cannot run JIT. Turned off completely so PHP-FPM stops warning about it at every start.",
+                jit.blocked_by
+            )
         };
         rows.push(json!({
             "key": "opcache.jit",
             "value": "disable",
-            "reason": format!(
-                "{blocker} chiếm opcode handler nên PHP không chạy JIT được. Tắt hẳn để khỏi cảnh báo mỗi lần PHP-FPM khởi động."
-            ),
+            "reason": reason,
         }));
         rows.push(json!({
             "key": "opcache.jit_buffer_size",
             "value": "0",
-            "reason": "PHP 8.4 mặc định giữ 64 MB cho JIT dù JIT không chạy được — trả lại chỗ đó cho máy.",
+            "reason": "PHP 8.4 reserves 64 MB for JIT by default even when JIT cannot run — this gives that memory back.",
         }));
     }
 
@@ -425,72 +428,72 @@ pub fn recommendations(facts: &ServerFacts, jit: &JitStatus) -> Vec<Value> {
         "key": "memory_limit",
         "value": format!("{}M", t.memory_limit),
         "reason": format!(
-            "Trần cho mỗi request. {total} MB RAM, {} MB để cho MariaDB/nginx/panel, còn {} MB cho PHP; số request chạy cùng lúc do pm.max_children chặn (~{workers}), không phải do trần này.",
+            "The ceiling for each request. {total} MB RAM, {} MB kept for MariaDB/nginx/the panel, {} MB left for PHP; how many requests run at once is capped by pm.max_children (~{workers}), not by this ceiling.",
             facts.reserved_memory_mb, facts.php_budget_mb
         ),
     }));
     rows.push(json!({
         "key": "opcache.enable",
         "value": "1",
-        "reason": "Không có opcache thì mỗi request biên dịch lại toàn bộ mã nguồn.",
+        "reason": "Without opcache every request compiles all the source code again.",
     }));
     rows.push(json!({
         "key": "opcache.memory_consumption",
         "value": t.opcache_mb.to_string(),
         "reason": format!(
-            "Đủ chứa mã đã biên dịch của một WordPress đầy plugin ({} MB).",
+            "Enough for the compiled code of a WordPress full of plugins ({} MB).",
             t.opcache_mb
         ),
     }));
     rows.push(json!({
         "key": "opcache.interned_strings_buffer",
         "value": t.interned.to_string(),
-        "reason": "Chuỗi lặp lại được dùng chung giữa các worker thay vì nhân bản.",
+        "reason": "Repeated strings are shared between the workers instead of copied.",
     }));
     rows.push(json!({
         "key": "opcache.max_accelerated_files",
         "value": t.files.to_string(),
-        "reason": "WordPress cùng plugin thường vượt 10.000 file; hết chỗ là opcache bắt đầu đuổi file.",
+        "reason": "WordPress with plugins often passes 10,000 files; when the slots run out, opcache starts evicting files.",
     }));
     rows.push(json!({
         "key": "opcache.validate_timestamps",
         "value": "1",
-        "reason": "Vẫn kiểm tra file đổi. Tắt thì nhanh hơn chút nhưng khách sửa code sẽ không thấy gì thay đổi.",
+        "reason": "Still checks for changed files. Off is slightly faster, but a customer who edits code would see no change.",
     }));
     rows.push(json!({
         "key": "opcache.revalidate_freq",
         "value": "60",
-        "reason": "Kiểm tra file mỗi 60s thay vì mỗi request.",
+        "reason": "Checks files every 60s instead of on every request.",
     }));
     rows.push(json!({
         "key": "opcache.save_comments",
         "value": "1",
-        "reason": "Bắt buộc giữ: nhiều thư viện PHP đọc annotation trong comment.",
+        "reason": "Must stay on: many PHP libraries read annotations in comments.",
     }));
     rows.push(json!({
         "key": "opcache.enable_cli",
         "value": "0",
-        "reason": "WP-CLI và cron chạy một lần rồi thoát, cache không kịp dùng.",
+        "reason": "WP-CLI and cron run once and exit, too soon for the cache to help.",
     }));
     rows.push(json!({
         "key": "realpath_cache_size",
         "value": "4096k",
-        "reason": "Mặc định 256k là quá nhỏ cho cây thư mục WordPress; giảm số lần stat().",
+        "reason": "The default 256k is too small for a WordPress folder tree; fewer stat() calls.",
     }));
     rows.push(json!({
         "key": "realpath_cache_ttl",
         "value": "600",
-        "reason": "Giữ đường dẫn đã phân giải 10 phút.",
+        "reason": "Keeps resolved paths for 10 minutes.",
     }));
     rows.push(json!({
         "key": "expose_php",
         "value": "Off",
-        "reason": "Không quảng cáo phiên bản PHP trong header trả về.",
+        "reason": "Does not advertise the PHP version in response headers.",
     }));
     rows.push(json!({
         "key": "zlib.output_compression",
         "value": "Off",
-        "reason": "Nginx đã nén rồi; nén hai lần chỉ tốn CPU.",
+        "reason": "Nginx already compresses; compressing twice only costs CPU.",
     }));
     rows
 }

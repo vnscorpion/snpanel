@@ -14,7 +14,7 @@ export default function AddonMissingPage() {
 
   function renderAddonMissing() {
     return <section className="section">
-      <div className="section-title"><div><h2>Applications</h2></div></div>
+      <div className="section-title"><div><h2>{t('Applications')}</h2></div></div>
       <EmptyState
         icon={Boxes}
         message={applicationAddonInstalled

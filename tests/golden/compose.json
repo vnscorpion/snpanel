@@ -7,7 +7,7 @@
    "plan": {
     "issues": [
      {
-      "message": "chưa có nội dung docker-compose",
+      "message": "the docker-compose content is empty",
       "service": ""
      }
     ],
@@ -28,7 +28,7 @@
    "plan": {
     "issues": [
      {
-      "message": "chưa có nội dung docker-compose",
+      "message": "the docker-compose content is empty",
       "service": ""
      }
     ],
@@ -49,7 +49,7 @@
    "plan": {
     "issues": [
      {
-      "message": "YAML không hợp lệ: while parsing a flow sequence",
+      "message": "Invalid YAML: while parsing a flow sequence",
       "service": ""
      }
     ],
@@ -70,7 +70,7 @@
    "plan": {
     "issues": [
      {
-      "message": "nội dung phải là một mapping YAML",
+      "message": "the content must be a YAML mapping",
       "service": ""
      }
     ],
@@ -91,7 +91,7 @@
    "plan": {
     "issues": [
      {
-      "message": "nội dung phải là một mapping YAML",
+      "message": "the content must be a YAML mapping",
       "service": ""
      }
     ],
@@ -112,7 +112,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không tìm thấy service nào",
+      "message": "no services found",
       "service": ""
      }
     ],
@@ -133,7 +133,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không tìm thấy service nào",
+      "message": "no services found",
       "service": ""
      }
     ],
@@ -154,7 +154,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không tìm thấy service nào",
+      "message": "no services found",
       "service": ""
      }
     ],
@@ -235,7 +235,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không có service tên other",
+      "message": "there is no service named other",
       "service": ""
      }
     ],
@@ -328,7 +328,7 @@
    "plan": {
     "issues": [
      {
-      "message": "networks: tự khai network; panel tạo network riêng cho ứng dụng",
+      "message": "networks: declares its own networks; the panel makes one network per application",
       "service": ""
      }
     ],
@@ -361,7 +361,7 @@
    "plan": {
     "issues": [
      {
-      "message": "khoá không được hỗ trợ: magic",
+      "message": "unsupported key: magic",
       "service": ""
      }
     ],
@@ -394,7 +394,7 @@
    "plan": {
     "issues": [
      {
-      "message": "tối đa 8 service cho một ứng dụng",
+      "message": "at most 8 services per application",
       "service": ""
      }
     ],
@@ -415,7 +415,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không service nào khai cổng; hãy chọn service phục vụ domain và cổng của nó",
+      "message": "no service declares a port; choose the service that serves the domain, and its port",
       "service": ""
      }
     ],
@@ -509,7 +509,7 @@
    "plan": {
     "issues": [
      {
-      "message": "privileged: chạy container ở chế độ privileged",
+      "message": "privileged: runs the container in privileged mode",
       "service": "web"
      }
     ],
@@ -542,7 +542,7 @@
    "plan": {
     "issues": [
      {
-      "message": "network_mode: đặt network_mode (host network bỏ qua chốt firewall)",
+      "message": "network_mode: sets network_mode (host networking bypasses the firewall)",
       "service": "web"
      }
     ],
@@ -575,7 +575,7 @@
    "plan": {
     "issues": [
      {
-      "message": "build: build image tại chỗ; panel chỉ chạy image có sẵn",
+      "message": "build: builds an image in place; the panel only runs existing images",
       "service": "web"
      }
     ],
@@ -608,7 +608,7 @@
    "plan": {
     "issues": [
      {
-      "message": "khoá không được hỗ trợ: profiles",
+      "message": "unsupported key: profiles",
       "service": "web"
      }
     ],
@@ -641,7 +641,7 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu image",
+      "message": "image is missing",
       "service": "web"
      }
     ],
@@ -662,7 +662,7 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu image",
+      "message": "image is missing",
       "service": "web"
      }
     ],
@@ -683,7 +683,7 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu image",
+      "message": "image is missing",
       "service": "web"
      }
     ],
@@ -755,7 +755,7 @@
    "plan": {
     "issues": [
      {
-      "message": "tên service chỉ được dùng chữ thường, số, gạch ngang và gạch dưới",
+      "message": "a service name may only use lowercase letters, digits, hyphens and underscores",
       "service": "Web"
      }
     ],
@@ -776,7 +776,7 @@
    "plan": {
     "issues": [
      {
-      "message": "service phải là một mapping",
+      "message": "a service must be a mapping",
       "service": "web"
      }
     ],
@@ -797,7 +797,7 @@
    "plan": {
     "issues": [],
     "notes": [
-     "web khai 4 cổng; domain vào cổng 80, còn 3000, 5000, 7000 chỉ dùng nội bộ giữa các container."
+     "web declares 4 ports; the domain goes to port 80, and 3000, 5000, 7000 stay internal between the containers."
     ],
     "ok": true,
     "services": [
@@ -832,7 +832,7 @@
    "plan": {
     "issues": [],
     "notes": [
-     "web khai 2 cổng; domain vào cổng 9090, còn 80 chỉ dùng nội bộ giữa các container."
+     "web declares 2 ports; the domain goes to port 9090, and 80 stay internal between the containers."
     ],
     "ok": true,
     "services": [
@@ -865,7 +865,7 @@
    "plan": {
     "issues": [
      {
-      "message": "service này không khai cổng 1234; đang khai: 80, 9090",
+      "message": "this service does not declare port 1234; it declares: 80, 9090",
       "service": "web"
      }
     ],
@@ -899,15 +899,15 @@
    "plan": {
     "issues": [
      {
-      "message": "cổng ngoài phạm vi: 0",
+      "message": "port out of range: 0",
       "service": "web"
      },
      {
-      "message": "cổng ngoài phạm vi: 70000",
+      "message": "port out of range: 70000",
       "service": "web"
      },
      {
-      "message": "không service nào khai cổng; hãy chọn service phục vụ domain và cổng của nó",
+      "message": "no service declares a port; choose the service that serves the domain, and its port",
       "service": ""
      }
     ],
@@ -938,11 +938,11 @@
    "plan": {
     "issues": [
      {
-      "message": "cổng không đọc được: abc",
+      "message": "unreadable port: abc",
       "service": "web"
      },
      {
-      "message": "không service nào khai cổng; hãy chọn service phục vụ domain và cổng của nó",
+      "message": "no service declares a port; choose the service that serves the domain, and its port",
       "service": ""
      }
     ],
@@ -1003,7 +1003,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không service nào khai cổng; hãy chọn service phục vụ domain và cổng của nó",
+      "message": "no service declares a port; choose the service that serves the domain, and its port",
       "service": ""
      }
     ],
@@ -1034,7 +1034,7 @@
    "plan": {
     "issues": [
      {
-      "message": "nhiều service khai cổng; hãy chọn service nào phục vụ domain",
+      "message": "several services declare ports; choose the one that serves the domain",
       "service": ""
      }
     ],
@@ -1078,7 +1078,7 @@
    "plan": {
     "issues": [
      {
-      "message": "service này chưa khai cổng lắng nghe",
+      "message": "this service does not declare a port it listens on",
       "service": "b"
      }
     ],
@@ -1185,7 +1185,7 @@
    "plan": {
     "issues": [
      {
-      "message": "mount đường dẫn máy chủ không được phép — /etc:/etc; hãy dùng đường dẫn trong thư mục ứng dụng (./data) hoặc volume có tên",
+      "message": "mounting a server path is not allowed — /etc:/etc; use a path inside the application folder (./data) or a named volume",
       "service": "db"
      }
     ],
@@ -1218,7 +1218,7 @@
    "plan": {
     "issues": [
      {
-      "message": "volume trỏ ra ngoài thư mục ứng dụng — ../secrets:/s",
+      "message": "the volume points outside the application folder — ../secrets:/s",
       "service": "db"
      }
     ],
@@ -1283,7 +1283,7 @@
    "plan": {
     "issues": [
      {
-      "message": "volume phải có dạng nguồn:đích — data",
+      "message": "a volume must be written source:target — data",
       "service": "db"
      }
     ],
@@ -1316,7 +1316,7 @@
    "plan": {
     "issues": [
      {
-      "message": "đích của volume phải là đường dẫn tuyệt đối — data:var/lib",
+      "message": "a volume's target must be an absolute path — data:var/lib",
       "service": "db"
      }
     ],
@@ -1384,7 +1384,7 @@
    "plan": {
     "issues": [
      {
-      "message": "loại volume không hỗ trợ: npipe",
+      "message": "unsupported volume type: npipe",
       "service": "db"
      }
     ],
@@ -1417,7 +1417,7 @@
    "plan": {
     "issues": [
      {
-      "message": "tên volume không hợp lệ: Data",
+      "message": "invalid volume name: Data",
       "service": "db"
      }
     ],
@@ -1450,7 +1450,7 @@
    "plan": {
     "issues": [
      {
-      "message": "volume data: driver_opts không được phép",
+      "message": "volume data: driver_opts is not allowed",
       "service": ""
      }
     ],
@@ -1483,7 +1483,7 @@
    "plan": {
     "issues": [
      {
-      "message": "tên volume không hợp lệ: BAD",
+      "message": "invalid volume name: BAD",
       "service": ""
      }
     ],
@@ -1550,7 +1550,7 @@
    "plan": {
     "issues": [
      {
-      "message": "biến môi trường B không có giá trị",
+      "message": "environment variable B has no value",
       "service": "web"
      }
     ],
@@ -1586,7 +1586,7 @@
    "plan": {
     "issues": [
      {
-      "message": "tên biến môi trường không hợp lệ: 1BAD",
+      "message": "invalid environment variable name: 1BAD",
       "service": "web"
      }
     ],
@@ -1619,7 +1619,7 @@
    "plan": {
     "issues": [
      {
-      "message": "giá trị của A chứa xuống dòng",
+      "message": "the value of A contains a line break",
       "service": "web"
      }
     ],
@@ -1652,7 +1652,7 @@
    "plan": {
     "issues": [
      {
-      "message": "environment phải là danh sách hoặc mapping",
+      "message": "environment must be a list or a mapping",
       "service": "web"
      }
     ],
@@ -1685,7 +1685,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không cho phép chạy service bằng root",
+      "message": "services may not run as root",
       "service": "web"
      }
     ],
@@ -1718,7 +1718,7 @@
    "plan": {
     "issues": [
      {
-      "message": "không cho phép chạy service bằng root",
+      "message": "services may not run as root",
       "service": "web"
      }
     ],
@@ -1751,7 +1751,7 @@
    "plan": {
     "issues": [
      {
-      "message": "giá trị user không hợp lệ: a b",
+      "message": "invalid user value: a b",
       "service": "web"
      }
     ],
@@ -1943,7 +1943,7 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu biến TAG — hãy khai TAG=... trong ô .env",
+      "message": "missing variable TAG — declare TAG=... in the .env box",
       "service": ""
      }
     ],
@@ -2015,7 +2015,7 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu biến TAG — hãy khai TAG=... trong ô .env (pick a tag)",
+      "message": "missing variable TAG — declare TAG=... in the .env box (pick a tag)",
       "service": ""
      }
     ],
@@ -2164,11 +2164,11 @@
    "plan": {
     "issues": [
      {
-      "message": "thiếu biến ALPHA — hãy khai ALPHA=... trong ô .env",
+      "message": "missing variable ALPHA — declare ALPHA=... in the .env box",
       "service": ""
      },
      {
-      "message": "thiếu biến ZED — hãy khai ZED=... trong ô .env",
+      "message": "missing variable ZED — declare ZED=... in the .env box",
       "service": ""
      }
     ],

@@ -958,13 +958,15 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
     };
     super::packages::audit_action(&state, &parts, current.user.id, action, &user.username).await;
 
-    let verb = if suspending {
-        "Suspended"
+    // Two sentences, not a verb put into one: the panel shows this in
+    // Vietnamese, which has no word to drop into "{verb} user".
+    let message = if suspending {
+        format!("Suspended user {}", user.username)
     } else {
-        "Unsuspended"
+        format!("Unsuspended user {}", user.username)
     };
     axum::Json(json!({
-        "message": format!("{verb} user {}", user.username),
+        "message": message,
         "affected_websites": websites.len(),
     }))
     .into_response()

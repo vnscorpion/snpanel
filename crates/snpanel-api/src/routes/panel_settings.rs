@@ -271,7 +271,7 @@ async fn ipv6_status(settings: &Settings) -> Value {
             .into_iter()
             .find(|s| !s.is_empty())
             .map(tail_300)
-            .unwrap_or_else(|| "Không đọc được trạng thái IPv6 của máy chủ.".to_string());
+            .unwrap_or_else(|| "Could not read the server's IPv6 status.".to_string());
         return json!({
             "available": false,
             "enabled": marker,
@@ -282,13 +282,14 @@ async fn ipv6_status(settings: &Settings) -> Value {
 
     let (available, enabled, addresses) = parse_ipv6_status(&result.stdout);
     let detail = if !available {
-        "VPS của bạn không có địa chỉ IPv6 nên không thể dùng tính năng này. \
-         Liên hệ nhà cung cấp để được cấp IPv6, sau đó bật lại."
+        "Your VPS has no IPv6 address, so this feature cannot be used. \
+         Ask your provider for IPv6, then turn it on again."
             .to_string()
     } else if enabled {
-        "Website và panel đang nhận kết nối qua cả IPv4 và IPv6.".to_string()
+        "Websites and the panel accept connections over both IPv4 and IPv6.".to_string()
     } else {
-        "VPS có IPv6. Bật để website và panel nhận thêm kết nối IPv6.".to_string()
+        "The VPS has IPv6. Turn it on so websites and the panel accept IPv6 connections too."
+            .to_string()
     };
 
     json!({
@@ -822,7 +823,7 @@ async fn use_domain_certificate(State(state): State<AppState>, req: Request) -> 
 
     if !domains_with_certificate(&state).await.contains(&host) {
         return bad_request(&format!(
-            "{host} chưa có chứng chỉ trên máy này. Cài SSL cho website đó trước."
+            "{host} has no certificate on this server. Install SSL for that website first."
         ));
     }
     let port_text = port.to_string();
@@ -851,8 +852,8 @@ async fn use_domain_certificate(State(state): State<AppState>, req: Request) -> 
     .await;
     axum::Json(json!({
         "message": format!(
-            "Panel dùng chứng chỉ của {host} làm mặc định. \
-             Các domain khác có SSL trên máy vẫn mở panel được bằng chứng chỉ riêng."
+            "The panel now uses {host}'s certificate by default. \
+             Other domains with SSL on this server still open the panel with their own certificates."
         ),
         "panel_url": format!("https://{host}:{port}"),
     }))
@@ -919,16 +920,15 @@ async fn regenerate_self_signed(State(state): State<AppState>, req: Request) -> 
     )
     .await;
     axum::Json(json!({
-        "message": "Panel dùng chứng chỉ tự ký.",
+        "message": "The panel uses a self-signed certificate.",
         "panel_url": format!("https://{host}:{port}"),
     }))
     .into_response()
 }
 
 /// Source: `panel_ipv6.NO_IPV6_MESSAGE`.
-const NO_IPV6_MESSAGE: &str =
-    "VPS của bạn không có địa chỉ IPv6 nên không thể dùng tính năng này. \
-     Liên hệ nhà cung cấp để được cấp IPv6, sau đó bật lại.";
+const NO_IPV6_MESSAGE: &str = "Your VPS has no IPv6 address, so this feature cannot be used. \
+     Ask your provider for IPv6, then turn it on again.";
 
 /// `(...).strip()[-500:]` - the **last** 500 characters, so the end of a long
 /// error survives rather than its beginning. Sliced by character.
@@ -991,7 +991,7 @@ async fn toggle_ipv6(State(state): State<AppState>, req: Request) -> Response {
             detail = NO_IPV6_MESSAGE.to_string();
         }
         if detail.is_empty() {
-            detail = "Không thay đổi được cấu hình IPv6.".to_string();
+            detail = "Could not change the IPv6 configuration.".to_string();
         }
         return bad_request(&detail);
     }
@@ -1007,9 +1007,9 @@ async fn toggle_ipv6(State(state): State<AppState>, req: Request) -> Response {
 
     let mut settings = current_settings(&state).await;
     settings["message"] = json!(if enabled {
-        "Đã bật IPv6 cho toàn bộ website và panel."
+        "IPv6 is on for all websites and the panel."
     } else {
-        "Đã tắt IPv6. Website và panel chỉ nhận kết nối IPv4."
+        "IPv6 is off. Websites and the panel accept IPv4 connections only."
     });
     axum::Json(to_response_model(&settings)).into_response()
 }

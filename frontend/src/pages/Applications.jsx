@@ -1,7 +1,15 @@
 import { AlertCircle, Check, FileText, FolderOpen, Pencil, Play, Plus, RefreshCw, RotateCcw, Save, Server, Square, Trash2, X } from 'lucide-react';
 import { SITE_APP_KINDS, SITE_APP_KIND_LABELS, composeWebPorts } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
-import { useT } from '../i18n/index.jsx';
+import { msg, serverText, useT } from '../i18n/index.jsx';
+
+// The kinds `docker system df` reports disk use for, by its own names.
+const DOCKER_DISK_TYPES = {
+  Images: msg('Images'),
+  Containers: msg('Containers'),
+  'Local Volumes': msg('Local Volumes'),
+  'Build Cache': msg('Build Cache'),
+};
 
 export default function ApplicationsPage() {
   const {
@@ -44,54 +52,53 @@ export default function ApplicationsPage() {
     const [portFrom, portTo] = siteApps.port_range || [21000, 21999];
     const atLimit = !isAdmin && siteApps.limit > 0 && siteApps.used >= siteApps.limit;
     const dockerReady = !!siteRuntimes.docker?.installed;
-    const kindHint = (SITE_APP_KINDS.find(([value]) => value === siteAppDraft.kind) || [])[2];
+    const kindHint = t((SITE_APP_KINDS.find(([value]) => value === siteAppDraft.kind) || [])[2] || '');
     return <>
       <section className="section">
         <div className="section-title">
           <div>
-            <h2>Applications</h2>
+            <h2>{t('Applications')}</h2>
             <p className="hint">
-              Each application runs on its own port under its own systemd unit. Point a website at one by setting its
-              mode to <strong>Application</strong>.
-              {siteApps.limit > 0 && <> Using {siteApps.used} of {siteApps.limit} allowed.</>}
+              {t('Each application runs on its own port under its own systemd unit. Point a website at one by setting its mode to {mode}.', { mode: <strong>{t('Application')}</strong> })}
+              {siteApps.limit > 0 && <> {t('Using {used} of {limit} allowed.', { used: siteApps.used, limit: siteApps.limit })}</>}
             </p>
           </div>
-          <button disabled={!!loading} onClick={() => { loadSiteApps(); loadSiteRuntimes(); }}><RefreshCw size={14}/> Refresh</button>
+          <button disabled={!!loading} onClick={() => { loadSiteApps(); loadSiteRuntimes(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
         <div className="site-runtime-strip">
-          <span>Docker: <strong>{dockerReady ? (siteRuntimes.docker.version || 'installed') : 'not installed'}</strong></span>
-          <span>Node: <strong>{siteRuntimes.node_majors?.length ? siteRuntimes.node_majors.map(major => `v${major}`).join(', ') : 'system version only'}</strong></span>
-          {isAdmin && !dockerReady && <button className="mini secondary-light" disabled={!!loading} onClick={installDockerEngine}>Install Docker</button>}
-          {isAdmin && <button className="mini secondary-light" disabled={!!loading} onClick={() => { const major = prompt('Install which Node major version?', '22'); if (major) installNodeMajor(major.trim()); }}>Add Node version</button>}
+          <span>{t('Docker: {value}', { value: <strong>{dockerReady ? (siteRuntimes.docker.version || t('installed')) : t('not installed')}</strong> })}</span>
+          <span>{t('Node: {value}', { value: <strong>{siteRuntimes.node_majors?.length ? siteRuntimes.node_majors.map(major => `v${major}`).join(', ') : t('system version only')}</strong> })}</span>
+          {isAdmin && !dockerReady && <button className="mini secondary-light" disabled={!!loading} onClick={installDockerEngine}>{t('Install Docker')}</button>}
+          {isAdmin && <button className="mini secondary-light" disabled={!!loading} onClick={() => { const major = prompt(t('Install which Node major version?'), '22'); if (major) installNodeMajor(major.trim()); }}>{t('Add Node version')}</button>}
         </div>
         {isAdmin && dockerReady && siteRuntimes.docker?.disk?.length > 0 && <div className="site-runtime-strip">
           <span>{t("Docker disk (whole server, not counted against customers' quota):")}</span>
           {siteRuntimes.docker.disk.map(row => <span key={row.type}>
-            {row.type}: <strong>{row.size}</strong>{row.reclaimable && !row.reclaimable.startsWith('0B') ? <> · {t('{size} reclaimable', { size: row.reclaimable })}</> : null}
+            {t(DOCKER_DISK_TYPES[row.type] || row.type)}: <strong>{row.size}</strong>{row.reclaimable && !row.reclaimable.startsWith('0B') ? <> · {t('{size} reclaimable', { size: row.reclaimable })}</> : null}
           </span>)}
           <button className="mini secondary-light" disabled={!!loading} onClick={pruneDocker}>{t('Remove unused layers')}</button>
         </div>}
         {!atLimit && <div className="site-app-form">
-          <label><span>Name</span>
+          <label><span>{t('Name')}</span>
             <input value={siteAppDraft.name} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, name: e.target.value }))} />
           </label>
-          <label><span>Runtime</span>
+          <label><span>{t('Runtime')}</span>
             <select value={siteAppDraft.kind} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, kind: e.target.value }))}>
-              {SITE_APP_KINDS.map(([value, label]) => <option key={value} value={value} disabled={value === 'docker' && !dockerReady}>{label}</option>)}
+              {SITE_APP_KINDS.map(([value, label]) => <option key={value} value={value} disabled={value === 'docker' && !dockerReady}>{t(label)}</option>)}
             </select>
           </label>
-          <label><span>Port</span>
+          <label><span>{t('Port')}</span>
             <input
               type="number"
               value={siteAppDraft.port}
               min={portFrom}
               max={portTo}
               disabled={!!loading}
-              placeholder={`auto (${portFrom}-${portTo})`}
+              placeholder={t('auto ({portFrom}-{portTo})', { portFrom, portTo })}
               onChange={e => setSiteAppDraft(prev => ({ ...prev, port: e.target.value }))}
             />
           </label>
-          <label><span>Memory (MB)</span>
+          <label><span>{t('Memory (MB)')}</span>
             <input
               type="number"
               value={siteAppDraft.memory_limit_mb}
@@ -103,7 +110,7 @@ export default function ApplicationsPage() {
             />
           </label>
           {siteAppDraft.kind === 'node' && <>
-            <label><span>Start with</span>
+            <label><span>{t('Start with')}</span>
               <select value={siteAppDraft.start_kind} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, start_kind: e.target.value }))}>
                 <option value="npm">npm run</option>
                 <option value="npx">npx</option>
@@ -111,12 +118,12 @@ export default function ApplicationsPage() {
                 <option value="node">node</option>
               </select>
             </label>
-            <label><span>{siteAppDraft.start_kind === 'node' ? 'Entry file' : 'Script or package'}</span>
+            <label><span>{siteAppDraft.start_kind === 'node' ? t('Entry file') : t('Script or package')}</span>
               <input value={siteAppDraft.start_arg} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, start_arg: e.target.value }))} placeholder={siteAppDraft.start_kind === 'node' ? 'server.js' : 'start'} />
             </label>
-            <label><span>Node version</span>
+            <label><span>{t('Node version')}</span>
               <select value={siteAppDraft.node_major} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, node_major: e.target.value }))}>
-                {(siteRuntimes.node_majors?.length ? siteRuntimes.node_majors : ['22']).map(major => <option key={major} value={major}>Node {major}</option>)}
+                {(siteRuntimes.node_majors?.length ? siteRuntimes.node_majors : ['22']).map(major => <option key={major} value={major}>{t('Node {major}', { major })}</option>)}
               </select>
             </label>
           </>}
@@ -155,17 +162,17 @@ export default function ApplicationsPage() {
             })}</p>
           </>}
           {siteAppDraft.kind === 'docker' && <>
-            <label><span>Image</span>
+            <label><span>{t('Image')}</span>
               <input value={siteAppDraft.image} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, image: e.target.value }))} placeholder="n8nio/n8n:latest" />
             </label>
-            <label><span>Port in container</span>
+            <label><span>{t('Port in container')}</span>
               <input type="number" value={siteAppDraft.container_port} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, container_port: e.target.value }))} placeholder="3000" />
             </label>
             <label><span>CPU</span>
               <input value={siteAppDraft.cpu_limit} disabled={!!loading} onChange={e => setSiteAppDraft(prev => ({ ...prev, cpu_limit: e.target.value }))} placeholder="1" />
             </label>
           </>}
-          <label className="site-app-env"><span>{siteAppDraft.kind === 'compose' ? '.env (KEY=value, one per line)' : 'Environment (KEY=value, one per line)'}</span>
+          <label className="site-app-env"><span>{siteAppDraft.kind === 'compose' ? t('.env (KEY=value, one per line)') : t('Environment (KEY=value, one per line)')}</span>
             <textarea
               className="code-editor"
               rows={4}
@@ -176,9 +183,9 @@ export default function ApplicationsPage() {
             />
           </label>
           <div className="site-app-form-actions">
-            {siteAppDraft.kind === 'compose' && <button className="secondary-light" disabled={!!loading || !siteAppDraft.compose_source.trim()} onClick={checkComposeFile}>Check file</button>}
-            <button className="secondary-light" disabled={!!loading} onClick={suggestSiteAppPort}>Pick free port</button>
-            <button disabled={!!loading || !siteAppDraft.name.trim()} onClick={createSiteApp}><Plus size={14}/> Install application</button>
+            {siteAppDraft.kind === 'compose' && <button className="secondary-light" disabled={!!loading || !siteAppDraft.compose_source.trim()} onClick={checkComposeFile}>{t('Check file')}</button>}
+            <button className="secondary-light" disabled={!!loading} onClick={suggestSiteAppPort}>{t('Pick free port')}</button>
+            <button disabled={!!loading || !siteAppDraft.name.trim()} onClick={createSiteApp}><Plus size={14}/> {t('Install application')}</button>
           </div>
           {composePlan && <div className={`compose-report ${composePlan.ok ? 'ok' : 'bad'}`}>
             {composePlan.ok
@@ -186,11 +193,11 @@ export default function ApplicationsPage() {
               : <p><AlertCircle size={14}/> {t('{count} issue(s) to fix before importing:', { count: composePlan.issues.length })}</p>}
             {composePlan.issues.length > 0 && <ul>
               {composePlan.issues.map((issue, index) => <li key={index}>
-                {issue.service && <code>{issue.service}</code>} {issue.message}
+                {issue.service && <code>{issue.service}</code>} {serverText(issue.message)}
               </li>)}
             </ul>}
             {composePlan.notes?.length > 0 && <ul className="compose-notes">
-              {composePlan.notes.map((note, index) => <li key={index}>{note}</li>)}
+              {composePlan.notes.map((note, index) => <li key={index}>{serverText(note)}</li>)}
             </ul>}
             {composePlan.ok && <ul className="compose-services">
               {composePlan.services.map(service => <li key={service.name}>
@@ -201,40 +208,40 @@ export default function ApplicationsPage() {
             </ul>}
           </div>}
         </div>}
-        {atLimit && <p className="hint">This package allows {siteApps.limit} application(s). Delete one to install another.</p>}
-        {kindHint && <p className="hint site-apps-note">{kindHint} Containers publish on <code>127.0.0.1</code> only, run as your own user with no capabilities, and are capped at the memory shown. Images come from {(siteRuntimes.allowed_registries || []).join(', ') || 'the allowed registries'}.</p>}
+        {atLimit && <p className="hint">{t('This package allows {limit} application(s). Delete one to install another.', { limit: siteApps.limit })}</p>}
+        {kindHint && <p className="hint site-apps-note">{kindHint} {t('Containers publish on {address} only, run as your own user with no capabilities, and are capped at the memory shown. Images come from {registries}.', { address: <code>127.0.0.1</code>, registries: (siteRuntimes.allowed_registries || []).join(', ') || t('the allowed registries') })}</p>}
       </section>
 
       <section className="section">
         <div className="section-title">
-          <div><h2>Installed</h2><p className="hint">{siteApps.items.length} application(s)</p></div>
+          <div><h2>{t('Installed')}</h2><p className="hint">{t('{count} application(s)', { count: siteApps.items.length })}</p></div>
         </div>
-        {siteApps.items.length === 0 && <EmptyState icon={Server} message="No applications yet. Install one above." />}
+        {siteApps.items.length === 0 && <EmptyState icon={Server} message={t('No applications yet. Install one above.')} />}
         <div className="site-app-list">
           {siteApps.items.map(app => <div className="site-app-item" key={app.id}>
             <div className="site-app-head">
               <strong>{app.name}</strong>
-              <span className="badge">{SITE_APP_KIND_LABELS[app.kind] || app.kind}</span>
+              <span className="badge">{t(SITE_APP_KIND_LABELS[app.kind] || app.kind)}</span>
               <code>127.0.0.1:{app.port}</code>
               <span className={`badge ${app.status === 'running' ? 'ok' : app.status === 'error' ? 'bad' : ''}`}>
-                {app.status === 'running' ? 'Running' : app.status === 'error' ? 'Failed' : 'Stopped'}
+                {app.status === 'running' ? t('Running') : app.status === 'error' ? t('Failed') : t('Stopped')}
               </span>
               {app.websites?.length > 0 && <span className="site-app-domains">{app.websites.join(', ')}</span>}
             </div>
-            {app.last_error && <p className="site-app-error">{app.last_error}</p>}
+            {app.last_error && <p className="site-app-error">{serverText(app.last_error)}</p>}
             <dl className="site-app-meta">
-              <div><dt>Upload code to</dt><dd><code>{app.directory}</code></dd></div>
-              {app.kind === 'node' && <div><dt>Start</dt><dd><code>{app.start_kind} {app.start_arg}</code></dd></div>}
+              <div><dt>{t('Upload code to')}</dt><dd><code>{app.directory}</code></dd></div>
+              {app.kind === 'node' && <div><dt>{t('Start')}</dt><dd><code>{app.start_kind} {app.start_arg}</code></dd></div>}
               {app.kind === 'node' && <div><dt>Node</dt><dd>v{app.node_major || '22'}</dd></div>}
-              {app.kind === 'compose' && <div><dt>Serves domain</dt><dd><code>{app.web_service}</code></dd></div>}
-              {app.kind === 'docker' && <div><dt>Image</dt><dd><code>{app.image}</code></dd></div>}
-              {app.kind === 'docker' && <div><dt>In container</dt><dd>port {app.container_port} · {app.cpu_limit} CPU</dd></div>}
-              <div><dt>Unit</dt><dd><code>{app.unit}</code></dd></div>
+              {app.kind === 'compose' && <div><dt>{t('Serves domain')}</dt><dd><code>{app.web_service}</code></dd></div>}
+              {app.kind === 'docker' && <div><dt>{t('Image')}</dt><dd><code>{app.image}</code></dd></div>}
+              {app.kind === 'docker' && <div><dt>{t('In container')}</dt><dd>port {app.container_port} · {app.cpu_limit} CPU</dd></div>}
+              <div><dt>{t('Unit')}</dt><dd><code>{app.unit}</code></dd></div>
             </dl>
             <div className="site-app-actions">
               <div className="site-app-fields">
                 <label className="site-app-port">
-                  <span>Port</span>
+                  <span>{t('Port')}</span>
                   <input
                     type="number"
                     defaultValue={app.port}
@@ -243,12 +250,12 @@ export default function ApplicationsPage() {
                     disabled={!!loading}
                     onBlur={e => {
                       const next = Number(e.target.value);
-                      if (next && next !== app.port) updateSiteApp(app, { port: next }, 'Moving application port...');
+                      if (next && next !== app.port) updateSiteApp(app, { port: next }, t('Moving application port...'));
                     }}
                   />
                 </label>
                 <label className="site-app-port">
-                  <span>Memory (MB)</span>
+                  <span>{t('Memory (MB)')}</span>
                   <input
                     type="number"
                     defaultValue={app.memory_limit_mb}
@@ -257,7 +264,7 @@ export default function ApplicationsPage() {
                     disabled={!!loading}
                     onBlur={e => {
                       const next = Number(e.target.value);
-                      if (next && next !== app.memory_limit_mb) updateSiteApp(app, { memory_limit_mb: next }, 'Applying the new memory limit...');
+                      if (next && next !== app.memory_limit_mb) updateSiteApp(app, { memory_limit_mb: next }, t('Applying the new memory limit...'));
                     }}
                   />
                 </label>
@@ -268,19 +275,19 @@ export default function ApplicationsPage() {
                     disabled={!!loading}
                     onBlur={e => {
                       const next = e.target.value.trim();
-                      if (next && next !== app.cpu_limit) updateSiteApp(app, { cpu_limit: next }, 'Applying the new CPU limit...');
+                      if (next && next !== app.cpu_limit) updateSiteApp(app, { cpu_limit: next }, t('Applying the new CPU limit...'));
                     }}
                   />
                 </label>}
               </div>
               <div className="site-app-buttons">
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => openSiteAppEdit(app)}><Pencil size={13}/> {app.kind === 'compose' ? 'Compose' : 'Environment'}</button>
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => openAppFileManager(app)}><FolderOpen size={13}/> Files</button>
-                <button className="mini" disabled={!!loading} onClick={() => deploySiteApp(app)}><Play size={13}/> Deploy</button>
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => controlSiteApp(app, 'restart')}><RotateCcw size={13}/> Restart</button>
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => controlSiteApp(app, 'stop')}><Square size={13}/> Stop</button>
-                <button className="mini secondary-light" disabled={!!loading} onClick={() => openSiteAppLog(app)}><FileText size={13}/> Log</button>
-                <button className="mini danger" disabled={!!loading} onClick={() => deleteSiteApp(app)}><Trash2 size={13}/> Delete</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => openSiteAppEdit(app)}><Pencil size={13}/> {app.kind === 'compose' ? 'Compose' : t('Environment')}</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => openAppFileManager(app)}><FolderOpen size={13}/> {t('Files')}</button>
+                <button className="mini" disabled={!!loading} onClick={() => deploySiteApp(app)}><Play size={13}/> {t('Deploy')}</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => controlSiteApp(app, 'restart')}><RotateCcw size={13}/> {t('Restart')}</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => controlSiteApp(app, 'stop')}><Square size={13}/> {t('Stop')}</button>
+                <button className="mini secondary-light" disabled={!!loading} onClick={() => openSiteAppLog(app)}><FileText size={13}/> {t('Log')}</button>
+                <button className="mini danger" disabled={!!loading} onClick={() => deleteSiteApp(app)}><Trash2 size={13}/> {t('Delete')}</button>
               </div>
             </div>
             {siteAppEdit?.id === app.id && <div className="site-app-editor">
@@ -299,7 +306,7 @@ export default function ApplicationsPage() {
                   url: <code>{'${SNPANEL_URL}'}</code>,
                   domain: <code>{'${SNPANEL_DOMAIN}'}</code>,
                 })}{app.websites?.length > 0 ? ` ${t('(currently {site})', { site: app.websites[0] })}` : ` ${t('(point a website at the application first)')}`}.</p>
-                <label className="site-app-env"><span>.env (KEY=value, one per line)</span>
+                <label className="site-app-env"><span>{t('.env (KEY=value, one per line)')}</span>
                   <textarea
                     className="code-editor"
                     rows={6}
@@ -319,7 +326,7 @@ export default function ApplicationsPage() {
                     {composeWebPorts(siteAppEditPlan, siteAppEdit.web_service).map(port => <option key={port} value={port}>{port}</option>)}
                   </select>
                 </label>}
-              </> : <label className="site-app-env"><span>Environment (KEY=value, one per line)</span>
+              </> : <label className="site-app-env"><span>{t('Environment (KEY=value, one per line)')}</span>
                 <textarea
                   className="code-editor"
                   rows={8}
@@ -329,9 +336,9 @@ export default function ApplicationsPage() {
                 />
               </label>}
               <div className="site-app-form-actions">
-                {app.kind === 'compose' && <button className="secondary-light" disabled={!!loading || !siteAppEdit.compose_source.trim()} onClick={checkSiteAppEdit}>Check file</button>}
-                <button disabled={!!loading} onClick={() => saveSiteAppEdit(app)}><Save size={14}/> Save</button>
-                <button className="secondary-light" disabled={!!loading} onClick={() => { setSiteAppEdit(null); setSiteAppEditPlan(null); }}><X size={14}/> Cancel</button>
+                {app.kind === 'compose' && <button className="secondary-light" disabled={!!loading || !siteAppEdit.compose_source.trim()} onClick={checkSiteAppEdit}>{t('Check file')}</button>}
+                <button disabled={!!loading} onClick={() => saveSiteAppEdit(app)}><Save size={14}/> {t('Save')}</button>
+                <button className="secondary-light" disabled={!!loading} onClick={() => { setSiteAppEdit(null); setSiteAppEditPlan(null); }}><X size={14}/> {t('Cancel')}</button>
               </div>
               {siteAppEditPlan && <div className={`compose-report ${siteAppEditPlan.ok ? 'ok' : 'bad'}`}>
                 {siteAppEditPlan.ok
@@ -339,11 +346,11 @@ export default function ApplicationsPage() {
                   : <p><AlertCircle size={14}/> {t('{count} issue(s) to fix:', { count: siteAppEditPlan.issues.length })}</p>}
                 {siteAppEditPlan.issues.length > 0 && <ul>
                   {siteAppEditPlan.issues.map((issue, index) => <li key={index}>
-                    {issue.service && <code>{issue.service}</code>} {issue.message}
+                    {issue.service && <code>{issue.service}</code>} {serverText(issue.message)}
                   </li>)}
                 </ul>}
                 {siteAppEditPlan.notes?.length > 0 && <ul className="compose-notes">
-                  {siteAppEditPlan.notes.map((note, index) => <li key={index}>{note}</li>)}
+                  {siteAppEditPlan.notes.map((note, index) => <li key={index}>{serverText(note)}</li>)}
                 </ul>}
               </div>}
             </div>}
@@ -352,7 +359,7 @@ export default function ApplicationsPage() {
         {siteAppLog && <div className="site-app-log">
           <div className="site-app-log-head">
             <h4>{siteAppLog.name} log</h4>
-            <button className="mini secondary-light" onClick={() => setSiteAppLog(null)}><X size={13}/> Close</button>
+            <button className="mini secondary-light" onClick={() => setSiteAppLog(null)}><X size={13}/> {t('Close')}</button>
           </div>
           <pre>{siteAppLog.log}</pre>
         </div>}

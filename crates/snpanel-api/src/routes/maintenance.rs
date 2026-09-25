@@ -2907,7 +2907,7 @@ async fn apply_php_tune(State(state): State<AppState>, req: axum::extract::Reque
     let message = {
         let stdout = result.stdout.trim();
         if stdout.is_empty() {
-            format!("PHP {version} đã tune.")
+            format!("PHP {version} is tuned.")
         } else {
             stdout.to_string()
         }
@@ -3005,10 +3005,11 @@ async fn toggle_php_opcache(
     axum::Json(json!({
         "php_version": version,
         "enabled": enabled,
-        "message": format!(
-            "OPcache PHP {version}: {}.",
-            if enabled { "bật" } else { "tắt" }
-        ),
+        "message": if enabled {
+            format!("OPcache is on for PHP {version}.")
+        } else {
+            format!("OPcache is off for PHP {version}.")
+        },
     }))
     .into_response()
 }
@@ -3054,7 +3055,7 @@ async fn retune_php_pools(State(state): State<AppState>, req: axum::extract::Req
     )
     .await;
     axum::Json(json!({
-        "message": "Đã tính lại các pool PHP-FPM.",
+        "message": "PHP-FPM pools recalculated.",
         "output": snpanel_core::pyunicode::tail(result.stdout.trim(), 4000),
     }))
     .into_response()
@@ -4059,7 +4060,13 @@ fn transfer_sources(
             return Err("File or folder not found".to_string());
         }
         if source == root {
-            return Err(format!("Cannot {} website root", action.to_lowercase()));
+            // Whole sentences: `action` is "Copying" or "Moving", which
+            // made "Cannot copying website root" when it was put into one.
+            return Err(if action == "Moving" {
+                "Cannot move website root".to_string()
+            } else {
+                "Cannot copy website root".to_string()
+            });
         }
         if std::fs::symlink_metadata(&source)
             .map(|m| m.file_type().is_symlink())
@@ -4146,10 +4153,11 @@ fn assert_transfer_target(
     // Moving a folder into itself, or into anything under itself, would move
     // the destination out from under the operation half way through.
     if source.is_dir() && (destination == source || destination.starts_with(source)) {
-        return Err(format!(
-            "Cannot {} a folder into itself",
-            action.to_lowercase()
-        ));
+        return Err(if action == "move" {
+            "Cannot move a folder into itself".to_string()
+        } else {
+            "Cannot copy a folder into itself".to_string()
+        });
     }
     let exists_or_link = target.exists()
         || std::fs::symlink_metadata(target)
@@ -8037,7 +8045,7 @@ async fn restore_applications(
             .map(|entry| {
                 json!({
                     "name": entry.get("name").cloned().unwrap_or(Value::Null),
-                    "skipped": "Addon Application chưa được cài",
+                    "skipped": "The Application addon is not installed",
                 })
             })
             .collect();
@@ -8081,7 +8089,7 @@ async fn restore_applications(
                     .and_then(Value::as_str)
                     .filter(|text| !text.is_empty())
                 {
-                    record["error"] = json!(format!("Backup này không có dữ liệu: {problem}"));
+                    record["error"] = json!(format!("This backup has no data: {problem}"));
                 }
             }
             Err(why) => {

@@ -1,7 +1,9 @@
 import { Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
+import { useT } from '../i18n/index.jsx';
 
 export default function ServicesPage() {
+  const t = useT();
   const {
     checkAllServices,
     isAdmin,
@@ -14,8 +16,8 @@ export default function ServicesPage() {
   function renderServices() {
     return <section className="section">
       <div className="section-title">
-        <h2>Services Status</h2>
-        <button disabled={!!loading} onClick={checkAllServices}><RefreshCw size={15}/> Refresh</button>
+        <h2>{t('Services Status')}</h2>
+        <button disabled={!!loading} onClick={checkAllServices}><RefreshCw size={15}/> {t('Refresh')}</button>
       </div>
       <div className="service-grid">
         {serviceNames.map(name => {
@@ -24,12 +26,12 @@ export default function ServicesPage() {
           const active = text.includes('active (running)');
           const inactive = text.includes('inactive') || text.includes('failed');
           return <div className="service-card" key={name}>
-            <div><strong>{name}</strong><span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? 'Running' : inactive ? 'Stopped' : '...'}</span></div>
-            <small>Auto-refreshes every 10s</small>
+            <div><strong>{name}</strong><span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span></div>
+            <small>{t('Auto-refreshes every 10s')}</small>
             {isAdmin && <div className="service-actions">
-              <button onClick={() => runServiceAction(name, 'start')}><Play size={13}/> Start</button>
-              {!['snpanel-api', 'redis-server'].includes(name) && <button onClick={() => runServiceAction(name, 'stop')}><Square size={13}/> Stop</button>}
-              <button onClick={() => runServiceAction(name, 'restart')}><RotateCcw size={13}/> Restart</button>
+              <button onClick={() => runServiceAction(name, 'start')}><Play size={13}/> {t('Start')}</button>
+              {!['snpanel-api', 'redis-server'].includes(name) && <button onClick={() => runServiceAction(name, 'stop')}><Square size={13}/> {t('Stop')}</button>}
+              <button onClick={() => runServiceAction(name, 'restart')}><RotateCcw size={13}/> {t('Restart')}</button>
             </div>}
           </div>;
         })}

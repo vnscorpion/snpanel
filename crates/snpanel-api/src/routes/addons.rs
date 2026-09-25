@@ -62,15 +62,15 @@ fn catalogue() -> Vec<(&'static str, Value)> {
             json!({
                 "name": "Application",
                 "version": "1.0.0",
-                "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+                "summary": "Runs Node.js apps, containers and Docker Compose projects, served on a domain through Nginx.",
                 "details": [
-                    "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-                    "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-                    "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài.",
+                    "Installs Docker and Node.js versions when they are needed; they are not part of the default install.",
+                    "Each application gets its own internal port and RAM/CPU limits, and runs as the customer's user.",
+                    "A website set to Application mode has Nginx point at the installed application.",
                 ],
                 "notes": [
-                    "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-                    "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách.",
+                    "Backups do not include application data yet (the apps folder and named volumes).",
+                    "Docker images and volumes do not count toward the customer's disk quota yet.",
                 ],
                 "keeps_data_on_uninstall": true,
             }),
@@ -139,7 +139,7 @@ pub(super) fn require_application() -> Result<(), axum::response::Response> {
     }
     Err(crate::errors::error(
         axum::http::StatusCode::CONFLICT,
-        "Addon Application chưa được cài. Vào Addons để cài trước.",
+        "The Application addon is not installed. Install it from Addons first.",
     ))
 }
 
@@ -364,7 +364,7 @@ async fn install(
         // page itself, which can report progress; saying so here saves someone
         // wondering why Docker did not appear.
         "next_step": match slug.as_str() {
-            APPLICATION => "Vào mục Application để cài Docker hoặc bản Node.js cần dùng.",
+            APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
             MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
             _ => "",
@@ -450,7 +450,7 @@ async fn uninstall(
         } else if slug == MCP {
             "The tokens are kept, and work again when the addon is installed again. Revoke them on the Addons page to remove them."
         } else {
-            "Thư mục ứng dụng, volume và dữ liệu trong panel được giữ nguyên."
+            "Application folders, volumes and panel data are kept."
         },
     }))
     .into_response()
@@ -711,14 +711,16 @@ mod tests {
 
     #[test]
     fn the_catalogue_text_is_the_panels_own() {
-        // These strings are what an administrator reads on the Addons page, so
-        // they are copied rather than translated or tidied (NT1).
+        // These strings are what an administrator reads on the Addons page.
+        // NT1 copied them from the Python, in Vietnamese; they are English now,
+        // the panel's language, and the Python's Vietnamese is what
+        // frontend/src/i18n/vi-server.js shows for them.
         let items = addon_state();
         assert_eq!(items[0]["name"], json!("Application"));
         assert!(items[0]["summary"]
             .as_str()
             .unwrap()
-            .starts_with("Chạy ứng dụng Node.js"));
+            .starts_with("Runs Node.js apps"));
         assert_eq!(items[0]["details"].as_array().unwrap().len(), 3);
         assert_eq!(items[0]["notes"].as_array().unwrap().len(), 2);
     }

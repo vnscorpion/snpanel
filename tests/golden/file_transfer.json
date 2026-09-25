@@ -122,7 +122,8 @@
    "paths": [
     ""
    ],
-   "error": "Cannot copying website root"
+   "error": "Cannot copy website root",
+   "python_error": "Cannot copying website root"
   },
   {
    "paths": [

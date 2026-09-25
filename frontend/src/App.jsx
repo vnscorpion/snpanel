@@ -32,7 +32,7 @@ import './brand.css';
 import './file-manager.css';
 import './theme.css';
 import { PanelContext } from './lib/panel-context.jsx';
-import { LocaleProvider, LocaleSwitch, useT } from './i18n/index.jsx';
+import { LocaleProvider, LocaleSwitch, msg, useT, serverText } from './i18n/index.jsx';
 import { createPasskey, getPasskeyAssertion, passkeysSupported } from './lib/webauthn.js';
 // Loaded on demand. Every page but the Dashboard - the one each session lands
 // on - and the code editor, which pulls in ace and is only ever shown in the
@@ -61,6 +61,15 @@ const SecurityPage = lazy(() => import('./pages/Security.jsx'));
 const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
 const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
 const UsersPage = lazy(() => import('./pages/Users.jsx'));
+
+// What the loading line says while a service or an application is sent an
+// action - a sentence per verb, so a translation need not splice one in.
+const ACTION_LABELS = {
+  start: msg('Starting {name}...'),
+  stop: msg('Stopping {name}...'),
+  restart: msg('Restarting {name}...'),
+  reload: msg('Reloading {name}...'),
+};
 
 function App() {
   // Auth is now cookie-based (HttpOnly snpanel_session). The SPA does not see
@@ -333,7 +342,7 @@ function App() {
     };
   }
 
-  function clearSession(message = 'Your session expired. Please log in again.') {
+  function clearSession(message = t('Your session expired. Please log in again.')) {
     // Old localStorage token from a previous deploy: nuke it for safety.
     try { localStorage.removeItem('token'); } catch {}
     clearReadableSessionCookies();
@@ -444,11 +453,11 @@ function App() {
       let data;
       try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text || `HTTP ${res.status}` }; }
       if (!res.ok && handleAuthExpired(res.status, data.detail)) return null;
-      if (!res.ok && !silent) setError(formatApiError(data.detail, `Request failed with status ${res.status}`));
+      if (!res.ok && !silent) setError(formatApiError(data.detail, t('Request failed with status {status}', { status: res.status })));
       if (res.ok && data?.message && !silent) setNotice(data.message);
       return res.ok ? data : null;
     } catch (err) {
-      setError(`Cannot connect to the ${panelSettings.app_name || 'SNPanel'} API at ${API}. Check snpanel-api and the panel port.`);
+      setError(t('Cannot connect to the {app} API at {url}. Check snpanel-api and the panel port.', { app: panelSettings.app_name || 'SNPanel', url: API }));
       return null;
     } finally {
       if (label) setLoading('');
@@ -460,7 +469,7 @@ function App() {
     const otp = typeof options.otp === 'string' ? options.otp : otpCode;
     try {
       setError('');
-      setLoading('Logging in...');
+      setLoading(t('Logging in...'));
       const body = new URLSearchParams({ username, password });
       if (needsTwoFactor || otp) body.set('otp', otp);
       if (rememberMe) body.set('remember', 'true');
@@ -491,10 +500,10 @@ function App() {
         setNotice(t('Login successful.'));
         await loadCurrentUser();
       } else {
-        setError(formatApiError(data.detail, `Login failed with status ${res.status}`));
+        setError(formatApiError(data.detail, t('Login failed with status {status}', { status: res.status })));
       }
     } catch (err) {
-      setError(`Cannot connect to the ${panelSettings.app_name || 'SNPanel'} API at ${API}. Check snpanel-api and the panel port.`);
+      setError(t('Cannot connect to the {app} API at {url}. Check snpanel-api and the panel port.', { app: panelSettings.app_name || 'SNPanel', url: API }));
     } finally {
       setLoading('');
     }
@@ -551,7 +560,7 @@ function App() {
         })(),
       });
     } catch {}
-    clearSession('Logged out.');
+    clearSession(t('Logged out.'));
   }
 
   async function loadCurrentUser({ clearOnUnauthorized = true } = {}) {
@@ -559,7 +568,7 @@ function App() {
       const res = await fetch(`${API}/auth/session`, { credentials: 'include' });
       if (!res.ok) {
         if (res.status === 401) {
-          if (clearOnUnauthorized) clearSession('Session expired.');
+          if (clearOnUnauthorized) clearSession(t('Session expired.'));
           else {
             clearReadableSessionCookies();
             setCurrentUser(null);
@@ -570,7 +579,7 @@ function App() {
       }
       const data = await res.json();
       if (!data.authenticated || !data.user) {
-        if (clearOnUnauthorized) clearSession('Session expired.');
+        if (clearOnUnauthorized) clearSession(t('Session expired.'));
         else {
           clearReadableSessionCookies();
           setCurrentUser(null);
@@ -635,16 +644,16 @@ function App() {
       const nameData = await request('/panel-settings', {
         method: 'PATCH',
         body: JSON.stringify({ app_name: panelSettingsForm.app_name }),
-      }, 'Saving panel settings...');
+      }, t('Saving panel settings...'));
       if (!nameData) return;
       const sslData = await request('/panel-settings/ssl', {
         method: 'POST',
         body: JSON.stringify({ panel_hostname: hostname, panel_port: port }),
-      }, 'Installing panel SSL...');
+      }, t('Installing panel SSL...'));
       if (sslData) {
         setPanelSettings(sslData);
         setPanelSettingsForm(formFromPanelSettings(sslData));
-        setNotice(sslData.message || 'Panel SSL installed. The panel may restart in a moment.');
+        setNotice(sslData.message || t('Panel SSL installed. The panel may restart in a moment.'));
       }
       return;
     }
@@ -655,11 +664,11 @@ function App() {
     const data = await request('/panel-settings', {
       method: 'PATCH',
       body: JSON.stringify(payload),
-    }, 'Saving panel settings...');
+    }, t('Saving panel settings...'));
     if (data) {
       setPanelSettings(data);
       setPanelSettingsForm(formFromPanelSettings(data));
-      setNotice(hasSsl && !wantsSsl ? 'Panel SSL disabled. The panel remains reachable by IP and port over HTTP.' : 'Panel settings updated.');
+      setNotice(hasSsl && !wantsSsl ? t('Panel SSL disabled. The panel remains reachable by IP and port over HTTP.') : t('Panel settings updated.'));
     }
   }
 
@@ -671,29 +680,29 @@ function App() {
     const code = String(adminAccountForm.code || '').trim();
 
     if (!email) {
-      setError('Email is required.');
+      setError(t('Email is required.'));
       return;
     }
     if (password && password.length < 12) {
-      setError('Password must be at least 12 characters.');
+      setError(t('Password must be at least 12 characters.'));
       return;
     }
     if (password && password !== confirmPassword) {
-      setError('Passwords do not match.');
+      setError(t('Passwords do not match.'));
       return;
     }
 
     const payload = { email };
     if (password) {
       if (!currentPassword) {
-        setError('Current password is required to change password.');
+        setError(t('Current password is required to change password.'));
         return;
       }
       payload.password = password;
       payload.current_password = currentPassword;
       if (currentUser?.totp_enabled) {
         if (!code) {
-          setError('Authentication code is required.');
+          setError(t('Authentication code is required.'));
           return;
         }
         payload.code = code;
@@ -703,15 +712,15 @@ function App() {
     const data = await request('/panel-settings/admin-account', {
       method: 'PATCH',
       body: JSON.stringify(payload),
-    }, 'Saving admin account...');
+    }, t('Saving admin account...'));
     if (!data) return;
     if (data.password_changed) {
-      clearSession('Password changed. Please log in again.');
+      clearSession(t('Password changed. Please log in again.'));
       return;
     }
     setAdminAccountForm(prev => ({ ...prev, current_password: '', password: '', confirm_password: '', code: '' }));
     await loadCurrentUser({ clearOnUnauthorized: false });
-    setNotice(data.message || 'Admin account updated.');
+    setNotice(data.message || t('Admin account updated.'));
   }
 
   async function uploadPanelAsset(kind) {
@@ -719,7 +728,7 @@ function App() {
     if (!file) return;
     const body = new FormData();
     body.append('file', file);
-    const data = await request(`/panel-settings/${kind}`, { method: 'POST', body }, `Uploading ${kind}...`);
+    const data = await request(`/panel-settings/${kind}`, { method: 'POST', body }, t('Uploading {kind}...', { kind }));
     if (data) {
       setPanelSettings(data);
       setPanelSettingsForm(formFromPanelSettings(data));
@@ -804,7 +813,7 @@ function App() {
     const query = String(search || '').trim();
     const suffix = query ? `?q=${encodeURIComponent(query)}` : '';
     setWebsiteSearching(true);
-    const data = await request(`/websites${suffix}`, {}, showLoading ? 'Loading websites...' : '');
+    const data = await request(`/websites${suffix}`, {}, showLoading ? t('Loading websites...') : '');
     setWebsiteSearching(false);
     if (data) {
       setWebsiteList(data);
@@ -917,9 +926,9 @@ function App() {
       website_limit: Number(newUser.website_limit),
       storage_limit_mb: Number(newUser.storage_limit_mb),
     };
-    const data = await request('/users', { method: 'POST', body: JSON.stringify(payload) }, 'Creating user...');
+    const data = await request('/users', { method: 'POST', body: JSON.stringify(payload) }, t('Creating user...'));
     if (data) {
-      setNotice(`Created user ${data.username}`);
+      setNotice(t('Created user {name}', { name: data.username }));
       setNewUser({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024 });
       await loadUsers();
       setUserTab('list');
@@ -971,13 +980,13 @@ function App() {
     if (!editingUser) return;
     const websiteLimit = Number(editingUserForm.website_limit);
     const storageLimitMb = Number(editingUserForm.storage_limit_mb);
-    if (!editingUserForm.email.trim()) { setError('Email is required.'); return; }
+    if (!editingUserForm.email.trim()) { setError(t('Email is required.')); return; }
     if (!Number.isInteger(websiteLimit) || websiteLimit < 0 || websiteLimit > 1000) {
-      setError('Website limit must be between 0 and 1000.');
+      setError(t('Website limit must be between 0 and 1000.'));
       return;
     }
     if (!Number.isInteger(storageLimitMb) || storageLimitMb < 0 || storageLimitMb > 1024 * 1024) {
-      setError('Storage limit must be between 0 and 1048576 MB.');
+      setError(t('Storage limit must be between 0 and 1048576 MB.'));
       return;
     }
     const payload = {
@@ -990,9 +999,9 @@ function App() {
     const data = await request(`/users/${editingUser.id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
-    }, `Updating ${editingUser.username}...`);
+    }, t('Updating {name}...', { name: editingUser.username }));
     if (data) {
-      setNotice(`Updated user ${data.username}.`);
+      setNotice(t('Updated user {name}.', { name: data.username }));
       if (data.id === currentUser?.id) setCurrentUser(prev => ({ ...prev, ...data }));
       cancelEditingUser();
       await loadUsers();
@@ -1002,20 +1011,20 @@ function App() {
   async function submitPasswordChange(user) {
     if (!user) return;
     const pw = editingUserForm.new_password;
-    if (pw.length < 12) { setError('Password must be at least 12 characters.'); return; }
-    if (pw !== editingUserForm.confirm_password) { setError('Passwords do not match.'); return; }
+    if (pw.length < 12) { setError(t('Password must be at least 12 characters.')); return; }
+    if (pw !== editingUserForm.confirm_password) { setError(t('Passwords do not match.')); return; }
     const payload = { password: pw };
     if (user.id === currentUser?.id) {
-      const currentPassword = prompt('Enter your current password to confirm this change:');
+      const currentPassword = prompt(t('Enter your current password to confirm this change:'));
       if (!currentPassword) return;
       payload.current_password = currentPassword;
       if (currentUser?.totp_enabled) {
-        const code = prompt('Enter the 6-digit code from your authenticator:');
+        const code = prompt(t('Enter the 6-digit code from your authenticator:'));
         if (!code) return;
         payload.code = code.trim();
       }
     }
-    const data = await request(`/users/${user.id}/password`, { method: 'POST', body: JSON.stringify(payload) }, `Changing password for ${user.username}...`);
+    const data = await request(`/users/${user.id}/password`, { method: 'POST', body: JSON.stringify(payload) }, t('Changing password for {name}...', { name: user.username }));
     if (data?.message) {
       setNotice(data.message);
       setEditingUserForm(prev => ({ ...prev, new_password: '', confirm_password: '' }));
@@ -1025,21 +1034,21 @@ function App() {
   async function createPackage() {
     const websiteLimit = Number(newPackage.website_limit);
     const storageLimitMb = Number(newPackage.storage_limit_mb);
-    if (!newPackage.name.trim()) { setError('Package name is required.'); return; }
+    if (!newPackage.name.trim()) { setError(t('Package name is required.')); return; }
     if (!Number.isInteger(websiteLimit) || websiteLimit < 0 || websiteLimit > 1000) {
-      setError('Website limit must be between 0 and 1000.');
+      setError(t('Website limit must be between 0 and 1000.'));
       return;
     }
     if (!Number.isInteger(storageLimitMb) || storageLimitMb < 0 || storageLimitMb > 1024 * 1024) {
-      setError('Storage limit must be between 0 and 1048576 MB.');
+      setError(t('Storage limit must be between 0 and 1048576 MB.'));
       return;
     }
     const data = await request('/packages', {
       method: 'POST',
       body: JSON.stringify({ name: newPackage.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
-    }, 'Creating package...');
+    }, t('Creating package...'));
     if (data) {
-      setNotice(`Created package ${data.name}.`);
+      setNotice(t('Created package {name}.', { name: data.name }));
       setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024 });
       await loadPackages();
     }
@@ -1062,21 +1071,21 @@ function App() {
   async function updatePackage(packageId) {
     const websiteLimit = Number(editingPackageForm.website_limit);
     const storageLimitMb = Number(editingPackageForm.storage_limit_mb);
-    if (!editingPackageForm.name.trim()) { setError('Package name is required.'); return; }
+    if (!editingPackageForm.name.trim()) { setError(t('Package name is required.')); return; }
     if (!Number.isInteger(websiteLimit) || websiteLimit < 0 || websiteLimit > 1000) {
-      setError('Website limit must be between 0 and 1000.');
+      setError(t('Website limit must be between 0 and 1000.'));
       return;
     }
     if (!Number.isInteger(storageLimitMb) || storageLimitMb < 0 || storageLimitMb > 1024 * 1024) {
-      setError('Storage limit must be between 0 and 1048576 MB.');
+      setError(t('Storage limit must be between 0 and 1048576 MB.'));
       return;
     }
     const data = await request(`/packages/${packageId}`, {
       method: 'PATCH',
       body: JSON.stringify({ name: editingPackageForm.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
-    }, 'Updating package...');
+    }, t('Updating package...'));
     if (data) {
-      setNotice(`Updated package ${data.name}.`);
+      setNotice(t('Updated package {name}.', { name: data.name }));
       cancelEditingPackage();
       await loadPackages();
       await loadUsers();
@@ -1084,41 +1093,41 @@ function App() {
   }
 
   async function deletePackage(item) {
-    if (!confirm(`Delete package ${item.name}?`)) return;
-    const data = await request(`/packages/${item.id}`, { method: 'DELETE' }, `Deleting ${item.name}...`);
+    if (!confirm(t('Delete package {name}?', { name: item.name }))) return;
+    const data = await request(`/packages/${item.id}`, { method: 'DELETE' }, t('Deleting {name}...', { name: item.name }));
     if (data) {
-      setNotice(`Deleted package ${item.name}.`);
+      setNotice(t('Deleted package {name}.', { name: item.name }));
       if (String(editingPackageId) === String(item.id)) cancelEditingPackage();
       await loadPackages();
     }
   }
 
   async function changeUserPassword(user) {
-    const password = prompt(`Enter a new password for ${user.username} (minimum 12 characters):`);
+    const password = prompt(t('Enter a new password for {name} (minimum 12 characters):', { name: user.username }));
     if (!password) return;
-    if (password.length < 12) { setError('Password must be at least 12 characters.'); return; }
+    if (password.length < 12) { setError(t('Password must be at least 12 characters.')); return; }
     const payload = { password };
     if (user.id === currentUser?.id) {
-      const currentPassword = prompt('Enter your current password to confirm this change:');
+      const currentPassword = prompt(t('Enter your current password to confirm this change:'));
       if (!currentPassword) return;
       payload.current_password = currentPassword;
       if (currentUser?.totp_enabled) {
-        const code = prompt('Enter the 6-digit code from your authenticator:');
+        const code = prompt(t('Enter the 6-digit code from your authenticator:'));
         if (!code) return;
         payload.code = code.trim();
       }
     }
-    const data = await request(`/users/${user.id}/password`, { method: 'POST', body: JSON.stringify(payload) }, `Changing password for ${user.username}...`);
+    const data = await request(`/users/${user.id}/password`, { method: 'POST', body: JSON.stringify(payload) }, t('Changing password for {name}...', { name: user.username }));
     if (data?.message) setNotice(data.message);
   }
 
   async function deletePanelUser(user) {
     if (!user || user.id === currentUser?.id) return;
-    if (!confirm(`Delete panel user ${user.username} and permanently delete all owned websites, files, databases, SSL certificates, and Linux user data?`)) return;
-    const data = await request(`/users/${user.id}`, { method: 'DELETE' }, `Deleting user ${user.username}...`);
+    if (!confirm(t('Delete panel user {name} and permanently delete all owned websites, files, databases, SSL certificates, and Linux user data?', { name: user.username }))) return;
+    const data = await request(`/users/${user.id}`, { method: 'DELETE' }, t('Deleting user {name}...', { name: user.username }));
     if (data) {
       const count = data.deleted_websites?.length || 0;
-      setNotice(`Deleted user ${user.username}${count ? ` and ${count} website(s)` : ''}`);
+      setNotice(count ? t('Deleted user {name} and {count} website(s)', { name: user.username, count }) : t('Deleted user {name}', { name: user.username }));
       await loadUsers();
       await refreshAll();
     }
@@ -1127,8 +1136,8 @@ function App() {
   async function suspendUser(user) {
     if (!user || user.id === currentUser?.id) return;
     const siteCount = websites.filter(w => w.owner_id === user.id).length;
-    if (!confirm(`Suspend user ${user.username}? This will block login, disable all ${siteCount} website(s), lock SFTP, and kill active sessions.`)) return;
-    const data = await request(`/users/${user.id}/suspend`, { method: 'POST' }, `Suspending user ${user.username}...`);
+    if (!confirm(t('Suspend user {name}? This will block login, disable all {siteCount} website(s), lock SFTP, and kill active sessions.', { name: user.username, siteCount }))) return;
+    const data = await request(`/users/${user.id}/suspend`, { method: 'POST' }, t('Suspending user {name}...', { name: user.username }));
     if (data) {
       await loadUsers();
       await refreshAll();
@@ -1137,8 +1146,8 @@ function App() {
 
   async function unsuspendUser(user) {
     if (!user || user.id === currentUser?.id) return;
-    if (!confirm(`Unsuspend user ${user.username}? This will restore login, websites, and SFTP access.`)) return;
-    const data = await request(`/users/${user.id}/unsuspend`, { method: 'POST' }, `Unsuspending user ${user.username}...`);
+    if (!confirm(t('Unsuspend user {name}? This will restore login, websites, and SFTP access.', { name: user.username }))) return;
+    const data = await request(`/users/${user.id}/unsuspend`, { method: 'POST' }, t('Unsuspending user {name}...', { name: user.username }));
     if (data) {
       await loadUsers();
       await refreshAll();
@@ -1147,14 +1156,14 @@ function App() {
 
   async function quickLoginUser(user) {
     if (!user) return;
-    const suspendedNote = user.is_active ? '' : ' This user is SUSPENDED — websites and SFTP are disabled.';
-    if (!confirm(`Login as ${user.username}?${suspendedNote}`)) return;
+    const suspendedNote = user.is_active ? '' : ` ${t('This user is SUSPENDED — websites and SFTP are disabled.')}`;
+    if (!confirm(`${t('Log in as {name}?', { name: user.username })}${suspendedNote}`)) return;
     // Impersonation re-prompts TOTP when the calling admin has 2FA enabled.
     // Try without the code first; if the backend says one is required, ask
     // and resend. Sending the OTP via FormData keeps it out of the URL.
     let body;
     if (currentUser?.totp_enabled) {
-      const code = prompt(`Enter the 6-digit code from your authenticator to confirm impersonation of ${user.username}:`);
+      const code = prompt(t('Enter the 6-digit code from your authenticator to confirm logging in as {name}:', { name: user.username }));
       if (!code) return;
       body = new URLSearchParams({ otp: code.trim() });
     }
@@ -1163,20 +1172,20 @@ function App() {
       body
         ? { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
         : { method: 'POST' },
-      `Logging in as ${user.username}...`,
+      t('Logging in as {name}...', { name: user.username }),
     );
     // Handle case where backend says 2FA is required (e.g., stale user object).
     if (data?.requires_2fa) {
-      const code = prompt(`Enter the 6-digit code from your authenticator to confirm impersonation of ${user.username}:`);
+      const code = prompt(t('Enter the 6-digit code from your authenticator to confirm logging in as {name}:', { name: user.username }));
       if (!code) return;
       const retryBody = new URLSearchParams({ otp: code.trim() });
       const retryData = await request(
         `/auth/impersonate/${user.id}`,
         { method: 'POST', body: retryBody, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-        `Logging in as ${user.username}...`,
+        t('Logging in as {name}...', { name: user.username }),
       );
       if (retryData?.access_token) {
-        setNotice(`Logged in as ${user.username}.`);
+        setNotice(t('Logged in as {name}.', { name: user.username }));
         await loadCurrentUser();
         navigateToPage('websites');
         await refreshAll();
@@ -1184,7 +1193,7 @@ function App() {
       return;
     }
     if (data?.access_token) {
-      setNotice(`Logged in as ${user.username}.`);
+      setNotice(t('Logged in as {name}.', { name: user.username }));
       await loadCurrentUser();
       navigateToPage('websites');
       await refreshAll();
@@ -1277,8 +1286,8 @@ function App() {
   }
 
   async function resetUserTwoFactor(user) {
-    if (!confirm(`Reset 2FA for ${user.username}?`)) return;
-    const data = await request(`/users/${user.id}/2fa/reset`, { method: 'POST' }, `Resetting 2FA for ${user.username}...`);
+    if (!confirm(t('Reset 2FA for {name}?', { name: user.username }))) return;
+    const data = await request(`/users/${user.id}/2fa/reset`, { method: 'POST' }, t('Resetting 2FA for {name}...', { name: user.username }));
     if (data?.message) { setNotice(data.message); await loadUsers(); }
   }
 
@@ -1332,7 +1341,7 @@ function App() {
   async function saveMalwareSchedule() {
     const f = malwareSchedulesForm;
     if (f.server?.enabled && malwareScanStatus?.memory_warning) {
-      if (!confirm(`${malwareScanStatus.memory_warning}\n\n${t('Schedule the whole-server scan anyway?')}`)) return;
+      if (!confirm(`${serverText(malwareScanStatus.memory_warning)}\n\n${t('Schedule the whole-server scan anyway?')}`)) return;
     }
     const body = {};
     for (const name of ['websites', 'server']) {
@@ -1389,7 +1398,7 @@ function App() {
   async function runMalwareScan() {
     if (!scanTargetWebsiteId) return;
     if (scanTargetWebsiteId === 'server' && malwareScanStatus?.memory_warning) {
-      if (!confirm(`${malwareScanStatus.memory_warning}\n\n${t('Scan the whole server anyway?')}`)) return;
+      if (!confirm(`${serverText(malwareScanStatus.memory_warning)}\n\n${t('Scan the whole server anyway?')}`)) return;
     }
     setScanResults(null);
     setScanJob(null);
@@ -1463,26 +1472,26 @@ function App() {
   }
 
   async function startClamavDaemon() {
-    const data = await request('/malware/start-daemon', { method: 'POST' }, 'Starting ClamAV daemon...');
+    const data = await request('/malware/start-daemon', { method: 'POST' }, t('Starting ClamAV daemon...'));
     if (data) {
-      setNotice(data.message || 'ClamAV daemon started.');
+      setNotice(data.message || t('ClamAV daemon started.'));
       await loadMalwareScanStatus();
     }
   }
 
   async function assignDomainToUser() {
     if (!assignWebsiteId || !assignUserId) return;
-    const data = await request(`/websites/${assignWebsiteId}`, { method: 'PATCH', body: JSON.stringify({ owner_id: Number(assignUserId) }) }, 'Assigning domain to user...');
-    if (data) { setNotice(`Assigned domain ${data.domain} to user ID ${assignUserId}`); await refreshAll(); }
+    const data = await request(`/websites/${assignWebsiteId}`, { method: 'PATCH', body: JSON.stringify({ owner_id: Number(assignUserId) }) }, t('Assigning domain to user...'));
+    if (data) { setNotice(t('Assigned domain {domain} to user ID {id}', { domain: data.domain, id: assignUserId })); await refreshAll(); }
   }
 
   async function createWordPress() {
     const cleanDomain = domain.trim().toLowerCase();
     const cleanAdminEmail = adminEmail.trim();
-    if (!cleanDomain) { setError('Please enter a domain name.'); return; }
+    if (!cleanDomain) { setError(t('Please enter a domain name.')); return; }
     const installWp = siteType === 'wordpress' && installWordPress;
     if (siteType === 'application' && !createSiteAppId) {
-      setError('Pick which application this website should serve.');
+      setError(t('Pick which application this website should serve.'));
       return;
     }
     const body = {
@@ -1496,18 +1505,20 @@ function App() {
     if (installWp) {
       body.admin_user = wpAdminUser;
       body.admin_email = cleanAdminEmail || `admin@${cleanDomain}`;
-      body.admin_password = wpAdminPassword || 'StrongPass123!';
+      // A blank field gets a random password, shown once in the notice below -
+      // never a fixed default, which would be one guessable login on every site.
+      body.admin_password = wpAdminPassword || generateRandomPassword();
     }
     const data = await request('/websites', { method: 'POST', body: JSON.stringify(body) },
-      installWp ? 'Creating WordPress website...' : 'Creating website...');
+      installWp ? t('Creating WordPress website...') : t('Creating website...'));
     if (data) {
       if (installWp) {
-        setNotice(`Created WordPress site: https://${cleanDomain}\nAdmin: ${wpAdminUser} | Password: ${wpAdminPassword || 'StrongPass123!'}`);
+        setNotice(t('Created WordPress site: {url}\nAdmin: {user} | Password: {password}', { url: `https://${cleanDomain}`, user: wpAdminUser, password: body.admin_password }));
       } else if (siteType === 'application') {
-        setNotice(`Created ${cleanDomain}, serving the selected application.`);
+        setNotice(t('Created {domain}, serving the selected application.', { domain: cleanDomain }));
         setCreateSiteAppId('');
       } else {
-        setNotice(`Created site ${cleanDomain}. Upload your files to public_html/ folder.`);
+        setNotice(t('Created site {domain}. Upload your files to public_html/ folder.', { domain: cleanDomain }));
       }
       if (createSslMode !== 'none') await applyCreateSsl(data.id, cleanDomain);
       refreshAll();
@@ -1515,13 +1526,13 @@ function App() {
   }
 
   async function deleteWebsite(id) {
-    if (!confirm('Delete this website including files, vhost, database, and its SSL certificate?')) return;
-    const data = await request(`/websites/${id}?delete_files=true&delete_database=true`, { method: 'DELETE' }, 'Deleting website...');
+    if (!confirm(t('Delete this website including files, vhost, database, and its SSL certificate?'))) return;
+    const data = await request(`/websites/${id}?delete_files=true&delete_database=true`, { method: 'DELETE' }, t('Deleting website...'));
     if (data) refreshAll();
   }
 
   async function enableSsl(id) {
-    const data = await request(`/websites/${id}/ssl`, { method: 'POST' }, "Installing Let's Encrypt SSL...");
+    const data = await request(`/websites/${id}/ssl`, { method: 'POST' }, t('Installing Let\'s Encrypt SSL...'));
     if (data) refreshAll();
   }
 
@@ -1539,10 +1550,10 @@ function App() {
       if (createSslToken.trim()) body.cloudflare_api_token = createSslToken.trim();
       const data = await request(`/websites/${id}/ssl/wildcard`,
         { method: 'POST', body: JSON.stringify(body) },
-        'Issuing wildcard certificate via Cloudflare...');
+        t('Issuing wildcard certificate via Cloudflare...'));
       if (data) {
         setCreateSslToken('');
-        setNotice(`Created ${siteDomain}. Wildcard SSL active — *.${data.ssl_source_domain} covers it.`);
+        setNotice(t('Created {domain}. Wildcard SSL active — *.{source} covers it.', { domain: siteDomain, source: data.ssl_source_domain }));
       }
       return;
     }
@@ -1550,7 +1561,7 @@ function App() {
       const sources = await request(`/websites/${id}/ssl/sources`, { silent: true });
       const list = Array.isArray(sources) ? sources : [];
       if (!list.length) {
-        setError(`Created ${siteDomain}, but no existing certificate covers it. Enable SSL from the SSL page.`);
+        setError(t('Created {domain}, but no existing certificate covers it. Enable SSL from the SSL page.', { domain: siteDomain }));
         return;
       }
       // Prefer a wildcard cert, then the longest-matching source domain.
@@ -1558,15 +1569,15 @@ function App() {
         (b.wildcard - a.wildcard) || (b.domain.length - a.domain.length))[0];
       const data = await request(`/websites/${id}/ssl/shared`,
         { method: 'POST', body: JSON.stringify({ source_domain: pick.domain }) },
-        `Using ${pick.domain}'s certificate...`);
-      if (data) setNotice(`Created ${siteDomain}, now serving ${pick.domain}'s certificate.`);
+        t('Using {domain}\'s certificate...', { domain: pick.domain }));
+      if (data) setNotice(t('Created {domain}, now serving {source}\'s certificate.', { domain: siteDomain, source: pick.domain }));
       return;
     }
     if (createSslMode === 'manual') {
       // Manual SSL needs the cert and key pasted in; send the operator to the
       // SSL page for this site to finish it there.
       setSelectedWebsiteId(String(id));
-      setNotice(`Created ${siteDomain}. Open the Manual tab on the SSL page to paste its certificate.`);
+      setNotice(t('Created {domain}. Open the Manual tab on the SSL page to paste its certificate.', { domain: siteDomain }));
       navigateToPage('ssl');
     }
   }
@@ -1574,11 +1585,11 @@ function App() {
   async function addWebsiteAlias(site) {
     const cleanAlias = String(aliasDrafts[site.id] || '').trim().toLowerCase();
     const aliasMode = aliasModes[site.id] || 'alias';
-    if (!cleanAlias) { setError('Enter a domain.'); return; }
+    if (!cleanAlias) { setError(t('Enter a domain.')); return; }
     const data = await request(`/websites/${site.id}/aliases`, {
       method: 'POST',
       body: JSON.stringify({ domain: cleanAlias, mode: aliasMode }),
-    }, `Adding ${aliasMode === 'redirect' ? 'redirect' : 'alias'} ${cleanAlias}...`);
+    }, t('Adding {kind} {domain}...', { kind: aliasMode === 'redirect' ? 'redirect' : 'alias', domain: cleanAlias }));
     if (data) {
       const label = aliasMode === 'redirect' ? 'redirect' : 'alias';
       // Adding a domain only wires it into Nginx - same split DirectAdmin
@@ -1600,10 +1611,10 @@ function App() {
 
   async function deleteWebsiteAlias(site, alias) {
     const label = alias.mode === 'redirect' ? 'redirect' : 'alias';
-    if (!confirm(`Remove ${label} ${alias.domain} from ${site.domain}?`)) return;
-    const data = await request(`/websites/${site.id}/aliases/${alias.id}`, { method: 'DELETE' }, `Removing ${label} ${alias.domain}...`);
+    if (!confirm(t('Remove {kind} {domain} from {site}?', { kind: label, domain: alias.domain, site: site.domain }))) return;
+    const data = await request(`/websites/${site.id}/aliases/${alias.id}`, { method: 'DELETE' }, t('Removing {kind} {domain}...', { kind: label, domain: alias.domain }));
     if (data) {
-      setNotice(`Removed ${label} ${alias.domain}.`);
+      setNotice(t('Removed {kind} {domain}.', { kind: label, domain: alias.domain }));
       setNginxCustomEditing(prev => {
         if (!prev || prev.id !== site.id) return prev;
         const nextSite = prev.site || site;
@@ -1618,7 +1629,7 @@ function App() {
     const hasCert = manualSslFiles.certificate || manualSslForm.certificate.trim();
     const hasKey = manualSslFiles.private_key || manualSslForm.private_key.trim();
     if (!hasCert || !hasKey) {
-      setError('Certificate and private key are required.');
+      setError(t('Certificate and private key are required.'));
       return;
     }
     const form = new FormData();
@@ -1628,7 +1639,7 @@ function App() {
     else form.append('private_key_text', manualSslForm.private_key);
     if (manualSslFiles.ca_bundle) form.append('ca_bundle', manualSslFiles.ca_bundle);
     else if (manualSslForm.ca_bundle.trim()) form.append('ca_bundle_text', manualSslForm.ca_bundle);
-    const data = await request(`/websites/${selectedWebsiteId}/ssl/manual`, { method: 'POST', body: form }, 'Installing manual SSL...');
+    const data = await request(`/websites/${selectedWebsiteId}/ssl/manual`, { method: 'POST', body: form }, t('Installing manual SSL...'));
     if (data) {
       setManualSslForm({ certificate: '', private_key: '', ca_bundle: '' });
       setManualSslFiles({ certificate: null, private_key: null, ca_bundle: null });
@@ -1650,12 +1661,12 @@ function App() {
     if (!selectedWebsiteId) return;
     const body = {};
     if (wildcardToken.trim()) body.cloudflare_api_token = wildcardToken.trim();
-    else if (!cfZone.has_token) { setError('Paste a Cloudflare API token (Zone.DNS Edit).'); return; }
+    else if (!cfZone.has_token) { setError(t('Paste a Cloudflare API token (Zone.DNS Edit).')); return; }
     const data = await request(`/websites/${selectedWebsiteId}/ssl/wildcard`,
-      { method: 'POST', body: JSON.stringify(body) }, 'Issuing wildcard certificate via Cloudflare...');
+      { method: 'POST', body: JSON.stringify(body) }, t('Issuing wildcard certificate via Cloudflare...'));
     if (data) {
       setWildcardToken('');
-      setNotice(`Wildcard SSL active — *.${data.ssl_source_domain} covers this site.`);
+      setNotice(t('Wildcard SSL active — *.{source} covers this site.', { source: data.ssl_source_domain }));
       refreshAll();
     }
   }
@@ -1664,9 +1675,9 @@ function App() {
     if (!selectedWebsiteId || !sharedSource) return;
     const data = await request(`/websites/${selectedWebsiteId}/ssl/shared`,
       { method: 'POST', body: JSON.stringify({ source_domain: sharedSource }) },
-      `Using ${sharedSource}'s certificate...`);
+      t('Using {domain}\'s certificate...', { domain: sharedSource }));
     if (data) {
-      setNotice(`Now serving ${sharedSource}'s certificate.`);
+      setNotice(t('Now serving {domain}\'s certificate.', { domain: sharedSource }));
       refreshAll();
     }
   }
@@ -1676,7 +1687,7 @@ function App() {
     setLogViewer(null);
     setTerminalViewer(null);
     setWebsiteSettingsForm(websiteConfigForm(site));
-    const data = await request(`/websites/${site.id}/nginx-custom`, {}, 'Loading Custom Nginx...');
+    const data = await request(`/websites/${site.id}/nginx-custom`, {}, t('Loading Custom Nginx...'));
     if (data !== null) {
       setNginxCustomEditing({
         id: site.id,
@@ -1712,7 +1723,7 @@ function App() {
       install ? t('Installing {name}...', { name: label }) : t('Uninstalling {name}...', { name: label }));
     if (data) {
       setNotice(install
-        ? `${t('{name} installed.', { name: label })} ${data.next_step ? t(data.next_step) : ''}`.trim()
+        ? `${t('{name} installed.', { name: label })} ${data.next_step ? serverText(data.next_step) : ''}`.trim()
         : `${t('{name} uninstalled.', { name: label })}${data.stopped?.length ? ` ${t('{count} application(s) stopped.', { count: data.stopped.length })}` : ''}`);
       await loadAddons();
       // The nav and the website mode picker both hang off this.
@@ -1730,7 +1741,7 @@ function App() {
         env: env || '',
         web_port: Number(webPort) || null,
       }),
-    }, 'Checking the compose file...');
+    }, t('Checking the compose file...'));
   }
 
   async function checkComposeFile() {
@@ -1775,11 +1786,11 @@ function App() {
           container_port: Number(siteAppEdit.container_port) || null,
         }
       : { env: siteAppEdit.env };
-    const data = await request(`/site-apps/${app.id}`, { method: 'PUT', body: JSON.stringify(patch) }, 'Saving configuration...');
+    const data = await request(`/site-apps/${app.id}`, { method: 'PUT', body: JSON.stringify(patch) }, t('Saving configuration...'));
     if (data) {
       setSiteAppEdit(null);
       setSiteAppEditPlan(null);
-      setNotice(`Saved ${data.name}.`);
+      setNotice(t('Saved {name}.', { name: data.name }));
       await loadSiteApps();
     }
   }
@@ -1790,9 +1801,9 @@ function App() {
   }
 
   async function deploySiteApp(app) {
-    const data = await request(`/site-apps/${app.id}/deploy`, { method: 'POST' }, `Deploying ${app.name}...`);
+    const data = await request(`/site-apps/${app.id}/deploy`, { method: 'POST' }, t('Deploying {name}...', { name: app.name }));
     if (data) {
-      setNotice(data.running ? `${app.name} is running on port ${app.port}.` : `${app.name} was deployed but is not running — check the log.`);
+      setNotice(data.running ? t('{name} is running on port {port}.', { name: app.name, port: app.port }) : t('{name} was deployed but is not running — check the log.', { name: app.name }));
       // What it downloaded and installed, which is otherwise invisible.
       if (data.output) setSiteAppLog({ name: `${app.name} deploy`, log: data.output });
       await loadSiteApps();
@@ -1800,22 +1811,22 @@ function App() {
   }
 
   async function controlSiteApp(app, action) {
-    const data = await request(`/site-apps/${app.id}/control`, { method: 'POST', body: JSON.stringify({ action }) }, `${action} ${app.name}...`);
+    const data = await request(`/site-apps/${app.id}/control`, { method: 'POST', body: JSON.stringify({ action }) }, t(ACTION_LABELS[action] || '{action} {name}...', { action, name: app.name }));
     if (data) {
-      setNotice(`${app.name} is ${data.running ? 'running' : 'stopped'}.`);
+      setNotice(data.running ? t('{name} is running.', { name: app.name }) : t('{name} is stopped.', { name: app.name }));
       await loadSiteApps();
     }
   }
 
   async function openSiteAppLog(app) {
-    const data = await request(`/site-apps/${app.id}/logs?lines=300`, {}, `Loading ${app.name} log...`);
-    if (data) setSiteAppLog({ name: app.name, log: data.log || 'No output yet.' });
+    const data = await request(`/site-apps/${app.id}/logs?lines=300`, {}, t('Loading the {name} log...', { name: app.name }));
+    if (data) setSiteAppLog({ name: app.name, log: data.log || t('No output yet.') });
   }
 
   async function installDockerEngine() {
-    const data = await request('/site-runtimes/docker-install', { method: 'POST' }, 'Installing Docker, this takes a few minutes...');
+    const data = await request('/site-runtimes/docker-install', { method: 'POST' }, t('Installing Docker, this takes a few minutes...'));
     if (data) {
-      setNotice(data.message || 'Docker is ready.');
+      setNotice(data.message || t('Docker is ready.'));
       await loadSiteRuntimes();
     }
   }
@@ -1830,9 +1841,9 @@ function App() {
   }
 
   async function installNodeMajor(major) {
-    const data = await request('/site-runtimes/node-install', { method: 'POST', body: JSON.stringify({ major }) }, `Installing Node ${major}...`);
+    const data = await request('/site-runtimes/node-install', { method: 'POST', body: JSON.stringify({ major }) }, t('Installing Node {major}...', { major }));
     if (data) {
-      setNotice(data.message || `Node ${major} is ready.`);
+      setNotice(data.message || t('Node {major} is ready.', { major }));
       await loadSiteRuntimes();
     }
   }
@@ -1861,28 +1872,28 @@ function App() {
       if (siteAppDraft.web_service) body.web_service = siteAppDraft.web_service;
       if (siteAppDraft.container_port) body.container_port = Number(siteAppDraft.container_port);
     }
-    const data = await request('/site-apps', { method: 'POST', body: JSON.stringify(body) }, 'Creating application...');
+    const data = await request('/site-apps', { method: 'POST', body: JSON.stringify(body) }, t('Creating application...'));
     if (data) {
-      setNotice(`Application ${data.name} created. Upload your files to ${data.directory} and press Deploy.`);
+      setNotice(t('Application {name} created. Upload your files to {directory} and press Deploy.', { name: data.name, directory: data.directory }));
       setSiteAppDraft(EMPTY_SITE_APP_DRAFT);
       setComposePlan(null);
       await loadSiteApps();
     }
   }
 
-  async function updateSiteApp(app, patch, label = 'Updating application...') {
+  async function updateSiteApp(app, patch, label = t('Updating application...')) {
     const data = await request(`/site-apps/${app.id}`, { method: 'PUT', body: JSON.stringify(patch) }, label);
     if (data) {
-      setNotice(`Updated ${data.name}.`);
+      setNotice(t('Updated {name}.', { name: data.name }));
       await loadSiteApps();
     }
   }
 
   async function deleteSiteApp(app) {
-    if (!confirm(`Delete application ${app.name}? Its files stay on disk; only the runtime is removed.`)) return;
-    const data = await request(`/site-apps/${app.id}`, { method: 'DELETE' }, 'Deleting application...');
+    if (!confirm(t('Delete application {name}? Its files stay on disk; only the runtime is removed.', { name: app.name }))) return;
+    const data = await request(`/site-apps/${app.id}`, { method: 'DELETE' }, t('Deleting application...'));
     if (data) {
-      setNotice(`Deleted ${app.name}.`);
+      setNotice(t('Deleted {name}.', { name: app.name }));
       await loadSiteApps();
     }
   }
@@ -1894,7 +1905,7 @@ function App() {
 
   async function viewFullNginxConfig() {
     if (!nginxCustomEditing) return;
-    const data = await request(`/websites/${nginxCustomEditing.id}/nginx-config`, {}, 'Loading full Nginx config...');
+    const data = await request(`/websites/${nginxCustomEditing.id}/nginx-config`, {}, t('Loading full Nginx config...'));
     if (data !== null) {
       setNginxCustomEditing(prev => ({ ...prev, mode: 'full', customContent: prev?.content || '', content: data?.nginx_config || '' }));
     }
@@ -1906,9 +1917,9 @@ function App() {
     const data = await request(`/websites/${nginxCustomEditing.id}/nginx-custom`, {
       method: 'PUT',
       body: JSON.stringify({ nginx_custom: nginxCustomEditing.content }),
-    }, 'Applying Custom Nginx and reloading...');
+    }, t('Applying Custom Nginx and reloading...'));
     if (data) {
-      setNotice(`Updated Custom Nginx for ${nginxCustomEditing.domain}`);
+      setNotice(t('Updated Custom Nginx for {domain}', { domain: nginxCustomEditing.domain }));
       setNginxCustomEditing(null);
       refreshAll();
     }
@@ -1928,11 +1939,11 @@ function App() {
 
     if (isProxiedAppType(nextAppType)) {
       if (siteApps.items.length === 0) {
-        setError('Install an application first, on the Applications page.');
+        setError(t('Install an application first, on the Applications page.'));
         return;
       }
       if (!websiteSettingsForm.app_id) {
-        setError('Pick which application this website should serve.');
+        setError(t('Pick which application this website should serve.'));
         return;
       }
       if (String(websiteSettingsForm.app_id) !== String(original.app_id || '')) {
@@ -1949,9 +1960,9 @@ function App() {
     const data = await request(`/websites/${nginxCustomEditing.id}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
-    }, `Saving ${nginxCustomEditing.domain} settings...`);
+    }, t('Saving the settings of {domain}...', { domain: nginxCustomEditing.domain }));
     if (data) {
-      setNotice(`Updated settings for ${nginxCustomEditing.domain}.`);
+      setNotice(t('Updated settings for {domain}.', { domain: nginxCustomEditing.domain }));
       setWebsiteSettingsForm(websiteConfigForm(data));
       setNginxCustomEditing(prev => prev ? ({ ...prev, site: data }) : prev);
       await refreshAll();
@@ -1960,13 +1971,13 @@ function App() {
 
   async function resetNginxDefault() {
     if (!nginxCustomEditing) return;
-    if (!confirm(`Clear Custom Nginx for ${nginxCustomEditing.domain}?`)) return;
+    if (!confirm(t('Clear Custom Nginx for {domain}?', { domain: nginxCustomEditing.domain }))) return;
     const data = await request(`/websites/${nginxCustomEditing.id}/nginx-custom`, {
       method: 'PUT',
       body: JSON.stringify({ nginx_custom: '' }),
-    }, 'Clearing Custom Nginx...');
+    }, t('Clearing Custom Nginx...'));
     if (data) {
-      setNotice(`Cleared Custom Nginx for ${nginxCustomEditing.domain}.`);
+      setNotice(t('Cleared Custom Nginx for {domain}.', { domain: nginxCustomEditing.domain }));
       setNginxCustomEditing(null);
       await refreshAll();
     }
@@ -1976,7 +1987,7 @@ function App() {
     const websiteId = typeof siteOrId === 'object' ? siteOrId.id : siteOrId;
     const domainName = typeof siteOrId === 'object' ? siteOrId.domain : domainLabel;
     if (!websiteId) return;
-    const data = await request(`/websites/${websiteId}/logs?kind=${encodeURIComponent(kind)}&lines=${encodeURIComponent(lines)}`, {}, `Loading ${kind} log...`);
+    const data = await request(`/websites/${websiteId}/logs?kind=${encodeURIComponent(kind)}&lines=${encodeURIComponent(lines)}`, {}, t('Loading the {kind} log...', { kind }));
     if (data) {
       setLogViewer({
         id: websiteId,
@@ -2027,11 +2038,11 @@ function App() {
     const adminEmailValue = String(wordpressInstaller.admin_email || '').trim();
     const adminPasswordValue = String(wordpressInstaller.admin_password || '').trim();
     if (!adminUser || !adminEmailValue || !adminPasswordValue) {
-      setError('Please fill all WordPress admin fields.');
+      setError(t('Please fill all WordPress admin fields.'));
       return;
     }
     if (adminPasswordValue.length < 10) {
-      setError('WordPress admin password must be at least 10 characters.');
+      setError(t('WordPress admin password must be at least 10 characters.'));
       return;
     }
     const data = await request(`/websites/${wordpressInstaller.website_id}/wordpress`, {
@@ -2042,9 +2053,9 @@ function App() {
         admin_email: adminEmailValue,
         admin_password: adminPasswordValue,
       }),
-    }, `Installing WordPress for ${wordpressInstaller.domain}...`);
+    }, t('Installing WordPress for {domain}...', { domain: wordpressInstaller.domain }));
     if (data) {
-      setNotice(`Installed WordPress: https://${wordpressInstaller.domain}\nAdmin: ${adminUser} | Password: ${adminPasswordValue}`);
+      setNotice(t('Installed WordPress: {url}\nAdmin: {user} | Password: {password}', { url: `https://${wordpressInstaller.domain}`, user: adminUser, password: adminPasswordValue }));
       setWordpressInstaller(null);
       await refreshAll();
     }
@@ -2056,32 +2067,32 @@ function App() {
     const data = await request('/maintenance/wordpress', {
       method: 'POST',
       body: JSON.stringify({ website_id: site.id, action }),
-    }, `Updating WordPress ${label}...`);
+    }, t('Updating WordPress {part}...', { part: label }));
     if (data?.returncode && data.returncode !== 0) {
-      setError(data.stderr || data.stdout || `WordPress ${label} update failed.`);
+      setError(data.stderr || data.stdout || t('WordPress {part} update failed.', { part: label }));
       return;
     }
     if (data) {
-      setNotice(`Updated WordPress ${label} for ${site.domain}.`);
+      setNotice(t('Updated WordPress {part} for {domain}.', { part: label, domain: site.domain }));
     }
   }
 
   async function updateWordPressAll(site) {
     if (!site) return;
-    setLoading('Updating WordPress...');
+    setLoading(t('Updating WordPress...'));
     for (const action of ['core', 'plugins', 'themes']) {
       const data = await request('/maintenance/wordpress', {
         method: 'POST',
         body: JSON.stringify({ website_id: site.id, action }),
       });
       if (data?.returncode && data.returncode !== 0) {
-        setError(data.stderr || data.stdout || `WordPress ${action} update failed.`);
+        setError(data.stderr || data.stdout || t('WordPress {part} update failed.', { part: action }));
         setLoading('');
         return;
       }
     }
     setLoading('');
-    setNotice(`Updated WordPress core, plugins, and themes for ${site.domain}.`);
+    setNotice(t('Updated WordPress core, plugins, and themes for {domain}.', { domain: site.domain }));
   }
 
   async function toggleWebsiteWaf(site) {
@@ -2089,21 +2100,21 @@ function App() {
     const data = await request(`/websites/${site.id}/waf`, {
       method: 'PATCH',
       body: JSON.stringify({ waf_enabled: next }),
-    }, `${next ? 'Enabling' : 'Disabling'} WAF for ${site.domain}...`);
+    }, next ? t('Turning on the WAF for {domain}...', { domain: site.domain }) : t('Turning off the WAF for {domain}...', { domain: site.domain }));
     if (data) {
-      setNotice(`${next ? 'Enabled' : 'Disabled'} WAF for ${site.domain}.`);
+      setNotice(next ? t('The WAF is on for {domain}.', { domain: site.domain }) : t('The WAF is off for {domain}.', { domain: site.domain }));
       await refreshAll();
       if (String(selectedWafWebsiteId) === String(site.id)) await loadWebsiteWafConfig(site.id, false);
     }
   }
 
   async function fixWordPressPermissions(id) {
-    const data = await request(`/maintenance/wordpress/${id}/fix-permissions`, { method: 'POST' }, 'Fixing permissions...');
+    const data = await request(`/maintenance/wordpress/${id}/fix-permissions`, { method: 'POST' }, t('Fixing permissions...'));
     if (data?.message) setNotice(data.message);
   }
 
   async function fixNginxSecurity(id) {
-    const data = await request(`/websites/${id}/fix-nginx-security`, { method: 'POST' }, 'Rewriting Nginx security template...');
+    const data = await request(`/websites/${id}/fix-nginx-security`, { method: 'POST' }, t('Rewriting Nginx security template...'));
     if (data?.message) setNotice(data.message);
   }
 
@@ -2171,37 +2182,37 @@ function App() {
   }
 
   async function addCron() {
-    const data = await request('/maintenance/cron', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId), schedule: cronSchedule, command: cronCommand }) }, 'Adding cron job...');
+    const data = await request('/maintenance/cron', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId), schedule: cronSchedule, command: cronCommand }) }, t('Adding cron job...'));
     if (data) {
       if (data.cron_user) setCronUser(data.cron_user);
-      setNotice(`Cron job added${data.cron_user ? ` as ${data.cron_user}` : ''}.`);
+      setNotice(data.cron_user ? t('Cron job added, running as {user}.', { user: data.cron_user }) : t('Cron job added.'));
       await listCron();
     }
   }
 
   async function listCron() {
     if (!selectedWebsiteId) return;
-    const data = await request(`/maintenance/cron/${selectedWebsiteId}`, {}, 'Loading cron jobs...');
+    const data = await request(`/maintenance/cron/${selectedWebsiteId}`, {}, t('Loading cron jobs...'));
     if (data?.items) setCronItems(data.items);
     if (data?.cron_user) setCronUser(data.cron_user);
     if (data?.php_binary) setCronPhpInfo({ php_binary: data.php_binary, php_version: data.php_version || '' });
   }
 
   async function deleteCron(index) {
-    if (!confirm(`Delete cron #${index}?`)) return;
+    if (!confirm(t('Delete cron #{index}?', { index }))) return;
     index = Number(index);
     if (Number.isNaN(index)) return;
-    const data = await request('/maintenance/cron', { method: 'DELETE', body: JSON.stringify({ website_id: Number(selectedWebsiteId), index }) }, 'Deleting cron job...');
+    const data = await request('/maintenance/cron', { method: 'DELETE', body: JSON.stringify({ website_id: Number(selectedWebsiteId), index }) }, t('Deleting cron job...'));
     if (data) {
       if (data.cron_user) setCronUser(data.cron_user);
-      setNotice('Cron job deleted.');
+      setNotice(t('Cron job deleted.'));
       await listCron();
     }
   }
 
   async function listFiles(path = fileListPath) {
     if (!hasFileTarget()) return;
-    const data = await request(`${fileTargetBase()}?path=${encodeURIComponent(path)}`, {}, 'Loading file list...');
+    const data = await request(`${fileTargetBase()}?path=${encodeURIComponent(path)}`, {}, t('Loading file list...'));
     if (data?.items) { setFiles(data.items); setFileListPath(path); setFileUploadDir(path || ''); setSelectedFilePaths([]); }
   }
 
@@ -2209,7 +2220,7 @@ function App() {
     const targetPath = pathOverride || filePath;
     if (!hasFileTarget() || !targetPath) return;
     if (pathOverride) setFilePath(pathOverride);
-    const data = await request(`${fileTargetBase()}/read?path=${encodeURIComponent(targetPath)}`, {}, 'Reading file...');
+    const data = await request(`${fileTargetBase()}/read?path=${encodeURIComponent(targetPath)}`, {}, t('Reading file...'));
     if (data?.content !== undefined) {
       setFileContent(data.content);
       setEditorCursor({ line: 1, column: 1 });
@@ -2217,23 +2228,23 @@ function App() {
   }
 
   async function writeFile() {
-    const data = await request('/maintenance/files/write', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: filePath, content: fileContent }) }, 'Saving file...');
+    const data = await request('/maintenance/files/write', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: filePath, content: fileContent }) }, t('Saving file...'));
     if (data) { await listFiles(fileListPath); await loadCurrentUser(); }
   }
 
   async function downloadFile(path) {
     if (!hasFileTarget() || !path) return;
     try {
-      setError(''); setLoading('Downloading file...');
+      setError(''); setLoading(t('Downloading file...'));
       const res = await fetch(`${API}${fileTargetBase()}/download?path=${encodeURIComponent(path)}`, { credentials: 'include' });
-      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Download failed.')); return; }
+      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Download failed.'))); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = path.split('/').pop() || 'download';
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
-    } catch (err) { setError('File download failed.'); }
+    } catch (err) { setError(t('File download failed.')); }
     finally { setLoading(''); }
   }
 
@@ -2256,17 +2267,17 @@ function App() {
 
   async function makeFileDirectory() {
     if (!hasFileTarget()) return;
-    const name = prompt('Folder name:');
+    const name = prompt(t('Folder name:'));
     if (!name) return;
-    const data = await request('/maintenance/files/mkdir', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: fileListPath || '', name }) }, 'Creating folder...');
+    const data = await request('/maintenance/files/mkdir', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: fileListPath || '', name }) }, t('Creating folder...'));
     if (data) await listFiles(fileListPath);
   }
 
   async function makeFile() {
     if (!hasFileTarget()) return;
-    const name = prompt('File name:', 'new-file.txt');
+    const name = prompt(t('File name:'), 'new-file.txt');
     if (!name) return;
-    const data = await request('/maintenance/files/create', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: fileListPath || '', name }) }, 'Creating file...');
+    const data = await request('/maintenance/files/create', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: fileListPath || '', name }) }, t('Creating file...'));
     if (data) {
       await listFiles(fileListPath);
       const newPath = [fileListPath, name].filter(Boolean).join('/');
@@ -2276,9 +2287,9 @@ function App() {
 
   async function renameFileItem(item) {
     if (!item) return;
-    const newName = prompt('New name:', item.name);
+    const newName = prompt(t('New name:'), item.name);
     if (!newName || newName === item.name) return;
-    const data = await request('/maintenance/files/rename', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: item.path, new_name: newName }) }, 'Renaming...');
+    const data = await request('/maintenance/files/rename', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), path: item.path, new_name: newName }) }, t('Renaming...'));
     if (data) await listFiles(fileListPath);
   }
 
@@ -2304,37 +2315,36 @@ function App() {
     const targets = chmodTarget || [];
     const mode = chmodMode.trim();
     if (targets.length === 0) return;
-    if (!/^[0-7]{3,4}$/.test(mode)) { setError('Mode must be octal, for example 644 or 755.'); return; }
+    if (!/^[0-7]{3,4}$/.test(mode)) { setError(t('Mode must be octal, for example 644 or 755.')); return; }
     for (const item of targets) {
       const data = await request('/maintenance/files/chmod', {
         method: 'POST',
         body: JSON.stringify({ ...fileTargetBody(), path: item.path, mode }),
-      }, `Setting permissions on ${item.name}...`);
+      }, t('Setting permissions on {name}...', { name: item.name }));
       // request() already surfaced the reason; stop so the dialog keeps the mode.
       if (!data) return;
     }
     setChmodTarget(null);
-    setNotice(`Permissions set to ${mode} on ${targets.length} item(s).`);
+    setNotice(t('Permissions set to {mode} on {count} item(s).', { mode, count: targets.length }));
     await listFiles(fileListPath);
   }
 
   async function deleteSelectedFiles() {
     if (selectedFilePaths.length === 0) return;
-    if (!confirm(`Delete ${selectedFilePaths.length} selected item(s)?`)) return;
-    const data = await request('/maintenance/files/delete', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), paths: selectedFilePaths }) }, 'Deleting selected files...');
+    if (!confirm(t('Delete {count} selected item(s)?', { count: selectedFilePaths.length }))) return;
+    const data = await request('/maintenance/files/delete', { method: 'POST', body: JSON.stringify({ ...fileTargetBody(), paths: selectedFilePaths }) }, t('Deleting selected files...'));
     if (data) { await listFiles(fileListPath); await loadCurrentUser(); }
   }
 
   async function transferFileItems(action, paths) {
     if (!hasFileTarget() || !paths?.length) return;
-    const verb = action === 'copy' ? 'Copy' : 'Move';
-    const destination = prompt(`${verb} to folder:`, fileListPath || 'public_html');
+        const destination = prompt(action === 'copy' ? t('Copy to folder:') : t('Move to folder:'), fileListPath || 'public_html');
     if (destination === null) return;
     const targetPath = destination.trim() || fileListPath || 'public_html';
     const data = await request(`/maintenance/files/${action}`, {
       method: 'POST',
       body: JSON.stringify({ ...fileTargetBody(), paths, destination_path: targetPath }),
-    }, `${verb}ing files...`);
+    }, action === 'copy' ? t('Copying files...') : t('Moving files...'));
     if (data) { await listFiles(fileListPath); await loadCurrentUser(); }
   }
 
@@ -2349,24 +2359,24 @@ function App() {
   async function archiveSelectedFiles() {
     if (selectedFilePaths.length === 0) return;
     const ext = archiveFormat === 'tar.gz' ? 'tar.gz' : 'zip';
-    const outputName = prompt('Archive file name:', `archive-${Date.now()}.${ext}`);
+    const outputName = prompt(t('Archive file name:'), `archive-${Date.now()}.${ext}`);
     if (!outputName) return;
     const data = await request('/maintenance/files/archive', {
       method: 'POST',
       body: JSON.stringify({ ...fileTargetBody(), base_path: fileListPath || '', paths: selectedFilePaths, output_name: outputName, format: archiveFormat }),
-    }, 'Creating archive...');
+    }, t('Creating archive...'));
     if (data) { await listFiles(fileListPath); await loadCurrentUser(); }
   }
 
   async function extractArchiveFile(path) {
     if (!hasFileTarget() || !path) return;
-    const destination = prompt('Extract to folder:', fileListPath || '.');
+    const destination = prompt(t('Extract to folder:'), fileListPath || '.');
     if (destination === null) return;
     const targetPath = destination.trim() || fileListPath || '.';
     const data = await request('/maintenance/files/extract', {
       method: 'POST',
       body: JSON.stringify({ ...fileTargetBody(), archive_path: path, destination_path: targetPath }),
-    }, 'Starting extraction...');
+    }, t('Starting extraction...'));
     if (data?.job_id) upsertFileJob(data);
     else if (data) { await listFiles(targetPath === '.' ? '' : targetPath); await loadCurrentUser(); }
   }
@@ -2411,14 +2421,14 @@ function App() {
           // Drop the card rather than parking it on "completed" forever; the
           // notice and the refreshed listing are the confirmation.
           dismissFileJob(job.job_id);
-          setNotice(data.message || 'Extraction completed');
+          setNotice(data.message || t('Extraction completed'));
           await listFiles(data.destination_path || fileListPath);
           await loadCurrentUser();
           continue;
         }
         upsertFileJob(data);
         if (data.status === 'error') {
-          setError(formatApiError(data.error, 'Extraction failed'));
+          setError(formatApiError(data.error, t('Extraction failed')));
         }
       }
     };
@@ -2460,13 +2470,13 @@ function App() {
 
   async function uploadSiteFile(file) {
     if (!file) return;
-    if (!hasFileTarget()) { setError('Please select a website or application first.'); return; }
+    if (!hasFileTarget()) { setError(t('Please select a website or application first.')); return; }
     const uploadDir = fileUploadDir.trim();
     const form = new FormData();
     form.append('file', file);
     try {
       setError('');
-      setLoading('Uploading file...');
+      setLoading(t('Uploading file...'));
       const csrfToken = readCookie('snpanel_csrf');
       const headers = csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
       const res = await fetch(`${API}${fileTargetBase()}/upload?path=${encodeURIComponent(uploadDir)}`, {
@@ -2478,18 +2488,18 @@ function App() {
       const responseText = await res.text();
       let data;
       try { data = responseText ? JSON.parse(responseText) : {}; } catch { data = { detail: responseText || `HTTP ${res.status}` }; }
-      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Upload failed.')); return; }
-      setNotice(`Uploaded ${file.name} to ${uploadDir || 'site root'}.`);
+      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Upload failed.'))); return; }
+      setNotice(uploadDir ? t('Uploaded {name} to {folder}.', { name: file.name, folder: uploadDir }) : t('Uploaded {name} to the site root.', { name: file.name }));
       if (String(fileListPath || '') === uploadDir) await listFiles(uploadDir);
       await loadCurrentUser();
-    } catch (err) { setError('File upload failed.'); }
+    } catch (err) { setError(t('File upload failed.')); }
     finally { setLoading(''); }
   }
 
   async function createBackup() {
-    const data = await request('/maintenance/backup', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId) }) }, 'Queueing backup...');
-    if (data?.job_id) { setNotice('Backup queued. It will keep running on the server.'); await loadBackupJobs(); }
-    else if (data?.backup_file) { setNotice(`Created backup: ${data.backup_file}`); await listBackups(); }
+    const data = await request('/maintenance/backup', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId) }) }, t('Queueing backup...'));
+    if (data?.job_id) { setNotice(t('Backup queued. It will keep running on the server.')); await loadBackupJobs(); }
+    else if (data?.backup_file) { setNotice(t('Created backup: {file}', { file: data.backup_file })); await listBackups(); }
   }
 
   async function listBackups() {
@@ -2557,10 +2567,10 @@ function App() {
       user_id: Number(selectedBackupUserId),
       ...destinationIds(userBackupDestination),
     };
-    const data = await request('/maintenance/user-backup', { method: 'POST', body: JSON.stringify(body) }, 'Queueing full user backup...');
-    if (data?.job_id) { setNotice('Full user backup queued. It will keep running on the server.'); await loadBackupJobs(); }
+    const data = await request('/maintenance/user-backup', { method: 'POST', body: JSON.stringify(body) }, t('Queueing full user backup...'));
+    if (data?.job_id) { setNotice(t('Full user backup queued. It will keep running on the server.')); await loadBackupJobs(); }
     else if (data?.backup_file) {
-      setNotice(data.remote_file ? `Full user backup uploaded: ${data.remote_file}` : `Created full user backup: ${data.backup_file}`);
+      setNotice(data.remote_file ? t('Full user backup uploaded: {file}', { file: data.remote_file }) : t('Created full user backup: {file}', { file: data.backup_file }));
       await listUserBackups();
     }
   }
@@ -2589,16 +2599,16 @@ function App() {
       retention: Number(newBackupSchedule.retention || 7),
       is_active: true,
     };
-    const data = await request('/maintenance/backup-schedules', { method: 'POST', body: JSON.stringify(body) }, 'Saving backup schedule...');
+    const data = await request('/maintenance/backup-schedules', { method: 'POST', body: JSON.stringify(body) }, t('Saving backup schedule...'));
     if (data) {
-      setNotice('Backup schedule saved.');
+      setNotice(t('Backup schedule saved.'));
       await loadBackupSchedules();
     }
   }
 
   async function deleteBackupSchedule(id) {
-    if (!confirm('Delete this backup schedule?')) return;
-    const data = await request(`/maintenance/backup-schedules/${id}`, { method: 'DELETE' }, 'Deleting backup schedule...');
+    if (!confirm(t('Delete this backup schedule?'))) return;
+    const data = await request(`/maintenance/backup-schedules/${id}`, { method: 'DELETE' }, t('Deleting backup schedule...'));
     if (data) await loadBackupSchedules();
   }
 
@@ -2617,17 +2627,17 @@ function App() {
       password: newSftpTarget.password || null,
       private_key: newSftpTarget.private_key || null,
     };
-    const data = await request('/maintenance/sftp-targets', { method: 'POST', body: JSON.stringify(body) }, 'Saving SFTP target...');
+    const data = await request('/maintenance/sftp-targets', { method: 'POST', body: JSON.stringify(body) }, t('Saving SFTP target...'));
     if (data) {
-      setNotice(`Saved SFTP target ${data.name}`);
+      setNotice(t('Saved SFTP target {name}', { name: data.name }));
       setNewSftpTarget({ name: '', host: '', port: 22, username: '', password: '', private_key: '', remote_path: '/backups/snpanel' });
       await loadSftpTargets();
     }
   }
 
   async function deleteSftpTarget(id) {
-    if (!confirm('Delete this SFTP target?')) return;
-    const data = await request(`/maintenance/sftp-targets/${id}`, { method: 'DELETE' }, 'Deleting SFTP target...');
+    if (!confirm(t('Delete this SFTP target?'))) return;
+    const data = await request(`/maintenance/sftp-targets/${id}`, { method: 'DELETE' }, t('Deleting SFTP target...'));
     if (data) await loadSftpTargets();
   }
 
@@ -2672,59 +2682,59 @@ function App() {
     const data = await request('/maintenance/backup-sftp', {
       method: 'POST',
       body: JSON.stringify({ website_id: Number(selectedWebsiteId), target_id: Number(selectedSftpTargetId) }),
-    }, 'Queueing SFTP backup...');
+    }, t('Queueing SFTP backup...'));
     if (data?.job_id) {
-      setNotice('SFTP backup queued. It will keep running on the server.');
+      setNotice(t('SFTP backup queued. It will keep running on the server.'));
       await loadBackupJobs();
     } else if (data?.remote_file) {
-      setNotice(`SFTP backup uploaded: ${data.remote_file}`);
+      setNotice(t('SFTP backup uploaded: {file}', { file: data.remote_file }));
       await listBackups();
     }
   }
 
   async function restoreBackup(file) {
-    if (!confirm(`Restore this backup to the current website?\n${file}`)) return;
-    await request('/maintenance/restore', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId), backup_file: file }) }, 'Restoring backup...');
+    if (!confirm(t('Restore this backup to the current website?\n{file}', { file }))) return;
+    await request('/maintenance/restore', { method: 'POST', body: JSON.stringify({ website_id: Number(selectedWebsiteId), backup_file: file }) }, t('Restoring backup...'));
   }
 
   async function downloadBackup(file) {
     if (!selectedWebsiteId) return;
     try {
-      setError(''); setLoading('Downloading backup...');
+      setError(''); setLoading(t('Downloading backup...'));
       const res = await fetch(`${API}/maintenance/backups/${selectedWebsiteId}/download?backup_file=${encodeURIComponent(file)}`, { credentials: 'include' });
-      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Download failed.')); return; }
+      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Download failed.'))); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = file.split('/').pop() || 'backup.tar.gz';
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
-      setNotice('Backup downloaded.');
-    } catch (err) { setError('Backup download failed.'); }
+      setNotice(t('Backup downloaded.'));
+    } catch (err) { setError(t('Backup download failed.')); }
     finally { setLoading(''); }
   }
 
   async function downloadUserBackup(file) {
     try {
-      setError(''); setLoading('Downloading full user backup...');
+      setError(''); setLoading(t('Downloading full user backup...'));
       const res = await fetch(`${API}/maintenance/user-backups-download?backup_file=${encodeURIComponent(file)}`, { credentials: 'include' });
-      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Download failed.')); return; }
+      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Download failed.'))); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = file.split('/').pop() || 'user-backup.tar.gz';
       document.body.appendChild(link); link.click(); link.remove();
       URL.revokeObjectURL(url);
-      setNotice('Full user backup downloaded.');
-    } catch (err) { setError('Full user backup download failed.'); }
+      setNotice(t('Full user backup downloaded.'));
+    } catch (err) { setError(t('Full user backup download failed.')); }
     finally { setLoading(''); }
   }
 
   async function restoreUserBackup(file) {
-    if (!confirm(`Restore this full user backup? Missing panel user and websites will be created.\n${file}`)) return;
-    const data = await request('/maintenance/user-restore', { method: 'POST', body: JSON.stringify({ backup_file: file }) }, 'Restoring full user backup...');
+    if (!confirm(t('Restore this full user backup? Missing panel user and websites will be created.\n{file}', { file }))) return;
+    const data = await request('/maintenance/user-restore', { method: 'POST', body: JSON.stringify({ backup_file: file }) }, t('Restoring full user backup...'));
     if (data) {
-      setNotice(`Restored user ${data.username}. Websites: ${data.websites?.length || 0}`);
+      setNotice(t('Restored user {name}. Websites: {count}', { name: data.username, count: data.websites?.length || 0 }));
       await refreshAll();
       await loadUsers();
       await listUserBackups();
@@ -2733,8 +2743,8 @@ function App() {
   }
 
   async function deleteUserBackup(file) {
-    if (!confirm(`Delete this full user backup?\n${file}`)) return;
-    const data = await request(`/maintenance/user-backups?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, 'Deleting full user backup...');
+    if (!confirm(t('Delete this full user backup?\n{file}', { file }))) return;
+    const data = await request(`/maintenance/user-backups?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, t('Deleting full user backup...'));
     if (data) {
       await listUserBackups();
       await loadRestoreBackups();
@@ -2742,8 +2752,8 @@ function App() {
   }
 
   async function deleteRestoreBackup(file) {
-    if (!confirm(`Delete this restore backup?\n${file}`)) return;
-    const data = await request(`/maintenance/user-restore-backups?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, 'Deleting restore backup...');
+    if (!confirm(t('Delete this restore backup?\n{file}', { file }))) return;
+    const data = await request(`/maintenance/user-restore-backups?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, t('Deleting restore backup...'));
     if (data) {
       await loadRestoreBackups();
       await listUserBackups();
@@ -2756,7 +2766,7 @@ function App() {
     const form = new FormData();
     selectedFiles.forEach(file => form.append('files', file));
     try {
-      setError(''); setLoading('Uploading full user backups...');
+      setError(''); setLoading(t('Uploading full user backups...'));
       const csrfToken = readCookie('snpanel_csrf');
       const headers = csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
       const res = await fetch(`${API}/maintenance/user-restore-backups/upload`, {
@@ -2768,11 +2778,11 @@ function App() {
       const responseText = await res.text();
       let data;
       try { data = responseText ? JSON.parse(responseText) : {}; } catch { data = { detail: responseText || `HTTP ${res.status}` }; }
-      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Upload failed.')); return; }
-      setNotice(`Uploaded ${data.items?.length || selectedFiles.length} full user backup file(s).`);
+      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Upload failed.'))); return; }
+      setNotice(t('Uploaded {count} full user backup file(s).', { count: data.items?.length || selectedFiles.length }));
       await loadRestoreBackups();
       await listUserBackups();
-    } catch (err) { setError('Full user backup upload failed.'); }
+    } catch (err) { setError(t('Full user backup upload failed.')); }
     finally { setLoading(''); }
   }
 
@@ -2787,7 +2797,7 @@ function App() {
     const form = new FormData();
     form.append('file', file);
     try {
-      setError(''); setLoading('Uploading DA backup...');
+      setError(''); setLoading(t('Uploading DA backup...'));
       const csrfToken = readCookie('snpanel_csrf');
       const headers = csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
       const res = await fetch(`${API}/maintenance/da-import/upload`, {
@@ -2796,28 +2806,28 @@ function App() {
       const text = await res.text();
       let data;
       try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text || `HTTP ${res.status}` }; }
-      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Upload failed.')); return; }
-      setNotice(`Uploaded: ${data.filename}`);
+      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Upload failed.'))); return; }
+      setNotice(t('Uploaded: {file}', { file: data.filename }));
       await listDaBackups();
-    } catch (err) { setError('DA backup upload failed.'); }
+    } catch (err) { setError(t('DA backup upload failed.')); }
     finally { setLoading(''); }
   }
 
   async function scanDaBackup(archivePath) {
     setDaScanResult(null);
-    const data = await request('/maintenance/da-import/scan', { method: 'POST', body: JSON.stringify({ archive_path: archivePath }) }, 'Scanning DA backup...');
+    const data = await request('/maintenance/da-import/scan', { method: 'POST', body: JSON.stringify({ archive_path: archivePath }) }, t('Scanning DA backup...'));
     if (data) setDaScanResult(data);
   }
 
   async function importDaBackup(archivePath, force = daReplaceExisting) {
     const message = force
-      ? 'Import and REPLACE? Any existing panel user, website, files and databases with the same names are deleted first.'
-      : 'Import this DirectAdmin backup? This will create users, websites, databases, and nginx configs.';
+      ? t('Import and REPLACE? Any existing panel user, website, files and databases with the same names are deleted first.')
+      : t('Import this DirectAdmin backup? This will create users, websites, databases, and nginx configs.');
     if (!confirm(message)) return;
     setDaImportJob(null);
-    const data = await request('/maintenance/da-import/import', { method: 'POST', body: JSON.stringify({ archive_path: archivePath, force }) }, 'Starting DA import...');
+    const data = await request('/maintenance/da-import/import', { method: 'POST', body: JSON.stringify({ archive_path: archivePath, force }) }, t('Starting DA import...'));
     if (data?.job_id) {
-      setNotice('DA import started. Polling for result...');
+      setNotice(t('DA import started. Polling for result...'));
       setDaImportJob(data);
       pollDaImportJob(data.job_id);
     }
@@ -2831,16 +2841,16 @@ function App() {
       const data = await request(`/maintenance/da-import/jobs/${jobId}`, { silent: true });
       if (!data) { attempts++; continue; }
       setDaImportJob(data);
-      if (data.status === 'completed') { setNotice('DA import completed successfully!'); await listDaBackups(); return; }
-      if (data.status === 'failed') { setError(`DA import failed: ${data.error || 'Unknown error'}`); return; }
+      if (data.status === 'completed') { setNotice(t('DA import completed successfully!')); await listDaBackups(); return; }
+      if (data.status === 'failed') { setError(t('DA import failed: {error}', { error: data.error || t('Unknown error') })); return; }
       attempts++;
     }
   }
 
   async function deleteDaBackup(archivePath) {
-    if (!confirm('Delete this DA backup file?')) return;
-    const data = await request('/maintenance/da-import/backups', { method: 'DELETE', body: JSON.stringify({ archive_path: archivePath }) }, 'Deleting DA backup...');
-    if (data) { setNotice(`Deleted: ${data.deleted}`); setDaScanResult(null); await listDaBackups(); }
+    if (!confirm(t('Delete this DA backup file?'))) return;
+    const data = await request('/maintenance/da-import/backups', { method: 'DELETE', body: JSON.stringify({ archive_path: archivePath }) }, t('Deleting DA backup...'));
+    if (data) { setNotice(t('Deleted: {file}', { file: data.deleted })); setDaScanResult(null); await listDaBackups(); }
   }
 
   function toggleDaBackupSelect(path) {
@@ -2854,15 +2864,15 @@ function App() {
   async function bulkImportDaBackups(force = daReplaceExisting) {
     if (selectedDaBackups.length === 0) return;
     const message = force
-      ? `Restore and REPLACE ${selectedDaBackups.length} backup(s)? Existing users, websites, files and databases with the same names are deleted first.`
-      : `Restore ${selectedDaBackups.length} backup(s)? This will create users, websites, databases, and nginx configs for each.`;
+      ? t('Restore and REPLACE {count} backup(s)? Existing users, websites, files and databases with the same names are deleted first.', { count: selectedDaBackups.length })
+      : t('Restore {count} backup(s)? This will create users, websites, databases, and nginx configs for each.', { count: selectedDaBackups.length });
     if (!confirm(message)) return;
     setDaBulkImportJob(null);
     setDaImportJob(null);
     setDaScanResult(null);
-    const data = await request('/maintenance/da-import/bulk-import', { method: 'POST', body: JSON.stringify({ archive_paths: selectedDaBackups, force }) }, 'Starting bulk restore...');
+    const data = await request('/maintenance/da-import/bulk-import', { method: 'POST', body: JSON.stringify({ archive_paths: selectedDaBackups, force }) }, t('Starting bulk restore...'));
     if (data?.job_id) {
-      setNotice(`Bulk restore started: ${data.total} backup(s). Processing sequentially...`);
+      setNotice(t('Bulk restore started: {count} backup(s). Processing sequentially...', { count: data.total }));
       setSelectedDaBackups([]);
       pollDaBulkImportJob(data.job_id);
     }
@@ -2879,7 +2889,7 @@ function App() {
       if (data.status === 'completed') {
         const ok = (data.results || []).filter(r => r.status === 'completed').length;
         const fail = (data.results || []).filter(r => r.status === 'failed').length;
-        setNotice(`Bulk restore done: ${ok} succeeded, ${fail} failed.`);
+        setNotice(t('Bulk restore done: {ok} succeeded, {fail} failed.', { ok, fail }));
         await listDaBackups();
         return;
       }
@@ -2889,11 +2899,11 @@ function App() {
 
   async function bulkDeleteDaBackups() {
     if (selectedDaBackups.length === 0) return;
-    if (!confirm(`Delete ${selectedDaBackups.length} selected backup file(s)?`)) return;
+    if (!confirm(t('Delete {count} selected backup file(s)?', { count: selectedDaBackups.length }))) return;
     for (const path of selectedDaBackups) {
-      await request('/maintenance/da-import/backups', { method: 'DELETE', body: JSON.stringify({ archive_path: path }) }, 'Deleting...');
+      await request('/maintenance/da-import/backups', { method: 'DELETE', body: JSON.stringify({ archive_path: path }) }, t('Deleting...'));
     }
-    setNotice(`Deleted ${selectedDaBackups.length} backup(s).`);
+    setNotice(t('Deleted {count} backup(s).', { count: selectedDaBackups.length }));
     setSelectedDaBackups([]);
     setDaScanResult(null);
     await listDaBackups();
@@ -2901,7 +2911,7 @@ function App() {
 
   async function openPhpMyAdmin(databaseId) {
     try {
-      setError(''); setLoading('Opening phpMyAdmin...');
+      setError(''); setLoading(t('Opening phpMyAdmin...'));
       const csrfToken = readCookie('snpanel_csrf');
       const headers = csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
       const res = await fetch(`${API}/databases/${databaseId}/phpmyadmin-sso`, {
@@ -2911,9 +2921,9 @@ function App() {
       });
       const data = await res.json().catch(() => ({}));
       if (handleAuthExpired(res.status, data.detail)) return;
-      if (!res.ok || !data.url) { setError(formatApiError(data.detail, 'Cannot open phpMyAdmin.')); return; }
+      if (!res.ok || !data.url) { setError(formatApiError(data.detail, t('Cannot open phpMyAdmin.'))); return; }
       window.open(data.url, '_blank', 'noopener,noreferrer');
-    } catch (err) { setError('Cannot open phpMyAdmin.'); }
+    } catch (err) { setError(t('Cannot open phpMyAdmin.')); }
     finally { setLoading(''); }
   }
 
@@ -2921,7 +2931,7 @@ function App() {
     try {
       setError(''); setLoading(t('Downloading the database...'));
       const res = await fetch(`${API}/databases/${databaseId}/download`, { credentials: 'include' });
-      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Download failed.')); return; }
+      if (!res.ok) { const data = await res.json().catch(() => ({})); if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Download failed.'))); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -2934,8 +2944,8 @@ function App() {
   }
 
   async function deleteBackup(file) {
-    if (!confirm(`Delete this backup?\n${file}`)) return;
-    const data = await request(`/maintenance/backups/${selectedWebsiteId}?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, 'Deleting backup...');
+    if (!confirm(t('Delete this backup?\n{file}', { file }))) return;
+    const data = await request(`/maintenance/backups/${selectedWebsiteId}?backup_file=${encodeURIComponent(file)}`, { method: 'DELETE' }, t('Deleting backup...'));
     if (data) await listBackups();
   }
 
@@ -2944,7 +2954,7 @@ function App() {
     const form = new FormData();
     form.append('file', file);
     try {
-      setError(''); setLoading('Uploading backup...');
+      setError(''); setLoading(t('Uploading backup...'));
       const csrfToken = readCookie('snpanel_csrf');
       const headers = csrfToken ? { 'X-CSRF-Token': csrfToken } : {};
       const res = await fetch(`${API}/maintenance/backups/${selectedWebsiteId}/upload`, {
@@ -2956,15 +2966,15 @@ function App() {
       const responseText = await res.text();
       let data;
       try { data = responseText ? JSON.parse(responseText) : {}; } catch { data = { detail: responseText || `HTTP ${res.status}` }; }
-      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, 'Upload failed.')); return; }
-      if (data.backup_file) { setNotice(`Uploaded backup: ${data.backup_file}`); await listBackups(); }
-    } catch (err) { setError('Upload backup failed.'); }
+      if (!res.ok) { if (handleAuthExpired(res.status, data.detail)) return; setError(formatApiError(data.detail, t('Upload failed.'))); return; }
+      if (data.backup_file) { setNotice(t('Uploaded backup: {file}', { file: data.backup_file })); await listBackups(); }
+    } catch (err) { setError(t('Upload backup failed.')); }
     finally { setLoading(''); }
   }
 
   async function checkService(name) {
     const data = await request('/services/action', { method: 'POST', body: JSON.stringify({ name, action: 'status' }) });
-    setServiceStates(prev => ({ ...prev, [name]: data || { stdout: '', stderr: error || 'Cannot check', returncode: 1 } }));
+    setServiceStates(prev => ({ ...prev, [name]: data || { stdout: '', stderr: error || t('Cannot check'), returncode: 1 } }));
     return data;
   }
 
@@ -2976,14 +2986,14 @@ function App() {
   }
 
   async function checkAllServices() {
-    setLoading('Checking services...');
+    setLoading(t('Checking services...'));
     const names = await loadServiceNames();
     for (const name of names) { await checkService(name); }
     setLoading('');
   }
 
   async function runServiceAction(name, action) {
-    await request('/services/action', { method: 'POST', body: JSON.stringify({ name, action }) }, `${action} ${name}...`);
+    await request('/services/action', { method: 'POST', body: JSON.stringify({ name, action }) }, t(ACTION_LABELS[action] || '{action} {name}...', { action, name }));
     await checkService(name);
   }
 
@@ -3020,7 +3030,7 @@ function App() {
   }
 
   async function loadPhpConfig(version = phpConfig.php_version) {
-    const data = await request(`/maintenance/php-config?php_version=${encodeURIComponent(version)}`, {}, 'Loading PHP config...');
+    const data = await request(`/maintenance/php-config?php_version=${encodeURIComponent(version)}`, {}, t('Loading PHP config...'));
     if (data) setPhpConfig(prev => ({ ...prev, ...data, php_version: version }));
   }
 
@@ -3028,24 +3038,24 @@ function App() {
     const data = await request('/maintenance/php-config', {
       method: 'POST',
       body: JSON.stringify({ ...phpConfig, max_execution_time: Number(phpConfig.max_execution_time), max_input_time: Number(phpConfig.max_input_time), max_input_vars: Number(phpConfig.max_input_vars) }),
-    }, 'Updating PHP config...');
-    if (data?.target) { setNotice(`Updated PHP config: ${data.target}`); await loadPhpConfig(phpConfig.php_version); }
+    }, t('Updating PHP config...'));
+    if (data?.target) { setNotice(t('Updated PHP config: {target}', { target: data.target })); await loadPhpConfig(phpConfig.php_version); }
   }
 
   async function restorePhpDefaults() {
-    if (!confirm(`Restore default PHP ${phpConfig.php_version} values?`)) return;
+    if (!confirm(t('Restore default PHP {version} values?', { version: phpConfig.php_version }))) return;
     const data = await request('/maintenance/php-config/defaults', {
       method: 'POST',
       body: JSON.stringify({ php_version: phpConfig.php_version }),
-    }, 'Restoring PHP defaults...');
+    }, t('Restoring PHP defaults...'));
     if (data?.values) {
       setPhpConfig(prev => ({ ...prev, ...data.values }));
-      setNotice(`Restored PHP ${phpConfig.php_version} defaults.`);
+      setNotice(t('Restored PHP {version} defaults.', { version: phpConfig.php_version }));
     }
   }
 
   async function loadPhpVersions() {
-    const data = await request('/maintenance/php-versions', {}, 'Loading PHP versions...');
+    const data = await request('/maintenance/php-versions', {}, t('Loading PHP versions...'));
     if (data) setPhpVersions({
       installed: sortPhpVersions(data.installed || []),
       supported: sortPhpVersions(data.supported || []),
@@ -3053,9 +3063,9 @@ function App() {
   }
 
   async function installPhpVersion(version) {
-    if (!confirm(`Install PHP ${version}? This will install php${version}-fpm via apt.`)) return;
-    const data = await request(`/maintenance/php-versions/${version}/install`, { method: 'POST' }, `Installing PHP ${version}...`);
-    if (data) { setNotice(`PHP ${version} installed successfully.`); await loadPhpVersions(); await loadServiceNames(); }
+    if (!confirm(t('Install PHP {version}? This will install php{version}-fpm via apt.', { version }))) return;
+    const data = await request(`/maintenance/php-versions/${version}/install`, { method: 'POST' }, t('Installing PHP {version}...', { version }));
+    if (data) { setNotice(t('PHP {version} installed successfully.', { version })); await loadPhpVersions(); await loadServiceNames(); }
   }
 
   async function loadFirewall() {
@@ -3225,7 +3235,7 @@ function App() {
   }
 
   async function loadWafRules() {
-    const data = await request('/waf/rules', {}, 'Loading WAF rules...');
+    const data = await request('/waf/rules', {}, t('Loading WAF rules...'));
     if (data) {
       setWafRules(data);
       const firstWebsiteId = selectedWafWebsiteId || selectedWebsiteId || websites[0]?.id || '';
@@ -3242,7 +3252,7 @@ function App() {
       setHttpFloodForm({ http_flood_enabled: false, ...HTTP_FLOOD_DEFAULTS });
       return;
     }
-    const data = await request(`/waf/websites/${websiteId}`, {}, showLoading ? 'Loading website WAF...' : '');
+    const data = await request(`/waf/websites/${websiteId}`, {}, showLoading ? t('Loading website WAF...') : '');
     if (data) {
       setSelectedWafWebsiteId(String(websiteId));
       setWafSiteConfig(data);
@@ -3262,10 +3272,10 @@ function App() {
     const data = await request(`/waf/websites/${selectedWafWebsiteId}/bots`, {
       method: 'PUT',
       body: JSON.stringify({ blocked_bots: siteBotText }),
-    }, 'Saving blocked bots...');
+    }, t('Saving blocked bots...'));
     if (data) {
       setSiteBotText((data.blocked_bots || []).join('\n'));
-      setNotice(data.message || 'Blocked bots saved.');
+      setNotice(data.message || t('Blocked bots saved.'));
       await loadBotBlocks();
     }
   }
@@ -3284,7 +3294,7 @@ function App() {
   }
 
   async function loadBotBlocks() {
-    const data = await request('/waf/bots', {}, 'Loading blocked bots...');
+    const data = await request('/waf/bots', {}, t('Loading blocked bots...'));
     if (data) {
       setBotBlocks(data);
       setGlobalBots(data.global_blocked_bots || []);
@@ -3295,12 +3305,12 @@ function App() {
     const data = await request('/waf/bots/global', {
       method: 'PUT',
       body: JSON.stringify({ blocked_bots: nextList.join('\n') }),
-    }, 'Saving global bad bots...');
+    }, t('Saving global bad bots...'));
     if (data) {
       setGlobalBots(data.global_blocked_bots || []);
       setNotice(data.failed?.length
-        ? `${data.message} Failed: ${data.failed.map(f => `${f.domain} (${f.error})`).join('; ')}`
-        : (data.message || 'Global bad bots saved.'));
+        ? `${serverText(data.message)} ${t('Failed: {list}', { list: data.failed.map(f => `${f.domain} (${serverText(f.error)})`).join('; ') })}`
+        : (data.message || t('Global bad bots saved.')));
       await loadBotBlocks();
     }
   }
@@ -3311,29 +3321,21 @@ function App() {
   }
 
   async function saveCrsMode(mode) {
-    if (mode === 'block' && !confirm(
-      'Switch OWASP CRS to blocking?\n\n'
-      + 'Every website with the WAF on will start refusing requests that score above the threshold. '
-      + 'Run detect mode first and read the logs, or a legitimate request somebody depends on may be the one it stops.'
-    )) return;
+    if (mode === 'block' && !confirm(t('Switch OWASP CRS to blocking?\n\nEvery website with the WAF on will start refusing requests that score above the threshold. Run detect mode first and read the logs, or a legitimate request somebody depends on may be the one it stops.'))) return;
     const data = await request('/waf/crs', {
       method: 'PUT',
       body: JSON.stringify({ mode }),
-    }, `Switching OWASP CRS to ${mode}...`);
+    }, t('Switching OWASP CRS to {mode}...', { mode }));
     if (data) await loadCrs();
   }
 
   async function toggleSiteCrs(row) {
     const turningOn = !row.crs_enabled;
-    if (turningOn && !confirm(
-      `Load OWASP CRS on ${row.domain}?\n\n`
-      + `This adds roughly ${crs?.rss_mb_per_site || 50} MB to nginx for this site. `
-      + 'Check the measured figure on this page afterwards rather than trusting the estimate.'
-    )) return;
+    if (turningOn && !confirm(t('Load OWASP CRS on {domain}?\n\nThis adds roughly {mb} MB to nginx for this site. Check the measured figure on this page afterwards rather than trusting the estimate.', { domain: row.domain, mb: crs?.rss_mb_per_site || 50 }))) return;
     const data = await request(`/waf/websites/${row.website_id}/crs`, {
       method: 'PUT',
       body: JSON.stringify({ enabled: turningOn }),
-    }, `${turningOn ? 'Enabling' : 'Disabling'} CRS on ${row.domain}...`);
+    }, turningOn ? t('Loading OWASP CRS on {domain}...', { domain: row.domain }) : t('Unloading OWASP CRS from {domain}...', { domain: row.domain }));
     if (data) {
       await loadCrs();
       // The site page reads its own copy of this, so refresh it when that is
@@ -3360,11 +3362,11 @@ function App() {
     const data = await request(`/waf/websites/${selectedWafWebsiteId}`, {
       method: 'PUT',
       body: JSON.stringify({ enabled_rule_ids: wafSiteConfig.enabled_rule_ids || [], custom_rules: wafCustomRules }),
-    }, 'Saving website WAF rules...');
+    }, t('Saving website WAF rules...'));
     if (data) {
       setWafSiteConfig(data);
       setWafCustomRules(data.custom_rules || '');
-      setNotice(data.message || 'Website WAF rules saved.');
+      setNotice(data.message || t('Website WAF rules saved.'));
       await refreshAll();
     }
   }
@@ -3375,9 +3377,9 @@ function App() {
     const data = await request(`/websites/${selectedWafWebsiteId}/http-flood`, {
       method: 'PATCH',
       body: JSON.stringify({ http_flood_enabled: !!httpFloodForm.http_flood_enabled, ...config }),
-    }, 'Saving HTTP Flood settings...');
+    }, t('Saving HTTP Flood settings...'));
     if (data) {
-      setNotice(`HTTP Flood settings saved for ${data.domain}.`);
+      setNotice(t('HTTP Flood settings saved for {domain}.', { domain: data.domain }));
       await refreshAll();
       await loadWebsiteWafConfig(selectedWafWebsiteId, false);
     }
@@ -3390,7 +3392,7 @@ function App() {
     params.set('limit', String(filters.limit || 50));
     params.set('lines', '5000');
     if (filters.query?.trim()) params.set('q', filters.query.trim());
-    const data = await request(`/waf/access-logs?${params.toString()}`, {}, showLoading ? 'Loading access logs...' : '');
+    const data = await request(`/waf/access-logs?${params.toString()}`, {}, showLoading ? t('Loading access logs...') : '');
     if (data) setWafAccessLogs(data);
   }
 
@@ -3409,13 +3411,13 @@ function App() {
   async function clearWafAccessLogs() {
     const selected = websites.find(site => String(site.id) === String(wafAccessLogFilters.websiteId));
     const label = selected?.domain || 'all websites';
-    if (!confirm(`Clear access logs for ${label}?`)) return;
+    if (!confirm(t('Clear access logs for {label}?', { label }))) return;
     const params = new URLSearchParams();
     if (wafAccessLogFilters.websiteId) params.set('website_id', wafAccessLogFilters.websiteId);
     const suffix = params.toString() ? `?${params.toString()}` : '';
-    const data = await request(`/waf/access-logs${suffix}`, { method: 'DELETE' }, 'Clearing access logs...');
+    const data = await request(`/waf/access-logs${suffix}`, { method: 'DELETE' }, t('Clearing access logs...'));
     if (data) {
-      setNotice(data.message || 'Access logs cleared.');
+      setNotice(data.message || t('Access logs cleared.'));
       await loadWafAccessLogs(wafAccessLogFilters, false);
     }
   }
@@ -3440,7 +3442,7 @@ function App() {
   }
 
   async function loadUpdates(force = false) {
-    const data = await request(`/updates/status${force ? '?refresh=true' : ''}`, {}, 'Loading update status...');
+    const data = await request(`/updates/status${force ? '?refresh=true' : ''}`, {}, t('Loading update status...'));
     if (data) setUpdatesStatus(data);
   }
 
@@ -3450,24 +3452,24 @@ function App() {
   }
 
   async function runOsUpdate() {
-    if (!confirm('Run apt-get update && apt-get upgrade now?')) return;
+    if (!confirm(t('Run apt-get update && apt-get upgrade now?'))) return;
     setOsUpdating(true);
-    const data = await request('/updates/os/run', { method: 'POST' }, 'Updating OS packages...');
+    const data = await request('/updates/os/run', { method: 'POST' }, t('Updating OS packages...'));
     setOsUpdating(false);
-    if (data) { setNotice((data.stdout || data.stderr || 'OS update completed.').trim()); if (showUpdateLog) await loadUpdates(); }
+    if (data) { setNotice((data.stdout || data.stderr || t('OS update completed.')).trim()); if (showUpdateLog) await loadUpdates(); }
   }
 
   async function saveOsAutoUpdate() {
-    const data = await request('/updates/os/auto', { method: 'POST', body: JSON.stringify(osAutoUpdate) }, 'Saving OS auto update...');
-    if (data) { setNotice((data.stdout || data.stderr || 'OS auto update saved.').trim()); if (showUpdateLog) await loadUpdates(); }
+    const data = await request('/updates/os/auto', { method: 'POST', body: JSON.stringify(osAutoUpdate) }, t('Saving OS auto update...'));
+    if (data) { setNotice((data.stdout || data.stderr || t('OS auto update saved.')).trim()); if (showUpdateLog) await loadUpdates(); }
   }
 
   async function runPanelUpdate() {
-    if (!confirm('Update SNPanel from GitHub now? The API may restart and this page will reload when done.')) return;
+    if (!confirm(t('Update SNPanel from GitHub now? The API may restart and this page will reload when done.'))) return;
     setPanelUpdating(true);
     setShowUpdateLog(true);
     setPanelUpdateLog([]);
-    const data = await request('/updates/panel/run', { method: 'POST' }, 'Updating SNPanel...');
+    const data = await request('/updates/panel/run', { method: 'POST' }, t('Updating SNPanel...'));
     if (!data) {
       setPanelUpdating(false);
       return;
@@ -3491,10 +3493,10 @@ function App() {
         }
         setPanelUpdating(false);
         if (st.last_update_status === 'completed' && Number(st.progress_percent) === 100) {
-          setNotice('Panel update completed. Reloading to apply the new version...');
+          setNotice(t('Panel update completed. Reloading to apply the new version...'));
           setTimeout(() => { window.location.reload(); }, 2000);
         } else if (st.last_update_status === 'failed') {
-          setNotice((st.progress_message || st.last_update_message || 'Panel update failed.').trim());
+          setNotice((st.progress_message || st.last_update_message || t('Panel update failed.')).trim());
         }
       }
     };
@@ -3732,7 +3734,7 @@ function App() {
     const errorMessage = formatApiError(error, '').trim();
     const noticeMessage = formatApiError(notice, '').trim();
     if (!errorMessage && !noticeMessage) return null;
-    return <div className="app-toast-stack" aria-label="Notifications">
+    return <div className="app-toast-stack" aria-label={t('Notifications')}>
       <NotificationToast type="error" message={errorMessage} onClose={() => setError('')} />
       <NotificationToast type="success" message={noticeMessage} onClose={() => setNotice('')} />
     </div>;
@@ -3777,9 +3779,9 @@ function App() {
         setSelectedFilePaths([]);
       }}
     >
-      <option value="">-- Select website or application --</option>
+      <option value="">{t('-- Select website or application --')}</option>
       {websites.map(site => <option key={`site-${site.id}`} value={site.id}>{site.domain}</option>)}
-      {siteApps.items.map(app => <option key={`app-${app.id}`} value={`app:${app.id}`}>App: {app.name}</option>)}
+      {siteApps.items.map(app => <option key={`app-${app.id}`} value={`app:${app.id}`}>{t('App: {name}', { name: app.name })}</option>)}
     </select>;
   }
 
@@ -3833,12 +3835,12 @@ function App() {
 
   function WebsiteSelect() {
     return <select value={selectedWebsiteId} onChange={e => setSelectedWebsiteId(e.target.value)}>
-      <option value="">-- Select website --</option>
+      <option value="">{t('-- Select website --')}</option>
       {websites.map(site => <option key={site.id} value={site.id}>{site.domain}</option>)}
     </select>;
   }
 
-  function EmptyState({ icon: Icon = AlertCircle, message = 'No data yet' }) {
+  function EmptyState({ icon: Icon = AlertCircle, message = t('No data yet') }) {
     return <div className="empty-state"><Icon size={40} /><p>{message}</p></div>;
   }
 
@@ -4444,7 +4446,7 @@ function App() {
   if (bootstrapping) {
     return <main className="login-page">
       <section className="login-card">
-        <div className="login-brand">{renderBrandMark('login-brand-mark')}<div><p className="eyebrow">{panelSettings.app_name || 'SNPanel'}</p><h1>Loading…</h1></div></div>
+        <div className="login-brand">{renderBrandMark('login-brand-mark')}<div><p className="eyebrow">{panelSettings.app_name || 'SNPanel'}</p><h1>{t('Loading…')}</h1></div></div>
       </section>
     </main>;
   }

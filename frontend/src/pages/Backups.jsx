@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, Check, Clock, Database, Download, Globe, Network, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
-import { msg, useT } from '../i18n/index.jsx';
+import { msg, serverText, useT } from '../i18n/index.jsx';
 import S3Destinations from '../components/S3Destinations.jsx';
 import './Backups.css';
 
@@ -398,7 +398,7 @@ export default function BackupsPage() {
       {daScanResult && <div className="da-scan-result">
         <h4>{t('Scan result: {name}', { name: daScanResult.filename })}</h4>
         {daScanResult.errors?.length > 0 && <div className="error-list">
-          {daScanResult.errors.map((err, i) => <p key={i} className="error-text">{err}</p>)}
+          {daScanResult.errors.map((err, i) => <p key={i} className="error-text">{serverText(err)}</p>)}
         </div>}
         {daScanResult.users?.map((user, i) => <div key={i} className="da-user-block">
           <p className="da-user-head"><Users size={13}/> <strong>{user.username}</strong>{user.email && <small>{user.email}</small>}</p>
@@ -443,7 +443,7 @@ export default function BackupsPage() {
           <p className="da-user-head"><strong>{item.username}</strong> <span className="badge ok">{t('{count} domain(s)', { count: item.imported_domains?.length || 0 })}</span> <span className="badge">{t('{count} database(s)', { count: item.databases?.length || 0 })}</span></p>
           {item.aliases?.length > 0 && <p className="hint">{t('Pointers: {list}', { list: item.aliases.join(', ') })}</p>}
           {item.ssl_enabled_domains?.length > 0 && <p className="hint">{t('SSL enabled: {list}', { list: item.ssl_enabled_domains.join(', ') })}</p>}
-          {item.warnings?.length > 0 && <p className="hint da-warn">{t('Warnings: {list}', { list: item.warnings.join('; ') })}</p>}
+          {item.warnings?.length > 0 && <p className="hint da-warn">{t('Warnings: {list}', { list: item.warnings.map(serverText).join('; ') })}</p>}
         </div>)}
         {daImportJob.result.credentials && <details className="da-creds-details">
           <summary>{t('Generated credentials (click to show)')}</summary>
@@ -467,7 +467,7 @@ export default function BackupsPage() {
             <summary>{t('Credentials')}</summary>
             <pre className="da-credentials">{item.result.credentials.join('\n')}</pre>
           </details>}
-          {item.error && <p className="error-text">{item.error}</p>}
+          {item.error && <p className="error-text">{serverText(item.error)}</p>}
         </div>)}
       </div>}
     </div>}

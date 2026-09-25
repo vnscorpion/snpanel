@@ -594,7 +594,13 @@ async fn run_malware_schedules(state: &AppState) -> String {
         && !crate::malware::maldet_installed()
     {
         for name in &due {
-            record_malware_run(name, "", "error", "Trình quét malware chưa được cài", now);
+            record_malware_run(
+                name,
+                "",
+                "error",
+                "The malware scanner is not installed",
+                now,
+            );
         }
         return "no scan engine".to_string();
     }
@@ -608,7 +614,7 @@ async fn run_malware_schedules(state: &AppState) -> String {
                     name,
                     &job_id,
                     "started",
-                    &format!("Đã bắt đầu ({name})"),
+                    &format!("Started ({name})"),
                     chrono::Utc::now(),
                 );
                 outcomes.push(format!("{name}: started"));

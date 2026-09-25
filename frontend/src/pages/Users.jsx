@@ -178,7 +178,7 @@ export default function UsersPage() {
           <button disabled={!!loading} onClick={loadPackages}><RefreshCw size={14}/> {t('Refresh')}</button>
         </div>
         <div className="user-create-card package-create-card">
-          <label><span>{t('Package name')}</span><input value={newPackage.name} onChange={e => setNewPackage(prev => ({ ...prev, name: e.target.value }))} placeholder="Starter" /></label>
+          <label><span>{t('Package name')}</span><input value={newPackage.name} onChange={e => setNewPackage(prev => ({ ...prev, name: e.target.value }))} placeholder={t('Starter')} /></label>
           <label><span>{t('Website limit')}</span><input type="number" min="0" max="1000" value={newPackage.website_limit} onChange={e => setNewPackage(prev => ({ ...prev, website_limit: e.target.value }))} /></label>
           <label><span>{t('Storage (MB)')}</span><input type="number" min="0" max="1048576" value={newPackage.storage_limit_mb} onChange={e => setNewPackage(prev => ({ ...prev, storage_limit_mb: e.target.value }))} /></label>
           <button disabled={!!loading || !newPackage.name.trim()} onClick={createPackage}><Plus size={14}/> {t('Create package')}</button>

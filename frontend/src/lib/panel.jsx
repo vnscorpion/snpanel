@@ -2,7 +2,7 @@
 // few small components the pages share. Moved here unchanged so the pages
 // can import them without importing App.jsx, which imports the pages.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { msg, useT } from '../i18n/index.jsx';
+import { msg, serverText, useT } from '../i18n/index.jsx';
 import { AlertCircle, Check, Moon, Sun, X } from 'lucide-react';
 
 export const API = import.meta.env.VITE_API_URL || '/api';
@@ -15,8 +15,8 @@ export const HTTP_FLOOD_DEFAULTS = {
 };
 export const PHP_VERSION_ORDER = ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'];
 export const NGINX_REWRITE_MODES = [
-  { value: 'none', label: 'None / static PHP' },
-  { value: 'front_controller', label: 'PHP front controller' },
+  { value: 'none', label: msg('None / static PHP') },
+  { value: 'front_controller', label: msg('PHP front controller') },
   { value: 'laravel', label: 'Laravel' },
   { value: 'codeigniter', label: 'CodeIgniter' },
   { value: 'seohburl', label: 'SEO HB URL' },
@@ -210,17 +210,17 @@ export const EMPTY_SITE_APP_DRAFT = {
   cpu_limit: '1',
   env: '',
 };
-export const SITE_APP_KIND_LABELS = { node: 'Node.js', docker: 'Container', compose: 'Compose' };
+export const SITE_APP_KIND_LABELS = { node: 'Node.js', docker: msg('Container'), compose: 'Compose' };
 export const SITE_APP_KINDS = [
-  ['node', 'Node.js', 'SNPanel installs dependencies and keeps the process running under systemd.'],
-  ['docker', 'Container', 'SNPanel pulls the image and runs it, published on loopback only.'],
-  ['compose', 'Docker Compose', 'Paste your project\u2019s docker-compose.yml. SNPanel checks it and runs a file it generates from what it accepted.'],
+  ['node', 'Node.js', msg('SNPanel installs dependencies and keeps the process running under systemd.')],
+  ['docker', msg('Container'), msg('SNPanel pulls the image and runs it, published on loopback only.')],
+  ['compose', 'Docker Compose', msg('Paste your project\u2019s docker-compose.yml. SNPanel checks it and runs a file it generates from what it accepted.')],
 ];
 export const WEBSITE_MODES = [
   ['wordpress', 'WordPress'],
   ['php', 'PHP'],
-  ['static', 'Static'],
-  ['application', 'Application'],
+  ['static', msg('Static')],
+  ['application', msg('Application')],
 ];
 
 export function isProxiedAppType(appType) {
@@ -276,9 +276,9 @@ export function accessLogBadgeClass(verdict = '') {
 }
 
 export function accessLogVerdictLabel(verdict = '') {
-  if (verdict === 'allow') return 'Allow';
-  if (verdict === 'error') return 'Error';
-  return 'Block';
+  if (verdict === 'allow') return msg('Allow');
+  if (verdict === 'error') return msg('Error');
+  return msg('Block');
 }
 
 export function accessLogCountryLabel(item = {}) {
@@ -336,18 +336,18 @@ export function vnScheduleToUtc(weekday, hour) {
 }
 
 export const PERMISSION_CLASSES = [
-  { key: 'owner', label: 'Owner' },
-  { key: 'group', label: 'Group' },
-  { key: 'other', label: 'Public' },
+  { key: 'owner', label: msg('Owner') },
+  { key: 'group', label: msg('Group') },
+  { key: 'other', label: msg('Public') },
 ];
 export const PERMISSION_BITS = [
-  { key: 'read', label: 'Read', value: 4 },
-  { key: 'write', label: 'Write', value: 2 },
-  { key: 'execute', label: 'Execute', value: 1 },
+  { key: 'read', label: msg('Read'), value: 4 },
+  { key: 'write', label: msg('Write'), value: 2 },
+  { key: 'execute', label: msg('Execute'), value: 1 },
 ];
 export const PERMISSION_PRESETS = {
-  file: [['644', 'Default'], ['755', 'Executable'], ['600', 'Private'], ['444', 'Read-only']],
-  dir: [['755', 'Default'], ['750', 'Group read'], ['775', 'Group write'], ['700', 'Private']],
+  file: [['644', msg('Default')], ['755', msg('Executable')], ['600', msg('Private')], ['444', msg('Read-only')]],
+  dir: [['755', msg('Default')], ['750', msg('Group read')], ['775', msg('Group write')], ['700', msg('Private')]],
 };
 
 export function normalizeOctalMode(mode) {
@@ -377,9 +377,9 @@ export function permissionSymbols(mode) {
     .join('');
 }
 
-export function formatApiError(detail, fallback = 'Request failed.') {
-  if (detail === null || detail === undefined || detail === '') return fallback;
-  if (typeof detail === 'string') return detail.replace(/^Value error,\s*/i, '') || fallback;
+export function formatApiError(detail, fallback = msg('Request failed.')) {
+  if (detail === null || detail === undefined || detail === '') return serverText(fallback);
+  if (typeof detail === 'string') return serverText(detail.replace(/^Value error,\s*/i, '') || fallback);
   if (typeof detail === 'number' || typeof detail === 'boolean') return String(detail);
 
   if (Array.isArray(detail)) {
@@ -399,7 +399,7 @@ export function formatApiError(detail, fallback = 'Request failed.') {
 
 export function formatApiErrorItem(item) {
   if (!item || typeof item !== 'object') return formatApiError(item, '');
-  const message = formatApiError(item.msg ?? item.message ?? item.detail, 'Invalid value');
+  const message = formatApiError(item.msg ?? item.message ?? item.detail, msg('Invalid value'));
   const loc = Array.isArray(item.loc)
     ? item.loc.filter(part => part !== 'body' && part !== 'query' && part !== 'path').join('.')
     : '';
@@ -407,16 +407,17 @@ export function formatApiErrorItem(item) {
 }
 
 export function NotificationToast({ type, message, onClose }) {
+  const t = useT();
   if (!message) return null;
   const isError = type === 'error';
   const Icon = isError ? AlertCircle : Check;
   return <div className={`app-toast ${isError ? 'app-toast-error' : 'app-toast-success'}`} role={isError ? 'alert' : 'status'} aria-live={isError ? 'assertive' : 'polite'}>
     <Icon className="app-toast-icon" size={18}/>
     <div className="app-toast-content">
-      <strong>{isError ? 'Action failed' : 'Completed'}</strong>
+      <strong>{isError ? t('Action failed') : t('Completed')}</strong>
       <span>{message}</span>
     </div>
-    <button className="app-toast-close" onClick={onClose} aria-label="Dismiss notification" title="Dismiss notification"><X size={16}/></button>
+    <button className="app-toast-close" onClick={onClose} aria-label={t('Dismiss notification')} title={t('Dismiss notification')}><X size={16}/></button>
   </div>;
 }
 

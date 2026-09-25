@@ -10,8 +10,13 @@
 // the middle - the whole sentence is translated once, instead of being cut
 // into fragments that each language would have to put back in the same
 // order. Such a call returns a fragment instead of a string.
+//
+// The server answers in English too. serverText() shows its messages in the
+// viewer's language through vi-server.js, which only a viewer reading
+// Vietnamese downloads - see server.js.
 import { createContext, Fragment, createElement, isValidElement, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import vi from './vi.js';
+import { compile, translateMessage } from './server.js';
 
 export const LOCALES = [
   { code: 'en', label: 'English', short: 'EN' },
@@ -19,6 +24,7 @@ export const LOCALES = [
 ];
 
 const CATALOGUES = { vi };
+const SERVER_CATALOGUES = { vi: () => import('./vi-server.js') };
 const STORAGE_KEY = 'snpanel-locale';
 
 function initialLocale() {
@@ -60,6 +66,34 @@ export function translate(locale, text, params) {
 /// scripts/i18n-check.mjs finds the string through this.
 export const msg = (text) => text;
 
+// The language on screen, for code outside React - formatApiError() - and
+// the server catalogues loaded so far, compiled.
+let activeLocale = 'en';
+const serverCatalogues = {};
+const serverLoads = {};
+
+function loadServerCatalogue(locale) {
+  if (!SERVER_CATALOGUES[locale]) return Promise.resolve(null);
+  if (!serverLoads[locale]) {
+    serverLoads[locale] = SERVER_CATALOGUES[locale]()
+      .then((m) => { serverCatalogues[locale] = compile(m.default); return serverCatalogues[locale]; })
+      .catch(() => { delete serverLoads[locale]; return null; });
+  }
+  return serverLoads[locale];
+}
+
+/// A message from the server in the viewer's language. The English as it
+/// came when nothing matches, or while the catalogue is still loading - the
+/// screen shows it again in Vietnamese once it has arrived.
+export function serverText(text) {
+  if (typeof text !== 'string' || !text || activeLocale === 'en') return text;
+  const own = CATALOGUES[activeLocale]?.[text];
+  if (own !== undefined) return own;
+  const compiled = serverCatalogues[activeLocale];
+  if (!compiled) { loadServerCatalogue(activeLocale); return text; }
+  return translateMessage(compiled, text);
+}
+
 const LocaleContext = createContext({
   locale: 'en',
   setLocale: () => {},
@@ -68,6 +102,9 @@ const LocaleContext = createContext({
 
 export function LocaleProvider({ children }) {
   const [locale, setLocaleState] = useState(initialLocale);
+  const [serverReady, setServerReady] = useState(() => !SERVER_CATALOGUES[locale] || !!serverCatalogues[locale]);
+  // Set while rendering, so the children rendering after it read the same.
+  activeLocale = locale;
 
   const setLocale = useCallback((next) => {
     setLocaleState(next);
@@ -75,9 +112,18 @@ export function LocaleProvider({ children }) {
   }, []);
 
   useEffect(() => { document.documentElement.lang = locale; }, [locale]);
+  useEffect(() => {
+    if (!SERVER_CATALOGUES[locale] || serverCatalogues[locale]) return;
+    let live = true;
+    setServerReady(false);
+    loadServerCatalogue(locale).then(() => { if (live) setServerReady(true); });
+    return () => { live = false; };
+  }, [locale]);
 
   const t = useCallback((text, params) => translate(locale, text, params), [locale]);
-  const value = useMemo(() => ({ locale, setLocale, t }), [locale, setLocale, t]);
+  // serverReady is in the value so that everything reading the context
+  // renders again when the server catalogue arrives; t keeps its identity.
+  const value = useMemo(() => ({ locale, setLocale, t, serverReady }), [locale, setLocale, t, serverReady]);
   return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;
 }
 

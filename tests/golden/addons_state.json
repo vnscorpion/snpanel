@@ -9,15 +9,15 @@
      "slug": "application",
      "name": "Application",
      "version": "1.0.0",
-     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "summary": "Runs Node.js apps, containers and Docker Compose projects, served on a domain through Nginx.",
      "details": [
-      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+      "Installs Docker and Node.js versions when they are needed; they are not part of the default install.",
+      "Each application gets its own internal port and RAM/CPU limits, and runs as the customer's user.",
+      "A website set to Application mode has Nginx point at the installed application."
      ],
      "notes": [
-      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+      "Backups do not include application data yet (the apps folder and named volumes).",
+      "Docker images and volumes do not count toward the customer's disk quota yet."
      ],
      "keeps_data_on_uninstall": true,
      "installed": true,
@@ -35,15 +35,15 @@
      "slug": "application",
      "name": "Application",
      "version": "1.0.0",
-     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "summary": "Runs Node.js apps, containers and Docker Compose projects, served on a domain through Nginx.",
      "details": [
-      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+      "Installs Docker and Node.js versions when they are needed; they are not part of the default install.",
+      "Each application gets its own internal port and RAM/CPU limits, and runs as the customer's user.",
+      "A website set to Application mode has Nginx point at the installed application."
      ],
      "notes": [
-      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+      "Backups do not include application data yet (the apps folder and named volumes).",
+      "Docker images and volumes do not count toward the customer's disk quota yet."
      ],
      "keeps_data_on_uninstall": true,
      "installed": false,
@@ -61,15 +61,15 @@
      "slug": "application",
      "name": "Application",
      "version": "1.0.0",
-     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "summary": "Runs Node.js apps, containers and Docker Compose projects, served on a domain through Nginx.",
      "details": [
-      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+      "Installs Docker and Node.js versions when they are needed; they are not part of the default install.",
+      "Each application gets its own internal port and RAM/CPU limits, and runs as the customer's user.",
+      "A website set to Application mode has Nginx point at the installed application."
      ],
      "notes": [
-      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+      "Backups do not include application data yet (the apps folder and named volumes).",
+      "Docker images and volumes do not count toward the customer's disk quota yet."
      ],
      "keeps_data_on_uninstall": true,
      "installed": true,
@@ -87,15 +87,15 @@
      "slug": "application",
      "name": "Application",
      "version": "1.0.0",
-     "summary": "Chạy ứng dụng Node.js, container và Docker Compose, đưa ra domain qua Nginx.",
+     "summary": "Runs Node.js apps, containers and Docker Compose projects, served on a domain through Nginx.",
      "details": [
-      "Cài Docker và các bản Node.js khi cần, không nằm trong bản cài mặc định.",
-      "Mỗi ứng dụng có cổng nội bộ riêng, giới hạn RAM/CPU và chạy dưới user của khách.",
-      "Website chọn mode Application để Nginx trỏ vào ứng dụng đã cài."
+      "Installs Docker and Node.js versions when they are needed; they are not part of the default install.",
+      "Each application gets its own internal port and RAM/CPU limits, and runs as the customer's user.",
+      "A website set to Application mode has Nginx point at the installed application."
      ],
      "notes": [
-      "Backup hiện chưa bao gồm dữ liệu ứng dụng (thư mục apps và named volume).",
-      "Dung lượng image và volume Docker chưa được tính vào quota đĩa của khách."
+      "Backups do not include application data yet (the apps folder and named volumes).",
+      "Docker images and volumes do not count toward the customer's disk quota yet."
      ],
      "keeps_data_on_uninstall": true,
      "installed": false,

@@ -742,7 +742,10 @@ whole plans.
 The reason strings are compared byte for byte. They are what an
 administrator reads before pressing the button, so a port that reworded
 them would change the product, and a corpus is the only way to be sure a
-transcription of fourteen Vietnamese sentences is exact.
+transcription of fourteen Vietnamese sentences is exact. Since the panel made
+English its language the fourteen are English, and the corpus was rewritten
+through the same pairs as the code, so it still holds them byte for byte; the
+Python's Vietnamese is what `vi-server.js` shows for them.
 
 Three behaviours that a reading of the code would get wrong, and the corpus
 pins each:
@@ -1199,6 +1202,71 @@ and on. The official MCP inspector CLI lists the tools and calls one. The
 accessibility snapshots of every page differ only by the new menu item and
 the Addons page's new card. Not tried: a real assistant over the Internet,
 which needs the panel on a certificate the assistant trusts.
+
+### English and Vietnamese, the server's messages too (past the Python)
+
+English is the panel's language and Vietnamese a translation of it, in the
+server's messages as much as on the pages.
+
+- Pages: every string goes through `t()` or, in a table a component renders,
+  `msg()` - 1,395 of them, gettext-style with the English as the key and
+  `{placeholders}` for values and inline elements, so a sentence with a link
+  or a `<code>` in it is translated whole. A converter did most of it from
+  the syntax tree; the sentences it refused as fragments were joined by hand.
+  `data-label`, which heads a table cell on a phone, is text too.
+- The server answers in English: it is what the CLI, the MCP tools and
+  anyone's scripts read. `frontend/scripts/server-messages.mjs` collects its
+  message templates from the Rust sources - a small tokenizer that knows
+  which call a string sits in, so logs, assertions, SQL and commands stay
+  out and a format string's `{}` become `{0}`, `{1}` - 1,283 of them, and
+  `frontend/src/i18n/vi-server.js` translates each. Matching a message
+  against the templates recovers its values; a value that is itself a
+  message is translated the same way, and `key: message` is too. The
+  catalogue is its own 35 KB chunk, loaded only for a viewer reading
+  Vietnamese. It is applied where server text reaches the screen:
+  `formatApiError`, which every toast and error passes through, and the
+  places a page shows it inline - compose issues, an application's last
+  error, file and backup jobs, the malware status and memory warning, IPv6,
+  the release check, WAF rule names and access-log reasons, the terminal.
+- `npm run i18n:check`, in CI: a translation for text the code no longer
+  has, or with different placeholders, is an error, on either catalogue;
+  and every server template, filled with marker values, is run through the
+  matcher the panel runs and has to come back as its own Vietnamese - so a
+  template that would catch another's messages fails the build. An
+  untranslated string is a count, not an error: it shows in English.
+- About 125 of the server's messages were Vietnamese only, as the Python
+  wrote them: the compose checks, the malware status lines, schedule errors
+  and memory warning, the PHP tuner's fourteen reasons, IPv6 and the panel
+  certificate, the Application addon's catalogue, the weekday names. They
+  are English now, and their Vietnamese in `vi-server.js` is the original
+  text, so a Vietnamese screen reads as it did. The five corpora that held
+  them - `addons_state`, `compose`, `malware_ops`, `malware_schedule`,
+  `php_tune_plan` - were rewritten through the same pairs, values untouched.
+- Messages that put a word into a sentence are whole sentences now, so
+  each can be translated: "OPcache PHP 8.4: bật", the malware scan's kind,
+  the extension that blocks JIT, "Suspended user" and moving or copying a
+  site's root - which had read "Cannot copying website root".
+- Stays English: command and terminal output, logs, the status dumps shown
+  as they are, and what the MCP tools say, which an assistant reads.
+- Found on the way: the new-website form sent `StrongPass123!` as the
+  WordPress administrator's password when the field was left blank - the
+  same, published password on every such site. A blank field now gets a
+  random 20-character one, shown once in the notice as before.
+
+Tests: `npm run i18n:check` - 1,395 page strings and 1,283 server templates,
+all translated, each template back through the matcher. The five corpora and
+every Rust test in the workspace, 1,743 of them, pass with the English; one
+more corpus, `file_transfer`, now holds "Cannot copy website root" beside the
+Python's words. `tools/ui-audit/server-messages.mjs` on the Debian 13 box:
+the Addons page reads the new English, and after the switch the Python's own
+Vietnamese word for word, the catalogue downloaded once; a real refusal from
+the server - a 422 list with its field - is a toast in the language on
+screen, both ways; the malware and IPv6 lines are Vietnamese; nothing
+throws. In English the accessibility snapshots of every page differ from the
+last ones only where the server's Vietnamese is English now - the Addons
+card, the malware status line, the IPv6 line. In Vietnamese a scan of them
+for English prose finds technical terms and brand names only - Node.js,
+Docker Compose, OWASP Core Rule Set, SQL injection, build cache.
 
 ### The billing system's half of `provisioning`
 
@@ -2563,7 +2631,7 @@ was that **reading one of those jobs is a write**, because every read passes
 each job through `_finalize_stale_malware_job`. Both have since landed.
 
 The one divergence the compose importer carries is written down rather than
-hidden: a file that fails to parse is refused with `YAML không hợp lệ:`
+hidden: a file that fails to parse is refused with `Invalid YAML:` (the Python's `YAML không hợp lệ:`)
 followed by this reader's own account of what went wrong, where the Python
 prints libyaml's. The prefix, the place and the refusal are the same; the
 sentence after the colon is not reproducible without PyYAML, and the test

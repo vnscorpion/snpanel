@@ -59,6 +59,8 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
   assistant with a token of the account it acts for (read-only unless made to
   allow actions), every action in the audit log
 - Google Authenticator compatible 2FA
+- English and Vietnamese, switched from the header - the pages and the server's
+  messages alike; English is the source, Vietnamese its translation
 
 ## Tech stack
 

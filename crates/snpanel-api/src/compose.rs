@@ -45,32 +45,35 @@ pub const ALLOWED_SERVICE_KEYS: &[&str] = &[
 /// Refused with a specific explanation rather than the generic message,
 /// because these are the ones people actually reach for.
 pub const EXPLAINED_SERVICE_KEYS: &[(&str, &str)] = &[
-    ("privileged", "chạy container ở chế độ privileged"),
+    ("privileged", "runs the container in privileged mode"),
     (
         "network_mode",
-        "đặt network_mode (host network bỏ qua chốt firewall)",
+        "sets network_mode (host networking bypasses the firewall)",
     ),
-    ("cap_add", "thêm capability"),
-    ("devices", "gắn thiết bị của máy chủ"),
-    ("pid", "dùng chung PID namespace với máy chủ"),
-    ("ipc", "dùng chung IPC namespace"),
-    ("userns_mode", "đổi user namespace"),
-    ("security_opt", "đổi tuỳ chọn bảo mật"),
-    ("sysctls", "đặt sysctl"),
-    ("build", "build image tại chỗ; panel chỉ chạy image có sẵn"),
-    ("extra_hosts", "ghi đè phân giải tên máy"),
-    ("volumes_from", "mượn volume của container khác"),
-    ("cgroup_parent", "đổi cgroup cha"),
-    ("group_add", "thêm group phụ"),
+    ("cap_add", "adds capabilities"),
+    ("devices", "passes the server's devices through"),
+    ("pid", "shares the server's PID namespace"),
+    ("ipc", "shares an IPC namespace"),
+    ("userns_mode", "changes the user namespace"),
+    ("security_opt", "changes security options"),
+    ("sysctls", "sets sysctls"),
+    (
+        "build",
+        "builds an image in place; the panel only runs existing images",
+    ),
+    ("extra_hosts", "overrides host name resolution"),
+    ("volumes_from", "borrows another container's volumes"),
+    ("cgroup_parent", "changes the parent cgroup"),
+    ("group_add", "adds supplementary groups"),
     (
         "env_file",
-        "đọc biến môi trường từ file; dán thẳng vào phần Environment",
+        "reads environment variables from a file; paste them into Environment instead",
     ),
     (
         "networks",
-        "tự khai network; panel tạo network riêng cho ứng dụng",
+        "declares its own networks; the panel makes one network per application",
     ),
-    ("deploy", "khai báo deploy của swarm"),
+    ("deploy", "declares a swarm deployment"),
 ];
 
 /// An application behind the panel's proxy never sees its own public address:
@@ -82,7 +85,7 @@ pub const PLACEHOLDERS: &[&str] = &["SNPANEL_URL", "SNPANEL_DOMAIN"];
 /// What a refused file is reported behind. Only the prefix is the panel's;
 /// what follows is the reader's own account of what went wrong, and PyYAML's
 /// wording for it was never something a second reader could reproduce.
-pub const PARSE_FAILED: &str = "YAML không hợp lệ: ";
+pub const PARSE_FAILED: &str = "Invalid YAML: ";
 
 pub const MAX_SERVICES: usize = 8;
 pub const MAX_SOURCE_BYTES: usize = 64 * 1024;
@@ -307,7 +310,7 @@ fn parse_environment(
                     // us is the panel's own process. Never pass that through.
                     issues.push(Issue::new(
                         service,
-                        format!("biến môi trường {} không có giá trị", clip(&text, 40)),
+                        format!("environment variable {} has no value", clip(&text, 40)),
                     ));
                     continue;
                 };
@@ -317,7 +320,7 @@ fn parse_environment(
         _ => {
             issues.push(Issue::new(
                 service,
-                "environment phải là danh sách hoặc mapping",
+                "environment must be a list or a mapping",
             ));
             return entries;
         }
@@ -328,7 +331,7 @@ fn parse_environment(
         if !env_key_ok(&name) {
             issues.push(Issue::new(
                 service,
-                format!("tên biến môi trường không hợp lệ: {}", clip(&name, 40)),
+                format!("invalid environment variable name: {}", clip(&name, 40)),
             ));
             continue;
         }
@@ -339,7 +342,7 @@ fn parse_environment(
         if text.contains(['\r', '\n', '\0']) {
             issues.push(Issue::new(
                 service,
-                format!("giá trị của {name} chứa xuống dòng"),
+                format!("the value of {name} contains a line break"),
             ));
             continue;
         }
@@ -387,12 +390,12 @@ fn parse_port(raw: &Value, service: &str, issues: &mut Vec<Issue>) -> Option<i12
     let Some(port) = python_int(&target) else {
         issues.push(Issue::new(
             service,
-            format!("cổng không đọc được: {}", clip(&raw.python_str(), 40)),
+            format!("unreadable port: {}", clip(&raw.python_str(), 40)),
         ));
         return None;
     };
     if !(1..=65535).contains(&port) {
-        issues.push(Issue::new(service, format!("cổng ngoài phạm vi: {port}")));
+        issues.push(Issue::new(service, format!("port out of range: {port}")));
         return None;
     }
     Some(port)
@@ -414,14 +417,17 @@ fn parse_volume(
         let target = raw.get("target").map(Value::python_str).unwrap_or_default();
         let read_only = raw.get("read_only").map(Value::truthy).unwrap_or(false);
         if source.is_empty() || target.is_empty() {
-            issues.push(Issue::new(service, "volume thiếu source hoặc target"));
+            issues.push(Issue::new(
+                service,
+                "volume is missing a source or a target",
+            ));
             return None;
         }
         let spec = format!("{source}:{target}{}", if read_only { ":ro" } else { "" });
         if kind != "bind" && kind != "volume" {
             issues.push(Issue::new(
                 service,
-                format!("loại volume không hỗ trợ: {kind}"),
+                format!("unsupported volume type: {kind}"),
             ));
             return None;
         }
@@ -433,7 +439,10 @@ fn parse_volume(
     if parts.len() < 2 {
         issues.push(Issue::new(
             service,
-            format!("volume phải có dạng nguồn:đích — {}", clip(&text, 50)),
+            format!(
+                "a volume must be written source:target — {}",
+                clip(&text, 50)
+            ),
         ));
         return None;
     }
@@ -446,7 +455,7 @@ fn parse_volume(
         issues.push(Issue::new(
             service,
             format!(
-                "đích của volume phải là đường dẫn tuyệt đối — {}",
+                "a volume's target must be an absolute path — {}",
                 clip(&text, 50)
             ),
         ));
@@ -456,8 +465,8 @@ fn parse_volume(
         issues.push(Issue::new(
             service,
             format!(
-                "mount đường dẫn máy chủ không được phép — {}; \
-hãy dùng đường dẫn trong thư mục ứng dụng (./data) hoặc volume có tên",
+                "mounting a server path is not allowed — {}; \
+use a path inside the application folder (./data) or a named volume",
                 clip(&text, 50)
             ),
         ));
@@ -472,7 +481,10 @@ hãy dùng đường dẫn trong thư mục ứng dụng (./data) hoặc volume 
         if pieces.contains(&"..") {
             issues.push(Issue::new(
                 service,
-                format!("volume trỏ ra ngoài thư mục ứng dụng — {}", clip(&text, 50)),
+                format!(
+                    "the volume points outside the application folder — {}",
+                    clip(&text, 50)
+                ),
             ));
             return None;
         }
@@ -489,7 +501,7 @@ hãy dùng đường dẫn trong thư mục ứng dụng (./data) hoặc volume 
     if !volume_name_ok(source) {
         issues.push(Issue::new(
             service,
-            format!("tên volume không hợp lệ: {}", clip(source, 40)),
+            format!("invalid volume name: {}", clip(source, 40)),
         ));
         return None;
     }
@@ -888,12 +900,12 @@ fn parse_service(
     if !service_name_ok(name) {
         issues.push(Issue::new(
             name,
-            "tên service chỉ được dùng chữ thường, số, gạch ngang và gạch dưới",
+            "a service name may only use lowercase letters, digits, hyphens and underscores",
         ));
         return None;
     }
     let Some(entries) = raw.as_map() else {
-        issues.push(Issue::new(name, "service phải là một mapping"));
+        issues.push(Issue::new(name, "a service must be a mapping"));
         return None;
     };
 
@@ -907,7 +919,7 @@ fn parse_service(
             .find(|(known, _)| *known == key)
         {
             Some((_, reason)) => issues.push(Issue::new(name, format!("{key}: {reason}"))),
-            None => issues.push(Issue::new(name, format!("khoá không được hỗ trợ: {key}"))),
+            None => issues.push(Issue::new(name, format!("unsupported key: {key}"))),
         }
     }
 
@@ -920,7 +932,7 @@ fn parse_service(
     };
     let image = snpanel_core::pyunicode::trim(&image_text).to_string();
     if image.is_empty() {
-        issues.push(Issue::new(name, "thiếu image"));
+        issues.push(Issue::new(name, "image is missing"));
         return None;
     }
     let image = match crate::site_apps::validate_image(&image, enforce_registry) {
@@ -987,11 +999,11 @@ fn parse_service(
         if !user.is_null() {
             let text = snpanel_core::pyunicode::trim(&user.python_str()).to_string();
             if matches!(text.as_str(), "root" | "0" | "0:0") || text.starts_with("0:") {
-                issues.push(Issue::new(name, "không cho phép chạy service bằng root"));
+                issues.push(Issue::new(name, "services may not run as root"));
             } else if !user_value_ok(&text) {
                 issues.push(Issue::new(
                     name,
-                    format!("giá trị user không hợp lệ: {}", clip(&text, 30)),
+                    format!("invalid user value: {}", clip(&text, 30)),
                 ));
             } else {
                 service.user = Some(text);
@@ -1014,11 +1026,12 @@ pub fn analyse(
     let mut plan = Plan::default();
     if snpanel_core::pyunicode::trim(source).is_empty() {
         plan.issues
-            .push(Issue::new("", "chưa có nội dung docker-compose"));
+            .push(Issue::new("", "the docker-compose content is empty"));
         return plan;
     }
     if source.len() > MAX_SOURCE_BYTES {
-        plan.issues.push(Issue::new("", "file compose quá lớn"));
+        plan.issues
+            .push(Issue::new("", "the compose file is too large"));
         return plan;
     }
     let document = match crate::yaml::parse(source) {
@@ -1038,7 +1051,7 @@ pub fn analyse(
     };
     if document.as_map().is_none() {
         plan.issues
-            .push(Issue::new("", "nội dung phải là một mapping YAML"));
+            .push(Issue::new("", "the content must be a YAML mapping"));
         return plan;
     }
 
@@ -1050,15 +1063,15 @@ pub fn analyse(
             plan.issues.push(Issue::new(
                 "",
                 format!(
-                    "${{{name}}} chỉ có khi ứng dụng đã gắn với một website; \
-hãy trỏ một website vào ứng dụng này trước"
+                    "${{{name}}} is only set once the application is attached to a website; \
+point a website at this application first"
                 ),
             ));
         } else {
             plan.issues.push(Issue::new(
                 "",
                 format!(
-                    "thiếu biến {name} — hãy khai {name}=... trong ô .env{}",
+                    "missing variable {name} — declare {name}=... in the .env box{}",
                     if note.is_empty() {
                         String::new()
                     } else {
@@ -1086,7 +1099,7 @@ hãy trỏ một website vào ứng dụng này trước"
                 .push(Issue::new("", format!("{name}: {reason}"))),
             None => plan
                 .issues
-                .push(Issue::new("", format!("khoá không được hỗ trợ: {name}"))),
+                .push(Issue::new("", format!("unsupported key: {name}"))),
         }
     }
 
@@ -1094,15 +1107,14 @@ hãy trỏ một website vào ứng dụng này trước"
     let service_entries = match raw_services.as_map() {
         Some(entries) if !entries.is_empty() => entries.to_vec(),
         _ => {
-            plan.issues
-                .push(Issue::new("", "không tìm thấy service nào"));
+            plan.issues.push(Issue::new("", "no services found"));
             return plan;
         }
     };
     if service_entries.len() > MAX_SERVICES {
         plan.issues.push(Issue::new(
             "",
-            format!("tối đa {MAX_SERVICES} service cho một ứng dụng"),
+            format!("at most {MAX_SERVICES} services per application"),
         ));
         return plan;
     }
@@ -1127,7 +1139,7 @@ hãy trỏ một website vào ứng dụng này trước"
                 if !volume_name_ok(&name) {
                     plan.issues.push(Issue::new(
                         "",
-                        format!("tên volume không hợp lệ: {}", clip(&name, 40)),
+                        format!("invalid volume name: {}", clip(&name, 40)),
                     ));
                     continue;
                 }
@@ -1139,7 +1151,7 @@ hãy trỏ một website vào ứng dụng này trước"
                     // `driver_opts` with `o=bind` is a host mount in disguise.
                     plan.issues.push(Issue::new(
                         "",
-                        format!("volume {name}: driver_opts không được phép"),
+                        format!("volume {name}: driver_opts is not allowed"),
                     ));
                     continue;
                 }
@@ -1184,7 +1196,7 @@ fn pick_web_port(plan: &mut Plan, requested: Option<i128>) {
             plan.issues.push(Issue::new(
                 &name,
                 format!(
-                    "service này không khai cổng {requested}; đang khai: {}",
+                    "this service does not declare port {requested}; it declares: {}",
                     declared.join(", ")
                 ),
             ));
@@ -1201,7 +1213,7 @@ fn pick_web_port(plan: &mut Plan, requested: Option<i128>) {
         .collect();
     if !others.is_empty() {
         let note = format!(
-            "{} khai {} cổng; domain vào cổng {}, còn {} chỉ dùng nội bộ giữa các container.",
+            "{} declares {} ports; the domain goes to port {}, and {} stay internal between the containers.",
             service.name,
             service.container_ports.len(),
             service
@@ -1221,7 +1233,7 @@ fn pick_web_port(plan: &mut Plan, requested: Option<i128>) {
                 .map(|port| port.to_string())
                 .collect();
             extra.push(format!(
-                "{} khai cổng {} — chỉ dùng nội bộ, không ra ngoài.",
+                "{} declares port {} — internal only, not published.",
                 other.name,
                 ports.join(", ")
             ));
@@ -1238,8 +1250,10 @@ fn pick_web_service(plan: &mut Plan, requested: &str) -> String {
         .collect();
     let chosen = if !requested.is_empty() {
         if !names.iter().any(|name| name == requested) {
-            plan.issues
-                .push(Issue::new("", format!("không có service tên {requested}")));
+            plan.issues.push(Issue::new(
+                "",
+                format!("there is no service named {requested}"),
+            ));
             return String::new();
         }
         requested.to_string()
@@ -1254,13 +1268,13 @@ fn pick_web_service(plan: &mut Plan, requested: &str) -> String {
         } else if !with_ports.is_empty() {
             plan.issues.push(Issue::new(
                 "",
-                "nhiều service khai cổng; hãy chọn service nào phục vụ domain",
+                "several services declare ports; choose the one that serves the domain",
             ));
             return String::new();
         } else if !plan.services.is_empty() {
             plan.issues.push(Issue::new(
                 "",
-                "không service nào khai cổng; hãy chọn service phục vụ domain và cổng của nó",
+                "no service declares a port; choose the service that serves the domain, and its port",
             ));
             return String::new();
         } else {
@@ -1273,8 +1287,10 @@ fn pick_web_service(plan: &mut Plan, requested: &str) -> String {
         .find(|item| item.name == chosen)
         .expect("one of them");
     if service.container_port.is_none() {
-        plan.issues
-            .push(Issue::new(&chosen, "service này chưa khai cổng lắng nghe"));
+        plan.issues.push(Issue::new(
+            &chosen,
+            "this service does not declare a port it listens on",
+        ));
         return String::new();
     }
     chosen
@@ -1297,7 +1313,7 @@ pub fn render(
     cpus: &str,
 ) -> Result<String, String> {
     if !plan.ok() {
-        return Err("Không thể dựng compose khi còn lỗi chưa xử lý".to_string());
+        return Err("Cannot build the compose file while there are unresolved issues".to_string());
     }
 
     let mut services: Vec<(Value, Value)> = Vec::new();
@@ -1612,7 +1628,7 @@ mod tests {
             );
             let mut got = plan.as_json();
             let mut want = case["plan"].clone();
-            // The wording after `YAML không hợp lệ:` is libyaml's, and this
+            // The wording after `Invalid YAML:` is libyaml's, and this
             // reader has its own. Both sides have to refuse the file, in the
             // same place and with the same prefix; what follows the colon is
             // the one thing here that is not reproducible.

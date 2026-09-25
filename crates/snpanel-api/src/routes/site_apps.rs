@@ -1464,7 +1464,7 @@ async fn prune_docker(State(state): State<AppState>, current: CurrentUser) -> Re
         Ok(output) => {
             audit(&state, current.user.id, "prune_docker", "docker", "").await;
             axum::Json(json!({
-                "message": "Đã dọn layer và build cache không dùng.",
+                "message": "Unused layers and build cache removed.",
                 "output": output,
                 "docker": service::docker_status(dry).await,
             }))
