@@ -846,6 +846,29 @@ impl HelperRequest {
                     recursive: false,
                 }
             }
+            ("site-file-search", 7) => {
+                // <site-user> <site-root> <folder, relative> <text> <suffix>
+                // <case-sensitive 0|1> <secret files 0|1>
+                let relative = rest[2].trim_matches('/');
+                let path = site_path_from(
+                    &rest[0],
+                    &rest[1],
+                    (!relative.is_empty() && relative != ".").then_some(relative),
+                )
+                .map_err(InvocationError::invalid)?;
+                let flag = |raw: &str| match raw {
+                    "0" => Ok(false),
+                    "1" => Ok(true),
+                    _ => Err(InvocationError::invalid(format!("invalid flag: {raw}"))),
+                };
+                HelperRequest::SiteFileSearch {
+                    path,
+                    query: rest[3].clone(),
+                    suffix: rest[4].clone(),
+                    case_sensitive: flag(&rest[5])?,
+                    include_secrets: flag(&rest[6])?,
+                }
+            }
             ("rm-site", 3) => {
                 // <site-user> <site-root> <path>
                 match site_path_from(&rest[0], &rest[1], None) {
@@ -1629,6 +1652,16 @@ mod tests {
                 "/home/alice/example.com",
                 "/home/alice/example.com/x",
                 "0644",
+            ],
+            &[
+                "site-file-search",
+                "alice",
+                "/home/alice/example.com",
+                "public_html",
+                "needle",
+                ".php",
+                "0",
+                "1",
             ],
             &["wp", "core", "version"],
             &["wp-site", "alice", "--php-version=8.3", "core", "version"],

@@ -1,6 +1,7 @@
 import {
   Activity,
   Archive,
+  Bot,
   Boxes,
   BrickWall,
   Bug,
@@ -89,6 +90,7 @@ const GROUPS = [
 const ADDON_TILES = {
   application: ['applications', Boxes],
   fail2ban: ['fail2ban', ShieldBan],
+  mcp: ['mcp', Bot],
 };
 
 // A plain click stays in the panel; a click that asks for a new tab or window

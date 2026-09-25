@@ -1126,6 +1126,80 @@ streamed and pinned; the forms, in both themes and languages and on a
 phone. The Backups page is in the translation now. Not tried against AWS,
 R2 or B2 themselves, nor virtual-hosted addressing outside unit tests.
 
+### The MCP addon (past the Python)
+
+AI assistants - Claude Code, Cursor, VS Code - read and work the panel through
+the Model Context Protocol. OPanel's addon (v1.16.0) is the model, down to
+the tools and the guards; it is ported onto this panel rather than copied.
+
+- An addon of its own kind: it runs inside the panel and installs nothing as
+  root. Installing it turns `POST /api/mcp` on; uninstalling turns it off and
+  keeps the tokens, and the Addons page revokes them - one or all.
+- `POST /api/mcp` is Streamable HTTP answering JSON only, with no event
+  stream and no session; `GET` and `DELETE` are 405. Protocol versions
+  2025-06-18, 2025-03-26 and 2024-11-05; another is answered with the newest.
+  The JSON-RPC - batches, notifications (202, no body), the error codes - is
+  written here: the protocol is small, and a library would be most of the
+  attack surface. Refused in order: the addon off (404), a request with an
+  `Origin` other than the panel's own (403 - an assistant sends none, so
+  that is a web page being used against the panel), a missing, unknown or
+  expired token or a suspended account (401, `WWW-Authenticate: Bearer
+  realm="snpanel-mcp"`).
+- Tokens (`mcp_tokens`, rust_0006/0007): `snmcp_` and 32 random bytes, shown
+  once; only the SHA-256 and the first twelve characters are stored. At most
+  ten an account, for 1 to 365 days, read-only unless made to allow actions,
+  last use noted at most once a minute. They go with their account.
+- Thirty-two tools, twenty for everyone on their own resources and twelve for
+  administrators. A tool the token may not use is not in `tools/list` and
+  calling it is an unknown tool, so the list cannot be probed. A website is
+  named by domain, and somebody else's reads exactly as a missing one.
+- A tool that acts calls the panel's own endpoint as the token's owner - an
+  internal request through the API router, the caller placed in the
+  request's extensions where nothing from the network can put one - so the
+  ownership checks, quotas and audit entries are the pages' own. It is also
+  audited as `mcp_tool` with its arguments, a file's content only as its
+  length. Tools that only read take what they show field by field: a
+  website's row carries its panel password.
+- `block_ip` refuses private, loopback, link-local, multicast, reserved,
+  CGNAT, benchmarking and documentation ranges, networks wider than a /16
+  (IPv4) or /32 (IPv6), this server's addresses and the address the
+  assistant calls from; one already blocked is `already`, not a second
+  rule. `add_waf_rule` writes no raw ModSecurity: the assistant picks an
+  address, a path's start, or text in the user agent or query, a value that
+  cannot leave its quotes or expand a macro, and the rule is always phase 1
+  with an id from 1090000-1099999 no rule on the server or any site uses.
+  `delete_file` never deletes the site or its web root; `restart_service`
+  restarts or reloads, and never stops.
+- `search_files` is a helper verb of its own, `site-file-search`: plain text
+  in a site's folder, walked without following a link and opened with
+  `O_NOFOLLOW`, skipping `.git`, `node_modules`, caches, uploads, binaries
+  and - for anyone but an administrator - the site's secret files; 512 KB a
+  file, 20,000 files, 200 MB, 100 matches, all enforced by the helper.
+- New endpoints for tools that had none: `POST
+  /maintenance/backup-schedules/{id}/run` runs a schedule now, as its timer
+  would (the scheduler's per-schedule step is now one function both call).
+- Settings, AI assistants (MCP): the endpoint, a token's name, lifetime and
+  "Allow actions", and - once - the token with the Claude Code command and
+  the Cursor and VS Code configuration filled in. Every installed addon has
+  its Dashboard tile, this one included.
+
+Tests: the protocol, the schema, arguments by name, kind, choice and range,
+who sees which tools (13 and 20 for a user, 20 and 32 for an administrator,
+read-only and not), the guards address by address, the WAF rule byte for
+byte, the traffic summary, the helper's walk. Nineteen checks removed one at a
+time: eighteen caught, and the one that is not - the walk's explicit symlink
+test - sits in front of two more that each stop a link on their own; with
+them it is caught too. `tools/ui-audit/mcp.mjs` on the Debian 13 box, 77
+checks: every tool against a real site, as a user and as an administrator -
+files written, searched, moved and deleted as the site's user; traffic added
+up; addresses blocked, refused and unblocked; a WAF rule written and read
+back; nginx reloaded; a schedule run - and the audit log, a token expired,
+its account suspended, a token revoked from the Addons page, the addon off
+and on. The official MCP inspector CLI lists the tools and calls one. The
+accessibility snapshots of every page differ only by the new menu item and
+the Addons page's new card. Not tried: a real assistant over the Internet,
+which needs the panel on a certificate the assistant trusts.
+
 ### The billing system's half of `provisioning`
 
 Six endpoints: the three a billing system reads through, and the three an

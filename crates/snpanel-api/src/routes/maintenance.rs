@@ -248,6 +248,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(delete_backup_schedule).fallback(crate::fallback),
         )
         .route(
+            "/maintenance/backup-schedules/{schedule_id}/run",
+            post(run_backup_schedule_now).fallback(crate::fallback),
+        )
+        .route(
             "/maintenance/sftp-targets",
             get(list_sftp_targets)
                 .post(create_sftp_target)
@@ -2357,6 +2361,54 @@ async fn create_backup_schedule(
     )
     .await;
     axum::Json(schedule_json(&created, options)).into_response()
+}
+
+/// Not in the Python: a schedule run now, as its timer would run it - in the
+/// background, its outcome recorded on the schedule. The MCP addon's
+/// `run_backup_schedule`.
+async fn run_backup_schedule_now(
+    State(state): State<AppState>,
+    AxumPath(schedule_id): AxumPath<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let schedule = match state.db.backup_schedules().list().await {
+        Ok(rows) => rows.into_iter().find(|row| row.id == schedule_id),
+        Err(e) => {
+            tracing::error!("listing backup schedules failed: {e}");
+            return internal_error();
+        }
+    };
+    let Some(schedule) = schedule else {
+        return not_found("Backup schedule not found");
+    };
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "run_backup_schedule",
+        &schedule_id.to_string(),
+    )
+    .await;
+    let worker = state.clone();
+    tokio::spawn(async move {
+        let _permit = crate::backup_jobs::worker_permit().await;
+        let stamp = chrono::Local::now().format("%Y-%m-%dT%H:%M").to_string();
+        crate::run_schedule(&worker, &schedule, &stamp).await;
+    });
+    axum::Json(json!({
+        "ok": true,
+        "schedule_id": schedule_id,
+        "message": "Backup schedule started",
+    }))
+    .into_response()
 }
 
 /// Source: `delete_backup_schedule`.

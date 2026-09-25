@@ -1344,6 +1344,11 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     )
     .await;
 
+    // Its MCP tokens go with it. The foreign key cascades too; this does
+    // not rest on `PRAGMA foreign_keys` having been on.
+    if let Err(e) = state.db.mcp_tokens().delete_for_user(user.id).await {
+        tracing::error!("deleting the MCP tokens of {} failed: {e}", user.username);
+    }
     if let Err(e) = state.db.users().delete(user.id).await {
         tracing::error!("deleting {} failed: {e}", user.username);
         return internal_error();

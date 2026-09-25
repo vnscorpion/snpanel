@@ -1754,6 +1754,55 @@ async fn read_site_logs(
     Ok(blocks)
 }
 
+/// Not in the Python: every entry of the access logs a caller may read,
+/// newest first and unfiltered - for the MCP addon's traffic tools, which
+/// read further back than the page does. The same scope as the page: an
+/// administrator's every site, anyone else's own, and only with WAF in their
+/// package. With the domains that have no log yet.
+pub(crate) async fn access_entries(
+    state: &AppState,
+    current: &CurrentUser,
+    website_id: Option<i64>,
+    lines: usize,
+) -> Result<(Vec<Value>, Vec<String>), Response> {
+    let websites = log_scope(state, current, website_id).await?;
+    let mut domains: Vec<String> = Vec::with_capacity(websites.len());
+    for site in &websites {
+        match crate::waf::validate_domain(&site.domain) {
+            Ok(domain) => domains.push(domain),
+            Err(e) => return Err(bad_request(&e.to_string())),
+        }
+    }
+    let blocks = read_site_logs(state, &domains, lines)
+        .await
+        .map_err(|detail| bad_request(&detail))?;
+    let mut sortable: Vec<(i64, u64, Value)> = Vec::new();
+    let mut missing = Vec::new();
+    let mut sequence = 0u64;
+    for domain in &domains {
+        let Some(Some(content)) = blocks.get(domain) else {
+            missing.push(domain.clone());
+            continue;
+        };
+        for line in content.lines() {
+            sequence += 1;
+            if let Some(entry) = crate::access_log::parse_access_line(
+                domain,
+                line,
+                sequence,
+                &(String::new(), String::new()),
+            ) {
+                sortable.push((entry.sort_time, sequence, entry.item));
+            }
+        }
+    }
+    sortable.sort_by_key(|(time, seq, _)| std::cmp::Reverse((*time, *seq)));
+    Ok((
+        sortable.into_iter().map(|(_, _, item)| item).collect(),
+        missing,
+    ))
+}
+
 /// Source: the `\x1f` loop in `_read_site_logs`.
 ///
 /// Every rule here is a contract with `site-logs-read-many`: the separator

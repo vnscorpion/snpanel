@@ -2319,7 +2319,7 @@ fn wildcard_token_field(payload: &Value) -> Result<Option<String>, Response> {
 /// Source: `ssl.cert_info` - expiry and covered names for a certificate on
 /// this machine, read through the helper because `/etc/letsencrypt/live` is
 /// root's.
-async fn cert_info(state: &AppState, domain: &str) -> (String, Vec<String>) {
+pub(crate) async fn cert_info(state: &AppState, domain: &str) -> (String, Vec<String>) {
     let probe = format!("echo 'no cert info for {domain}'; exit 1");
     let result = shell::privileged(
         state.settings.command_dry_run,

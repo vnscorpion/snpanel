@@ -188,6 +188,25 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
             s3_target_id INTEGER REFERENCES s3_backup_targets (id) ON DELETE SET NULL, \
             name_style VARCHAR(16) DEFAULT 'timestamp' NOT NULL)",
     ),
+    // The MCP addon's tokens - see `mcp_tokens.rs`. Only a token's hash is
+    // kept; an account deleted takes its tokens with it.
+    (
+        "rust_0006_mcp_tokens",
+        "CREATE TABLE IF NOT EXISTS mcp_tokens (\
+            id INTEGER NOT NULL PRIMARY KEY, \
+            user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE, \
+            name VARCHAR(64) NOT NULL, \
+            token_hash VARCHAR(64) NOT NULL UNIQUE, \
+            prefix VARCHAR(16) NOT NULL, \
+            can_write BOOLEAN NOT NULL, \
+            expires_at DATETIME NOT NULL, \
+            last_used_at DATETIME, \
+            created_at DATETIME NOT NULL)",
+    ),
+    (
+        "rust_0007_mcp_tokens_by_user",
+        "CREATE INDEX IF NOT EXISTS ix_mcp_tokens_user_id ON mcp_tokens (user_id)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -742,7 +761,9 @@ mod tests {
             added,
             vec![
                 "backup_schedule_options",
+                "ix_mcp_tokens_user_id",
                 "ix_passkeys_user_id",
+                "mcp_tokens",
                 "passkeys",
                 "s3_backup_targets",
                 "sftp_accounts",

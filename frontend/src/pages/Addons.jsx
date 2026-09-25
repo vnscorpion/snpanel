@@ -1,9 +1,10 @@
 import { AlertCircle, Boxes, Download, RefreshCw, Trash2 } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
+import McpTokens from '../components/McpTokens.jsx';
 
 // The page each addon opens, when it has one.
-const ADDON_PAGE = { application: 'applications', fail2ban: 'fail2ban' };
+const ADDON_PAGE = { application: 'applications', fail2ban: 'fail2ban', mcp: 'mcp' };
 
 // The catalogue's text comes from the API. Fail2ban's is English, marked here
 // so the translation check knows it; the Application addon's is still the
@@ -17,6 +18,13 @@ const CATALOGUE_TEXT = [
   msg('The address you install it from is never banned. Add the other addresses you manage the server from on the Fail2ban page.'),
   msg('Cloudflare\'s addresses are never banned from a site\'s log: a site behind Cloudflare logs Cloudflare, not its visitors.'),
   msg('Open the Fail2ban page to choose the jails and the addresses that are never banned.'),
+  msg('Lets AI assistants - Claude Code, Cursor, VS Code - read and work the panel through the Model Context Protocol, each with a token of the account it acts for.'),
+  msg('Every account makes its own tokens under Settings, AI assistants (MCP): an administrator\'s reach the whole server, anyone else\'s only their own websites, databases, files and backups.'),
+  msg('A token only reads unless it is made to allow actions, and what it may not do is never offered to the assistant.'),
+  msg('Every action an assistant takes is written to the audit log.'),
+  msg('Assistants reach the panel at /api/mcp over HTTPS and refuse a self-signed certificate: give the panel a real one first.'),
+  msg('Uninstalling turns the endpoint off and keeps the tokens; revoke them on this page to remove them.'),
+  msg('Open Settings, AI assistants (MCP) to make a token for your assistant.'),
 ];
 
 export default function AddonsPage() {
@@ -66,6 +74,7 @@ export default function AddonsPage() {
                 </>
               : <button disabled={!!loading} onClick={() => setAddonInstalled(addon.slug, true)}><Download size={14}/> {t('Install')}</button>}
           </div>}
+          {addons.can_manage && addon.slug === 'mcp' && <McpTokens />}
         </div>)}
         {addons.loaded && addons.items.length === 0 && <EmptyState icon={Boxes} message={t('No addons yet.')} />}
       </div>

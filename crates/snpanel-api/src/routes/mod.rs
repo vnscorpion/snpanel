@@ -12,6 +12,7 @@ pub mod firewall;
 pub mod health;
 pub mod maintenance;
 pub mod malware;
+pub mod mcp;
 pub mod packages;
 pub mod panel_settings;
 pub mod passkeys;
@@ -54,6 +55,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(provisioning::router())
         .merge(maintenance::router())
         .merge(s3_targets::router())
+        .merge(mcp::router())
         .merge(malware::router())
         .merge(panel_settings::router())
         .merge(site_apps::router())

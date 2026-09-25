@@ -689,6 +689,19 @@ pub enum HelperRequest {
         mode: FileMode,
         recursive: bool,
     },
+    /// Not in the bash: the MCP addon's `search_files`. Plain text, never a
+    /// pattern; the limits are the helper's own, so no caller can widen them.
+    SiteFileSearch {
+        /// The folder searched, inside a site root.
+        path: SitePath,
+        query: String,
+        /// Only files whose names end with this; empty for every file.
+        suffix: String,
+        case_sensitive: bool,
+        /// Whether `wp-config.php`, `.env` and `.my.cnf` are read - for an
+        /// administrator, as only they may open those in the file manager.
+        include_secrets: bool,
+    },
 
     // --- firewall ---
     FirewallApply,
@@ -1168,6 +1181,7 @@ impl HelperRequest {
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",
+            Self::SiteFileSearch { .. } => "site-file-search",
             Self::FirewallApply => "firewall-apply",
             Self::FirewallFlush => "firewall-flush",
             Self::FirewallStatus => "firewall-status",

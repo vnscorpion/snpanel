@@ -54,6 +54,10 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 - PHP-FPM config editor per version
 - Cron job manager with whitelisted WP-CLI commands
 - Role-based access: Admin / End user
+- An MCP addon for AI assistants - Claude Code, Cursor, VS Code - at `/api/mcp`:
+  32 tools over the websites, files, logs, backups, firewall and WAF, each
+  assistant with a token of the account it acts for (read-only unless made to
+  allow actions), every action in the audit log
 - Google Authenticator compatible 2FA
 
 ## Tech stack

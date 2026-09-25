@@ -57,6 +57,7 @@ mod malware_scan;
 mod malware_schedule;
 mod manual_ssl;
 mod mariadb;
+mod mcp;
 mod middleware;
 mod panel_urls;
 mod php;
@@ -711,41 +712,55 @@ async fn run_backup_schedules(state: &AppState) -> usize {
             continue;
         }
 
-        let users = schedule_users(state, &schedule).await;
-        if users.is_empty() {
-            let outcome = backup_scheduler::no_users();
-            record(state, schedule.id, &stamp, &outcome).await;
-            continue;
-        }
-
-        let mut successes = Vec::new();
-        let mut errors = Vec::new();
-        // Not in the Python: where else the archives go, and their names. A
-        // schedule whose options cannot be read is not run as if it had
-        // none - that would keep an offsite backup on this server alone.
-        match state.db.schedule_options().get(schedule.id).await {
-            Ok(options) => {
-                for user in users {
-                    match routes::maintenance::run_scheduled_user_backup(
-                        state, &schedule, options, &user,
-                    )
-                    .await
-                    {
-                        Ok(went) => successes.push(format!("{}: {went}", user.username)),
-                        Err(e) => errors.push(format!("{}: {e}", user.username)),
-                    }
-                }
-            }
-            Err(e) => errors.push(format!("Cannot read the schedule's settings: {e}")),
-        }
-
-        let outcome = backup_scheduler::outcome(&successes, &errors);
-        if outcome.counts_as_run {
+        if run_schedule(state, &schedule, &stamp).await {
             ran += 1;
         }
-        record(state, schedule.id, &stamp, &outcome).await;
     }
     ran
+}
+
+/// One schedule's run: every user's backup, uploaded and pruned, and the
+/// outcome recorded on the schedule. Whether it ran cleanly.
+///
+/// The timer's loop calls this for each due schedule, and
+/// `POST /maintenance/backup-schedules/{id}/run` - the MCP addon's
+/// `run_backup_schedule` - for one it names.
+pub(crate) async fn run_schedule(
+    state: &AppState,
+    schedule: &snpanel_db::BackupSchedule,
+    stamp: &str,
+) -> bool {
+    let users = schedule_users(state, schedule).await;
+    if users.is_empty() {
+        let outcome = backup_scheduler::no_users();
+        record(state, schedule.id, stamp, &outcome).await;
+        return false;
+    }
+
+    let mut successes = Vec::new();
+    let mut errors = Vec::new();
+    // Not in the Python: where else the archives go, and their names. A
+    // schedule whose options cannot be read is not run as if it had
+    // none - that would keep an offsite backup on this server alone.
+    match state.db.schedule_options().get(schedule.id).await {
+        Ok(options) => {
+            for user in users {
+                match routes::maintenance::run_scheduled_user_backup(
+                    state, schedule, options, &user,
+                )
+                .await
+                {
+                    Ok(went) => successes.push(format!("{}: {went}", user.username)),
+                    Err(e) => errors.push(format!("{}: {e}", user.username)),
+                }
+            }
+        }
+        Err(e) => errors.push(format!("Cannot read the schedule's settings: {e}")),
+    }
+
+    let outcome = backup_scheduler::outcome(&successes, &errors);
+    record(state, schedule.id, stamp, &outcome).await;
+    outcome.counts_as_run
 }
 
 async fn record(state: &AppState, id: i64, stamp: &str, outcome: &backup_scheduler::Outcome) {

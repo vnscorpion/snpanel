@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -52,6 +52,7 @@ const ServicesPage = lazy(() => import('./pages/Services.jsx'));
 const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
+const McpPage = lazy(() => import('./pages/Mcp.jsx'));
 const WafPage = lazy(() => import('./pages/Waf.jsx'));
 const WafSitePage = lazy(() => import('./pages/WafSite.jsx'));
 const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
@@ -213,6 +214,11 @@ function App() {
   const [passkeys, setPasskeys] = useState({ items: [], available: false, totp_enabled: false, limit: 10, loaded: false });
   const [malwareScanStatus, setMalwareScanStatus] = useState(null);
   const [fail2ban, setFail2ban] = useState(null);
+  // The MCP addon: whether it is on and where, this account's tokens, and -
+  // for an administrator on the Addons page - every account's.
+  const [mcpInfo, setMcpInfo] = useState(null);
+  const [mcpTokens, setMcpTokens] = useState([]);
+  const [mcpAllTokens, setMcpAllTokens] = useState([]);
   const [scanTargetWebsiteId, setScanTargetWebsiteId] = useState('');
   const [scanResults, setScanResults] = useState(null);
   const [scanJob, setScanJob] = useState(null);
@@ -255,6 +261,7 @@ function App() {
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
+  const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
   // Two locks, and both have to be open: the server has to have the addon
   // installed at all, and the customer's package has to include it. Admins skip
   // the second one, never the first.
@@ -363,6 +370,9 @@ function App() {
     setSelectedSftpTargetId('');
     setS3Targets([]);
     setUserBackupDestination('');
+    setMcpInfo(null);
+    setMcpTokens([]);
+    setMcpAllTokens([]);
     setTwoFactorStatus(null);
     setTwoFactorSetup(null);
     setTwoFactorCode('');
@@ -1692,7 +1702,9 @@ function App() {
   async function setAddonInstalled(slug, install) {
     const addon = addons.items.find(item => item.slug === slug);
     const label = addon?.name || slug;
-    const uninstallQuestion = slug === 'fail2ban'
+    const uninstallQuestion = slug === 'mcp'
+      ? t('Uninstall the MCP addon?\n\nAssistants can no longer reach the panel. Their tokens are kept and work again if you reinstall; revoke them on the Addons page to remove them.')
+      : slug === 'fail2ban'
       ? t('Uninstall the Fail2ban addon?\n\nFail2ban is stopped, and every address it banned can connect again. Its settings are kept, and reinstalling puts them back.')
       : t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label });
     if (!install && !confirm(uninstallQuestion)) return;
@@ -3069,6 +3081,44 @@ function App() {
     return !!data;
   }
 
+  async function loadMcp() {
+    const info = await request('/mcp/info', { silent: true });
+    if (info) setMcpInfo(info);
+    const data = await request('/mcp/tokens', { silent: true });
+    if (data?.items) setMcpTokens(data.items);
+  }
+
+  async function loadAllMcpTokens() {
+    const data = await request('/mcp/tokens?all=true', { silent: true });
+    if (data?.items) setMcpAllTokens(data.items);
+  }
+
+  // The answer carries the token itself, this once.
+  async function createMcpToken(body) {
+    const data = await request('/mcp/tokens', { method: 'POST', body: JSON.stringify(body) }, t('Creating the token...'));
+    if (data) await loadMcp();
+    return data;
+  }
+
+  async function revokeMcpToken(token, everyones = false) {
+    if (!confirm(t('Revoke the token {name}? An assistant using it loses access at once.', { name: token.name }))) return;
+    const data = await request(`/mcp/tokens/${token.id}`, { method: 'DELETE' }, t('Revoking the token...'));
+    if (data) {
+      setNotice(t('Token {name} revoked.', { name: token.name }));
+      if (everyones) await loadAllMcpTokens();
+      else await loadMcp();
+    }
+  }
+
+  async function revokeAllMcpTokens() {
+    if (!confirm(t('Revoke every MCP token on this panel? Every assistant loses access at once.'))) return;
+    const data = await request('/mcp/tokens?all=true', { method: 'DELETE' }, t('Revoking every token...'));
+    if (data) {
+      setNotice(t('{count} token(s) revoked.', { count: data.revoked }));
+      await loadAllMcpTokens();
+    }
+  }
+
   async function fail2banUnban(address) {
     const data = await request('/fail2ban/unban', { method: 'POST', body: JSON.stringify({ address }) }, t('Letting {address} back in...', { address }));
     if (data) { setFail2ban(data); setNotice(t('{address} can connect again.', { address })); }
@@ -3561,6 +3611,10 @@ function App() {
   }, [isAuthenticated, page, isAdmin, fail2banAddonInstalled]);
 
   useEffect(() => {
+    if (isAuthenticated && page === 'mcp') loadMcp();
+  }, [isAuthenticated, page, mcpAddonInstalled]);
+
+  useEffect(() => {
     if (page !== 'files' || !hasFileTarget()) return;
     // An app has no public_html; its root is the code directory itself.
     listFiles(fileAppId ? '' : 'public_html');
@@ -3655,6 +3709,9 @@ function App() {
   const settingsNavItems = [
     ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
     ['security', t('Account security'), Shield],
+    // An administrator sees it to install the addon from; anyone else once
+    // the addon is on.
+    ...((isAdmin || mcpAddonInstalled) ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
@@ -4024,6 +4081,14 @@ function App() {
       fail2ban,
       fail2banBan,
       fail2banUnban,
+      createMcpToken,
+      loadAllMcpTokens,
+      loadMcp,
+      mcpAllTokens,
+      mcpInfo,
+      mcpTokens,
+      revokeAllMcpTokens,
+      revokeMcpToken,
       fileBreadcrumbs,
       fileJobs,
       fileListPath,
@@ -4362,6 +4427,7 @@ function App() {
     if (page === 'php') return <PhpConfigPage />;
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;
+    if (page === 'mcp') return <McpPage />;
     if (page === 'waf') return <WafPage />;
     if (page === 'waf-site') return <WafSitePage />;
     if (page === 'malware') return <MalwarePage />;

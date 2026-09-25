@@ -41,6 +41,10 @@ const APPLICATION: &str = "application";
 /// Not in the Python: fail2ban, run with the panel's jails.
 const FAIL2BAN: &str = "fail2ban";
 
+/// Not in the Python: the MCP endpoint for AI assistants. It runs inside the
+/// panel and installs nothing as root: installing it turns `/api/mcp` on.
+const MCP: &str = "mcp";
+
 /// Source: `addons.CATALOGUE`.
 ///
 /// Held here rather than read from a file because it is the Python's own
@@ -89,6 +93,24 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "keeps_data_on_uninstall": true,
             }),
         ),
+        (
+            MCP,
+            json!({
+                "name": "MCP server",
+                "version": "1.0.0",
+                "summary": "Lets AI assistants - Claude Code, Cursor, VS Code - read and work the panel through the Model Context Protocol, each with a token of the account it acts for.",
+                "details": [
+                    "Every account makes its own tokens under Settings, AI assistants (MCP): an administrator's reach the whole server, anyone else's only their own websites, databases, files and backups.",
+                    "A token only reads unless it is made to allow actions, and what it may not do is never offered to the assistant.",
+                    "Every action an assistant takes is written to the audit log.",
+                ],
+                "notes": [
+                    "Assistants reach the panel at /api/mcp over HTTPS and refuse a self-signed certificate: give the panel a real one first.",
+                    "Uninstalling turns the endpoint off and keeps the tokens; revoke them on this page to remove them.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
     ]
 }
 
@@ -133,6 +155,11 @@ pub fn application_installed() -> bool {
 /// Whether the Fail2ban addon is installed, read the same way.
 pub fn fail2ban_installed() -> bool {
     is_installed(FAIL2BAN)
+}
+
+/// Whether the MCP addon is installed - whether `/api/mcp` answers.
+pub fn mcp_installed() -> bool {
+    is_installed(MCP)
 }
 
 fn is_installed(slug: &str) -> bool {
@@ -339,6 +366,7 @@ async fn install(
         "next_step": match slug.as_str() {
             APPLICATION => "Vào mục Application để cài Docker hoặc bản Node.js cần dùng.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
+            MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
             _ => "",
         },
     }))
@@ -419,6 +447,8 @@ async fn uninstall(
         "could_not_stop": failed,
         "kept": if slug == FAIL2BAN {
             "Fail2ban's settings are kept; installing the addon again puts them back."
+        } else if slug == MCP {
+            "The tokens are kept, and work again when the addon is installed again. Revoke them on the Addons page to remove them."
         } else {
             "Thư mục ứng dụng, volume và dữ liệu trong panel được giữ nguyên."
         },
@@ -642,7 +672,7 @@ mod tests {
         let items = addon_state();
         // Sorted by slug, as the Python sorts them.
         let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, [APPLICATION, FAIL2BAN]);
+        assert_eq!(slugs, [APPLICATION, FAIL2BAN, MCP]);
         for addon in &items {
             for key in [
                 "name",

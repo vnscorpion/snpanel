@@ -223,6 +223,13 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             mode,
             recursive,
         } => site::chmod(path, *mode, *recursive),
+        HelperRequest::SiteFileSearch {
+            path,
+            query,
+            suffix,
+            case_sensitive,
+            include_secrets,
+        } => site::file_search(path, query, suffix, *case_sensitive, *include_secrets),
         HelperRequest::SiteFixPermissions { path, user: u } => site::fix_permissions(path, u),
         HelperRequest::SiteLogRead {
             domain,

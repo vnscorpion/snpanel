@@ -65,7 +65,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 148;
+const ANSWERED_VERBS: usize = 149;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -82,6 +82,7 @@ fn print_help(sink: audit::Sink) {
         "  panel-user-*    ensure, delete, password (password on stdin),",
         "                  lock, unlock",
         "  site-*          mkdir, rm, path-fix, file-write, file-install, chmod,",
+        "                  file-search,",
         "                  log-read, log-clear, logs-read-many, document-root-ensure,",
         "                  populate, archive-extract, runtime-ensure, runtime-move,",
         "                  runtime-delete",

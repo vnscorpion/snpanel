@@ -108,6 +108,216 @@ pub fn file_write(path: &SitePath, content: &[u8], mode: FileMode) -> HelperResp
     }
 }
 
+/// Limits of `site-file-search`, the MCP addon's `search_files`. The helper
+/// holds them, so no caller can widen them.
+pub const SEARCH_MAX_MATCHES: usize = 100;
+pub const SEARCH_MAX_FILES: usize = 20_000;
+pub const SEARCH_MAX_FILE_BYTES: u64 = 512 * 1024;
+pub const SEARCH_MAX_TOTAL_BYTES: u64 = 200 * 1024 * 1024;
+/// A match's line is cut to this many characters.
+const SEARCH_LINE_CHARS: usize = 300;
+/// Directories never entered: history, dependencies, caches and uploads -
+/// large, rarely what is being looked for, and mostly not code.
+const SEARCH_SKIP_DIRS: &[&str] = &[".git", "node_modules", ".cache", "cache", "uploads"];
+
+/// One line that holds the text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SearchMatch {
+    /// Relative to the directory searched.
+    pub path: String,
+    /// From 1.
+    pub line: usize,
+    pub text: String,
+}
+
+/// What a search found, and how far it got.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SearchOutcome {
+    pub matches: Vec<SearchMatch>,
+    pub files_scanned: usize,
+    pub bytes_scanned: u64,
+    /// Files passed over for being larger than [`SEARCH_MAX_FILE_BYTES`].
+    pub files_too_large: usize,
+    /// The limit that ended the search early: `matches`, `files` or `bytes`.
+    pub stopped_by: Option<&'static str>,
+}
+
+/// `site-file-search`: plain text in a site's files, never a pattern.
+///
+/// Walks the directory without following a symlink anywhere, reads regular
+/// files only, and passes over the directories in [`SEARCH_SKIP_DIRS`],
+/// binary files and the site's secret files unless `include_secrets` - the
+/// file manager lets only an administrator open those. The answer is JSON on
+/// stdout.
+pub fn file_search(
+    path: &SitePath,
+    query: &str,
+    suffix: &str,
+    case_sensitive: bool,
+    include_secrets: bool,
+) -> HelperResponse {
+    if let Err(r) = guard(path) {
+        return r;
+    }
+    if query.is_empty() || query.chars().count() > 200 || query.contains(['\n', '\r', '\0']) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "the search text is 1 to 200 characters on one line".to_string(),
+        );
+    }
+    if suffix.len() > 32 || suffix.contains(['/', '\0']) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("invalid file suffix: {suffix}"),
+        );
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path.as_path()) else {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("no such folder: {path}"),
+        );
+    };
+    if !meta.is_dir() {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("not a folder: {path}"),
+        );
+    }
+    let outcome = search_tree(
+        path.as_path(),
+        query,
+        suffix,
+        case_sensitive,
+        include_secrets,
+    );
+    let mut response = HelperResponse::ok();
+    response.stdout = serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".to_string());
+    response
+}
+
+/// The walk itself, separate from the request so a test can give it a tree.
+pub fn search_tree(
+    root: &std::path::Path,
+    query: &str,
+    suffix: &str,
+    case_sensitive: bool,
+    include_secrets: bool,
+) -> SearchOutcome {
+    let needle = if case_sensitive {
+        query.to_string()
+    } else {
+        query.to_lowercase()
+    };
+    let mut outcome = SearchOutcome::default();
+    // A folder's files, then its subfolders, each in name order: the same
+    // tree gives the same answer.
+    let mut stack = vec![root.to_path_buf()];
+    'walk: while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<std::fs::DirEntry> = entries.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let mut subdirs = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            // `symlink_metadata`: a link is itself, never what it points at.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                if !SEARCH_SKIP_DIRS.contains(&name.as_str()) {
+                    subdirs.push(path);
+                }
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            if !suffix.is_empty() && !name.ends_with(suffix) {
+                continue;
+            }
+            if !include_secrets && SECRET_FILES.contains(&name.as_str()) {
+                continue;
+            }
+            if outcome.files_scanned >= SEARCH_MAX_FILES {
+                outcome.stopped_by = Some("files");
+                break 'walk;
+            }
+            if meta.len() > SEARCH_MAX_FILE_BYTES {
+                outcome.files_too_large += 1;
+                continue;
+            }
+            if outcome.bytes_scanned + meta.len() > SEARCH_MAX_TOTAL_BYTES {
+                outcome.stopped_by = Some("bytes");
+                break 'walk;
+            }
+            let Some(content) = read_regular(&path) else {
+                continue;
+            };
+            outcome.files_scanned += 1;
+            outcome.bytes_scanned += content.len() as u64;
+            // A NUL near the start is a binary file, as grep decides.
+            if content[..content.len().min(8192)].contains(&0) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&content);
+            let relative = path
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(name);
+            for (index, line) in text.lines().enumerate() {
+                let found = if case_sensitive {
+                    line.contains(&needle)
+                } else {
+                    line.to_lowercase().contains(&needle)
+                };
+                if !found {
+                    continue;
+                }
+                outcome.matches.push(SearchMatch {
+                    path: relative.clone(),
+                    line: index + 1,
+                    text: line.trim().chars().take(SEARCH_LINE_CHARS).collect(),
+                });
+                if outcome.matches.len() >= SEARCH_MAX_MATCHES {
+                    outcome.stopped_by = Some("matches");
+                    break 'walk;
+                }
+            }
+        }
+        // Reversed onto the stack, so they come off in name order.
+        stack.extend(subdirs.into_iter().rev());
+    }
+    outcome
+}
+
+/// A regular file's bytes, opened without following a link and without
+/// waiting on a FIFO that appeared after the listing; `None` for anything
+/// else.
+fn read_regular(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > SEARCH_MAX_FILE_BYTES {
+        return None;
+    }
+    let mut content = Vec::with_capacity(meta.len() as usize);
+    Read::take(&mut file, SEARCH_MAX_FILE_BYTES)
+        .read_to_end(&mut content)
+        .ok()?;
+    Some(content)
+}
+
 /// `site-chmod`.
 ///
 /// Runs as root deliberately, and the bash says why: the site user is not a
@@ -2028,5 +2238,165 @@ mod tests {
             0o640
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn tree(tag: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("snpanel-search-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn put(root: &std::path::Path, relative: &str, content: &[u8]) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn found(outcome: &SearchOutcome) -> Vec<(String, usize)> {
+        outcome
+            .matches
+            .iter()
+            .map(|m| (m.path.clone(), m.line))
+            .collect()
+    }
+
+    #[test]
+    fn plain_text_is_found_by_file_and_line_a_folders_files_first() {
+        let root = tree("plain");
+        put(&root, "b.php", b"<?php\n// Needle here\n");
+        put(&root, "a/deep.txt", b"one\ntwo needle\nthree NEEDLE\n");
+        put(&root, "a.css", b"no match\n");
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(
+            found(&outcome),
+            [
+                ("b.php".to_string(), 2),
+                ("a/deep.txt".to_string(), 2),
+                ("a/deep.txt".to_string(), 3)
+            ]
+        );
+        assert_eq!(outcome.matches[0].text, "// Needle here");
+        assert_eq!(outcome.files_scanned, 3);
+        assert_eq!(outcome.stopped_by, None);
+        // Case matters when asked to, and a pattern is only text.
+        let exact = search_tree(&root, "NEEDLE", "", true, false);
+        assert_eq!(found(&exact), [("a/deep.txt".to_string(), 3)]);
+        assert!(search_tree(&root, "need.e", "", false, false)
+            .matches
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn caches_dependencies_history_and_uploads_are_passed_over() {
+        let root = tree("skip");
+        for dir in [
+            ".git",
+            "node_modules",
+            ".cache",
+            "cache",
+            "uploads",
+            "wp-content/uploads",
+        ] {
+            put(&root, &format!("{dir}/x.txt"), b"needle\n");
+        }
+        put(&root, "wp-content/plugin.php", b"needle\n");
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(found(&outcome), [("wp-content/plugin.php".to_string(), 1)]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A link to a file or a folder outside the site is never read.
+    #[test]
+    fn a_symlink_is_never_followed() {
+        let root = tree("links");
+        let outside = tree("links-outside");
+        put(&outside, "secret.txt", b"needle\n");
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("file-link.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
+        put(&root, "real.txt", b"needle\n");
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(found(&outcome), [("real.txt".to_string(), 1)]);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn binaries_are_skipped_and_the_secret_files_are_an_administrators() {
+        let root = tree("secrets");
+        put(&root, "logo.png", b"\x89PNG\0\0needle");
+        put(
+            &root,
+            "wp-config.php",
+            b"define('DB_PASSWORD', 'needle');\n",
+        );
+        put(&root, ".env", b"KEY=needle\n");
+        put(&root, "index.php", b"needle\n");
+        let user = search_tree(&root, "needle", "", false, false);
+        assert_eq!(found(&user), [("index.php".to_string(), 1)]);
+        let admin = search_tree(&root, "needle", "", false, true);
+        assert_eq!(
+            found(&admin),
+            [
+                (".env".to_string(), 1),
+                ("index.php".to_string(), 1),
+                ("wp-config.php".to_string(), 1)
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_suffix_narrows_the_files_read() {
+        let root = tree("suffix");
+        put(&root, "a.php", b"needle\n");
+        put(&root, "a.js", b"needle\n");
+        let outcome = search_tree(&root, "needle", ".php", false, false);
+        assert_eq!(found(&outcome), [("a.php".to_string(), 1)]);
+        assert_eq!(outcome.files_scanned, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_large_file_is_counted_and_not_read() {
+        let root = tree("large");
+        let mut big = vec![b'x'; SEARCH_MAX_FILE_BYTES as usize];
+        big.extend_from_slice(b"\nneedle\n");
+        put(&root, "dump.sql", &big);
+        put(&root, "small.txt", b"needle\n");
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(found(&outcome), [("small.txt".to_string(), 1)]);
+        assert_eq!(outcome.files_too_large, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_search_stops_at_a_hundred_matches() {
+        let root = tree("cap");
+        let many: String = (0..150).map(|i| format!("needle {i}\n")).collect();
+        put(&root, "a.txt", many.as_bytes());
+        put(&root, "b.txt", b"needle\n");
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(outcome.matches.len(), SEARCH_MAX_MATCHES);
+        assert_eq!(outcome.stopped_by, Some("matches"));
+        assert!(outcome.matches.iter().all(|m| m.path == "a.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_long_line_is_cut() {
+        let root = tree("long");
+        let line = format!("{}needle{}\n", "a".repeat(400), "b".repeat(400));
+        put(&root, "a.txt", line.as_bytes());
+        let outcome = search_tree(&root, "needle", "", false, false);
+        assert_eq!(outcome.matches[0].text.chars().count(), 300);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
