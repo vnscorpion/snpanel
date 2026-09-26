@@ -106,7 +106,8 @@ await logIn(context);
 // control in turn - a tab, a row, a button - before the shot.
 for (const item of wanted.filter((w) => w !== 'login')) {
   const [name, spec] = item.includes('=') ? [item.slice(0, item.indexOf('=')), item.slice(item.indexOf('=') + 1)] : [item, ROUTES[item]];
-  const [route, ...clicks] = spec.split('@');
+  // machinectl splits arguments at spaces, so a label's spaces come as '~'.
+  const [route, ...clicks] = spec.split('@').map((part) => part.replaceAll('~', ' '));
   const page = await context.newPage();
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -125,14 +126,19 @@ for (const item of wanted.filter((w) => w !== 'login')) {
       await page.waitForTimeout(900);
       continue;
     }
-    const byRole = page.getByRole('button', { name: text }).or(page.getByRole('tab', { name: text })).or(page.getByRole('link', { name: text }));
-    const target = (await byRole.count()) ? byRole.first() : page.getByText(text, { exact: false }).first();
+    // hover=Name: rest the pointer on that control, for a shot of its hover
+    // state. The last step, since any later click moves the pointer away.
+    const hover = text.startsWith('hover=');
+    const name = hover ? text.slice('hover='.length) : text;
+    const byRole = page.getByRole('button', { name }).or(page.getByRole('tab', { name })).or(page.getByRole('link', { name }));
+    const target = (await byRole.count()) ? byRole.first() : page.getByText(name, { exact: false }).first();
     try {
-      await target.click({ timeout: 5000 });
+      if (hover) await target.hover({ timeout: 5000 });
+      else await target.click({ timeout: 5000 });
     } catch (e) {
-      errors.push(`could not click "${text}": ${String(e).split('\n')[0]}`);
+      errors.push(`could not ${hover ? 'hover' : 'click'} "${name}": ${String(e).split('\n')[0]}`);
     }
-    await page.waitForTimeout(900);
+    await page.waitForTimeout(hover ? 400 : 900);
   }
   const { file, overflow } = await shoot(page, name);
   console.log(`${name.padEnd(14)} ${file} overflow=${overflow}px errors=${errors.length}${errors.length ? ` ${errors[0].slice(0, 140)}` : ''}`);

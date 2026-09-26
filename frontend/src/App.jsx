@@ -3204,6 +3204,11 @@ function App() {
     if (done) setFirewallRule(prev => ({ ...prev, ip: '', port: '' }));
   }
 
+  // A port anyone may reach: the Firewall page's "Open ports".
+  async function openFirewallPort(port, protocol) {
+    return runFirewallAction('/firewall/allow-port', { method: 'POST', body: JSON.stringify({ port: String(port).trim(), protocol }) }, t('Opening the port...'));
+  }
+
   async function deleteFirewallRule(number) {
     if (!confirm(t('Delete firewall rule #{number}?', { number }))) return;
     await runFirewallAction(`/firewall/rules/${encodeURIComponent(number)}`, { method: 'DELETE' }, t('Deleting the rule...'));
@@ -4062,6 +4067,7 @@ function App() {
       deleteDatabase,
       deleteFirewallBlocklistUrl,
       deleteFirewallRule,
+      openFirewallPort,
       deletePackage,
       deletePanelUser,
       deleteRestoreBackup,

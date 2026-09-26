@@ -1,10 +1,11 @@
-/* A schedule picked by name, or typed as a crontab expression.
-   See components/CronSchedule.jsx. */
+/* A schedule picked by name, beside its crontab expression in a box of its
+   own. See components/CronSchedule.jsx. */
 
-.cron-schedule{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0}
-.cron-schedule.custom{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.cron-schedule{display:grid;grid-template-columns:minmax(0,1fr) minmax(128px,.8fr);gap:8px;align-items:center;min-width:0}
 .cron-schedule select,.cron-schedule input{width:100%;min-width:0}
-.cron-schedule-expr{font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;padding:0 2px}
+.cron-schedule-input{font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);letter-spacing:.02em}
 
-/* A job's schedule, named when it is one of the presets. */
+/* A job's schedule in the list: the expression in a box, and its name when
+   it is one of the presets. */
+.cron-item-expr{display:inline-block;font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);font-weight:600;padding:2px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-sunken);color:var(--text)}
 .cron-item-when{margin-left:8px;font-style:normal;font-weight:600;font-size:var(--text-sm);color:var(--text-muted)}

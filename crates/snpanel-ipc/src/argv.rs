@@ -119,6 +119,26 @@ fn fail2ban_config(
 }
 
 /// One address - not a network: a ban is of a host.
+/// `<ip>` for every port, or `<ip> <port> <tcp|udp>` for one - the two
+/// shapes the API sends an address rule in.
+fn address_rule(rest: &[String]) -> Result<(IpOrCidr, Option<Port>, Protocol), InvocationError> {
+    let ip = IpOrCidr::parse(&rest[0]).map_err(|e| InvocationError::invalid(e.to_string()))?;
+    let [_, port, protocol] = rest else {
+        return Ok((ip, None, Protocol::Tcp));
+    };
+    let port = Port::parse(port).map_err(|e| InvocationError::invalid(e.to_string()))?;
+    let protocol = match protocol.as_str() {
+        "tcp" => Protocol::Tcp,
+        "udp" => Protocol::Udp,
+        other => {
+            return Err(InvocationError::invalid(format!(
+                "invalid protocol: {other}"
+            )))
+        }
+    };
+    Ok((ip, Some(port), protocol))
+}
+
 fn address_of(raw: &str) -> Result<std::net::IpAddr, InvocationError> {
     raw.parse::<std::net::IpAddr>()
         .map(|a| a.to_canonical())
@@ -317,22 +337,14 @@ impl HelperRequest {
                 })?,
             },
 
-            ("firewall-allow-ip", 1) | ("ufw-allow-ip", 1) => match IpOrCidr::parse(&rest[0]) {
-                Ok(ip) => HelperRequest::FirewallAllowIp {
-                    ip,
-                    port: None,
-                    protocol: Protocol::Tcp,
-                },
-                Err(e) => return Err(InvocationError::invalid(e.to_string())),
-            },
-            ("firewall-deny-ip", 1) | ("ufw-deny-ip", 1) => match IpOrCidr::parse(&rest[0]) {
-                Ok(ip) => HelperRequest::FirewallDenyIp {
-                    ip,
-                    port: None,
-                    protocol: Protocol::Tcp,
-                },
-                Err(e) => return Err(InvocationError::invalid(e.to_string())),
-            },
+            ("firewall-allow-ip", 1 | 3) | ("ufw-allow-ip", 1 | 3) => {
+                let (ip, port, protocol) = address_rule(rest)?;
+                HelperRequest::FirewallAllowIp { ip, port, protocol }
+            }
+            ("firewall-deny-ip", 1 | 3) | ("ufw-deny-ip", 1 | 3) => {
+                let (ip, port, protocol) = address_rule(rest)?;
+                HelperRequest::FirewallDenyIp { ip, port, protocol }
+            }
             ("firewall-allow-port", 1)
             | ("firewall-allow-port", 2)
             | ("ufw-allow-port", 1)
@@ -1477,6 +1489,49 @@ mod tests {
                 format!("{:?}", map(&[alias]).expect(alias)),
                 format!("{apply:?}"),
                 "{alias}"
+            );
+        }
+    }
+
+    /// An address on one port arrives as three arguments - the API's shape -
+    /// and an address on every port as one. Allowing 203.0.113.78 on 65003
+    /// was "unknown command" until both were mapped.
+    #[test]
+    fn an_address_rule_takes_every_port_or_one() {
+        for verb in [
+            "firewall-allow-ip",
+            "firewall-deny-ip",
+            "ufw-allow-ip",
+            "ufw-deny-ip",
+        ] {
+            let one = format!(
+                "{:?}",
+                map(&[verb, "203.0.113.78/32", "65003", "udp"]).expect(verb)
+            );
+            assert!(
+                one.contains("port: Some(") && one.contains("65003") && one.contains("Udp"),
+                "{verb}: {one}"
+            );
+            let every = format!("{:?}", map(&[verb, "203.0.113.78"]).expect(verb));
+            assert!(
+                every.contains("port: None") && every.contains("Tcp"),
+                "{verb}: {every}"
+            );
+            assert!(
+                map(&[verb, "203.0.113.78", "65003"]).is_err(),
+                "{verb}: two arguments"
+            );
+            assert!(
+                map(&[verb, "203.0.113.78", "65003", "icmp"]).is_err(),
+                "{verb}: a protocol"
+            );
+            assert!(
+                map(&[verb, "203.0.113.78", "0", "tcp"]).is_err(),
+                "{verb}: port 0"
+            );
+            assert!(
+                map(&[verb, "not-an-address", "65003", "tcp"]).is_err(),
+                "{verb}: an address"
             );
         }
     }

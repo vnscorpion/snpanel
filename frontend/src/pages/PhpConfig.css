@@ -1,0 +1,8 @@
+/* The PHP Configuration page's limits: each says its floor under it, in red
+   when the value is below it. See pages/PhpConfig.jsx. */
+
+/* A row holding a note is taller; the fields keep their height at its top. */
+.php-config-card>label{align-content:start}
+.php-limit-note{font-size:var(--text-xs);font-weight:500;color:var(--text-muted);line-height:1.35}
+.php-limit-note.bad{color:var(--danger-text);font-weight:600}
+.php-limit input[aria-invalid="true"]{border-color:var(--danger-border);background:var(--danger-bg)}

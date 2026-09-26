@@ -3,10 +3,12 @@
 
 .addon-rows{display:grid;gap:10px}
 .addon-row{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
-.addon-row.installed{border-color:var(--success-border)}
+.addon-row.installed{border-color:var(--primary-border)}
 .addon-row-main{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 14px}
-.addon-row-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);background:var(--surface-sunken);color:var(--text-secondary)}
-.addon-row.installed .addon-row-icon{background:var(--success-bg);color:var(--success-text)}
+.addon-row-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);background:var(--surface-sunken);color:var(--text)}
+/* Installed in the panel's blue, not green: green reads as a status here. */
+.addon-row.installed .addon-row-icon{background:var(--primary-light);color:var(--primary-text)}
+.addon-row .badge.ok{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
 .addon-row-text{min-width:0;display:grid;gap:3px}
 .addon-row-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .addon-row-head strong{font-size:var(--text-md);color:var(--text)}

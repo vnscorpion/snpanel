@@ -1,7 +1,53 @@
 import { AlertCircle, Ban, Check, Cpu, Play, RotateCcw } from 'lucide-react';
 import { sortPhpVersions } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
-import { useT } from '../i18n/index.jsx';
+import { msg, useT } from '../i18n/index.jsx';
+import './PhpConfig.css';
+
+// SNPanel's floor for each limit - the API refuses anything lower, and the
+// defaults are these - and the helper's ceiling.
+const COUNTS = [
+  ['max_execution_time', 300, 3600, msg('At least {value} seconds')],
+  ['max_input_time', 600, 3600, msg('At least {value} seconds')],
+  ['max_input_vars', 10000, 1000000, msg('At least {value}')],
+];
+const SIZES = ['memory_limit', 'post_max_size', 'upload_max_filesize'];
+const MIN_SIZE_MB = 1024;
+
+// PHP's shorthand - 1024M, 2G, 524288K, or bytes - in MB; null when it is
+// not a size at all.
+function sizeMb(value) {
+  const match = /^\s*(\d{1,12})([KMG]?)\s*$/i.exec(String(value ?? ''));
+  if (!match) return null;
+  const n = Number(match[1]);
+  const unit = match[2].toUpperCase();
+  if (unit === 'G') return n * 1024;
+  if (unit === 'M') return n;
+  return Math.floor(unit === 'K' ? n / 1024 : n / 1048576);
+}
+
+// What is wrong with one limit, as a message and its values, or null.
+function limitProblem(key, value) {
+  const text = String(value ?? '').trim();
+  const count = COUNTS.find(([name]) => name === key);
+  if (count) {
+    const [, lo, hi, atLeast] = count;
+    const n = Number(text);
+    if (text === '' || !Number.isInteger(n) || n < lo) return [atLeast, { value: lo }];
+    if (n > hi) return [msg('At most {value}'), { value: hi }];
+    return null;
+  }
+  const mb = sizeMb(text);
+  if (mb === null) return [msg('A size such as 1024M or 2G'), {}];
+  if (mb < MIN_SIZE_MB) return [msg('At least {value}'), { value: `${MIN_SIZE_MB}M` }];
+  return null;
+}
+
+// The note under a limit that is fine: its floor.
+function limitFloor(key) {
+  const count = COUNTS.find(([name]) => name === key);
+  return count ? [count[3], { value: count[1] }] : [msg('At least {value}'), { value: `${MIN_SIZE_MB}M` }];
+}
 
 export default function PhpConfigPage() {
   const {
@@ -25,6 +71,11 @@ export default function PhpConfigPage() {
   function renderPhpConfig() {
     if (!isAdmin) return <section className="section"><h2>{t('PHP config')}</h2><p className="hint">{t('You do not have permission to edit PHP config.')}</p></section>;
     const notInstalled = sortPhpVersions(phpVersions.supported.filter(v => !phpVersions.installed.includes(v)));
+    const limits = [
+      ...COUNTS.map(([key, lo, hi]) => ({ key, count: true, lo, hi })),
+      ...SIZES.map(key => ({ key, count: false })),
+    ].map(item => ({ ...item, problem: limitProblem(item.key, phpConfig[item.key]) }));
+    const invalid = limits.some(item => item.problem);
     // The only thing worth an administrator's attention: settings Auto tune
     // would actually change. A row that already matches, or one pinned by the
     // form below (it always wins - PHP reads it last), is not a decision to
@@ -44,21 +95,27 @@ export default function PhpConfigPage() {
       <div className="section-title">
         <div><h2>{t('PHP Configuration')}</h2></div>
       </div>
-      <div className="user-create-card">
+      <div className="user-create-card php-config-card">
         <label><span>{t('PHP version')}</span><select value={phpConfig.php_version} onChange={e => { const v = e.target.value; setPhpConfig(prev => ({ ...prev, php_version: v })); loadPhpConfig(v); loadPhpTune(v); }}>
           {phpVersions.installed.map(v => <option key={v} value={v}>PHP {v}</option>)}
         </select></label>
         <label><span>display_errors</span><select value={phpConfig.display_errors} onChange={e => setPhpConfig(prev => ({ ...prev, display_errors: e.target.value }))}>
           <option value="Off">{t('Off (production)')}</option><option value="On">{t('On (debug)')}</option>
         </select></label>
-        <label><span>max_execution_time</span><input type="number" value={phpConfig.max_execution_time} onChange={e => setPhpConfig(prev => ({ ...prev, max_execution_time: e.target.value }))} /></label>
-        <label><span>max_input_time</span><input type="number" value={phpConfig.max_input_time} onChange={e => setPhpConfig(prev => ({ ...prev, max_input_time: e.target.value }))} /></label>
-        <label><span>max_input_vars</span><input type="number" value={phpConfig.max_input_vars} onChange={e => setPhpConfig(prev => ({ ...prev, max_input_vars: e.target.value }))} /></label>
-        <label><span>memory_limit</span><input value={phpConfig.memory_limit} onChange={e => setPhpConfig(prev => ({ ...prev, memory_limit: e.target.value }))} placeholder="1024M" /></label>
-        <label><span>post_max_size</span><input value={phpConfig.post_max_size} onChange={e => setPhpConfig(prev => ({ ...prev, post_max_size: e.target.value }))} placeholder="1024M" /></label>
-        <label><span>upload_max_filesize</span><input value={phpConfig.upload_max_filesize} onChange={e => setPhpConfig(prev => ({ ...prev, upload_max_filesize: e.target.value }))} placeholder="1024M" /></label>
+        {limits.map(({ key, count, lo, hi, problem }) => {
+          const [note, values] = problem || limitFloor(key);
+          return <label key={key} className="php-limit">
+            <span>{key}</span>
+            <input type={count ? 'number' : 'text'} min={count ? lo : undefined} max={count ? hi : undefined}
+              inputMode={count ? 'numeric' : undefined} value={phpConfig[key]} placeholder={count ? String(lo) : '1024M'}
+              onChange={e => { const value = e.target.value; setPhpConfig(prev => ({ ...prev, [key]: value })); }}
+              aria-invalid={problem ? 'true' : undefined} aria-describedby={`php-limit-${key}`} spellCheck={false} autoComplete="off" />
+            <small id={`php-limit-${key}`} className={problem ? 'php-limit-note bad' : 'php-limit-note'}>{t(note, values)}</small>
+          </label>;
+        })}
         <button className="secondary-light" disabled={!!loading} onClick={restorePhpDefaults}><RotateCcw size={14}/> {t('Restore defaults')}</button>
-        <button disabled={!!loading} onClick={updatePhpConfig}>{t('Save')}</button>
+        <button disabled={!!loading || invalid} onClick={updatePhpConfig}
+          title={invalid ? t('Fix the values marked in red first.') : undefined}>{t('Save')}</button>
         {phpTune && tuneChanges.length > 0 && <div className="php-tune-diff">
           <strong><AlertCircle size={14}/> {t('Auto tune for PHP {version} will change {count} setting(s)', { version: phpTune.php_version, count: tuneChanges.length })}</strong>
           <span>{tuneChanges.map(row => `${row.key} ${row.current || t('not set')} → ${row.value}`).join(', ')}.</span>

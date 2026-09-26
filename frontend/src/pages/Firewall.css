@@ -43,6 +43,17 @@
 .fw-url-list code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm);color:var(--text)}
 .fw-blocklist-facts{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-5);margin:0;color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
 
+/* ---- open ports ---- */
+.fw-port-form{display:grid;grid-template-columns:minmax(120px,200px) minmax(100px,140px) auto;justify-content:start;gap:var(--space-2);align-items:end}
+.fw-port-form label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.fw-port-form label span{font-size:var(--text-sm)}
+.fw-port-list{list-style:none;margin:var(--space-3) 0 0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.fw-port-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 10px;border:1px solid var(--primary-border);border-radius:999px;background:var(--primary-light);color:var(--primary-text)}
+.fw-port-chip code{font-family:var(--font-mono);font-size:var(--text-sm);font-weight:700}
+.fw-port-chip.always{padding-right:10px;border-color:var(--border);background:var(--surface-sunken);color:var(--text-secondary)}
+.fw-port-close{display:grid;place-items:center;width:22px;height:22px;min-height:0;padding:0;border-radius:50%;background:transparent;color:inherit;border:0;box-shadow:none}
+.fw-port-close:hover:not(:disabled){background:var(--danger-bg);color:var(--danger-text)}
+
 /* ---- technical details ---- */
 .fw-details{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
 .fw-details summary{cursor:pointer;padding:var(--space-3) var(--space-4);font-weight:600;color:var(--text-secondary);border-radius:var(--radius-lg)}
@@ -64,7 +75,7 @@
   .fw-rule-form button{grid-column:1 / -1}
 }
 @media (max-width:520px){
-  .fw-rule-form{grid-template-columns:1fr}
+  .fw-rule-form,.fw-port-form{grid-template-columns:1fr}
   .fw-url-form{flex-direction:column}
   .fw-status-actions{width:100%}
   .fw-status-actions>button:not(.icon-button){flex:1}

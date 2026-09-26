@@ -2756,19 +2756,38 @@ async fn update_php_config(State(state): State<AppState>, req: axum::extract::Re
     let number = |name: &str, default: i64| -> i64 {
         payload.get(name).and_then(Value::as_i64).unwrap_or(default)
     };
+    // PHP reads `1g` as `1G`; the helper takes only the capital.
+    let size = |name: &str| text(name, "1024M").trim().to_ascii_uppercase();
     let update = php::IniUpdate {
         display_errors: text("display_errors", "Off"),
-        memory_limit: text("memory_limit", "1024M"),
-        upload_max_filesize: text("upload_max_filesize", "1024M"),
-        post_max_size: text("post_max_size", "1024M"),
+        memory_limit: size("memory_limit"),
+        upload_max_filesize: size("upload_max_filesize"),
+        post_max_size: size("post_max_size"),
         max_execution_time: number("max_execution_time", 300),
         max_input_time: number("max_input_time", 600),
         max_input_vars: number("max_input_vars", 10000),
     };
+    // The floor is SNPanel's (see `php::MIN_MAX_EXECUTION_TIME`); the
+    // ceiling is the helper's.
     for (name, value, lo, hi) in [
-        ("max_execution_time", update.max_execution_time, 1, 3600),
-        ("max_input_time", update.max_input_time, 1, 3600),
-        ("max_input_vars", update.max_input_vars, 100, 1_000_000),
+        (
+            "max_execution_time",
+            update.max_execution_time,
+            php::MIN_MAX_EXECUTION_TIME,
+            3600,
+        ),
+        (
+            "max_input_time",
+            update.max_input_time,
+            php::MIN_MAX_INPUT_TIME,
+            3600,
+        ),
+        (
+            "max_input_vars",
+            update.max_input_vars,
+            php::MIN_MAX_INPUT_VARS,
+            1_000_000,
+        ),
     ] {
         if !(lo..=hi).contains(&value) {
             let (kind, msg, ctx) = if value < lo {
@@ -2790,6 +2809,25 @@ async fn update_php_config(State(state): State<AppState>, req: axum::extract::Re
                 "msg": msg,
                 "input": value,
                 "ctx": ctx,
+            })]);
+        }
+    }
+
+    // The three sizes have a floor too. What is not a size at all is the
+    // helper's to refuse, with its own reason.
+    for (name, value) in [
+        ("memory_limit", &update.memory_limit),
+        ("post_max_size", &update.post_max_size),
+        ("upload_max_filesize", &update.upload_max_filesize),
+    ] {
+        if php::size_mb(value).is_some_and(|mb| mb < php::MIN_SIZE_MB) {
+            let lo = format!("{}M", php::MIN_SIZE_MB);
+            return crate::errors::validation_error(vec![json!({
+                "type": "greater_than_equal",
+                "loc": ["body", name],
+                "msg": format!("Input should be greater than or equal to {lo}"),
+                "input": value,
+                "ctx": { "ge": lo },
             })]);
         }
     }

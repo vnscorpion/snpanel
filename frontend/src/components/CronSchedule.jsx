@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { msg, useT } from '../i18n/index.jsx';
 import './CronSchedule.css';
 
@@ -26,30 +26,33 @@ export function cronPresetLabel(expr) {
   return hit ? hit[1] : null;
 }
 
-// A select of the presets, and the expression itself when "Custom" is picked
-// or the value is one the presets do not name.
+// A select of the presets beside the expression itself, in a box of its own:
+// picking a preset writes its expression there, and typing one the presets
+// do not name turns the select to "Custom".
 export default function CronSchedule({ id, value, onChange, describedBy }) {
   const t = useT();
+  const input = useRef(null);
   const known = CRON_PRESETS.some(([preset]) => preset === tidy(value));
-  const [custom, setCustom] = useState(!known && tidy(value) !== '');
-  const showInput = custom || !known;
+  // "Custom" picked while the box still holds a preset's expression: the
+  // select stays on it rather than jumping back to that preset's name.
+  const [picked, setPicked] = useState(false);
 
-  return <div className={`cron-schedule${showInput ? ' custom' : ''}`}>
-    <select id={id} value={showInput ? 'custom' : tidy(value)} aria-describedby={describedBy}
+  return <div className="cron-schedule">
+    <select id={id} value={known && !picked ? tidy(value) : 'custom'} aria-describedby={describedBy}
       onChange={(event) => {
         if (event.target.value === 'custom') {
-          setCustom(true);
+          setPicked(true);
+          input.current?.focus();
+          input.current?.select();
         } else {
-          setCustom(false);
+          setPicked(false);
           onChange(event.target.value);
         }
       }}>
       {CRON_PRESETS.map(([preset, label]) => <option key={preset} value={preset}>{t(label)}</option>)}
       <option value="custom">{t('Custom schedule…')}</option>
     </select>
-    {showInput
-      ? <input value={value} onChange={(event) => onChange(event.target.value)} placeholder="*/15 * * * *"
-        aria-label={t('Cron expression')} spellCheck={false} autoComplete="off" />
-      : <code className="cron-schedule-expr" aria-hidden="true">{tidy(value)}</code>}
+    <input ref={input} className="cron-schedule-input" value={value} onChange={(event) => onChange(event.target.value)}
+      placeholder="*/15 * * * *" aria-label={t('Cron expression')} spellCheck={false} autoComplete="off" />
   </div>;
 }

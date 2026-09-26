@@ -1,6 +1,12 @@
 /* Layout that holds at every width, loaded after the three sheets it
    corrects. Page-specific rules stay in pages/*.css. */
 
+/* ---- segmented tabs keep their words on hover ---- */
+/* The hover gave a tab a white background and no colour of its own, and the
+   global button hover's white text won: in the light theme a hovered tab
+   went blank - Panel settings' tabs most visibly. */
+.segmented-control button:hover:not(:disabled):not(.active){color:var(--text)}
+
 /* ---- a list's head: Refresh and New on one line, on a phone too ---- */
 .list-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
 .section-title.create-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}

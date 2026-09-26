@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 pub const SUPPORTED_PHP_VERSIONS: &[&str] =
     &["5.6", "7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"];
 
-/// Source: `PHP_CONFIG_KEYS`.
+/// Source: `PHP_CONFIG_KEYS`. The defaults are SNPanel's floor as well: see
+/// [`MIN_MAX_EXECUTION_TIME`] and the rest.
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("display_errors", "Off"),
     ("memory_limit", "1024M"),
@@ -25,6 +26,37 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("max_input_time", "600"),
     ("max_input_vars", "10000"),
 ];
+
+/// The least SNPanel lets the PHP Configuration page save: what WordPress and
+/// WooCommerce need to import, update and back up a site without a support
+/// ticket. Lower is refused the way a value past the ceiling is.
+pub const MIN_MAX_EXECUTION_TIME: i64 = 300;
+pub const MIN_MAX_INPUT_TIME: i64 = 600;
+pub const MIN_MAX_INPUT_VARS: i64 = 10_000;
+/// `memory_limit`, `post_max_size` and `upload_max_filesize`, in MB.
+pub const MIN_SIZE_MB: u64 = 1024;
+
+/// A php.ini size - `1024M`, `1G`, `524288K`, or plain bytes - in MB, rounded
+/// down. `None` for anything else (`-1` among them), which is not this floor's
+/// to judge: the helper refuses what is not a size, with its own reason.
+pub fn size_mb(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let (digits, kb_per_unit) = match value.as_bytes().last()? {
+        b'K' | b'k' => (&value[..value.len() - 1], Some(1)),
+        b'M' | b'm' => (&value[..value.len() - 1], Some(1024)),
+        b'G' | b'g' => (&value[..value.len() - 1], Some(1024 * 1024)),
+        _ => (value, None),
+    };
+    if digits.is_empty() || digits.len() > 12 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    let kb = match kb_per_unit {
+        Some(scale) => n.checked_mul(scale)?,
+        None => n / 1024,
+    };
+    Some(kb / 1024)
+}
 
 fn allowed_list() -> String {
     let mut all: Vec<&str> = SUPPORTED_PHP_VERSIONS.to_vec();
@@ -271,4 +303,51 @@ pub fn install_packages(version: &str) -> Vec<String> {
     .iter()
     .map(|part| format!("php{version}-{part}"))
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_size_is_read_in_megabytes() {
+        assert_eq!(size_mb("1024M"), Some(1024));
+        assert_eq!(size_mb("1G"), Some(1024));
+        assert_eq!(size_mb("2g"), Some(2048));
+        assert_eq!(size_mb("1048576K"), Some(1024));
+        assert_eq!(size_mb("1073741824"), Some(1024));
+        assert_eq!(size_mb(" 512M "), Some(512));
+        assert_eq!(size_mb("1023M"), Some(1023));
+        for not_a_size in ["", "M", "-1", "1.5G", "1024MB", "abc", "1 G"] {
+            assert_eq!(size_mb(not_a_size), None, "{not_a_size:?}");
+        }
+    }
+
+    /// The defaults a fresh install writes, and "Restore defaults" writes,
+    /// are the floor itself: never below it.
+    #[test]
+    fn the_defaults_are_at_the_floor() {
+        let get = |key: &str| {
+            DEFAULTS
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| *v)
+                .unwrap_or("")
+        };
+        assert_eq!(
+            get("max_execution_time").parse::<i64>().ok(),
+            Some(MIN_MAX_EXECUTION_TIME)
+        );
+        assert_eq!(
+            get("max_input_time").parse::<i64>().ok(),
+            Some(MIN_MAX_INPUT_TIME)
+        );
+        assert_eq!(
+            get("max_input_vars").parse::<i64>().ok(),
+            Some(MIN_MAX_INPUT_VARS)
+        );
+        for key in ["memory_limit", "post_max_size", "upload_max_filesize"] {
+            assert_eq!(size_mb(get(key)), Some(MIN_SIZE_MB), "{key}");
+        }
+    }
 }

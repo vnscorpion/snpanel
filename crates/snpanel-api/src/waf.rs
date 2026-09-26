@@ -91,7 +91,33 @@ pub const DEFAULT_RULES: &[DefaultRule] = &[
         description: r#"Blocks direct access to WordPress installation scripts after deployment."#,
         rules: r#"SecRule REQUEST_URI "@rx (?i)(?:/wp-admin/install\.php(?:$|[?])|/wp-admin/setup-config\.php(?:$|[?]))" "id:1001104,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress installer probe'"#,
     },
+    // Not in the Python - SNPanel's own, after the ones the corpus records.
+    // The WordPress vhost already denies /xmlrpc.php; this is the same refusal
+    // for WordPress in PHP mode, and one the WAF page can show and switch off.
+    DefaultRule {
+        id: r#"wordpress-xmlrpc"#,
+        category: r#"WordPress"#,
+        title: r#"WordPress XML-RPC"#,
+        description: r#"Blocks xmlrpc.php, which password guessing and pingback floods go through. Switch it off for a site whose app still needs XML-RPC."#,
+        rules: r#"SecRule REQUEST_FILENAME "@endsWith /xmlrpc.php" "id:1001105,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress XML-RPC'""#,
+    },
+    // wp2shell and its kind turn an administrator's login into a web shell
+    // through the theme and plugin editors or a plugin or theme uploaded as a
+    // zip. The editor's save is a POST whose `action` is in the body, which a
+    // phase:1 rule cannot read and a phase:2 rule on this connector never
+    // runs for - so the editor pages themselves are refused.
+    DefaultRule {
+        id: r#"wordpress-admin-shell"#,
+        category: r#"WordPress"#,
+        title: r#"WordPress admin to shell (wp2shell)"#,
+        description: r#"Blocks the theme and plugin file editors and zip uploads of plugins and themes - the ways a stolen admin login becomes a web shell. Plugins and themes still install from wordpress.org."#,
+        rules: r#"SecRule REQUEST_URI "@rx (?i)(?:/wp-admin/(?:theme|plugin)-editor\.php(?:$|[?])|/wp-admin/update\.php\?(?:[^#]*&)?action=upload-(?:plugin|theme)(?:&|$))" "id:1001106,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress admin-to-shell path'""#,
+    },
 ];
+
+/// The rules above that the Python never had: the corpus records the rest.
+#[cfg(test)]
+pub const SNPANEL_RULE_IDS: &[&str] = &["wordpress-xmlrpc", "wordpress-admin-shell"];
 
 pub const LEGACY_RULE_ID_MAP: &[(&str, Option<&str>)] = &[
     (r#"general-sensitive-files"#, Some(r#"php-sensitive-files"#)),
@@ -791,7 +817,16 @@ mod tests {
             let Some(want) = case.get("config") else {
                 continue; // Python raised; not a case this compares.
             };
-            let got = site_config(&website, mode, &settings);
+            let mut got = site_config(&website, mode, &settings);
+            // The page as the Python drew it: SNPanel's own rules are not in
+            // the corpus, so they are taken out before comparing.
+            let own = |v: &serde_json::Value| SNPANEL_RULE_IDS.contains(&v.as_str().unwrap_or(""));
+            if let Some(rules) = got["default_rules"].as_array_mut() {
+                rules.retain(|r| !own(&r["id"]));
+            }
+            if let Some(ids) = got["enabled_rule_ids"].as_array_mut() {
+                ids.retain(|id| !own(id));
+            }
 
             // Compare key by key so a failure names the field rather than
             // printing two walls of JSON.
@@ -996,6 +1031,32 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// SNPanel's own WordPress rules render like the rest: phase 1, since a
+    /// phase:2 rule never runs on the nginx connector, and ids of their own.
+    #[test]
+    fn snpanels_own_wordpress_rules_render_in_phase_one() {
+        let text = render_site_rules("example.com", SNPANEL_RULE_IDS, "", "off").expect("renders");
+        assert!(text.contains("id:1001105,phase:1,deny,status:403"));
+        assert!(text.contains("id:1001106,phase:1,deny,status:403"));
+        assert!(text.contains("@endsWith /xmlrpc.php"));
+        assert!(text.contains("theme|plugin)-editor"));
+        assert!(text.contains("action=upload-(?:plugin|theme)"));
+        let mut ids: Vec<&str> = DEFAULT_RULES
+            .iter()
+            .flat_map(|r| r.rules.split("id:").skip(1))
+            .map(|rest| &rest[..rest.find(',').unwrap_or(rest.len())])
+            .collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "a rule id is used twice");
+        // And a new site gets them: an empty column is every rule.
+        let all = parse_enabled_rule_ids("");
+        assert!(SNPANEL_RULE_IDS
+            .iter()
+            .all(|id| all.iter().any(|a| a == id)));
+    }
+
     /// An unreadable stored selection means **every** rule, not none. Getting
     /// this backwards silently unprotects a site.
     #[test]
@@ -1006,12 +1067,18 @@ mod tests {
             let stored = case["stored"].as_str().unwrap_or("");
             let mut got = parse_enabled_rule_ids(stored);
             got.sort();
-            let want: Vec<String> = case["ids"]
+            let mut want: Vec<String> = case["ids"]
                 .as_array()
                 .expect("a list")
                 .iter()
                 .map(|v| v.as_str().unwrap_or("").to_string())
                 .collect();
+            // "Every rule" is every rule this build has - the Python's and
+            // SNPanel's own.
+            if want.len() == corpus["rule_ids"].as_array().map_or(0, Vec::len) {
+                want.extend(SNPANEL_RULE_IDS.iter().map(|id| id.to_string()));
+                want.sort();
+            }
             if got != want {
                 failures.push(format!(
                     "{:?}: python {want:?}, rust {got:?}",
@@ -1064,9 +1131,15 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap_or("").to_string())
             .collect();
-        let mut got: Vec<String> = DEFAULT_RULES.iter().map(|r| r.id.to_string()).collect();
+        // The Python's, and SNPanel's own beside them.
+        let mut got: Vec<String> = DEFAULT_RULES
+            .iter()
+            .map(|r| r.id.to_string())
+            .filter(|id| !SNPANEL_RULE_IDS.contains(&id.as_str()))
+            .collect();
         got.sort();
         assert_eq!(got, want);
+        assert_eq!(DEFAULT_RULES.len(), want.len() + SNPANEL_RULE_IDS.len());
 
         // Two legacy ids map to nothing because the rules behind them were
         // withdrawn. Asking for one is not an error and not a rule.

@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   TriangleAlert,
   UserCog,
+  UserPlus,
 } from 'lucide-react';
 import { followInPanel, routeForPage, scanRoute } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
@@ -221,7 +222,9 @@ export default function DashboardPage() {
     { key: 'ssl', icon: Lock, label: t('Install SSL'), page: 'ssl' },
     { key: 'backup', icon: Archive, label: t('Back up'), page: 'backups', before: () => setBackupTab('website') },
     isAdmin
-      ? { key: 'sftp', icon: FolderKey, label: t('New SFTP account'), page: 'users', before: () => setUserTab('add') }
+      // A new panel user - who can then have SFTP logins of their own. Called
+      // "New SFTP account" it read as the SFTP page's job.
+      ? { key: 'new-user', icon: UserPlus, label: t('New account'), page: 'users', before: () => setUserTab('add') }
       : { key: 'sftp', icon: FolderKey, label: t('SFTP login'), page: 'security' },
     isAdmin && { key: 'users', icon: UserCog, label: t('Panel users'), page: 'users', before: () => setUserTab('list') },
     // Every installed addon has its way in from here too.

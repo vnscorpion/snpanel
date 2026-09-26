@@ -2041,7 +2041,8 @@ mod tests {
     #[test]
     fn every_definition_carries_the_five_fields() {
         let defs = rule_definitions();
-        assert_eq!(defs.len(), 8);
+        // The Python's eight, and SNPanel's own.
+        assert_eq!(defs.len(), 8 + crate::waf::SNPANEL_RULE_IDS.len());
         for d in &defs {
             for key in ["id", "category", "title", "description", "enabled_default"] {
                 assert!(d.get(key).is_some(), "{key} missing from {d}");

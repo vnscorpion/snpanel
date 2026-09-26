@@ -1,4 +1,5 @@
-import { Plus, RefreshCw, RotateCw, ShieldAlert, ShieldCheck, ShieldOff, ShieldQuestion, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { Lock, Plus, RefreshCw, RotateCw, ShieldAlert, ShieldCheck, ShieldOff, ShieldQuestion, Trash2, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 import './Firewall.css';
@@ -62,12 +63,14 @@ export default function FirewallPage() {
     loadFirewall,
     loadFirewallBlocklists,
     loading,
+    openFirewallPort,
     reloadFirewall,
     setFirewallBlocklistUrl,
     setFirewallRule,
     updateFirewallBlocklistsNow,
   } = usePanel();
   const t = useT();
+  const [openPort, setOpenPort] = useState({ port: '', protocol: 'tcp' });
 
   if (!isAdmin) return <section className="section"><h2>{t('Firewall')}</h2><p className="hint">{t('No permission.')}</p></section>;
 
@@ -91,13 +94,20 @@ export default function FirewallPage() {
 
   const protectedPorts = firewallStatus?.summary?.protected_ports || [];
   const rules = (firewallStatus?.rules || []).filter((rule) => !rule.protected);
+  // A port open to anyone is its own list; what is left is about addresses.
+  const isOpenPort = (item) => item.action !== 'DENY' && item.from === 'any' && item.to !== 'any';
+  const openPorts = rules.filter(isOpenPort);
+  const addressRules = rules.filter((item) => !isOpenPort(item));
+  // One port: the API takes no ranges.
+  const portNumber = openPort.port.trim();
+  const portOk = /^\d{1,5}$/.test(portNumber) && Number(portNumber) >= 1 && Number(portNumber) <= 65535;
   const blocklist = parseBlocklistStatus(firewallBlocklists?.stdout);
 
   const rule = firewallRule;
   const blocking = rule.action === 'block';
   const hasPort = rule.port.trim() !== '';
-  // Blocking needs an address: the helper will not deny a port to everyone.
-  const canAdd = blocking ? rule.ip.trim() !== '' : rule.ip.trim() !== '' || hasPort;
+  // An address, always: a port for everyone is "Open ports" above.
+  const canAdd = rule.ip.trim() !== '';
   const change = (field) => (event) => setFirewallRule((prev) => ({ ...prev, [field]: event.target.value }));
 
   return <div className="fw-page">
@@ -117,16 +127,46 @@ export default function FirewallPage() {
             : <button type="button" className="secondary danger-hover" disabled={busy || state === 'loading'} onClick={disableFirewall}><ShieldOff size={15} aria-hidden="true"/> {t('Turn off')}</button>}
         </div>
       </div>
-      {protectedPorts.length > 0 && <p className="fw-ports">
-        <span>{t('Always open')}</span>
-        {protectedPorts.map((port) => <code key={port}>{port}</code>)}
-      </p>}
+    </section>
+
+    <section className="section fw-open-ports">
+      <div className="fw-section-head">
+        <h2>{t('Open ports')}</h2>
+        <p className="hint">{t('Let anyone reach a port on this server - for a service of your own, such as an application on 8080.')}</p>
+      </div>
+      <form className="fw-port-form" onSubmit={async (event) => {
+        event.preventDefault();
+        if (portOk && await openFirewallPort(openPort.port, openPort.protocol)) setOpenPort((prev) => ({ ...prev, port: '' }));
+      }}>
+        <label><span>{t('Port')}</span>
+          <input value={openPort.port} onChange={(event) => setOpenPort((prev) => ({ ...prev, port: event.target.value }))}
+            placeholder="8080" inputMode="numeric" autoComplete="off" aria-describedby="fw-port-hint" />
+        </label>
+        <label><span>{t('Protocol')}</span>
+          <select value={openPort.protocol} onChange={(event) => setOpenPort((prev) => ({ ...prev, protocol: event.target.value }))}>
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
+        </label>
+        <button type="submit" disabled={busy || !portOk}><Plus size={15} aria-hidden="true"/> {t('Open port')}</button>
+      </form>
+      <p className="hint" id="fw-port-hint">{t('A port number from 1 to 65535.')}</p>
+      <ul className="fw-port-list" aria-label={t('Open ports')}>
+        {protectedPorts.map((port) => <li key={`always-${port}`} className="fw-port-chip always" title={t('Always open: the panel needs it')}>
+          <Lock size={12} aria-hidden="true"/> <code>{port}</code>
+        </li>)}
+        {openPorts.map((item) => <li key={item.id} className="fw-port-chip">
+          <code>{item.to}</code>
+          <button type="button" className="fw-port-close" disabled={busy} onClick={() => deleteFirewallRule(item.id)}
+            aria-label={t('Close port {port}', { port: item.to })} title={t('Close port {port}', { port: item.to })}><X size={13} aria-hidden="true"/></button>
+        </li>)}
+      </ul>
     </section>
 
     <section className="section fw-rules">
       <div className="fw-section-head">
-        <h2>{t('Rules')}</h2>
-        <p className="hint">{t('Allow or block an address, a port, or a port for one address.')}</p>
+        <h2>{t('IP addresses')}</h2>
+        <p className="hint">{t('Allow or block one address - on every port, or only on one.')}</p>
       </div>
       <form className="fw-rule-form" onSubmit={(event) => { event.preventDefault(); if (canAdd) addFirewallRule(); }}>
         <label><span>{t('Action')}</span>
@@ -136,7 +176,7 @@ export default function FirewallPage() {
           </select>
         </label>
         <label><span>{t('From address')}</span>
-          <input value={rule.ip} onChange={change('ip')} placeholder={blocking ? '203.0.113.7' : t('Anyone')} spellCheck="false" autoComplete="off" />
+          <input value={rule.ip} onChange={change('ip')} placeholder="203.0.113.7" spellCheck="false" autoComplete="off" />
         </label>
         <label><span>{t('Port')}</span>
           <input value={rule.port} onChange={change('port')} placeholder={t('All ports')} inputMode="numeric" autoComplete="off" />
@@ -152,8 +192,8 @@ export default function FirewallPage() {
         </button>
       </form>
 
-      {rules.length === 0
-        ? <p className="empty-note fw-empty">{t('No rules yet. Only the always-open ports accept connections.')}</p>
+      {addressRules.length === 0
+        ? <p className="empty-note fw-empty">{t('No address is allowed or blocked yet.')}</p>
         : <div className="data-table-wrap">
           <table className="data-table fw-table">
             <thead><tr>
@@ -164,7 +204,7 @@ export default function FirewallPage() {
               <th scope="col"><span className="sr-only">{t('Delete')}</span></th>
             </tr></thead>
             <tbody>
-              {rules.map((item) => <tr key={item.id}>
+              {addressRules.map((item) => <tr key={item.id}>
                 <td className="fw-id">{item.id}</td>
                 <td><span className={`badge ${item.action === 'DENY' ? 'bad' : 'ok'}`}>{item.action === 'DENY' ? t('Block') : t('Allow')}</span></td>
                 <td>{item.from === 'any' ? <span className="data-table-muted">{t('Anyone')}</span> : <code>{item.from}</code>}</td>
