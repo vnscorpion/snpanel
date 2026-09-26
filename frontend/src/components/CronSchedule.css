@@ -1,0 +1,10 @@
+/* A schedule picked by name, or typed as a crontab expression.
+   See components/CronSchedule.jsx. */
+
+.cron-schedule{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;min-width:0}
+.cron-schedule.custom{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.cron-schedule select,.cron-schedule input{width:100%;min-width:0}
+.cron-schedule-expr{font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);color:var(--text-muted);white-space:nowrap;padding:0 2px}
+
+/* A job's schedule, named when it is one of the presets. */
+.cron-item-when{margin-left:8px;font-style:normal;font-weight:600;font-size:var(--text-sm);color:var(--text-muted)}

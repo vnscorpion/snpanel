@@ -18,7 +18,18 @@
 .sftp-shown code{font-size:var(--text-md);font-weight:600;letter-spacing:.02em;user-select:all;overflow-wrap:anywhere}
 .sftp-shown small{flex-basis:100%}
 
-.sftp-password{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-2);align-items:end}
+/* The fields in a grid of their own: with the buttons spanning it, auto-fit
+   kept its empty tracks and left the fields a fifth of the width each. */
+/* minmax(0,1fr): an auto track grew to the fields' three columns on a phone
+   and took the whole page 260px past the window. */
+.sftp-password{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-2)}
+.sftp-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-2);align-items:end;max-width:880px}
 .sftp-field{display:grid;gap:6px;min-width:0}
 .sftp-field>label{color:var(--text-secondary);font-size:var(--text-sm);font-weight:600}
-.sftp-actions{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.sftp-actions{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+
+@media (max-width:640px){
+  .sftp-fields{grid-template-columns:1fr}
+  .sftp-actions{display:grid;grid-template-columns:1fr}
+  .sftp-actions button{width:100%}
+}

@@ -270,6 +270,10 @@ async fn website_waf(
     // The custom-rules box is admin-only to write; tell the UI so it can show
     // it read-only rather than offering an edit that will be refused.
     data["may_edit_custom_rules"] = json!(permissions::is_admin_role(&current.user.role));
+    // Whether the switch can do anything here: without nginx's ModSecurity
+    // module there is no WAF to turn on, and the page says so to anyone,
+    // not only to an administrator who can read the WAF status.
+    data["engine"] = json!(crate::system::waf_engine_available());
     axum::Json(data).into_response()
 }
 
@@ -1132,11 +1136,68 @@ async fn set_crs(State(state): State<AppState>, req: Request) -> Response {
         );
     }
 
+    let (websites, failures) = match switch_crs_mode(&state, target).await {
+        Ok(done) => done,
+        Err(response) => return response,
+    };
+
+    let sites_using_crs = if target == "off" {
+        0
+    } else {
+        websites
+            .iter()
+            .filter(|w| crate::waf::site_uses_crs(w))
+            .count()
+    };
+
+    let mut message = match target {
+        "off" => "OWASP CRS is off.".to_string(),
+        "detect" => "OWASP CRS is in detect mode: every rule logs, nothing is blocked.".to_string(),
+        _ => "OWASP CRS is blocking at paranoia level 1.".to_string(),
+    };
+    if !failures.is_empty() {
+        let names: Vec<String> = failures
+            .iter()
+            .take(5)
+            .map(|f| f["domain"].as_str().unwrap_or("").to_string())
+            .collect();
+        message = format!(
+            "{message} {} site(s) could not be updated: {}",
+            failures.len(),
+            names.join(", ")
+        );
+    }
+
+    // "Switching every site to blocking is the largest single change an admin
+    // can make here, and it left no trace at all."
+    super::packages::audit_action(&state, &parts, current.user.id, "update_crs_mode", target).await;
+
+    axum::Json(json!({
+        "ok": true,
+        "message": message,
+        "mode": target,
+        "failures": failures,
+        "sites_using_crs": sites_using_crs,
+    }))
+    .into_response()
+}
+
+/// The server-wide mode switched and every site's rules rewritten for it, in
+/// the order described on [`set_crs`]; the sites and the ones that could not
+/// be rewritten come back.
+///
+/// Its own function because a site's WAF switch needs it as well: WAF on
+/// means the OWASP rule set blocking, and a server still at "off" or
+/// "detect" is moved to "block" first.
+pub(super) async fn switch_crs_mode(
+    state: &AppState,
+    target: &'static str,
+) -> Result<(Vec<snpanel_db::Website>, Vec<Value>), Response> {
     let websites = match state.db.websites().list(None, "").await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("listing websites failed: {e}");
-            return crate::errors::internal_error();
+            return Err(crate::errors::internal_error());
         }
     };
 
@@ -1184,7 +1245,7 @@ async fn set_crs(State(state): State<AppState>, req: Request) -> Response {
     let (result, failures) = if target == "off" {
         if let Err(e) = save_crs_mode("off") {
             tracing::error!("writing panel-settings.json failed: {e}");
-            return crate::errors::internal_error();
+            return Err(crate::errors::internal_error());
         }
         let failures = rewrite("off", websites.clone()).await;
         let result = helper("off", "echo 'OWASP CRS disabled'".to_string()).await;
@@ -1192,66 +1253,27 @@ async fn set_crs(State(state): State<AppState>, req: Request) -> Response {
     } else {
         let result = helper(target, format!("echo 'OWASP CRS mode: {target}'")).await;
         if !result.ok() {
-            return bad_request(
+            return Err(bad_request(
                 result
                     .failure_detail("Could not change the CRS mode")
                     .trim(),
-            );
+            ));
         }
         if let Err(e) = save_crs_mode(target) {
             tracing::error!("writing panel-settings.json failed: {e}");
-            return crate::errors::internal_error();
+            return Err(crate::errors::internal_error());
         }
         let failures = rewrite(target, websites.clone()).await;
         (result, failures)
     };
     if !result.ok() {
-        return bad_request(
+        return Err(bad_request(
             result
                 .failure_detail("Could not change the CRS mode")
                 .trim(),
-        );
+        ));
     }
-
-    let sites_using_crs = if target == "off" {
-        0
-    } else {
-        websites
-            .iter()
-            .filter(|w| crate::waf::site_uses_crs(w))
-            .count()
-    };
-
-    let mut message = match target {
-        "off" => "OWASP CRS is off.".to_string(),
-        "detect" => "OWASP CRS is in detect mode: every rule logs, nothing is blocked.".to_string(),
-        _ => "OWASP CRS is blocking at paranoia level 1.".to_string(),
-    };
-    if !failures.is_empty() {
-        let names: Vec<String> = failures
-            .iter()
-            .take(5)
-            .map(|f| f["domain"].as_str().unwrap_or("").to_string())
-            .collect();
-        message = format!(
-            "{message} {} site(s) could not be updated: {}",
-            failures.len(),
-            names.join(", ")
-        );
-    }
-
-    // "Switching every site to blocking is the largest single change an admin
-    // can make here, and it left no trace at all."
-    super::packages::audit_action(&state, &parts, current.user.id, "update_crs_mode", target).await;
-
-    axum::Json(json!({
-        "ok": true,
-        "message": message,
-        "mode": target,
-        "failures": failures,
-        "sites_using_crs": sites_using_crs,
-    }))
-    .into_response()
+    Ok((websites, failures))
 }
 
 /// Source: `str(exc)[:200]` and `(...).strip()[:200]` - Python slices

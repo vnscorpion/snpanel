@@ -99,6 +99,7 @@ export default function SftpAccess({ user, self = false, page = false }) {
     {info.active && !info.enabled && !isAdmin && <p className="hint">{t('Ask an administrator to turn it on.')}</p>}
 
     {info.active && (info.enabled || isAdmin) && <div className="sftp-password">
+      <div className="sftp-fields">
       <div className="sftp-field">
         <label htmlFor={`sftp-typed-${user.id}`}>{info.enabled ? t('New SFTP password') : t('SFTP password')}</label>
         <input id={`sftp-typed-${user.id}`} type="password" autoComplete="new-password" value={typed}
@@ -116,6 +117,7 @@ export default function SftpAccess({ user, self = false, page = false }) {
             onChange={(event) => setCode(event.target.value)} />
         </div>}
       </>}
+      </div>
       <div className="sftp-actions">
         {info.enabled
           ? <>

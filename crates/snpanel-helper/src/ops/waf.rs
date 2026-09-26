@@ -194,7 +194,11 @@ pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
             "modsecurity-crs installed but no rules directory found",
         );
     };
-    let setup = first_existing(CRS_SETUP_FILES);
+    // A file, not a directory: looked up with `first_existing`, which wants a
+    // directory, none of these was ever found, the include went out without
+    // `crs-setup.conf`, and CRS's rule 901001 answered every request on every
+    // site that loaded it with a 500 - "deployed without configuration".
+    let setup = first_existing_file(CRS_SETUP_FILES);
 
     // The worker opens the audit log, so it has to exist and be the web
     // account's before the configuration names it.
@@ -419,6 +423,15 @@ fn first_existing<P: AsRef<Path>>(dirs: &[P]) -> Option<std::path::PathBuf> {
     dirs.iter()
         .map(|d| std::path::PathBuf::from(d.as_ref()))
         .find(|d| d.is_dir())
+}
+
+/// The first of `files` that is a file: `[[ -f ]]`, where [`first_existing`]
+/// is `[[ -d ]]`.
+fn first_existing_file<P: AsRef<Path>>(files: &[P]) -> Option<std::path::PathBuf> {
+    files
+        .iter()
+        .map(|f| std::path::PathBuf::from(f.as_ref()))
+        .find(|f| f.is_file())
 }
 
 /// `ls "$(crs_rules_dir)"/*.conf | wc -l`, or 0 when there is no such
@@ -1217,6 +1230,48 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(count_conf_files(None), 0);
+    }
+
+    /// The setup file is a file. Looked up as a directory it was never found,
+    /// and CRS without it refuses every request with a 500.
+    #[test]
+    fn the_crs_setup_file_is_found_as_a_file() {
+        let base = std::env::temp_dir().join(format!("crs-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("the base");
+        let first = base.join("crs-setup.conf");
+        let second = base.join("crs-setup.conf.example");
+        let candidates = [first.clone(), second.clone()];
+
+        assert_eq!(first_existing_file(&candidates), None, "neither exists yet");
+        std::fs::write(&second, "# example").expect("the example");
+        assert_eq!(first_existing_file(&candidates), Some(second.clone()));
+        std::fs::write(&first, "# real").expect("the real one");
+        assert_eq!(
+            first_existing_file(&candidates),
+            Some(first.clone()),
+            "the earlier entry wins"
+        );
+
+        // A directory of the right name is not a setup file.
+        std::fs::remove_file(&first).expect("remove");
+        std::fs::create_dir_all(&first).expect("a directory, not a file");
+        assert_eq!(first_existing_file(&candidates), Some(second.clone()));
+
+        // And the include names it, before the rules.
+        let text = crs_conf_text(
+            CrsMode::Block,
+            Path::new("/usr/share/modsecurity-crs/rules"),
+            Some(&second),
+        );
+        let setup_at = text
+            .find(&format!("Include {}", second.display()))
+            .expect("the setup is included");
+        let rules_at = text
+            .find("Include /usr/share/modsecurity-crs/rules/*.conf")
+            .expect("the rules are");
+        assert!(setup_at < rules_at);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// `free -m` truncates, and so does this.

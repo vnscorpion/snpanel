@@ -205,18 +205,25 @@ async function main() {
   } else {
     const rules = (await api('GET', '/waf/rules')).json;
     const ids = (rules?.default_rule_definitions || []).map((r) => r.id);
-    await api('PATCH', `/websites/${s.id}/waf`, { waf_enabled: true });
+    const modeBefore = (await api('GET', '/waf/crs')).json?.mode;
+    // One switch: WAF on is the panel's rules and the OWASP rule set blocking.
+    const on = await api('PATCH', `/websites/${s.id}/waf`, { waf_enabled: true });
     const put = await api('PUT', `/waf/websites/${s.id}`, { enabled_rule_ids: ids, custom_rules: '' });
     await webUntil(phpDomain, '/.git/config', (r) => r.code === 403, { seconds: 10, https: siteHttps });
     const blocked = ['/.git/config', '/.env', '/composer.lock', '/wp-config.php.bak'].map((path) => [path, web(phpDomain, path, { https: siteHttps }).code]);
-    check(put.ok && blocked.some(([, code]) => code === 403), `the default rules block probes: ${blocked.map(([a, b]) => `${a} ${b}`).join(', ')}`, detail(put));
+    check(on.ok && put.ok && blocked.some(([, code]) => code === 403), `the default rules block probes: ${blocked.map(([a, b]) => `${a} ${b}`).join(', ')}`, `${detail(on)} ${detail(put)}`);
+    // Real requests, not only nginx -t: an include that loads CRS without its
+    // setup file passes nginx -t and answers every request with a 500.
     check(web(phpDomain, '/probe.php', { https: siteHttps }).code === 200, 'and let the site through');
-    const crs = await api('PUT', '/waf/crs', { mode: 'detect' });
-    const crsSite = await api('PUT', `/waf/websites/${s.id}/crs`, { enabled: true });
-    check(crs.ok && crsSite.ok && run('nginx', ['-t']).ok, 'OWASP CRS on in detect mode for the site, nginx -t passes', `${detail(crs)} ${detail(crsSite)}`);
-    await api('PUT', `/waf/websites/${s.id}/crs`, { enabled: false });
-    await api('PUT', '/waf/crs', { mode: 'off' });
-    await api('PATCH', `/websites/${s.id}/waf`, { waf_enabled: false });
+    const cfg = (await api('GET', `/waf/websites/${s.id}`)).json;
+    const attack = '/probe.php?id=1%27%20OR%20%271%27%3D%271';
+    const refused = await webUntil(phpDomain, attack, (r) => r.code === 403, { seconds: 10, https: siteHttps });
+    check(cfg?.crs_active && refused.code === 403, `the same switch turns the OWASP rule set on, blocking: an SQL injection is refused (${refused.code})`, JSON.stringify(cfg || {}).slice(0, 200));
+    const off = await api('PATCH', `/websites/${s.id}/waf`, { waf_enabled: false });
+    const cfgOff = (await api('GET', `/waf/websites/${s.id}`)).json;
+    const through = await webUntil(phpDomain, attack, (r) => r.code === 200, { seconds: 10, https: siteHttps });
+    check(off.ok && !cfgOff?.crs_enabled && through.code === 200, `and off takes both off (${through.code})`, detail(off));
+    if (modeBefore && modeBefore !== 'block') await api('PUT', '/waf/crs', { mode: modeBefore });
   }
   const access = await api('GET', `/waf/access-logs?website_id=${s.id}&limit=20`);
   check(access.ok && access.json?.total > 0, `Access Logs reads the site's log (${access.json?.total} lines)`, detail(access));

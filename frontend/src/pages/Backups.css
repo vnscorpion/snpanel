@@ -17,10 +17,17 @@
 .bk-user-form{grid-template-columns:minmax(200px,1fr) minmax(200px,1fr) max-content;align-items:end}
 
 /* ---- schedules ---- */
-.bk-schedule-form{grid-template-columns:repeat(3,minmax(0,1fr))}
-.bk-schedule-form .bk-users{grid-row:span 2}
-.bk-schedule-form select[multiple]{min-height:96px;padding-block:8px}
-.bk-schedule-form .bk-keep{max-width:200px}
+.bk-schedule-form{grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:var(--space-4)}
+.bk-schedule-form select[multiple]{min-height:120px;padding-block:8px}
+/* When and where: a label beside each control, the controls one width. */
+.bk-when{display:grid;gap:var(--space-3);min-width:0}
+.bk-row{display:grid;grid-template-columns:180px minmax(0,1fr);gap:var(--space-3);align-items:center}
+.bk-row>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.bk-row>select,.bk-row>.cron-schedule,.bk-control{max-width:520px;min-width:0}
+.bk-control{display:grid;gap:4px}
+.bk-control .hint{margin:0;font-size:var(--text-sm)}
+.bk-control code{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text);word-break:break-all}
+.bk-keep{grid-template-columns:110px minmax(0,1fr);align-items:center;gap:var(--space-2)}
 .bk-schedule-form,.bk-s3-form,.bk-sftp-form{padding:12px;background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg)}
 /* A schedule's row is words, not a path: they wrap whole. */
 .backups-page .bk-schedule-row>span{word-break:normal;overflow-wrap:anywhere}
@@ -50,8 +57,8 @@
 @media (max-width:760px){
   .bk-user-form,.bk-s3-form,.bk-sftp-form,.bk-schedule-form{grid-template-columns:1fr}
   .bk-span-2{grid-column:auto}
-  .bk-schedule-form .bk-users{grid-row:auto}
-  .bk-schedule-form .bk-keep{max-width:none}
+  .bk-row{grid-template-columns:1fr;gap:6px}
+  .bk-row>select,.bk-row>.cron-schedule,.bk-control{max-width:none}
   .bk-actions{justify-content:stretch}
   .bk-actions button{flex:1 1 auto}
 }

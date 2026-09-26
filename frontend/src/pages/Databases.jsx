@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Check, Copy, Database, Dices, Download, Globe, KeyRound, Plus, RefreshCw, Search, Trash2, User, UserCog, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Copy, Database, Dices, Download, ExternalLink, Globe, KeyRound, Plus, RefreshCw, Search, Trash2, User, UserCog, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 
@@ -34,6 +34,24 @@ export default function DatabasesPage() {
   const t = useT();
   // The row whose owner is being changed, and the choice so far.
   const [moving, setMoving] = useState(null);
+  // The create form: open while there is nothing to list, on "New database",
+  // and when the address asks for it (?new=1, the dashboard's quick action).
+  const [createChoice, setCreateChoice] = useState(() => (new URLSearchParams(window.location.search).get('new') === '1' ? true : null));
+  const createOpen = createChoice ?? (databases.length === 0 && !dbSearch.trim());
+  const createRef = useRef(null);
+  const nameRef = useRef(null);
+  function showCreate() {
+    setCreateChoice(true);
+    setTimeout(() => {
+      createRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      nameRef.current?.focus({ preventScroll: true });
+    }, 30);
+  }
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('new') !== '1') return;
+    window.history.replaceState({}, '', window.location.pathname);
+    showCreate();
+  }, []);
 
   // Whose a database is decides whose backup it is in, and a database is only
   // ever put on one of its owner's sites.
@@ -59,9 +77,12 @@ export default function DatabasesPage() {
 
   const dbSearchActive = !!dbSearch.trim();
   return <section className="section">
-    <div className="section-title">
+    <div className="section-title list-head">
       <h2>{t('Databases')}</h2>
-      <button className="secondary-light" disabled={!!loading || dbSearching} onClick={() => loadDatabases(dbSearch, true)}><RefreshCw size={15} className={dbSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+      <div className="list-head-actions">
+        <button className="secondary-light" disabled={!!loading || dbSearching} onClick={() => loadDatabases(dbSearch, true)}><RefreshCw size={15} className={dbSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+        <button type="button" onClick={showCreate}><Plus size={15}/> {t('New database')}</button>
+      </div>
     </div>
     <div className="website-search-bar">
       <Search size={16}/>
@@ -70,8 +91,8 @@ export default function DatabasesPage() {
       {dbSearch && <button className="secondary-light icon-button" type="button" onClick={() => setDbSearch('')}
         aria-label={t('Clear the search')} title={t('Clear the search')}><X size={15}/></button>}
     </div>
-    <div className="db-create">
-      <input value={newDatabase.db_name} onChange={e => setNewDatabase(prev => ({ ...prev, db_name: e.target.value }))}
+    {createOpen && <div className="db-create" ref={createRef}>
+      <input ref={nameRef} value={newDatabase.db_name} onChange={e => setNewDatabase(prev => ({ ...prev, db_name: e.target.value }))}
         placeholder="database_name" aria-label={t('Database name')} />
       <input value={newDatabase.db_user} onChange={e => setNewDatabase(prev => ({ ...prev, db_user: e.target.value }))}
         placeholder={t('db_user (the name, if left empty)')} aria-label={t('Database user')} />
@@ -90,8 +111,11 @@ export default function DatabasesPage() {
         <option value="">{t('No website')}</option>
         {sitesOf(createOwner).map(site => <option key={site.id} value={site.id}>{site.domain}</option>)}
       </select>
-      <button disabled={!!loading || !newDatabase.db_name.trim()} onClick={createDatabase}><Plus size={15}/> {t('Create database')}</button>
-    </div>
+      <div className="db-create-actions">
+        <button disabled={!!loading || !newDatabase.db_name.trim()} onClick={createDatabase}><Plus size={15}/> {t('Create database')}</button>
+        {databases.length > 0 && <button type="button" className="secondary-light" onClick={() => setCreateChoice(false)}>{t('Cancel')}</button>}
+      </div>
+    </div>}
     {createdDbInfo && <div className="info-box db-created-box">
       <div className="db-created-head"><strong>{t('Database created')}</strong>
         <button className="mini secondary-light" onClick={() => setCreatedDbInfo(null)} aria-label={t('Close')}><X size={13}/></button></div>
@@ -113,15 +137,23 @@ export default function DatabasesPage() {
               <span title={t('Website')}><Globe size={12} aria-hidden="true"/> {db.website || t('No website')}</span>
             </small>
           </span>
-          <button className="secondary-light" disabled={!!loading} onClick={() => openPhpMyAdmin(db.id)}>phpMyAdmin</button>
-          <button className="secondary-light" disabled={!!loading} onClick={() => downloadDatabase(db.id, db.db_name)}><Download size={14}/> SQL</button>
-          <button className="secondary-light" disabled={!!loading} onClick={() => changeDbPassword(db.id)}><KeyRound size={14}/> {t('Password')}</button>
-          {isAdmin && <button className="secondary-light" disabled={!!loading} aria-expanded={moving?.id === db.id}
-            onClick={() => setMoving(moving?.id === db.id ? null : { id: db.id, owner_id: String(db.owner_id), website_id: db.website_id ? String(db.website_id) : '' })}>
-            <UserCog size={14}/> {t('Owner')}
-          </button>}
-          <button className="danger" disabled={!!loading} onClick={() => deleteDatabase(db.id, db.db_name)}
-            aria-label={t('Delete {name}', { name: db.db_name })} title={t('Delete {name}', { name: db.db_name })}><Trash2 size={14}/></button>
+          {/* One row of actions at every width: on a phone the labels give way
+              to their icons, and phpMyAdmin keeps its name. */}
+          <div className="db-actions">
+            <button className="secondary-light db-pma" disabled={!!loading} onClick={() => openPhpMyAdmin(db.id)}
+              title={t('Open {name} in phpMyAdmin', { name: db.db_name })}><ExternalLink size={14} aria-hidden="true"/> phpMyAdmin</button>
+            <button className="secondary-light" disabled={!!loading} onClick={() => downloadDatabase(db.id, db.db_name)}
+              aria-label={t('Download {name} as SQL', { name: db.db_name })} title={t('Download {name} as SQL', { name: db.db_name })}><Download size={14} aria-hidden="true"/> <span className="btn-text">SQL</span></button>
+            <button className="secondary-light" disabled={!!loading} onClick={() => changeDbPassword(db.id)}
+              aria-label={t('Change the password of {name}', { name: db.db_name })} title={t('Change the password of {name}', { name: db.db_name })}><KeyRound size={14} aria-hidden="true"/> <span className="btn-text">{t('Password')}</span></button>
+            {isAdmin && <button className="secondary-light" disabled={!!loading} aria-expanded={moving?.id === db.id}
+              aria-label={t('Change the owner of {name}', { name: db.db_name })} title={t('Change the owner of {name}', { name: db.db_name })}
+              onClick={() => setMoving(moving?.id === db.id ? null : { id: db.id, owner_id: String(db.owner_id), website_id: db.website_id ? String(db.website_id) : '' })}>
+              <UserCog size={14} aria-hidden="true"/> <span className="btn-text">{t('Owner')}</span>
+            </button>}
+            <button className="danger" disabled={!!loading} onClick={() => deleteDatabase(db.id, db.db_name)}
+              aria-label={t('Delete {name}', { name: db.db_name })} title={t('Delete {name}', { name: db.db_name })}><Trash2 size={14} aria-hidden="true"/></button>
+          </div>
         </div>
         {moving?.id === db.id && <div className="db-owner-editor">
           <p className="hint">{t('The owner\'s backups include this database. It can sit on one of their websites, or on none.')}</p>

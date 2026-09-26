@@ -31,6 +31,7 @@ import './style.css';
 import './brand.css';
 import './file-manager.css';
 import './theme.css';
+import './responsive.css';
 import { PanelContext } from './lib/panel-context.jsx';
 import { LocaleProvider, LocaleSwitch, msg, useT, serverText } from './i18n/index.jsx';
 import { createPasskey, getPasskeyAssertion, passkeysSupported } from './lib/webauthn.js';
@@ -59,6 +60,7 @@ const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
 const UpdatesPage = lazy(() => import('./pages/Updates.jsx'));
 const SecurityPage = lazy(() => import('./pages/Security.jsx'));
 const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
+const MalwareScanPage = lazy(() => import('./pages/MalwareScan.jsx'));
 const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
 const UsersPage = lazy(() => import('./pages/Users.jsx'));
 
@@ -280,13 +282,17 @@ function App() {
     ? `${currentUser?.username || username} - ${currentUser.package_name}`
     : (currentUser?.username || username);
 
+  // `options.path` for a page reached at an address of its own (one scan's
+  // details); `options.query` for what the page should open with - the
+  // dashboard's "New website" lands on the form, not above it.
   const navigateToPage = useCallback((nextPage, options = {}) => {
-    const route = routeForPage(nextPage);
+    const route = options.path || routeForPage(nextPage);
     if (!route) return;
-    const nextUrl = route;
-    if (!options.replace && window.location.pathname !== route) {
+    const nextUrl = options.query ? `${route}?${options.query}` : route;
+    const here = window.location.pathname + window.location.search;
+    if (!options.replace && here !== nextUrl) {
       window.history.pushState({}, '', nextUrl);
-    } else if (options.replace && window.location.pathname !== route) {
+    } else if (options.replace && here !== nextUrl) {
       window.history.replaceState({}, '', nextUrl);
     }
     setPage(nextPage);
@@ -2104,6 +2110,9 @@ function App() {
     if (data) {
       setNotice(next ? t('The WAF is on for {domain}.', { domain: site.domain }) : t('The WAF is off for {domain}.', { domain: site.domain }));
       await refreshAll();
+      // The switch carries the OWASP rule set with it; the WAF page's per-site
+      // state comes from here.
+      if (isAdmin) await loadCrs();
       if (String(selectedWafWebsiteId) === String(site.id)) await loadWebsiteWafConfig(site.id, false);
     }
   }
@@ -4214,6 +4223,9 @@ function App() {
       removePasskey,
       renameFileItem,
       renderBrandMark,
+      // For a page that keeps what it loads to itself - one scan's details,
+      // the dashboard's summary - rather than in App.
+      request,
       resetNginxDefault,
       resetUserTwoFactor,
       resourceUsage,
@@ -4434,6 +4446,7 @@ function App() {
     if (page === 'waf') return <WafPage />;
     if (page === 'waf-site') return <WafSitePage />;
     if (page === 'malware') return <MalwarePage />;
+    if (page === 'malware-scan') return <MalwareScanPage />;
     if (page === 'access-logs') return <WafAccessLogsPage />;
     if (page === 'updates') return <UpdatesPage />;
     if (page === 'services') return <ServicesPage />;
@@ -4461,7 +4474,6 @@ function App() {
             <div>
               <p className="eyebrow">{t('Server Management Panel')}</p>
               <h1>{panelSettings.app_name || 'SNPanel'}</h1>
-              <p className="hint">{t('Manage websites, databases, backups, SSL, and services.')}</p>
             </div>
           </div>
           <div className="login-toggles">

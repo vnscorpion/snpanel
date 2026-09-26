@@ -6,6 +6,7 @@
 
 pub mod addons;
 pub mod auth;
+pub mod dashboard;
 pub mod databases;
 pub mod fail2ban;
 pub mod firewall;
@@ -41,6 +42,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(health::router())
         .nest("/auth", auth::router())
         .nest("/services", services::router())
+        .merge(dashboard::router())
         .merge(packages::router())
         .merge(users::router())
         .merge(sftp::router())
@@ -77,6 +79,7 @@ pub const PORTED_PREFIXES: &[&str] = &[
     "/api/ready",
     "/api/addons",
     "/api/auth",
+    "/api/dashboard",
     "/api/databases",
     "/api/firewall",
     "/api/maintenance",
@@ -129,6 +132,7 @@ mod tests {
     fn every_router_can_be_built_on_its_own() {
         let _ = health::router();
         let _ = auth::router();
+        let _ = dashboard::router();
         let _ = services::router();
         let _ = packages::router();
         let _ = users::router();

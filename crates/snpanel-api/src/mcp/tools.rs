@@ -213,7 +213,7 @@ pub static ALL: &[Tool] = &[
     Tool {
         name: "set_website_waf",
         title: "Turn a website's WAF on or off",
-        description: "Turns the web application firewall of one website on or off.",
+        description: "Turns the web application firewall of one website on or off: the panel's own rules and, where nginx has ModSecurity, the OWASP Core Rule Set blocking.",
         params: &[
             DOMAIN.required(),
             Param::flag("enabled", "true to turn it on, false to turn it off.").required(),

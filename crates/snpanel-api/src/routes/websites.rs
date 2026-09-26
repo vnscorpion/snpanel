@@ -1500,24 +1500,74 @@ async fn set_waf(
         Err(response) => return response,
     };
 
-    // `sync_website_rules` renders from the site's **stored** flags, not from
-    // the one being set. That is the Python's behaviour: the rule file is
-    // brought up to date, and whether nginx loads it is what the block below
-    // decides.
+    // One switch: a site's WAF on is the panel's rules and the OWASP rule
+    // set blocking, off is neither. Two switches - WAF, then CRS in off,
+    // detect or block - read as two firewalls to anyone who did not know
+    // what CRS was. Where nginx has no ModSecurity module there is no rule
+    // set to switch, and the flag keeps meaning what it did.
+    //
+    // The server-wide mode only decides for sites that load the rule set,
+    // which after this are the ones with WAF on; moving it to "block" on the
+    // first one changes nothing for any other.
+    let engine = crate::system::waf_engine_available();
+    if engine && waf_enabled && crate::waf::normalize_crs_mode(&server_crs_mode()) != "block" {
+        if let Err(r) = super::waf::switch_crs_mode(&state, "block").await {
+            return r;
+        }
+        super::packages::audit_action(&state, &parts, current.user.id, "update_crs_mode", "block")
+            .await;
+    }
+    let mut updated = website.clone();
+    updated.waf_enabled = waf_enabled;
+    if engine {
+        updated.crs_enabled = waf_enabled;
+    }
+    let crs_changed = updated.crs_enabled != website.crs_enabled;
+    if crs_changed {
+        if let Err(e) = state
+            .db
+            .websites()
+            .set_crs_enabled(website.id, updated.crs_enabled)
+            .await
+        {
+            tracing::error!("storing the CRS opt-in failed: {e}");
+            return internal_error();
+        }
+    }
+    // Put the rule set's flag back when the switch does not go through, so
+    // the site is not left loading it with the WAF off, or the reverse.
+    let undo_crs = || async {
+        if crs_changed {
+            let _ = state
+                .db
+                .websites()
+                .set_crs_enabled(website.id, website.crs_enabled)
+                .await;
+        }
+    };
+
+    // Rendered from the flags being set: the rule set is loaded only when the
+    // WAF is on (`site_uses_crs`), so rendering from the stored ones would
+    // write a site being switched on without it.
     let result = match crate::waf::sync_website_rules(
         state.settings.command_dry_run,
-        &website,
+        &updated,
         &server_crs_mode(),
     )
     .await
     {
         Ok(r) => r,
-        Err(e) => return bad_request(&e.to_string()),
+        Err(e) => {
+            undo_crs().await;
+            return bad_request(&e.to_string());
+        }
     };
     if !result.ok() {
+        undo_crs().await;
         return bad_request(result.failure_detail("Could not write WAF rules").trim());
     }
     if let Err(r) = update_waf_block(&state, &website.domain, waf_enabled).await {
+        undo_crs().await;
         return r;
     }
 

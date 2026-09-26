@@ -117,6 +117,12 @@ async fn status(State(state): State<AppState>, current: CurrentUser) -> Response
     axum::Json(body).into_response()
 }
 
+/// On or off and whether that is in force, as the Firewall page reads it -
+/// for the dashboard, which shows the same thing.
+pub(crate) async fn firewall_summary(state: &AppState) -> Value {
+    parse_summary(&listing(state).await)
+}
+
 /// The helper's `firewall-list` answer, or nothing.
 async fn listing(state: &AppState) -> String {
     let result = shell::privileged(

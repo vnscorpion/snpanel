@@ -1,23 +1,29 @@
-// The dashboard: a map of the panel, grouped, six tiles to a row.
+// The dashboard as the administrator sees it: how things are, not where.
 //
 //     node dashboard.mjs [out-dir]
 //
-// As the administrator, checks that
-//   - the tiles are exactly the sidebar's pages (less the dashboard itself),
-//     plus one per installed addon, and each group is where it should be;
-//   - a row holds six tiles at 1440px, fewer as the page narrows, and the
-//     page never scrolls sideways;
-//   - a click on a tile moves inside the panel without a reload, Enter on a
-//     focused tile does the same, and a Ctrl-click opens a new tab instead;
-//   - a focused tile shows that it is focused;
-//   - the page logs no console errors;
+// Checks that
+//   - there are eight status cards - Websites, SSL, Databases, Backups,
+//     Firewall, WAF, Malware, Services - each a link to its page, each
+//     coloured ok, warn or bad, and that the colours agree with what
+//     /api/dashboard/summary says;
+//   - "Needs attention" lists the worst first, each with a link, or says
+//     everything is fine;
+//   - "New website" lands on the Websites page with the create form open and
+//     its domain field focused, and the ?new=1 it came with is gone;
+//   - a card is reached by Tab, shows it is focused, and Enter opens its page
+//     without a reload; a Ctrl-click opens a new tab instead;
+//   - at 1440, 1024, 768 and 390px, in both themes and both languages, the
+//     page never scrolls sideways and logs no console errors;
 // and saves a screenshot per width, theme and language to out-dir.
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { BASE, logIn } from './capture.mjs';
 
 const OUT = process.argv[2] || '/root/ui-audit/dashboard';
 const WIDTHS = [[1440, 900], [1024, 768], [768, 1024], [390, 844]];
+const CARDS = ['Websites', 'SSL', 'Databases', 'Backups', 'Firewall', 'WAF', 'Malware', 'Services'];
+const RANK = { bad: 0, warn: 1, info: 2 };
 mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch();
@@ -35,121 +41,98 @@ async function openDashboard({ theme = 'light', locale = 'en', viewport = { widt
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.dash-group');
+  await page.waitForSelector('.dash-cards:not(.skeleton) .dash-card');
   await page.waitForTimeout(500);
   return { context, page, errors };
 }
 
-const readGroups = (page) => page.$$eval('.dash-group', (groups) => groups.map((g) => ({
-  title: g.querySelector('.dash-group-title').textContent,
-  tiles: [...g.querySelectorAll('.dash-tile')].map((a) => ({ label: a.textContent, href: a.getAttribute('href') })),
-  columns: getComputedStyle(g.querySelector('.dash-grid')).gridTemplateColumns.split(' ').length,
-})));
-
-// ---------------------------------------------------------------- structure
+// ------------------------------------------------------------ in English, 1440
 {
   const { context, page, errors } = await openDashboard();
-  const groups = await readGroups(page);
-  for (const g of groups) console.log(`      ${g.title}: ${g.tiles.map((t) => t.label).join(', ')}`);
+  const summary = await (await context.request.get(`${BASE}/api/dashboard/summary`)).json();
+  const cards = await page.$$eval('.dash-card', (cs) => cs.map((c) => ({
+    label: c.querySelector('.dash-card-label').textContent,
+    tone: c.dataset.tone,
+    href: c.getAttribute('href'),
+    value: c.querySelector('.dash-card-value').textContent,
+  })));
+  for (const c of cards) console.log(`      ${c.label}: ${c.value} [${c.tone}] -> ${c.href}`);
+  check(JSON.stringify(cards.map((c) => c.label)) === JSON.stringify(CARDS), `the eight cards, in order (${cards.map((c) => c.label).join(', ')})`);
+  check(cards.every((c) => ['ok', 'warn', 'bad'].includes(c.tone) && c.href?.startsWith('/')), 'each is a link, coloured ok, warn or bad');
+  const tone = (label) => cards.find((c) => c.label === label)?.tone;
+  const stopped = summary.services?.stopped || [];
+  check(tone('Services') === (stopped.length ? 'bad' : 'ok'), `Services is ${tone('Services')} with ${stopped.length} stopped`);
+  const fw = summary.firewall || {};
+  const fwWant = fw.state === 'enabled' ? (fw.chain_active === false ? 'warn' : 'ok') : fw.state === 'disabled' ? 'bad' : 'warn';
+  check(tone('Firewall') === fwWant, `Firewall is ${tone('Firewall')} for state ${fw.state}`);
+  const withSsl = summary.websites?.with_ssl || 0;
+  check(tone('SSL') === (withSsl < (summary.websites?.total || 0) ? 'warn' : 'ok'), `SSL is ${tone('SSL')} with ${withSsl}/${summary.websites?.total}`);
+  check(tone('Malware') === ({ threats: 'bad', clean: 'ok' }[summary.malware?.state] || 'warn'), `Malware is ${tone('Malware')} for ${summary.malware?.state}`);
 
-  // The sidebar, with its settings group opened so every entry is rendered.
-  const toggle = page.locator('.sidebar-group-toggle');
-  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
-  const sidebar = (await page.$$eval('.sidebar-nav > button, .sidebar-subnav > button', (bs) => bs.map((b) => b.textContent)))
-    .filter((label) => label !== 'Dashboard');
+  const items = await page.$$eval('.dash-attention-list li', (lis) => lis.map((li) => ({
+    tone: li.dataset.tone, text: li.querySelector('.dash-attention-text').textContent, href: li.querySelector('a')?.getAttribute('href'),
+  })));
+  const allGood = await page.locator('.dash-all-good').count();
+  for (const i of items) console.log(`      [${i.tone}] ${i.text} -> ${i.href}`);
+  check(items.length > 0 || allGood === 1, `needs attention: ${items.length} item(s)${allGood ? ', or everything is fine' : ''}`);
+  check(items.every((i, n) => n === 0 || RANK[items[n - 1].tone] <= RANK[i.tone]), 'the worst first');
+  check(items.every((i) => i.href?.startsWith('/')), 'each with the way to the page that fixes it');
 
-  const addonsRoute = '/addons';
-  const addonGroup = groups.find((g) => g.title === 'Addons');
-  // An addon without a page of its own opens the Addons page; it has no
-  // sidebar entry to match.
-  const tiles = groups.flatMap((g) => g.tiles.filter((t) => !(g === addonGroup && t.href === addonsRoute)).map((t) => t.label));
-  const missing = sidebar.filter((l) => !tiles.includes(l));
-  const extra = tiles.filter((l) => !sidebar.includes(l));
-  check(sidebar.length > 0 && missing.length === 0, `every sidebar page has a tile (${sidebar.length} pages; missing: ${missing.join(', ') || 'none'})`);
-  check(extra.length === 0 || (addonGroup && extra.every((l) => addonGroup.tiles.some((t) => t.label === l))),
-    `no tile outside the sidebar's pages (extra: ${extra.join(', ') || 'none'})`);
-  check(new Set(tiles).size === tiles.length, 'no page has two tiles');
-
-  const res = await context.request.get(`${BASE}/api/addons`);
-  const installed = (await res.json()).items.filter((a) => a.installed);
-  check((addonGroup?.tiles.length || 0) === installed.length,
-    `one Addons tile per installed addon (${installed.map((a) => a.slug).join(', ') || 'none installed'}; tiles: ${addonGroup?.tiles.length || 0})`);
-
-  const expectFirst = { Hosting: 'Websites', Security: 'Account security', Server: 'PHP config', Administration: 'Panel users' };
-  for (const [title, first] of Object.entries(expectFirst)) {
-    const g = groups.find((x) => x.title === title);
-    check(g && g.tiles[0].label === first, `the ${title} group starts with ${first}`);
-  }
-  check(groups.every((g) => g.columns === 6), `six tiles to a row at 1440px (${groups.map((g) => g.columns).join('/')})`);
-  check(await page.locator('.stats-grid, .site-grid').count() === 0, 'the counters row and the quick overview are gone');
-
-  // Keyboard: focus shows, and Enter follows the tile. Tab from the tile
-  // before, so the focus arrives the way a keyboard user's does.
-  const ssl = page.locator('.dash-tile', { hasText: /^SSL$/ });
-  await page.locator('.dash-tile', { hasText: /^Websites$/ }).focus();
+  // Keyboard: Tab reaches a card, shows it, and Enter opens the page in place.
+  const first = page.locator('.dash-card').first();
+  await first.focus();
   await page.keyboard.press('Tab');
-  const focus = await ssl.evaluate((el) => ({
-    focused: document.activeElement === el,
-    visible: el.matches(':focus-visible'),
-    ring: getComputedStyle(el).boxShadow,
-  }));
-  check(focus.focused && focus.visible && focus.ring !== 'none', `Tab reaches the next tile and it shows a ring (${focus.ring})`);
+  // After the card's .15s transition: at once the shadow is still nothing.
+  await page.waitForTimeout(300);
+  const focus = await page.evaluate(() => {
+    const el = document.activeElement;
+    return { card: el?.classList.contains('dash-card'), ring: getComputedStyle(el).boxShadow };
+  });
+  check(focus.card && /\b3px\b/.test(focus.ring), `Tab reaches the next card and it shows a 3px ring (${focus.ring})`);
   await page.evaluate(() => { window.__sameDocument = true; });
-  await ssl.press('Enter');
+  await page.keyboard.press('Enter');
   await page.waitForURL(/\/ssl$/);
-  check(await page.evaluate(() => window.__sameDocument === true), 'Enter on a tile moves inside the panel, no reload');
+  check(await page.evaluate(() => window.__sameDocument === true), 'Enter on a card opens its page, no reload');
 
-  // Mouse: a plain click stays in the panel; Ctrl-click opens a new tab.
+  // New website: the form, open, with the domain field focused.
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.dash-group');
-  await page.evaluate(() => { window.__sameDocument = true; });
-  await page.locator('.dash-tile', { hasText: /^Websites$/ }).click();
-  await page.waitForURL(/\/website$/);
-  const h1 = await page.locator('.page-title h1').textContent();
-  check(await page.evaluate(() => window.__sameDocument === true) && h1 === 'Websites', `a click opens the page in place (title: ${h1})`);
+  await page.waitForSelector('.dash-action');
+  await page.locator('.dash-action', { hasText: /^New website$/ }).click();
+  await page.waitForURL(/\/website(\?new=1)?$/);
+  await page.waitForTimeout(400);
+  const landed = await page.evaluate(() => ({
+    search: window.location.search,
+    focused: document.activeElement?.getAttribute('placeholder'),
+  }));
+  check(landed.focused === 'domain.com' && landed.search === '', `New website opens the create form, domain focused (${landed.focused}), ?new=1 gone (${landed.search || 'none'})`);
 
+  // Ctrl-click: a new tab, and the dashboard stays.
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.dash-group');
+  await page.waitForSelector('.dash-card');
   const [tab] = await Promise.all([
     context.waitForEvent('page'),
-    page.locator('.dash-tile', { hasText: /^Database$/ }).click({ modifiers: ['Control'] }),
+    page.locator('.dash-card', { hasText: 'Databases' }).click({ modifiers: ['Control'] }),
   ]);
   await tab.waitForLoadState('domcontentloaded');
   check(tab.url().endsWith('/database') && new URL(page.url()).pathname === '/', `Ctrl-click opens a new tab (${new URL(tab.url()).pathname}) and leaves the dashboard`);
-
   check(errors.length === 0, `no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
-  writeFileSync(`${OUT}/aria-en.yml`, await page.locator('.dashboard').ariaSnapshot());
   await context.close();
 }
 
 // ----------------------------------------------------- widths, themes, languages
-const columnsAt = {};
 for (const theme of ['light', 'dark']) {
   for (const locale of ['en', 'vi']) {
     for (const [width, height] of WIDTHS) {
       const { context, page, errors } = await openDashboard({ theme, locale, viewport: { width, height } });
-      const groups = await readGroups(page);
-      const room = await page.$eval('.dash-groups', (el) => el.clientWidth);
-      columnsAt[room] = groups[0].columns;
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      const tall = await page.evaluate(() => document.documentElement.scrollHeight);
-      check(sideways <= 0, `${theme} ${locale} ${width}px: no sideways scroll (${sideways}px over); ${groups[0].columns} columns in ${room}px; page ${tall}px tall`);
-      if (width === 1440) check(tall <= height, `${theme} ${locale} 1440x${height}: the whole dashboard fits without scrolling`);
+      const columns = await page.$eval('.dash-cards', (el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
+      check(sideways <= 0, `${theme} ${locale} ${width}px: no sideways scroll (${sideways}px over); cards in ${columns} column(s)`);
       if (errors.length) check(false, `${theme} ${locale} ${width}px: console errors: ${errors.join(' | ')}`);
-      if (locale === 'vi' && theme === 'light' && width === 1440) {
-        writeFileSync(`${OUT}/aria-vi.yml`, await page.locator('.dashboard').ariaSnapshot());
-      }
-      await page.screenshot({ path: `${OUT}/${theme}-${locale}-${width}.png`, fullPage: true });
+      await page.screenshot({ path: `${OUT}/admin-${theme}-${locale}-${width}.png`, fullPage: true });
       await context.close();
     }
   }
 }
-// The columns follow the room the dashboard has, which is not the window's
-// width: the sidebar is hidden on a tablet, so 768px can have more room than
-// 1024px.
-const rooms = Object.keys(columnsAt).map(Number).sort((a, b) => b - a);
-check(rooms.every((r, i) => i === 0 || columnsAt[r] <= columnsAt[rooms[i - 1]]),
-  `rows never widen as the room narrows (${rooms.map((r) => `${r}px:${columnsAt[r]}`).join(' ')})`);
 
 await browser.close();
 console.log(ok ? 'PASS' : 'FAIL');

@@ -52,6 +52,12 @@
 .fw-details-body h3{margin:var(--space-4) 0 var(--space-2);font-size:var(--text-sm);color:var(--text-secondary)}
 .fw-details-body h3:first-child{margin-top:0}
 .fw-details-body pre{max-height:320px;overflow:auto;white-space:pre;word-break:normal;padding:var(--space-3);background:var(--code-bg);color:var(--code-fg);border-radius:var(--radius-md);font-size:var(--text-xs);line-height:1.5}
+/* Those pre blocks are as wide as their longest line, and the page's grid
+   items default to their content's width: one opened on a phone widened the
+   whole page by 500px. They scroll inside themselves instead. */
+.fw-page>*{min-width:0}
+.fw-details-body{min-width:0}
+.fw-details-body pre{max-width:100%;min-height:3.5em}
 
 @media (max-width:900px){
   .fw-rule-form{grid-template-columns:repeat(2,minmax(0,1fr))}

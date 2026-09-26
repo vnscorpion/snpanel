@@ -50,10 +50,13 @@ export default function SslPage() {
         <button className={sslMode === 'wildcard' ? 'active' : ''} onClick={() => setSslMode('wildcard')}><Globe size={14}/> {t('Wildcard (Cloudflare)')}</button>
         <button className={sslMode === 'shared' ? 'active' : ''} onClick={() => setSslMode('shared')}><Copy size={14}/> {t('Use existing')}</button>
       </div>
-      {sslMode === 'letsencrypt' && <>
-        <button className="ssl-issue" disabled={!selectedWebsiteId || !!loading} onClick={() => enableSsl(selectedWebsiteId)}><Lock size={15}/> {t('Install / Renew SSL')}</button>
+      {sslMode === 'letsencrypt' && <div className="ssl-le">
         <p className="hint">{t('The domain must point to the correct VPS IP before issuing SSL.')}</p>
-      </>}
+        {/* One short verb for what it will do to this site, not both. */}
+        <button className="ssl-issue" disabled={!selectedWebsiteId || !!loading} onClick={() => enableSsl(selectedWebsiteId)}>
+          <Lock size={14} aria-hidden="true"/> {currentSite?.ssl_enabled && (!currentSite.ssl_mode || currentSite.ssl_mode === 'letsencrypt') ? t('Renew SSL') : t('Install SSL')}
+        </button>
+      </div>}
       {sslMode === 'wildcard' && <div className="ssl-sub-form">
         <p className="hint">
           {t('Issues {names} over Cloudflare DNS. Needs an API token with {permission} for the zone.', { names: <code>{cfZone.zone ? `${cfZone.zone} + *.${cfZone.zone}` : 'zone + *.zone'}</code>, permission: <strong>{t('Zone → DNS → Edit')}</strong> })}

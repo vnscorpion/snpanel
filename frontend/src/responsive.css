@@ -1,0 +1,67 @@
+/* Layout that holds at every width, loaded after the three sheets it
+   corrects. Page-specific rules stay in pages/*.css. */
+
+/* ---- a list's head: Refresh and New on one line, on a phone too ---- */
+.list-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+.section-title.create-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+
+/* ---- a website's card ---- */
+/* The six actions share the row equally rather than 40px each, which left
+   the last one - Delete - on a line of its own below about 300px. */
+.site-feature-actions{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:6px}
+.site-feature-actions .site-icon-button{width:100%;min-width:0;flex:none}
+@media (min-width:951px){
+  .site-feature-actions{grid-auto-columns:36px}
+}
+
+/* ---- a database's row: the name, then one row of actions ---- */
+.row.db-row{grid-template-columns:minmax(0,1fr) auto}
+.db-actions{display:flex;align-items:center;gap:6px;flex-wrap:nowrap}
+.db-actions button{white-space:nowrap}
+.db-create-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* ---- a cron job: the delete button stays a button ---- */
+@media (max-width:950px){
+  .cron-item{grid-template-columns:auto minmax(0,1fr) auto;align-items:center}
+  .cron-item button{grid-column:auto;width:auto}
+}
+
+@media (max-width:950px){
+  /* The title row turns into a grid here, and the flex row's space-between
+     left its one column only as wide as the widest item. */
+  .section-title.list-head{justify-content:normal}
+  .list-head-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}
+  .list-head-actions button{width:100%}
+  /* The path is on the settings page; on a phone it only pushed the
+     actions down. */
+  .site-card .site-head small{display:none}
+  .site-feature-actions .site-icon-button{height:40px;min-height:40px}
+  .row.db-row{grid-template-columns:1fr}
+  .db-actions{width:100%}
+  .db-actions button{flex:1 1 0;min-width:0;padding-inline:6px}
+  .db-actions .db-pma{flex:2.8 1 0;overflow:hidden;text-overflow:ellipsis}
+  .db-actions .db-pma svg{display:none}
+  .db-actions .btn-text{display:none}
+  .db-create-actions{display:grid;grid-template-columns:1fr}
+  .db-create-actions button{width:100%}
+}
+
+/* ---- the file manager's rows on a phone ---- */
+/* The size and the permissions shared one cell, the permissions pushed right
+   by a justify-self that `button.file-mode` overrode: the two printed on top
+   of each other. A column each, so they cannot. */
+@media (max-width:760px){
+  .file-list .file-item{grid-template-columns:18px minmax(0,1fr) auto}
+  .file-list .file-item button.file-name{grid-column:2 / -1}
+  .file-list .file-item .file-size{grid-column:2;grid-row:2;align-self:center}
+  .file-list .file-item button.file-mode{grid-column:3;grid-row:2;justify-self:end}
+  .file-list .file-item .file-row-actions{grid-column:2 / -1}
+}
+
+/* ---- the malware scan history ---- */
+/* Links to each scan's own page now. As buttons they kept a button's height
+   on a phone, where the text runs to three lines, and each row was drawn over
+   the one before it. */
+a.scan-history-item{text-decoration:none;color:inherit;height:auto;cursor:pointer}
+a.scan-history-item:hover{text-decoration:none}
+a.scan-history-item:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}

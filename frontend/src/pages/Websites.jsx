@@ -1,5 +1,5 @@
 import { Copy, Dices, FileText, FolderOpen, Globe, KeyRound, Lock, Plus, RefreshCw, RotateCcw, Save, Search, Settings as SettingsIcon, TerminalIcon, Trash2, X } from 'lucide-react';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 // xterm.js is most of this page's weight and only the terminal panel uses
 // it, so it is fetched when that panel is opened rather than with the page.
 const Terminal = lazy(() => import('../components/Terminal').then((m) => ({ default: m.Terminal })));
@@ -76,6 +76,27 @@ export default function WebsitesPage() {
     wpAdminPassword,
     wpAdminUser,
   } = usePanel();
+
+  // The create form is open while there is nothing to list, when "New
+  // website" is pressed, and when the address asks for it - the dashboard's
+  // quick action lands here with ?new=1.
+  const [createChoice, setCreateChoice] = useState(() => (new URLSearchParams(window.location.search).get('new') === '1' ? true : null));
+  const createOpen = createChoice ?? websites.length === 0;
+  const createRef = useRef(null);
+  const domainRef = useRef(null);
+  function showCreate() {
+    setCreateChoice(true);
+    setTimeout(() => {
+      createRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      domainRef.current?.focus({ preventScroll: true });
+    }, 30);
+  }
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('new') !== '1') return;
+    // Asked for once; a reload of the page should not open it again.
+    window.history.replaceState({}, '', window.location.pathname);
+    showCreate();
+  }, []);
 
   function renderNginxEditor() {
     if (!nginxCustomEditing) return null;
@@ -288,11 +309,17 @@ export default function WebsitesPage() {
       ? null
       : t('This creates the first hosted site for the current account.');
     return <>
-      <section className="section">
-        <h2>{createTitle}</h2>
-        {createHint && <p className="hint">{createHint}</p>}
+      {createOpen && <section className="section" ref={createRef}>
+        <div className="section-title create-head">
+          <div>
+            <h2>{createTitle}</h2>
+            {createHint && <p className="hint">{createHint}</p>}
+          </div>
+          {websites.length > 0 && <button type="button" className="secondary-light icon-button" onClick={() => setCreateChoice(false)}
+            aria-label={t('Close')} title={t('Close')}><X size={15}/></button>}
+        </div>
         <div className="form-row create-site-row">
-          <label className="field"><span>{t('Domain')}</span><input value={domain} onChange={e => setDomain(e.target.value)} placeholder="domain.com" /></label>
+          <label className="field"><span>{t('Domain')}</span><input ref={domainRef} value={domain} onChange={e => setDomain(e.target.value)} placeholder="domain.com" /></label>
           <label className="field"><span>{t('Website mode')}</span><select value={siteType} onChange={e => setSiteType(e.target.value)}>
             {WEBSITE_MODES.map(([value, label]) => <option
               key={value}
@@ -345,11 +372,14 @@ export default function WebsitesPage() {
             ? t('Nginx will forward this domain to the selected application on 127.0.0.1, including WebSocket upgrades.')
             : t('A PHP-FPM vhost will be created with public_html/ folder. Upload your PHP, HTML, or static files via File Manager.')}</p>
         <div className="create-site-actions"><button disabled={!!loading || !domain} onClick={createWordPress}><Plus size={15}/> {t('Create website')}</button></div>
-      </section>
+      </section>}
       <section className="section">
-        <div className="section-title">
+        <div className="section-title list-head">
           <div><h2>{t('Website list')}</h2><p className="hint">{searchActive ? t('{count} result(s)', { count: visibleWebsites.length }) : t('{count} website(s)', { count: visibleWebsites.length })}</p></div>
-          <button className="secondary-light" disabled={!!loading || websiteSearching} onClick={() => loadWebsiteList(websiteSearch, true)}><RefreshCw size={15} className={websiteSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+          <div className="list-head-actions">
+            <button className="secondary-light" disabled={!!loading || websiteSearching} onClick={() => loadWebsiteList(websiteSearch, true)}><RefreshCw size={15} className={websiteSearching ? 'spin' : ''}/> {t('Refresh')}</button>
+            <button type="button" onClick={showCreate}><Plus size={15}/> {t('New website')}</button>
+          </div>
         </div>
         <div className="website-search-bar">
           <Search size={16}/>

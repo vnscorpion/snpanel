@@ -1,0 +1,25 @@
+/* The Addons page: one row per addon, details one click down.
+   See pages/Addons.jsx. */
+
+.addon-rows{display:grid;gap:10px}
+.addon-row{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.addon-row.installed{border-color:var(--success-border)}
+.addon-row-main{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 14px}
+.addon-row-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--radius-md);background:var(--surface-sunken);color:var(--text-secondary)}
+.addon-row.installed .addon-row-icon{background:var(--success-bg);color:var(--success-text)}
+.addon-row-text{min-width:0;display:grid;gap:3px}
+.addon-row-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.addon-row-head strong{font-size:var(--text-md);color:var(--text)}
+.addon-row-head code{font-family:Consolas,'SFMono-Regular','Liberation Mono',Menlo,monospace;font-size:var(--text-sm);color:var(--text-muted)}
+.addon-row-summary{margin:0;font-size:var(--text-sm);line-height:1.45;color:var(--text-secondary)}
+.addon-row-actions{display:flex;gap:8px;flex-wrap:nowrap}
+.addon-row-more{border-top:1px solid var(--border);padding:8px 14px 12px}
+.addon-row-more>summary{cursor:pointer;font-size:var(--text-sm);font-weight:600;color:var(--text-secondary);padding:2px 0}
+.addon-row-more[open]>summary{margin-bottom:8px}
+.addon-row-more .addon-details{margin-bottom:8px}
+
+@media (max-width:640px){
+  .addon-row-main{grid-template-columns:auto minmax(0,1fr)}
+  .addon-row-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr))}
+  .addon-row-actions button{width:100%}
+}

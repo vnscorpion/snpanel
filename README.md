@@ -31,7 +31,11 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 > would see a *lower* number and offer no update at all, which is the safe
 > direction for that mistake to fail in.
 
-- Dashboard resource monitoring for CPU, RAM, disk, and network throughput
+- A dashboard that says how things are: CPU, RAM, disk and network; a card each
+  for websites, SSL, databases, backups, the firewall, the WAF, malware and
+  services, green, amber or red; what needs attention, worst first, with the
+  way to fix it; and quick actions. A customer sees their package's usage,
+  SSL, WAF and two-step verification
 - WordPress one-click installer (PHP 8.4 default, 8.3 beside it; more versions
   can be installed from the panel) with WP-CLI
 - WordPress and PHP sites with editable full Nginx vhosts
@@ -54,7 +58,9 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
   and URL blocklists loaded straight into nftables sets; reloaded at every boot
 - OS package updates through apt or dnf - now, or automatically (security fixes
   or everything, with an optional reboot) - and SNPanel release updates
-- Nginx ModSecurity/WAF engine installed by default, using lightweight WordPress/Laravel/PHP rules, per-site toggles, and HTTP Flood limits
+- Nginx ModSecurity/WAF engine installed by default, with one switch per site:
+  the panel's WordPress/Laravel/PHP rules and the OWASP Core Rule Set, blocking;
+  plus HTTP Flood limits and bot blocking
 - PHP-FPM config editor per version
 - Cron job manager with whitelisted WP-CLI commands
 - Role-based access: Admin / End user

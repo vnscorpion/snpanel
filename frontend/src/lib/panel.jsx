@@ -32,11 +32,11 @@ export function composeWebPorts(plan, wanted) {
 // Pages opened from inside another page instead of the sidebar. They have no
 // nav entry of their own, so without this the header falls back to the first
 // item and titles the page "Dashboard".
-export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'settings' };
+export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'settings', 'malware-scan': 'malware' };
 
 // 'waf-site' is reached from the WAF overview rather than the sidebar, but it
 // still belongs to Settings so the menu stays open and WAF stays highlighted.
-export const SETTINGS_PAGE_KEYS = ['settings', 'api-tokens', 'security', 'mcp', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'access-logs', 'updates', 'addons', 'services'];
+export const SETTINGS_PAGE_KEYS = ['settings', 'api-tokens', 'security', 'mcp', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'malware-scan', 'access-logs', 'updates', 'addons', 'services'];
 export const PAGE_ROUTES = {
   dashboard: '/',
   websites: '/website',
@@ -57,6 +57,8 @@ export const PAGE_ROUTES = {
   waf: '/waf',
   'waf-site': '/waf-site',
   malware: '/malware',
+  // One scan's details; the job id follows it, see scanRoute.
+  'malware-scan': '/malware/scan',
   'access-logs': '/access-logs',
   updates: '/updates',
   services: '/services',
@@ -165,8 +167,13 @@ export const ROUTE_PAGES = new Map([
 
 export function pageFromPathname(pathname) {
   const normalized = `/${String(pathname || '').replace(/^\/+|\/+$/g, '')}`.toLowerCase();
+  if (/^\/malware\/scan\/[a-z0-9_-]+$/.test(normalized)) return 'malware-scan';
   return ROUTE_PAGES.get(normalized) || 'dashboard';
 }
+
+// The address of one scan's details, and the job it names.
+export const scanRoute = (jobId) => `/malware/scan/${encodeURIComponent(jobId)}`;
+export const scanFromPathname = (pathname) => /^\/malware\/scan\/([A-Za-z0-9_-]+)\/?$/.exec(pathname || '')?.[1] || '';
 
 export function routeForPage(pageName) {
   return PAGE_ROUTES[pageName] || PAGE_ROUTES.dashboard;
@@ -422,3 +429,12 @@ export function NotificationToast({ type, message, onClose }) {
 }
 
 
+
+// A plain click on an in-panel link stays in the panel; a click that asks for
+// a new tab or window is left to the browser, which is what the href is for.
+export function followInPanel(event, open) {
+  if (event.defaultPrevented || event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  open();
+}

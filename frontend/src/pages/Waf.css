@@ -1,0 +1,35 @@
+/* The WAF page: one switch per website. See pages/Waf.jsx and WafSite.jsx. */
+
+.waf-status-line{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:4px}
+.waf-no-engine{margin:10px 0 0;padding:8px 12px;border:1px solid var(--warning-border);border-radius:var(--radius-md);background:var(--warning-bg);color:var(--warning-text)}
+
+.waf-sites{display:grid;gap:8px}
+.waf-site-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.waf-site-name{display:grid;gap:2px;min-width:0}
+.waf-site-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.waf-site-name small{font-size:var(--text-sm);color:var(--text-muted);font-weight:600}
+.waf-legacy{color:var(--warning-text)}
+.waf-site-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+
+/* The switch: a checkbox, drawn as one. */
+.waf-switch{position:relative;display:inline-flex;align-items:center;cursor:pointer}
+.waf-switch input{position:absolute;inset:0;opacity:0;margin:0;width:100%;height:100%;min-height:0;cursor:inherit}
+.waf-switch-track{position:relative;display:block;width:40px;height:22px;border-radius:999px;background:var(--border-strong,var(--border));transition:background .15s ease}
+.waf-switch-thumb{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s ease}
+.waf-switch input:checked+.waf-switch-track{background:var(--success,#16a34a)}
+.waf-switch input:checked+.waf-switch-track .waf-switch-thumb{transform:translateX(18px)}
+.waf-switch input:focus-visible+.waf-switch-track{box-shadow:0 0 0 3px var(--ring)}
+.waf-switch input:disabled+.waf-switch-track{opacity:.5}
+.waf-switch:has(input:disabled){cursor:not-allowed}
+
+/* A website's own page: the same switch, and a line on what it means. */
+.waf-site-switch{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-alt);margin-top:4px}
+.waf-site-switch>div{display:grid;gap:2px;min-width:0}
+.waf-site-switch strong{font-size:var(--text-md)}
+.waf-site-switch small{font-size:var(--text-sm);color:var(--text-secondary)}
+
+@media (max-width:640px){
+  .waf-site-row{grid-template-columns:auto minmax(0,1fr) auto;row-gap:8px}
+  .waf-site-badges{grid-column:2 / -1;grid-row:2;justify-content:flex-start}
+  .waf-configure-label{display:none}
+}

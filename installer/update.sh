@@ -1198,6 +1198,15 @@ if [[ -f "$SOURCE_DIR/installer/files/snpanel-sudoers" ]]; then
     systemctl daemon-reload
     systemctl stop snpanel-helper.service 2>/dev/null || true
     sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper wp --info >/dev/null
+    # The OWASP rule set's include is written only when its mode is set, and
+    # one written before the setup-file fix names no crs-setup.conf: CRS then
+    # answers every request on every site that loads it with a 500. Written
+    # again here, in the mode it is in.
+    crs_mode="$(tr -d '[:space:]' < /etc/nginx/modsec/snpanel-crs-mode 2>/dev/null || true)"
+    if [[ "$crs_mode" == "detect" || "$crs_mode" == "block" ]]; then
+      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper waf-crs-mode "$crs_mode" >/dev/null \
+        || echo "  (warning: could not rewrite the OWASP CRS include; switch the WAF off and on again from the panel)"
+    fi
     # The retune output is a function of the helper's logic and this machine's
     # RAM/CPU; neither moves between two updates of the same release. Skip the
     # pair (and the autotune unit, which just runs the same two) when the

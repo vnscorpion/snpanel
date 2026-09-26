@@ -1,6 +1,7 @@
 import { Clock, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
+import CronSchedule, { cronPresetLabel } from '../components/CronSchedule.jsx';
 
 export default function CronPage() {
   const t = useT();
@@ -38,7 +39,7 @@ export default function CronPage() {
       </div>
       <div className="cron-form">
         <label className="field"><span>{t('Website')}</span><WebsiteSelect /></label>
-        <label className="field"><span>{t('Schedule')}</span><input value={cronSchedule} onChange={e => setCronSchedule(e.target.value)} placeholder="*/15 * * * *" /></label>
+        <div className="field cron-when"><label htmlFor="cron-schedule">{t('Schedule')}</label><CronSchedule id="cron-schedule" value={cronSchedule} onChange={setCronSchedule} /></div>
         <label className="field cron-command"><span>{t('Command')}</span><input value={cronCommand} onChange={e => setCronCommand(e.target.value)} placeholder="php -q cron.php >/dev/null 2>&1" /></label>
         <button disabled={!selectedWebsiteId || !!loading} onClick={addCron}><Plus size={14}/> {t('Add cron')}</button>
       </div>
@@ -63,7 +64,7 @@ export default function CronPage() {
         {selectedWebsiteId && cronItems.length === 0 && <EmptyState icon={Clock} message={t('No cron jobs found for this website.')} />}
         {cronItems.map(item => <div className="cron-item" key={`${item.index}-${item.line}`}>
           <span className="badge">#{item.index}</span>
-          <span><strong>{item.schedule}</strong><small>{item.command || item.line}</small></span>
+          <span><strong>{item.schedule}{cronPresetLabel(item.schedule) && <em className="cron-item-when">{t(cronPresetLabel(item.schedule))}</em>}</strong><small>{item.command || item.line}</small></span>
           <button className="mini danger" disabled={!!loading} onClick={() => deleteCron(item.index)}><Trash2 size={13}/></button>
         </div>)}
       </div>

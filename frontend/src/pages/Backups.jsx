@@ -1,5 +1,6 @@
 import { Archive, ArchiveRestore, Check, Clock, Database, Download, Globe, Network, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
+import CronSchedule from '../components/CronSchedule.jsx';
 import { msg, serverText, useT } from '../i18n/index.jsx';
 import S3Destinations from '../components/S3Destinations.jsx';
 import './Backups.css';
@@ -257,6 +258,8 @@ export default function BackupsPage() {
         <button className="secondary-light" disabled={busy} onClick={refreshScheduledBackupArea}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
       <div className="bk-form bk-schedule-form">
+        {/* Who on the left, when and where on the right: four settings in a
+            column each had a third of the width and their hints wrapped. */}
         <div className="bk-field bk-users">
           <span className="bk-label" id="bk-schedule-users-label">{t('Users')}</span>
           <label className="schedule-toggle">
@@ -268,28 +271,33 @@ export default function BackupsPage() {
             {users.map((user) => <option key={user.id} value={String(user.id)}>{user.username}</option>)}
           </select>
         </div>
-        <div className="bk-field">
-          <label htmlFor="bk-schedule-cron">{t('Runs at (cron)')}</label>
-          <input id="bk-schedule-cron" value={newBackupSchedule.schedule} onChange={(e) => setSchedule('schedule')(e.target.value)} placeholder="0 2 * * *" spellCheck={false} aria-describedby="bk-schedule-cron-hint" />
-          <small className="hint" id="bk-schedule-cron-hint">{t('Minute, hour, day, month, weekday. 0 2 * * * is every day at 02:00.')}</small>
+        <div className="bk-when">
+          <div className="bk-row">
+            <label htmlFor="bk-schedule-cron">{t('Schedule')}</label>
+            <CronSchedule id="bk-schedule-cron" value={newBackupSchedule.schedule} onChange={setSchedule('schedule')} />
+          </div>
+          <div className="bk-row">
+            <label htmlFor="bk-schedule-destination">{t('Destination')}</label>
+            <DestinationSelect id="bk-schedule-destination" value={newBackupSchedule.destination || ''} onChange={setSchedule('destination')} />
+          </div>
+          <div className="bk-row">
+            <label htmlFor="bk-schedule-style">{t('Append to the file name')}</label>
+            <div className="bk-control">
+              <select id="bk-schedule-style" value={style} onChange={(e) => setSchedule('name_style')(e.target.value)} aria-describedby="bk-schedule-style-hint">
+                {NAME_STYLES.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
+              </select>
+              <small className="hint" id="bk-schedule-style-hint"><code>{exampleName(style, firstScheduled?.username || 'user')}</code> · {t(styleInfo.keeps)}</small>
+            </div>
+          </div>
+          {keepsNewest && <div className="bk-row">
+            <label htmlFor="bk-schedule-keep">{t('Keep')}</label>
+            <div className="bk-control bk-keep">
+              <input id="bk-schedule-keep" type="number" min="1" max="365" inputMode="numeric" value={newBackupSchedule.retention ?? 7}
+                onChange={(e) => setSchedule('retention')(e.target.value)} aria-describedby="bk-schedule-keep-hint" />
+              <small className="hint" id="bk-schedule-keep-hint">{t('files per user, here')}</small>
+            </div>
+          </div>}
         </div>
-        <div className="bk-field">
-          <label htmlFor="bk-schedule-destination">{t('Destination')}</label>
-          <DestinationSelect id="bk-schedule-destination" value={newBackupSchedule.destination || ''} onChange={setSchedule('destination')} />
-        </div>
-        <div className="bk-field">
-          <label htmlFor="bk-schedule-style">{t('Append to the file name')}</label>
-          <select id="bk-schedule-style" value={style} onChange={(e) => setSchedule('name_style')(e.target.value)} aria-describedby="bk-schedule-style-hint">
-            {NAME_STYLES.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
-          </select>
-          <small className="hint" id="bk-schedule-style-hint"><code>{exampleName(style, firstScheduled?.username || 'user')}</code> · {t(styleInfo.keeps)}</small>
-        </div>
-        {keepsNewest && <div className="bk-field bk-keep">
-          <label htmlFor="bk-schedule-keep">{t('Keep')}</label>
-          <input id="bk-schedule-keep" type="number" min="1" max="365" inputMode="numeric" value={newBackupSchedule.retention ?? 7}
-            onChange={(e) => setSchedule('retention')(e.target.value)} aria-describedby="bk-schedule-keep-hint" />
-          <small className="hint" id="bk-schedule-keep-hint">{t('files per user, here')}</small>
-        </div>}
         <div className="bk-actions bk-span-all">
           {newBackupSchedule.destination && keepsNewest && <p className="hint bk-note">{String(newBackupSchedule.destination).startsWith('s3:')
             ? t('The bucket keeps the same number: older copies there are removed after each upload.')

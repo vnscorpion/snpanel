@@ -1,13 +1,13 @@
 import { ArrowLeft, Globe, Shield } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { serverText, useT } from '../i18n/index.jsx';
+import './Waf.css';
 
 export default function WafSitePage() {
   const t = useT();
   const {
     EmptyState,
     botBlocks,
-    crs,
     httpFloodForm,
     loadWebsiteWafConfig,
     loading,
@@ -20,7 +20,6 @@ export default function WafSitePage() {
     setSiteBotText,
     setWafCustomRules,
     siteBotText,
-    toggleSiteCrs,
     toggleWafDefaultRule,
     toggleWebsiteWaf,
     wafCustomRules,
@@ -53,37 +52,32 @@ export default function WafSitePage() {
             <button className="secondary-light" onClick={() => navigateToPage('waf')}><ArrowLeft size={14}/> {t('All websites')}</button>
           </div>
         </div>
-        <div className="waf-site-toggles">
-          <span className={selectedSite?.waf_enabled ? 'badge ok' : 'badge'}>{selectedSite?.waf_enabled ? t('WAF enabled') : t('WAF disabled')}</span>
-          <button disabled={!selectedWafWebsiteId || !!loading} onClick={() => selectedSite && toggleWebsiteWaf(selectedSite)}>
-            <Shield size={14}/> {selectedSite?.waf_enabled ? t('Disable WAF') : t('Enable WAF')}
-          </button>
-          <span className={wafSiteConfig?.crs_active ? 'badge ok' : 'badge'}>
-            {wafSiteConfig?.crs_enabled
-              ? (wafSiteConfig?.crs_mode === 'off' ? t('CRS on (server-wide: off)') : t('CRS {crs_mode}', { crs_mode: wafSiteConfig.crs_mode }))
-              : t('CRS off')}
-          </span>
-          <button
-            disabled={!selectedWafWebsiteId || !!loading || !selectedSite?.waf_enabled}
-            title={selectedSite?.waf_enabled ? '' : t('Enable the WAF first')}
-            onClick={() => wafSiteConfig && toggleSiteCrs({
-              website_id: wafSiteConfig.website_id,
-              domain: wafSiteConfig.domain,
-              crs_enabled: wafSiteConfig.crs_enabled,
-            })}
-          >
-            <Shield size={14}/> {wafSiteConfig?.crs_enabled ? t('Disable CRS') : t('Enable CRS')}
-          </button>
-        </div>
-        <p className="hint">
-          {t('The WAF blocks known bad paths. OWASP CRS adds payload inspection — SQL injection, XSS, command injection — for this site, at roughly {mb} MB of nginx memory.', { mb: crs?.rss_mb_per_site || 50 })}
-          {wafSiteConfig?.crs_enabled && wafSiteConfig?.crs_mode === 'off'
-            ? t(' This site is opted in, but CRS is switched off server-wide on the WAF page, so nothing is loaded.')
-            : ''}
-          {wafSiteConfig?.crs_active
-            ? t(' Add SecRuleRemoveById <id> to the custom rules below to excuse this site from one CRS rule.')
-            : ''}
-        </p>
+        {/* One switch: the panel's rules and the OWASP rule set together, the
+            way the WAF page lists it. */}
+        {(() => {
+          const on = !!selectedSite?.waf_enabled;
+          const engine = wafSiteConfig?.engine !== false;
+          return <>
+            <div className="waf-site-switch">
+              <label className="waf-switch">
+                <input type="checkbox" role="switch" checked={on} disabled={!selectedWafWebsiteId || !!loading || !engine}
+                  onChange={() => selectedSite && toggleWebsiteWaf(selectedSite)} aria-label={t('WAF for {domain}', { domain: selectedSite?.domain || '' })} />
+                <span className="waf-switch-track" aria-hidden="true"><span className="waf-switch-thumb"/></span>
+              </label>
+              <div>
+                <strong>{on ? t('WAF on') : t('WAF off')}</strong>
+                <small>{!engine
+                  ? t('This server\'s nginx has no ModSecurity module, so the WAF cannot run here. Flood limits and bot blocking still work.')
+                  : on
+                    ? (wafSiteConfig && !wafSiteConfig.crs_enabled
+                      ? t('The panel\'s rules are on; the OWASP rule set is not loaded yet. Turn the WAF off and on again to load it.')
+                      : t('The panel\'s rules and the OWASP rule set block attacks on this website.'))
+                    : t('Requests reach this website without being checked.')}</small>
+              </div>
+            </div>
+            {on && engine && <p className="hint">{t('To excuse this website from one rule, add {directive} to its custom rules below.', { directive: <code>SecRuleRemoveById &lt;id&gt;</code> })}</p>}
+          </>;
+        })()}
       </section>
 
       {!wafSiteConfig && websites.length === 0 && <section className="section"><EmptyState icon={Globe} message={t('No websites yet.')} /></section>}
