@@ -121,14 +121,14 @@ fn catalogue() -> Vec<(&'static str, Value)> {
             json!({
                 "name": "Notifications",
                 "version": "1.0.0",
-                "summary": "Tells administrators and customers by e-mail and on Telegram what they would otherwise only find by opening the panel: failed backups, malware, expiring certificates, a full disk, a stopped service, a new sign-in.",
+                "summary": "Tells the panel's administrators by e-mail and on Telegram what they would otherwise only find by opening the panel: failed backups, malware, expiring certificates, a full disk, a stopped service, a new sign-in to an administrator account.",
                 "details": [
-                    "E-mail goes through an SMTP server you set up - your mail host's, or a service such as Gmail, SendGrid or Amazon SES. Telegram messages come from a bot you make with @BotFather.",
-                    "Administrators hear of the server: scheduled backups, malware anywhere, certificates renewal did not renew, the disk filling, services stopping, new releases.",
-                    "Every account hears of its own: its backups, malware on its websites, its certificates and storage, a sign-in from a new address, and changes to its password, two-step verification and tokens - each chosen on its Notifications page.",
+                    "E-mail goes through an SMTP server you set up - your mail host's, or a service such as Gmail, SendGrid or Amazon SES - to the administrators' own addresses, or to those you give. Telegram messages come from a bot you make with @BotFather, to the chat you choose: yours, or a group the administrators share.",
+                    "Of every account: backups that failed, malware, certificates renewal did not renew, storage nearly full. Of the server: the disk filling, services stopping, new releases. Of the administrator accounts: a sign-in from a new address, changes to passwords, two-step verification and tokens, a new administrator.",
+                    "For administrators only: customers are not sent anything, and do not see the Notifications page.",
                 ],
                 "notes": [
-                    "Nothing is sent until an SMTP server or a Telegram bot is set up on the Notifications page.",
+                    "Nothing is sent until an SMTP server, or a Telegram bot and its chat, is set up on the Notifications page.",
                     "Uninstalling stops the messages and keeps every setting.",
                 ],
                 "keeps_data_on_uninstall": true,
@@ -395,7 +395,7 @@ async fn install(
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
             MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
-            NOTIFICATIONS => "Open Settings, Notifications to set up an SMTP server or a Telegram bot.",
+            NOTIFICATIONS => "Open Settings, Notifications to set up e-mail, or a Telegram bot and its chat.",
             _ => "",
         },
     }))
@@ -479,7 +479,7 @@ async fn uninstall(
         } else if slug == MCP {
             "The tokens are kept, and work again when the addon is installed again. Revoke them on the Addons page to remove them."
         } else if slug == NOTIFICATIONS {
-            "No more messages are sent. The SMTP server, the bot and everyone's choices are kept for when it is installed again."
+            "No more messages are sent. The SMTP server, the bot and what is told are kept for when it is installed again."
         } else {
             "Application folders, volumes and panel data are kept."
         },

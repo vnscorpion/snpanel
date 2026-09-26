@@ -443,6 +443,16 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         &updated.username,
     )
     .await;
+    // Not in the Python: the Notifications addon tells the administrators
+    // of a new one.
+    if !user.is_admin() && updated.is_admin() {
+        crate::notify::new_administrator(
+            &state,
+            &updated.username,
+            &current.user,
+            &crate::client::audit_ip(&parts),
+        );
+    }
     axum::Json(user_out(&state, &updated, StorageFigure::Fresh).await).into_response()
 }
 
@@ -816,8 +826,8 @@ async fn set_password(
         &user.username,
     )
     .await;
-    // Not in the Python: the owner hears of it - from whom, when it was an
-    // administrator.
+    // Not in the Python: an administrator account's new password is told to
+    // the administrators, and by whom.
     crate::notify::security_change(
         &state,
         &user,
@@ -1306,6 +1316,14 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Ok(Some(u)) => u,
         _ => return internal_error(),
     };
+    if created.is_admin() {
+        crate::notify::new_administrator(
+            &state,
+            &created.username,
+            &current.user,
+            &crate::client::audit_ip(&parts),
+        );
+    }
     axum::Json(user_out(&state, &created, StorageFigure::Fresh).await).into_response()
 }
 

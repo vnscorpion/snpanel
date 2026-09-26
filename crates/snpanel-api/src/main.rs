@@ -829,7 +829,6 @@ pub(crate) async fn run_schedule(
                     Err(e) => errors.push(format!("{}: {e}", user.username)),
                 }
                 told.push(notify::UserBackup {
-                    user_id: user.id,
                     username: user.username.clone(),
                     outcome,
                 });

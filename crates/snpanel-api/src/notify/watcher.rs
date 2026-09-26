@@ -58,7 +58,7 @@ pub struct Memo {
     /// `1` or `0` days.
     #[serde(default)]
     pub ssl_told: BTreeMap<String, String>,
-    /// Accounts told they are nearly full.
+    /// Accounts told of as nearly full.
     #[serde(default)]
     pub storage_told: Vec<i64>,
 }
@@ -184,8 +184,7 @@ pub async fn look(state: &AppState, daily: bool) {
     // Nothing is looked at while nobody can be told: a problem remembered as
     // told then would never be told once e-mail or Telegram is set up, and
     // the daily looks run at the first look after that.
-    let channels = super::load_channels();
-    if channels.smtp.is_none() && channels.telegram.is_none() {
+    if !super::load_channels().ready() {
         return;
     }
     let mut memo = Memo::load();
@@ -253,7 +252,6 @@ async fn certificates(state: &AppState, memo: &mut Memo, now: chrono::DateTime<c
         }
         memo.ssl_told.insert(site.domain.clone(), told);
         expiring.push(Expiring {
-            owner: site.owner_id,
             domain: site.domain.clone(),
             days,
         });
@@ -305,7 +303,6 @@ async fn accounts(state: &AppState, memo: &mut Memo) {
         super::deliver(
             state,
             Event::StorageFull {
-                owner,
                 username: user.username.clone(),
                 percent,
                 used,

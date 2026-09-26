@@ -1,5 +1,6 @@
 //! The Telegram Bot API, as far as notifications need it: who the bot is,
-//! a message to a chat, and the updates a link is found in.
+//! a chat and what it is called, the chats that wrote to the bot, and a
+//! message to a chat.
 //!
 //! Not in the Python. Built as the Cloudflare client is - hyper over
 //! `tokio-rustls`, the machine's trust store - and, like it, **the token is
@@ -95,17 +96,19 @@ fn verdict(status: u16, body: &[u8]) -> Result<Value, TelegramError> {
     if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(parsed.get("result").cloned().unwrap_or(Value::Null));
     }
-    let described = parsed
+    let described: String = parsed
         .get("description")
         .and_then(Value::as_str)
-        .unwrap_or("no reason given");
-    let described: String = described
+        .unwrap_or("")
         .chars()
         .filter(|c| !c.is_control())
         .take(200)
         .collect();
     Err(fail(match status {
         401 | 404 => "Telegram does not know this bot token".to_string(),
+        _ if described.trim().is_empty() => {
+            format!("Telegram refused without saying why (HTTP {status})")
+        }
         _ => format!("Telegram refused: {described}"),
     }))
 }
@@ -214,81 +217,95 @@ pub async fn send(token: &str, chat: &str, html: &str) -> Result<(), TelegramErr
     .map(|_| ())
 }
 
-/// A `/start <code>` somebody sent the bot, and from which chat.
+/// A chat the bot can write in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Start {
-    pub update_id: i64,
-    pub code: String,
-    pub chat_id: String,
-    /// `@username`, or the name, for the page.
-    pub who: String,
+pub struct Chat {
+    /// As Telegram numbers it: a person's, a group's (negative), a channel's.
+    pub id: String,
+    /// `private`, `group`, `supergroup` or `channel`.
+    pub kind: String,
+    /// A group's or channel's title, or a person's name and `@username`.
+    pub name: String,
 }
 
-/// What the bot has been sent since `offset`: the `/start <code>` messages
-/// among it, and the offset that confirms all of it read.
-pub async fn starts(token: &str, offset: i64) -> Result<(Vec<Start>, i64), TelegramError> {
+/// What a chat is called, from Telegram's `Chat` object.
+pub fn chat_name(chat: &Value) -> String {
+    let field = |key: &str| chat.get(key).and_then(Value::as_str).unwrap_or("").trim();
+    let name = if !field("title").is_empty() {
+        field("title").to_string()
+    } else {
+        let person = format!("{} {}", field("first_name"), field("last_name"))
+            .trim()
+            .to_string();
+        match (person.is_empty(), field("username")) {
+            (false, "") => person,
+            (false, user) => format!("{person} (@{user})"),
+            (true, "") => String::new(),
+            (true, user) => format!("@{user}"),
+        }
+    };
+    name.chars().filter(|c| !c.is_control()).take(80).collect()
+}
+
+fn read_chat(chat: &Value) -> Option<Chat> {
+    let id = chat.get("id").and_then(Value::as_i64)?;
+    Some(Chat {
+        id: id.to_string(),
+        kind: chat
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("private")
+            .chars()
+            .filter(char::is_ascii_lowercase)
+            .take(12)
+            .collect(),
+        name: chat_name(chat),
+    })
+}
+
+/// The chat `chat` names - a number, or a channel's `@name` - as the bot
+/// sees it: which proves the bot can reach it, and says what it is called.
+pub async fn chat(token: &str, chat: &str) -> Result<Chat, TelegramError> {
+    let found = call(token, "getChat", &json!({ "chat_id": chat })).await?;
+    read_chat(&found).ok_or_else(|| fail("Telegram did not say which chat that is"))
+}
+
+/// Where the updates that name a chat keep it.
+const UPDATES_WITH_A_CHAT: [&str; 4] = [
+    "message",
+    "edited_message",
+    "channel_post",
+    "my_chat_member",
+];
+
+/// The chats that wrote to the bot, or that it was added to, in the last
+/// day - newest first, each once. Nothing is confirmed as read, so looking
+/// changes nothing: Telegram keeps an unconfirmed update for a day.
+pub async fn recent_chats(token: &str) -> Result<Vec<Chat>, TelegramError> {
     let updates = call(
         token,
         "getUpdates",
-        &json!({ "offset": offset, "timeout": 0, "allowed_updates": ["message"] }),
+        &json!({ "timeout": 0, "limit": 100, "allowed_updates": UPDATES_WITH_A_CHAT }),
     )
     .await?;
-    Ok(read_starts(&updates, offset))
+    Ok(read_chats(&updates))
 }
 
-fn read_starts(updates: &Value, offset: i64) -> (Vec<Start>, i64) {
-    let mut next = offset;
-    let mut found = Vec::new();
-    for update in updates.as_array().into_iter().flatten() {
-        let Some(id) = update.get("update_id").and_then(Value::as_i64) else {
-            continue;
-        };
-        next = next.max(id + 1);
-        let Some(message) = update.get("message") else {
-            continue;
-        };
-        let text = message.get("text").and_then(Value::as_str).unwrap_or("");
-        let mut words = text.split_whitespace();
-        let command = words.next().unwrap_or("");
-        // `/start CODE`, or `/start@bot CODE` from a group.
-        if command != "/start" && !command.starts_with("/start@") {
-            continue;
-        }
-        let Some(code) = words.next() else {
-            continue;
-        };
-        let Some(chat_id) = message
-            .get("chat")
-            .and_then(|c| c.get("id"))
-            .and_then(Value::as_i64)
+fn read_chats(updates: &Value) -> Vec<Chat> {
+    let mut found: Vec<Chat> = Vec::new();
+    for update in updates.as_array().into_iter().flatten().rev() {
+        let Some(chat) = UPDATES_WITH_A_CHAT
+            .iter()
+            .find_map(|key| update.get(*key).and_then(|m| m.get("chat")))
+            .and_then(read_chat)
         else {
             continue;
         };
-        let chat = message.get("chat").cloned().unwrap_or(Value::Null);
-        let from = message.get("from").cloned().unwrap_or(Value::Null);
-        let who = chat
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                from.get("username")
-                    .and_then(Value::as_str)
-                    .map(|u| format!("@{u}"))
-            })
-            .or_else(|| {
-                from.get("first_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| chat_id.to_string());
-        found.push(Start {
-            update_id: id,
-            code: code.to_string(),
-            chat_id: chat_id.to_string(),
-            who: who.chars().filter(|c| !c.is_control()).take(64).collect(),
-        });
+        if !found.iter().any(|c| c.id == chat.id) {
+            found.push(chat);
+        }
     }
-    (found, next)
+    found
 }
 
 /// Text for Telegram's HTML: the three characters it reads as markup.
@@ -339,34 +356,37 @@ mod tests {
     }
 
     #[test]
-    fn a_start_with_a_code_is_found_among_the_updates() {
+    fn the_chats_that_wrote_to_the_bot_newest_first_each_once() {
         let updates = json!([
-            {"update_id": 10, "message": {"text": "hello", "chat": {"id": 1}}},
-            {"update_id": 11, "message": {"text": "/start ABC123", "chat": {"id": 42, "type": "private"},
-                "from": {"id": 42, "username": "alice", "first_name": "Alice"}}},
-            {"update_id": 12, "message": {"text": "/start@snpanel_bot XYZ", "chat": {"id": -100, "title": "Ops team"},
-                "from": {"id": 43, "first_name": "Bob"}}},
-            {"update_id": 13, "edited_message": {"text": "/start NOPE", "chat": {"id": 5}}},
+            {"update_id": 10, "message": {"text": "hi", "chat": {"id": 42, "type": "private",
+                "first_name": "Alice", "last_name": "Nguyen", "username": "alice"}}},
+            {"update_id": 11, "my_chat_member": {"chat": {"id": -1001234567890_i64, "type": "supergroup",
+                "title": "Ops team"}}},
+            {"update_id": 12, "channel_post": {"text": "x", "chat": {"id": -1009876543210_i64, "type": "channel",
+                "title": "Alerts", "username": "snpanel_alerts"}}},
+            {"update_id": 13, "message": {"text": "again", "chat": {"id": 42, "type": "private",
+                "first_name": "Alice"}}},
+            {"update_id": 14, "callback_query": {"id": "1"}},
         ]);
-        let (found, next) = read_starts(&updates, 9);
-        assert_eq!(next, 14);
-        assert_eq!(found.len(), 2);
+        let chats = read_chats(&updates);
+        let seen: Vec<(&str, &str, &str)> = chats
+            .iter()
+            .map(|c| (c.id.as_str(), c.kind.as_str(), c.name.as_str()))
+            .collect();
         assert_eq!(
-            (
-                found[0].code.as_str(),
-                found[0].chat_id.as_str(),
-                found[0].who.as_str()
-            ),
-            ("ABC123", "42", "@alice")
+            seen,
+            [
+                ("42", "private", "Alice"),
+                ("-1009876543210", "channel", "Alerts"),
+                ("-1001234567890", "supergroup", "Ops team"),
+            ]
         );
         assert_eq!(
-            (
-                found[1].code.as_str(),
-                found[1].chat_id.as_str(),
-                found[1].who.as_str()
-            ),
-            ("XYZ", "-100", "Ops team")
+            chat_name(&json!({"first_name": "Alice", "last_name": "Nguyen", "username": "alice"})),
+            "Alice Nguyen (@alice)"
         );
+        assert_eq!(chat_name(&json!({"username": "bob"})), "@bob");
+        assert_eq!(chat_name(&json!({"title": "Ops\nteam"})), "Opsteam");
     }
 
     #[test]

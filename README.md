@@ -73,12 +73,14 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
   documents every tool a token of the account is offered, and how to connect
 - Two-step sign-in with a passkey, an authenticator-app code (TOTP), or both;
   `snpanel reset-admin-2fa` for an administrator who lost the device
-- A Notifications addon: e-mail through your SMTP server and Telegram through
-  your bot. Administrators hear of failed scheduled backups, malware, expiring
-  certificates, a filling disk, stopped services and new releases; every
-  account of its own backups, malware, certificates and storage, sign-ins from
-  new addresses and changes to how it signs in - each chosen on its own page,
-  in English or Vietnamese
+- A Notifications addon, for the administrators: e-mail through your SMTP
+  server to their addresses or those you give, and Telegram through your bot
+  to the chat you choose - picked from the chats that wrote to it. Of every
+  account: failed backups, malware, expiring certificates, storage nearly
+  full; of the server: a filling disk, stopped services, new releases; of the
+  administrator accounts: sign-ins from new addresses, changes to how they
+  sign in, a new administrator - each on or off, in English or Vietnamese.
+  Customers are sent nothing
 - A Fail2ban addon: SSH, panel sign-ins, WordPress sign-ins, password-protected
   folders and repeat offenders, banned in nftables; Cloudflare's addresses are
   never banned from a site's log

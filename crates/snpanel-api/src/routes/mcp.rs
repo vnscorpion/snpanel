@@ -223,7 +223,8 @@ async fn create_token(State(state): State<AppState>, req: axum::extract::Request
         },
     )
     .await;
-    // A key to the account, made: its owner hears of it, as of a password.
+    // A key to the account, made: told as a new password is, when the
+    // account is an administrator's.
     crate::notify::security_change(
         &state,
         &current.user,

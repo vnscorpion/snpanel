@@ -8617,23 +8617,25 @@ async fn website_named(state: &AppState, website_id: i64) -> String {
     }
 }
 
-/// Not in the Python: the Notifications addon tells whoever started a
-/// backup how it ended - after the job is marked, so the page does not wait
-/// on the mail.
+/// Not in the Python: the Notifications addon tells the administrators of a
+/// backup that failed, and who started it - after the job is marked, so the
+/// page does not wait on the mail. One that finished is the page's to say.
 async fn tell_backup(
     state: &AppState,
     requester: i64,
     (what, outcome): (String, Result<String, String>),
 ) {
-    crate::notify::deliver(
-        state,
-        crate::notify::Event::Backup {
-            owner: requester,
-            what,
-            outcome,
-        },
-    )
-    .await;
+    let Err(why) = outcome else {
+        return;
+    };
+    if !crate::notify::installed() {
+        return;
+    }
+    let by = match state.db.users().by_id(requester).await {
+        Ok(Some(user)) => user.username,
+        _ => format!("account #{requester}"),
+    };
+    crate::notify::deliver(state, crate::notify::Event::BackupFailed { by, what, why }).await;
 }
 
 struct SiteArchive {

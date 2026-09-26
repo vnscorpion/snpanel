@@ -1,31 +1,29 @@
-//! Notifications - the addon that tells people, by e-mail and on Telegram,
-//! what they would otherwise only find by opening the panel.
+//! Notifications - the addon that tells the panel's administrators, by
+//! e-mail and on Telegram, what they would otherwise only find by opening
+//! the panel.
 //!
-//! Not in the Python. Two halves:
+//! Not in the Python. It is the administrators' alone: no customer is sent
+//! anything, or sees its page. What it keeps is in `notifications.json` in
+//! the data directory, mode 0600, the SMTP password and the bot token
+//! Fernet-encrypted with the panel's key - see [`Channels`]:
 //!
-//! - **How messages go out** is the administrator's: an SMTP server, a
-//!   Telegram bot, and the language a message is written in when its reader
-//!   chose none. `notifications.json` in the data directory, mode 0600, the
-//!   SMTP password and the bot token Fernet-encrypted with the panel's key -
-//!   see [`Channels`].
-//! - **Who hears of what** is every account's own: whether to be told by
-//!   e-mail, and at which address; a Telegram chat linked through the bot;
-//!   and which events. `notification_settings` in the database, one row per
-//!   account that chose anything.
+//! - **E-mail**: an SMTP server, and the addresses it sends to - by default
+//!   every active administrator's own.
+//! - **Telegram**: a bot, and the chat it writes in - a person's, or a group
+//!   or channel the administrators share.
+//! - **What is told**, and in which language.
 //!
-//! An administrator hears of the server - a scheduled backup that failed,
-//! malware on any website, a certificate about to expire, the disk filling,
-//! a service stopping, a new release, an account running out of room. Every
-//! account, administrators' too, hears of its own - its backups, malware on
-//! its websites, its certificates and storage, a sign-in from an address it
-//! has not used, and changes to how it signs in. See [`KINDS`].
+//! What can be told - see [`KINDS`] - is of every account's websites and
+//! backups (a backup that failed, malware, a certificate about to expire, an
+//! account nearly out of storage), of the machine (the disk filling, a
+//! service stopping, a new release), and of the administrator accounts
+//! themselves (a sign-in from an address new to one, a change to how one
+//! signs in, a new administrator). A customer's own sign-ins and passwords
+//! are the customer's, and are not told.
 //!
-//! Each event is written in English and Vietnamese here, and each reader
-//! gets it in theirs. A reader who is both an event's owner and an
-//! administrator gets one message, the administrator's, which says more.
-//! Nothing is sent while the addon is not installed, or while neither way of
-//! sending is set up; what was sent, and what failed, is in
-//! `notification_log`.
+//! Each event is written in English and Vietnamese here. Nothing is sent
+//! while the addon is not installed, or while there is nowhere to send it;
+//! what was sent, and what failed, is in `notification_log`.
 
 pub mod smtp;
 pub mod telegram;
@@ -37,14 +35,14 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snpanel_core::crypto::fernet;
-use snpanel_db::notifications::{NewLogEntry, NotificationSettings};
+use snpanel_db::notifications::NewLogEntry;
 use snpanel_db::User;
 
 use crate::state::AppState;
 
 // ---------------------------------------------------------------- channels
 
-/// How mail goes out.
+/// How mail goes out, and to whom.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmtpConfig {
     pub host: String,
@@ -59,27 +57,69 @@ pub struct SmtpConfig {
     pub from_address: String,
     #[serde(default)]
     pub from_name: String,
+    /// Where messages go; none is every active administrator's own address.
+    #[serde(default)]
+    pub to: Vec<String>,
 }
 
-/// The Telegram bot messages come from.
+/// The Telegram bot messages come from, and the chat they go to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelegramConfig {
     /// Fernet-encrypted.
     pub token: String,
     /// The bot's `@username`, as `getMe` said when the token was saved.
     pub username: String,
+    /// The chat, as Telegram numbers it: a person's, a group's (negative) or
+    /// a channel's. Empty in a file saved before there was one - nothing
+    /// goes to Telegram then.
+    #[serde(default)]
+    pub chat_id: String,
+    /// What Telegram calls that chat, for the page and the log.
+    #[serde(default)]
+    pub chat_name: String,
 }
 
-/// The administrator's half: how messages go out.
+/// Everything the addon keeps.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channels {
     #[serde(default)]
     pub smtp: Option<SmtpConfig>,
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
-    /// `en` or `vi`: a message's language when its reader chose none.
+    /// `en` or `vi`; Vietnamese when none was chosen.
     #[serde(default)]
     pub language: Option<String>,
+    /// `{event: bool}`: an event not in it takes its default.
+    #[serde(default)]
+    pub events: BTreeMap<String, bool>,
+}
+
+impl Channels {
+    /// The bot and the chat it writes in, when both are set.
+    pub fn telegram_chat(&self) -> Option<(&TelegramConfig, &str)> {
+        self.telegram
+            .as_ref()
+            .filter(|bot| !bot.chat_id.is_empty())
+            .map(|bot| (bot, bot.chat_id.as_str()))
+    }
+
+    /// Whether a message has anywhere to go.
+    pub fn ready(&self) -> bool {
+        self.smtp.is_some() || self.telegram_chat().is_some()
+    }
+
+    /// Whether `key` is told.
+    pub fn wants(&self, key: &str) -> bool {
+        self.events
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| kind(key).is_some_and(|k| k.default_on))
+    }
+
+    /// The language messages are written in.
+    pub fn lang(&self) -> Lang {
+        Lang::parse(self.language.as_deref()).unwrap_or(Lang::Vi)
+    }
 }
 
 fn data_dir() -> PathBuf {
@@ -146,106 +186,73 @@ pub fn installed() -> bool {
 
 // ---------------------------------------------------------------- the kinds
 
-/// One kind of event a reader can ask to hear of or not.
+/// One kind of event, told or not as the administrators chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kind {
     pub key: &'static str,
-    /// Only administrators are offered it: it is about the server.
-    pub admin: bool,
-    /// Whether it is heard of by someone who never chose.
+    /// Where the page lists it: `accounts` - the websites and backups of
+    /// every account - `server`, or `admins`, the administrator accounts.
+    pub group: &'static str,
+    /// Whether it is told before anyone chose.
     pub default_on: bool,
 }
 
-/// Every kind, in the order the page lists them: the account's own first,
-/// then the server's.
+/// Every kind, in the order the page lists them.
 pub const KINDS: &[Kind] = &[
     Kind {
         key: "backup_failed",
-        admin: false,
+        group: "accounts",
         default_on: true,
     },
     Kind {
         key: "backup_done",
-        admin: false,
+        group: "accounts",
         default_on: false,
     },
     Kind {
         key: "malware",
-        admin: false,
+        group: "accounts",
         default_on: true,
     },
     Kind {
         key: "ssl_expiring",
-        admin: false,
+        group: "accounts",
         default_on: true,
     },
     Kind {
         key: "storage_full",
-        admin: false,
-        default_on: true,
-    },
-    Kind {
-        key: "sign_in",
-        admin: false,
-        default_on: true,
-    },
-    Kind {
-        key: "security",
-        admin: false,
-        default_on: true,
-    },
-    Kind {
-        key: "server_backup_failed",
-        admin: true,
-        default_on: true,
-    },
-    Kind {
-        key: "server_backup_done",
-        admin: true,
-        default_on: false,
-    },
-    Kind {
-        key: "server_malware",
-        admin: true,
-        default_on: true,
-    },
-    Kind {
-        key: "server_ssl_expiring",
-        admin: true,
+        group: "accounts",
         default_on: true,
     },
     Kind {
         key: "disk_low",
-        admin: true,
+        group: "server",
         default_on: true,
     },
     Kind {
         key: "service_down",
-        admin: true,
+        group: "server",
         default_on: true,
     },
     Kind {
         key: "panel_update",
-        admin: true,
+        group: "server",
         default_on: true,
     },
     Kind {
-        key: "server_storage_full",
-        admin: true,
-        default_on: false,
+        key: "sign_in",
+        group: "admins",
+        default_on: true,
+    },
+    Kind {
+        key: "security",
+        group: "admins",
+        default_on: true,
     },
 ];
 
 pub fn kind(key: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.key == key)
-}
-
-/// Whether a reader with these choices hears of `key`.
-pub fn wants(settings: &NotificationSettings, key: &str) -> bool {
-    let chosen = serde_json::from_str::<Value>(&settings.events)
-        .ok()
-        .and_then(|v| v.get(key).and_then(Value::as_bool));
-    chosen.unwrap_or_else(|| kind(key).is_some_and(|k| k.default_on))
 }
 
 // ---------------------------------------------------------------- the words
@@ -309,29 +316,18 @@ pub struct Content {
     pub page: &'static str,
 }
 
-/// Who a message is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Audience {
-    /// One account: the owner of what it is about.
-    Owner(i64),
-    /// Every active administrator.
-    Admins,
-}
-
-/// One message an event makes: for whom, under which kind, saying what.
+/// One message an event makes: under which kind, saying what.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    pub audience: Audience,
     pub key: &'static str,
     pub content: Content,
 }
 
 // ---------------------------------------------------------------- the events
 
-/// One user's part in a scheduled backup's run.
+/// One account's part in a scheduled backup's run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserBackup {
-    pub user_id: i64,
     pub username: String,
     /// Where the archive went, or why there is none.
     pub outcome: Result<String, String>,
@@ -343,8 +339,6 @@ pub struct Threat {
     pub path: String,
     pub signature: String,
     pub domain: String,
-    /// The website's owner, when the path is in a website.
-    pub owner: Option<i64>,
     /// Whether it was moved to quarantine.
     pub quarantined: bool,
 }
@@ -352,13 +346,12 @@ pub struct Threat {
 /// A certificate close to its end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expiring {
-    pub owner: i64,
     pub domain: String,
     /// Whole days left; zero or less is expired.
     pub days: i64,
 }
 
-/// A change to how an account signs in.
+/// A change to how an administrator account signs in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Password,
@@ -367,25 +360,33 @@ pub enum Change {
     TwoFactorReset,
     PasskeyAdded(String),
     PasskeyRemoved(String),
-    McpToken { name: String, can_write: bool },
+    McpToken {
+        name: String,
+        can_write: bool,
+    },
     SftpPassword(String),
+    /// The account is an administrator now: made as one, or made one.
+    Administrator,
 }
 
 /// Something that happened, as a hook reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// A backup schedule ran, for these users; `problem` when it could not
-    /// run for anyone.
+    /// A backup schedule ran, for these accounts; `problem` when it could
+    /// not run for anyone.
     ScheduleRun {
         schedule: String,
         users: Vec<UserBackup>,
         problem: Option<String>,
     },
-    /// A backup someone started finished, one way or the other.
-    Backup {
-        owner: i64,
+    /// A backup someone started by hand failed. One that finished is told
+    /// by the page that started it.
+    BackupFailed {
+        /// The account that started it.
+        by: String,
+        /// The website or account it was of.
         what: String,
-        outcome: Result<String, String>,
+        why: String,
     },
     /// A scan found something.
     Malware { threats: Vec<Threat> },
@@ -404,27 +405,27 @@ pub enum Event {
     },
     /// A newer release is out.
     PanelUpdate { current: String, latest: String },
-    /// An account's storage is nearly full.
+    /// A customer's storage is nearly full.
     StorageFull {
-        owner: i64,
         username: String,
         percent: f64,
         used: u64,
         limit: u64,
     },
-    /// A sign-in from an address the account has not signed in from.
+    /// A sign-in to an administrator account from an address it has not
+    /// signed in from.
     SignIn {
-        owner: i64,
+        username: String,
         address: String,
         agent: String,
         how: &'static str,
     },
-    /// A change to how the account signs in.
+    /// A change to how an administrator account signs in.
     Security {
-        owner: i64,
+        username: String,
         change: Change,
         address: String,
-        /// The administrator who made it, when it was not the owner.
+        /// The administrator who made it, when it was not the account's own.
         by: Option<String>,
     },
 }
@@ -562,15 +563,17 @@ fn ssl_content(certificates: &[Expiring]) -> Content {
     }
 }
 
-fn if_not_you() -> Text {
+/// What to do when an administrator account did something nobody meant it
+/// to: `who` is the account that did it.
+fn if_not_them(who: &str) -> Text {
     Text::new(
-        "If it was not you, sign in and change your password at once, and turn on two-step verification.",
-        "Nếu không phải bạn, hãy đăng nhập và đổi mật khẩu ngay, rồi bật xác minh 2 bước.",
+        format!("If it was not {who}, change {who}'s password at once on the Users page, or deactivate the account."),
+        format!("Nếu không phải {who}, hãy đổi mật khẩu của {who} ngay ở trang Người dùng, hoặc vô hiệu hoá tài khoản đó."),
     )
 }
 
 impl Event {
-    /// The messages this event makes, each for its audience and kind.
+    /// The messages this event makes, each under its kind.
     pub fn messages(&self) -> Vec<Message> {
         match self {
             Event::ScheduleRun {
@@ -579,172 +582,83 @@ impl Event {
                 problem,
             } => {
                 let failed: Vec<&UserBackup> = users.iter().filter(|u| u.outcome.is_err()).collect();
-                let mut out = Vec::new();
                 if failed.is_empty() && problem.is_none() {
-                    out.push(Message {
-                        audience: Audience::Admins,
-                        key: "server_backup_done",
+                    let mut lines = vec![Text::new(
+                        format!("{} account(s) backed up.", users.len()),
+                        format!("Đã sao lưu {} tài khoản.", users.len()),
+                    )];
+                    let (shown, rest) = first(users, 15);
+                    lines.extend(shown.iter().map(|u| {
+                        Text::same(format!(
+                            "{}: {}",
+                            u.username,
+                            u.outcome.as_ref().map(String::as_str).unwrap_or("")
+                        ))
+                    }));
+                    lines.extend(more(rest));
+                    return vec![Message {
+                        key: "backup_done",
                         content: Content {
                             subject: Text::new(
                                 format!("Scheduled backup finished: {schedule}"),
                                 format!("Đã sao lưu xong theo lịch: {schedule}"),
                             ),
-                            lines: vec![Text::new(
-                                format!("{} account(s) backed up.", users.len()),
-                                format!("Đã sao lưu {} tài khoản.", users.len()),
-                            )],
-                            page: "/backups",
-                        },
-                    });
-                } else {
-                    let mut lines = Vec::new();
-                    if let Some(problem) = problem {
-                        lines.push(Text::same(problem.clone()));
-                    }
-                    if !failed.is_empty() {
-                        lines.push(Text::new(
-                            format!("{} of {} account(s) were not backed up:", failed.len(), users.len()),
-                            format!("{}/{} tài khoản chưa được sao lưu:", failed.len(), users.len()),
-                        ));
-                    }
-                    let (shown, rest) = first(&failed, 15);
-                    lines.extend(shown.iter().map(|u| {
-                        Text::same(format!(
-                            "{}: {}",
-                            u.username,
-                            u.outcome.as_ref().err().map(String::as_str).unwrap_or("")
-                        ))
-                    }));
-                    lines.extend(more(rest));
-                    out.push(Message {
-                        audience: Audience::Admins,
-                        key: "server_backup_failed",
-                        content: Content {
-                            subject: Text::new(
-                                format!("Scheduled backup failed: {schedule}"),
-                                format!("Lịch sao lưu bị lỗi: {schedule}"),
-                            ),
                             lines,
                             page: "/backups",
                         },
-                    });
+                    }];
                 }
-                for user in users {
-                    let (key, content) = match &user.outcome {
-                        Ok(went) => (
-                            "backup_done",
-                            Content {
-                                subject: Text::new("Your account was backed up", "Tài khoản của bạn đã được sao lưu"),
-                                lines: vec![
-                                    Text::new(
-                                        format!("By the schedule \"{schedule}\"."),
-                                        format!("Theo lịch \"{schedule}\"."),
-                                    ),
-                                    Text::same(went.clone()),
-                                ],
-                                page: "/backups",
-                            },
-                        ),
-                        Err(why) => (
-                            "backup_failed",
-                            Content {
-                                subject: Text::new("Your account's backup failed", "Sao lưu tài khoản của bạn bị lỗi"),
-                                lines: vec![
-                                    Text::new(
-                                        format!("The schedule \"{schedule}\" could not back up your account."),
-                                        format!("Lịch \"{schedule}\" không sao lưu được tài khoản của bạn."),
-                                    ),
-                                    Text::new(format!("Reason: {why}"), format!("Lý do: {why}")),
-                                ],
-                                page: "/backups",
-                            },
-                        ),
-                    };
-                    out.push(Message {
-                        audience: Audience::Owner(user.user_id),
-                        key,
-                        content,
-                    });
+                let mut lines = Vec::new();
+                if let Some(problem) = problem {
+                    lines.push(Text::same(problem.clone()));
                 }
-                out
-            }
-            Event::Backup {
-                owner,
-                what,
-                outcome,
-            } => {
-                let (key, content) = match outcome {
-                    Ok(file) => (
-                        "backup_done",
-                        Content {
-                            subject: Text::new(format!("Backup finished: {what}"), format!("Đã sao lưu xong: {what}")),
-                            lines: vec![Text::new(format!("File: {file}"), format!("Tệp: {file}"))],
-                            page: "/backups",
-                        },
-                    ),
-                    Err(why) => (
-                        "backup_failed",
-                        Content {
-                            subject: Text::new(format!("Backup failed: {what}"), format!("Sao lưu bị lỗi: {what}")),
-                            lines: vec![Text::new(format!("Reason: {why}"), format!("Lý do: {why}"))],
-                            page: "/backups",
-                        },
-                    ),
-                };
+                if !failed.is_empty() {
+                    lines.push(Text::new(
+                        format!("{} of {} account(s) were not backed up:", failed.len(), users.len()),
+                        format!("{}/{} tài khoản chưa được sao lưu:", failed.len(), users.len()),
+                    ));
+                }
+                let (shown, rest) = first(&failed, 15);
+                lines.extend(shown.iter().map(|u| {
+                    Text::same(format!(
+                        "{}: {}",
+                        u.username,
+                        u.outcome.as_ref().err().map(String::as_str).unwrap_or("")
+                    ))
+                }));
+                lines.extend(more(rest));
                 vec![Message {
-                    audience: Audience::Owner(*owner),
-                    key,
-                    content,
+                    key: "backup_failed",
+                    content: Content {
+                        subject: Text::new(
+                            format!("Scheduled backup failed: {schedule}"),
+                            format!("Lịch sao lưu bị lỗi: {schedule}"),
+                        ),
+                        lines,
+                        page: "/backups",
+                    },
                 }]
             }
-            Event::Malware { threats } => {
-                let mut out = vec![Message {
-                    audience: Audience::Admins,
-                    key: "server_malware",
-                    content: malware_content(threats),
-                }];
-                let mut owners: Vec<i64> = threats.iter().filter_map(|t| t.owner).collect();
-                owners.sort_unstable();
-                owners.dedup();
-                for owner in owners {
-                    let theirs: Vec<Threat> = threats
-                        .iter()
-                        .filter(|t| t.owner == Some(owner))
-                        .cloned()
-                        .collect();
-                    out.push(Message {
-                        audience: Audience::Owner(owner),
-                        key: "malware",
-                        content: malware_content(&theirs),
-                    });
-                }
-                out
-            }
-            Event::SslExpiring { certificates } => {
-                let mut out = vec![Message {
-                    audience: Audience::Admins,
-                    key: "server_ssl_expiring",
-                    content: ssl_content(certificates),
-                }];
-                let mut owners: Vec<i64> = certificates.iter().map(|c| c.owner).collect();
-                owners.sort_unstable();
-                owners.dedup();
-                for owner in owners {
-                    let theirs: Vec<Expiring> = certificates
-                        .iter()
-                        .filter(|c| c.owner == owner)
-                        .cloned()
-                        .collect();
-                    out.push(Message {
-                        audience: Audience::Owner(owner),
-                        key: "ssl_expiring",
-                        content: ssl_content(&theirs),
-                    });
-                }
-                out
-            }
+            Event::BackupFailed { by, what, why } => vec![Message {
+                key: "backup_failed",
+                content: Content {
+                    subject: Text::new(format!("Backup failed: {what}"), format!("Sao lưu bị lỗi: {what}")),
+                    lines: vec![
+                        Text::new(format!("Started by {by}."), format!("Do {by} khởi chạy.")),
+                        Text::new(format!("Reason: {why}"), format!("Lý do: {why}")),
+                    ],
+                    page: "/backups",
+                },
+            }],
+            Event::Malware { threats } => vec![Message {
+                key: "malware",
+                content: malware_content(threats),
+            }],
+            Event::SslExpiring { certificates } => vec![Message {
+                key: "ssl_expiring",
+                content: ssl_content(certificates),
+            }],
             Event::DiskLow { mount, percent: used, free } => vec![Message {
-                audience: Audience::Admins,
                 key: "disk_low",
                 content: Content {
                     subject: Text::new(
@@ -772,7 +686,6 @@ impl Event {
                 if !stopped.is_empty() {
                     let names = stopped.join(", ");
                     out.push(Message {
-                        audience: Audience::Admins,
                         key: "service_down",
                         content: Content {
                             subject: Text::new(format!("Service stopped: {names}"), format!("Dịch vụ đã dừng: {names}")),
@@ -787,7 +700,6 @@ impl Event {
                 if !running_again.is_empty() {
                     let names = running_again.join(", ");
                     out.push(Message {
-                        audience: Audience::Admins,
                         key: "service_down",
                         content: Content {
                             subject: Text::new(format!("Service running again: {names}"), format!("Dịch vụ đã chạy lại: {names}")),
@@ -799,7 +711,6 @@ impl Event {
                 out
             }
             Event::PanelUpdate { current, latest } => vec![Message {
-                audience: Audience::Admins,
                 key: "panel_update",
                 content: Content {
                     subject: Text::new(format!("SNPanel {latest} is out"), format!("Đã có SNPanel {latest}")),
@@ -811,48 +722,29 @@ impl Event {
                 },
             }],
             Event::StorageFull {
-                owner,
                 username,
                 percent: used_percent,
                 used,
                 limit,
-            } => {
-                let figures = format!("{} / {}", human_size(*used), human_size(*limit));
-                vec![
-                    Message {
-                        audience: Audience::Admins,
-                        key: "server_storage_full",
-                        content: Content {
-                            subject: Text::new(
-                                format!("{username} has used {} of their storage", percent(*used_percent)),
-                                format!("{username} đã dùng {} dung lượng", percent(*used_percent)),
-                            ),
-                            lines: vec![Text::same(figures.clone())],
-                            page: "/users",
-                        },
-                    },
-                    Message {
-                        audience: Audience::Owner(*owner),
-                        key: "storage_full",
-                        content: Content {
-                            subject: Text::new(
-                                format!("Your storage is {} full", percent(*used_percent)),
-                                format!("Dung lượng của bạn đã dùng {}", percent(*used_percent)),
-                            ),
-                            lines: vec![
-                                Text::same(figures),
-                                Text::new(
-                                    "When it is full, uploads, new websites and backups stop. Delete what you no longer need, or ask for more room.",
-                                    "Khi đầy, việc tải tệp lên, tạo website mới và sao lưu sẽ dừng. Hãy xoá bớt những gì không cần, hoặc xin thêm dung lượng.",
-                                ),
-                            ],
-                            page: "/filemanager",
-                        },
-                    },
-                ]
-            }
+            } => vec![Message {
+                key: "storage_full",
+                content: Content {
+                    subject: Text::new(
+                        format!("{username} has used {} of their storage", percent(*used_percent)),
+                        format!("{username} đã dùng {} dung lượng", percent(*used_percent)),
+                    ),
+                    lines: vec![
+                        Text::same(format!("{} / {}", human_size(*used), human_size(*limit))),
+                        Text::new(
+                            "When it is full, the account's uploads, new websites and backups stop. Raise its limit on the Users page, or ask its owner to delete what they no longer need.",
+                            "Khi đầy, tài khoản này sẽ không tải tệp lên, tạo website mới hay sao lưu được nữa. Hãy tăng giới hạn ở trang Người dùng, hoặc đề nghị chủ tài khoản xoá bớt những gì không cần.",
+                        ),
+                    ],
+                    page: "/users",
+                },
+            }],
             Event::SignIn {
-                owner,
+                username,
                 address,
                 agent,
                 how,
@@ -874,72 +766,103 @@ impl Event {
                 if !agent.is_empty() {
                     lines.push(Text::new(format!("Browser: {agent}"), format!("Trình duyệt: {agent}")));
                 }
-                lines.push(if_not_you());
+                lines.push(if_not_them(username));
                 vec![Message {
-                    audience: Audience::Owner(*owner),
                     key: "sign_in",
                     content: Content {
-                        subject: Text::new("A new sign-in to your account", "Có đăng nhập mới vào tài khoản của bạn"),
+                        subject: Text::new(
+                            format!("New sign-in to the administrator account {username}"),
+                            format!("Có đăng nhập mới vào tài khoản quản trị {username}"),
+                        ),
                         lines,
-                        page: "/security",
+                        page: "/users",
                     },
                 }]
             }
             Event::Security {
-                owner,
+                username,
                 change,
                 address,
                 by,
             } => {
                 let subject = match change {
-                    Change::Password => Text::new("Your panel password was changed", "Mật khẩu panel của bạn đã được đổi"),
-                    Change::TwoFactorOn => Text::new("Two-step verification was turned on", "Đã bật xác minh 2 bước"),
-                    Change::TwoFactorOff => Text::new("The authenticator app was turned off", "Đã tắt ứng dụng xác thực"),
-                    Change::TwoFactorReset => Text::new(
-                        "Your two-step verification was reset",
-                        "Xác minh 2 bước của bạn đã được đặt lại",
+                    Change::Password => Text::new(
+                        format!("Password changed: {username}"),
+                        format!("Đã đổi mật khẩu: {username}"),
                     ),
-                    Change::PasskeyAdded(name) => Text::new(format!("A passkey was added: {name}"), format!("Đã thêm passkey: {name}")),
-                    Change::PasskeyRemoved(name) => Text::new(format!("A passkey was removed: {name}"), format!("Đã gỡ passkey: {name}")),
+                    Change::TwoFactorOn => Text::new(
+                        format!("Two-step verification turned on: {username}"),
+                        format!("Đã bật xác minh 2 bước: {username}"),
+                    ),
+                    Change::TwoFactorOff => Text::new(
+                        format!("Authenticator app turned off: {username}"),
+                        format!("Đã tắt ứng dụng xác thực: {username}"),
+                    ),
+                    Change::TwoFactorReset => Text::new(
+                        format!("Two-step verification reset: {username}"),
+                        format!("Đã đặt lại xác minh 2 bước: {username}"),
+                    ),
+                    Change::PasskeyAdded(name) => Text::new(
+                        format!("Passkey added to {username}: {name}"),
+                        format!("Đã thêm passkey cho {username}: {name}"),
+                    ),
+                    Change::PasskeyRemoved(name) => Text::new(
+                        format!("Passkey removed from {username}: {name}"),
+                        format!("Đã gỡ passkey của {username}: {name}"),
+                    ),
                     Change::McpToken { name, .. } => Text::new(
-                        format!("An AI assistant token was made: {name}"),
-                        format!("Đã tạo token trợ lý AI: {name}"),
+                        format!("AI assistant token made for {username}: {name}"),
+                        format!("Đã tạo token trợ lý AI cho {username}: {name}"),
                     ),
                     Change::SftpPassword(account) => Text::new(
-                        format!("The SFTP password of {account} was changed"),
-                        format!("Đã đổi mật khẩu SFTP của {account}"),
+                        format!("SFTP password changed: {account} ({username})"),
+                        format!("Đã đổi mật khẩu SFTP: {account} ({username})"),
+                    ),
+                    Change::Administrator => Text::new(
+                        format!("{username} is now an administrator"),
+                        format!("{username} đã trở thành quản trị viên"),
                     ),
                 };
                 let mut lines = Vec::new();
                 if let Change::McpToken { can_write, .. } = change {
                     lines.push(if *can_write {
                         Text::new(
-                            "It can read and act as your account: write files, issue certificates and more.",
-                            "Token này đọc và thao tác được như tài khoản của bạn: ghi tệp, cấp chứng chỉ và nhiều việc khác.",
+                            format!("It can read and act as {username}: write files, issue certificates and more."),
+                            format!("Token này đọc và thao tác được như {username}: ghi tệp, cấp chứng chỉ và nhiều việc khác."),
                         )
                     } else {
-                        Text::new("It can read as your account.", "Token này đọc được như tài khoản của bạn.")
+                        Text::new(
+                            format!("It can read as {username}."),
+                            format!("Token này đọc được như {username}."),
+                        )
                     });
                 }
-                match by {
-                    Some(admin) => lines.push(Text::new(
+                match (by, address.is_empty()) {
+                    (Some(admin), false) => lines.push(Text::new(
+                        format!("By the administrator {admin}, from {address}."),
+                        format!("Do quản trị viên {admin} thực hiện, từ địa chỉ {address}."),
+                    )),
+                    (Some(admin), true) => lines.push(Text::new(
                         format!("By the administrator {admin}."),
                         format!("Do quản trị viên {admin} thực hiện."),
                     )),
-                    None if !address.is_empty() => lines.push(Text::new(
+                    (None, false) => lines.push(Text::new(
                         format!("From {address}."),
                         format!("Từ địa chỉ {address}."),
                     )),
-                    None => {}
+                    (None, true) => {}
                 }
-                lines.push(if_not_you());
+                lines.push(if_not_them(by.as_deref().unwrap_or(username)));
+                let page = match change {
+                    Change::McpToken { .. } => "/ai-assistants",
+                    _ => "/users",
+                };
                 vec![Message {
-                    audience: Audience::Owner(*owner),
                     key: "security",
                     content: Content {
                         subject,
                         lines,
-                        page: "/security",
+                        page,
                     },
                 }]
             }
@@ -965,43 +888,21 @@ fn html_escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// What the footer says, in `lang`.
-struct Footer<'a> {
-    app: &'a str,
-    username: &'a str,
-    base_url: &'a str,
-}
-
-pub fn render(
-    content: &Content,
-    lang: Lang,
-    footer_app: &str,
-    username: &str,
-    base_url: &str,
-) -> Rendered {
-    let footer = Footer {
-        app: footer_app,
-        username,
-        base_url,
-    };
+pub fn render(content: &Content, lang: Lang, app: &str, base_url: &str) -> Rendered {
     let subject = content.subject.get(lang).to_string();
     let lines: Vec<&str> = content.lines.iter().map(|l| l.get(lang)).collect();
-    let link =
-        (!footer.base_url.is_empty()).then(|| format!("{}{}", footer.base_url, content.page));
-    let prefs = (!footer.base_url.is_empty()).then(|| format!("{}/notifications", footer.base_url));
+    let link = (!base_url.is_empty()).then(|| format!("{base_url}{}", content.page));
+    let settings = (!base_url.is_empty()).then(|| format!("{base_url}/notifications"));
     let (open, why, choose) = match lang {
         Lang::En => (
             "Open the panel",
-            format!("You get this as {} on {}.", footer.username, footer.app),
-            "Choose what you are told of",
+            format!("Sent to the administrators of {app}."),
+            "Choose what is sent",
         ),
         Lang::Vi => (
             "Mở panel",
-            format!(
-                "Bạn nhận thư này với tư cách {} trên {}.",
-                footer.username, footer.app
-            ),
-            "Chọn những gì muốn được báo",
+            format!("Gửi tới quản trị viên của {app}."),
+            "Chọn những gì được gửi",
         ),
     };
 
@@ -1014,8 +915,8 @@ pub fn render(
         text.push_str(&format!("\n{open}: {link}\n"));
     }
     text.push_str(&format!("\n--\n{why}\n"));
-    if let Some(prefs) = &prefs {
-        text.push_str(&format!("{choose}: {prefs}\n"));
+    if let Some(settings) = &settings {
+        text.push_str(&format!("{choose}: {settings}\n"));
     }
 
     let mut html = String::from(
@@ -1025,7 +926,7 @@ pub fn render(
     html.push_str(&format!(
         "<p style=\"margin:0 0 4px;font-size:12px;color:#6b7280\">{}</p>\
          <h1 style=\"margin:0 0 16px;font-size:20px;line-height:1.35;color:#0b3d91\">{}</h1>",
-        html_escape(footer.app),
+        html_escape(app),
         html_escape(&subject)
     ));
     for line in &lines {
@@ -1045,10 +946,10 @@ pub fn render(
         "</div><p style=\"max-width:600px;margin:12px auto 0;font-size:12px;color:#6b7280\">{}",
         html_escape(&why)
     ));
-    if let Some(prefs) = &prefs {
+    if let Some(settings) = &settings {
         html.push_str(&format!(
             " <a href=\"{}\" style=\"color:#0b5cd5\">{}</a>",
-            html_escape(prefs),
+            html_escape(settings),
             html_escape(choose)
         ));
     }
@@ -1066,11 +967,7 @@ pub fn render(
             telegram::escape(open)
         ));
     }
-    telegram.push_str(&format!(
-        "\n<i>{} · {}</i>",
-        telegram::escape(footer.app),
-        telegram::escape(footer.username)
-    ));
+    telegram.push_str(&format!("\n<i>{}</i>", telegram::escape(app)));
 
     Rendered {
         subject,
@@ -1110,27 +1007,42 @@ pub fn base_url(state: &AppState) -> String {
         .to_string()
 }
 
-/// An address as the log shows it: enough to tell which, not the whole.
-pub fn masked_address(address: &str) -> String {
-    match address.split_once('@') {
-        Some((local, domain)) => {
-            let first: String = local.chars().take(1).collect();
-            format!("{first}***@{domain}")
-        }
-        None => "***".to_string(),
+/// The chat as the page and the log name it.
+pub fn chat_label(bot: &TelegramConfig) -> String {
+    if bot.chat_name.is_empty() || bot.chat_name == bot.chat_id {
+        bot.chat_id.clone()
+    } else {
+        format!("{} ({})", bot.chat_name, bot.chat_id)
     }
 }
 
-pub fn masked_chat(chat: &str) -> String {
-    let tail: String = chat
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("…{tail}")
+/// Every active administrator's own address, each once: where e-mail goes
+/// when no address is set.
+pub async fn admin_addresses(state: &AppState) -> Vec<String> {
+    let users = match state.db.users().active_ordered_by_id().await {
+        Ok(users) => users,
+        Err(e) => {
+            tracing::error!("notifications: cannot list the accounts: {e}");
+            return Vec::new();
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for user in users.iter().filter(|u| u.is_admin()) {
+        let address = user.email.trim();
+        if smtp::valid_address(address) && !out.iter().any(|a| a.eq_ignore_ascii_case(address)) {
+            out.push(address.to_string());
+        }
+    }
+    out
+}
+
+/// Where e-mail goes: the addresses set, or the administrators' own.
+pub async fn recipients(state: &AppState, config: &SmtpConfig) -> Vec<String> {
+    if config.to.is_empty() {
+        admin_addresses(state).await
+    } else {
+        config.to.clone()
+    }
 }
 
 /// The date header's value, now.
@@ -1182,6 +1094,13 @@ pub async fn send_mail(
     .map_err(|e| e.0)
 }
 
+/// The bot token in the clear.
+pub fn bot_token(state: &AppState, config: &TelegramConfig) -> Result<String, String> {
+    reveal(state, &config.token)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| "The saved bot token cannot be read: save it again".to_string())
+}
+
 /// One Telegram message.
 pub async fn send_telegram(
     state: &AppState,
@@ -1189,18 +1108,16 @@ pub async fn send_telegram(
     chat: &str,
     rendered: &Rendered,
 ) -> Result<(), String> {
-    let token = reveal(state, &config.token)
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| "The saved bot token cannot be read: save it again".to_string())?;
+    let token = bot_token(state, config)?;
     telegram::send(&token, chat, &rendered.telegram)
         .await
         .map_err(|e| e.0)
 }
 
-async fn log(
+/// What was sent, or why not, for the page's "Recently sent".
+pub async fn log(
     state: &AppState,
     key: &str,
-    user: &User,
     channel: &str,
     target: &str,
     subject: &str,
@@ -1217,8 +1134,8 @@ async fn log(
         .log(&NewLogEntry {
             created_at: &now,
             event: key,
-            user_id: Some(user.id),
-            username: Some(&user.username),
+            user_id: None,
+            username: None,
             channel,
             target,
             subject,
@@ -1230,122 +1147,76 @@ async fn log(
         tracing::warn!("cannot record a notification: {e}");
     }
     if let Err(why) = outcome {
-        tracing::warn!(user = %user.username, channel, event = key, "a notification was not sent: {why}");
+        tracing::warn!(
+            channel,
+            target,
+            event = key,
+            "a notification was not sent: {why}"
+        );
     }
 }
 
-/// Everything an event makes, to everyone who asked to hear of it, by every
-/// way they chose. Waits for the sending: a one-shot process calls this
-/// before it exits; a request hands it to [`spawn`] instead.
+/// Everything an event makes that the administrators chose to hear of, by
+/// e-mail to each address and to the Telegram chat. Waits for the sending:
+/// a one-shot process calls this before it exits; a request hands it to
+/// [`spawn`] instead.
 pub async fn deliver(state: &AppState, event: Event) {
     if !installed() {
         return;
     }
     let channels = load_channels();
-    if channels.smtp.is_none() && channels.telegram.is_none() {
+    if !channels.ready() {
         return;
     }
-    let messages = event.messages();
+    let messages: Vec<Message> = event
+        .messages()
+        .into_iter()
+        .filter(|m| channels.wants(m.key))
+        .collect();
     if messages.is_empty() {
         return;
     }
-    let users = match state.db.users().list_all().await {
-        Ok(users) => users,
-        Err(e) => {
-            tracing::error!("notifications: cannot list the accounts: {e}");
-            return;
-        }
-    };
-    // Each reader's candidates, the administrators' message first: it says
-    // more, and one message is enough.
-    let mut candidates: BTreeMap<i64, Vec<&Message>> = BTreeMap::new();
-    for message in messages.iter().filter(|m| m.audience == Audience::Admins) {
-        for user in users.iter().filter(|u| u.is_active && u.is_admin()) {
-            candidates.entry(user.id).or_default().push(message);
-        }
-    }
-    for message in &messages {
-        if let Audience::Owner(owner) = message.audience {
-            if users.iter().any(|u| u.id == owner && u.is_active) {
-                candidates.entry(owner).or_default().push(message);
-            }
-        }
-    }
-
+    let lang = channels.lang();
     let app = app_name(state);
     let base = base_url(state);
-    let default_lang = Lang::parse(channels.language.as_deref()).unwrap_or(Lang::Vi);
-    for (user_id, offered) in candidates {
-        let Some(user) = users.iter().find(|u| u.id == user_id) else {
-            continue;
-        };
-        let settings = state
-            .db
-            .notifications()
-            .get(user.id, &user.username)
-            .await
-            .unwrap_or_default();
-        // Two messages of one event for the same reader - "Service stopped"
-        // and "Service running again" - are both theirs; the administrator's
-        // and the owner's view of the same thing are one.
-        let mut chosen: Vec<&Message> = Vec::new();
-        for message in offered {
-            if !wants(&settings, message.key) {
-                continue;
+    let addresses = match &channels.smtp {
+        Some(config) => recipients(state, config).await,
+        None => Vec::new(),
+    };
+    for message in &messages {
+        let rendered = render(&message.content, lang, &app, &base);
+        if let Some(config) = &channels.smtp {
+            if addresses.is_empty() {
+                let nowhere = Err(
+                    "No administrator has an e-mail address, and no address is set to send to"
+                        .to_string(),
+                );
+                log(
+                    state,
+                    message.key,
+                    "email",
+                    "-",
+                    &rendered.subject,
+                    &nowhere,
+                )
+                .await;
             }
-            let duplicate = chosen
-                .iter()
-                .any(|c| c.content.page == message.content.page && c.audience != message.audience);
-            if !duplicate {
-                chosen.push(message);
+            for to in &addresses {
+                let outcome = send_mail(state, config, to, &rendered).await;
+                log(state, message.key, "email", to, &rendered.subject, &outcome).await;
             }
         }
-        let lang = Lang::parse(settings.language.as_deref()).unwrap_or(default_lang);
-        for message in chosen {
-            let rendered = render(&message.content, lang, &app, &user.username, &base);
-            if let Some(config) = channels.smtp.as_ref().filter(|_| settings.email_enabled) {
-                let to = settings
-                    .email
-                    .clone()
-                    .filter(|e| !e.trim().is_empty())
-                    .unwrap_or_else(|| user.email.clone());
-                if smtp::valid_address(&to) {
-                    let outcome = send_mail(state, config, &to, &rendered).await;
-                    log(
-                        state,
-                        message.key,
-                        user,
-                        "email",
-                        &masked_address(&to),
-                        &rendered.subject,
-                        &outcome,
-                    )
-                    .await;
-                }
-            }
-            if let Some(config) = channels
-                .telegram
-                .as_ref()
-                .filter(|_| settings.telegram_enabled)
-            {
-                if let Some(chat) = settings
-                    .telegram_chat_id
-                    .as_deref()
-                    .filter(|c| !c.is_empty())
-                {
-                    let outcome = send_telegram(state, config, chat, &rendered).await;
-                    log(
-                        state,
-                        message.key,
-                        user,
-                        "telegram",
-                        &masked_chat(chat),
-                        &rendered.subject,
-                        &outcome,
-                    )
-                    .await;
-                }
-            }
+        if let Some((bot, chat)) = channels.telegram_chat() {
+            let outcome = send_telegram(state, bot, chat, &rendered).await;
+            log(
+                state,
+                message.key,
+                "telegram",
+                &chat_label(bot),
+                &rendered.subject,
+                &outcome,
+            )
+            .await;
         }
     }
 }
@@ -1366,23 +1237,10 @@ pub fn test_content() -> Content {
     Content {
         subject: Text::new("A test message from the panel", "Tin nhắn thử từ panel"),
         lines: vec![Text::new(
-            "If you can read this, notifications reach you here.",
-            "Nếu bạn đọc được tin này, thông báo sẽ đến được với bạn ở đây.",
+            "If you can read this, the panel's notifications reach you here.",
+            "Nếu bạn đọc được tin này, thông báo của panel sẽ đến được đây.",
         )],
         page: "/notifications",
-    }
-}
-
-/// What the bot says in a chat it was just linked to, in Telegram's HTML.
-pub fn linked_hello(lang: Lang, username: &str, app: &str) -> String {
-    let (username, app) = (telegram::escape(username), telegram::escape(app));
-    match lang {
-        Lang::En => {
-            format!("Linked. This chat now gets the notifications of <b>{username}</b> on {app}.")
-        }
-        Lang::Vi => format!(
-            "Đã liên kết. Cuộc trò chuyện này sẽ nhận thông báo của <b>{username}</b> trên {app}."
-        ),
     }
 }
 
@@ -1413,12 +1271,6 @@ pub async fn scan_finished(job_id: &str) {
     let Some(found) = job["threats"].as_array().filter(|t| !t.is_empty()) else {
         return;
     };
-    let websites = state
-        .db
-        .websites()
-        .all_by_domain()
-        .await
-        .unwrap_or_default();
     let threats: Vec<Threat> = found
         .iter()
         .filter(|t| !matches!(t["state"].as_str(), Some("whitelisted" | "missing")))
@@ -1429,16 +1281,11 @@ pub async fn scan_finished(job_id: &str) {
                 .filter(|d| !d.is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| crate::malware_jobs::domain_from_path(&path));
-            let owner = websites
-                .iter()
-                .find(|w| w.domain == domain)
-                .map(|w| w.owner_id);
             Threat {
                 signature: t["signature"].as_str().unwrap_or_default().to_string(),
                 quarantined: t["state"].as_str() == Some("quarantined"),
                 path,
                 domain,
-                owner,
             }
         })
         .collect();
@@ -1447,14 +1294,15 @@ pub async fn scan_finished(job_id: &str) {
     }
 }
 
-/// A sign-in: recorded against the account, and told of when the address is
-/// new to it. `how` is `password`, `code` or `passkey`.
+/// A sign-in to an administrator account: recorded, and told when the
+/// address is new to it. `how` is `password`, `code` or `passkey`. A
+/// customer's sign-ins are not looked at.
 pub fn signed_in(state: &AppState, user: &User, address: &str, agent: &str, how: &'static str) {
-    if !installed() || address.is_empty() {
+    if !installed() || address.is_empty() || !user.is_admin() {
         return;
     }
     let state = state.clone();
-    let (owner, username) = (user.id, user.username.clone());
+    let (id, username) = (user.id, user.username.clone());
     let address = address.to_string();
     let agent: String = agent
         .chars()
@@ -1466,14 +1314,14 @@ pub fn signed_in(state: &AppState, user: &User, address: &str, agent: &str, how:
         match state
             .db
             .notifications()
-            .note_address(owner, &username, &address, &now)
+            .note_address(id, &username, &address, &now)
             .await
         {
             Ok(true) => {
                 deliver(
                     &state,
                     Event::SignIn {
-                        owner,
+                        username,
                         address,
                         agent,
                         how,
@@ -1487,7 +1335,8 @@ pub fn signed_in(state: &AppState, user: &User, address: &str, agent: &str, how:
     });
 }
 
-/// A change to how an account signs in, told to its owner.
+/// A change to how an administrator account signs in; `by` is who made it.
+/// A customer's own are not told.
 pub fn security_change(
     state: &AppState,
     owner: &User,
@@ -1495,14 +1344,31 @@ pub fn security_change(
     address: &str,
     by: Option<&User>,
 ) {
+    if !owner.is_admin() {
+        return;
+    }
     let by = by.filter(|b| b.id != owner.id).map(|b| b.username.clone());
     spawn(
         state,
         Event::Security {
-            owner: owner.id,
+            username: owner.username.clone(),
             change,
             address: address.to_string(),
             by,
+        },
+    );
+}
+
+/// An account made an administrator - created as one, or its role changed -
+/// by the administrator `by`, from `address`.
+pub fn new_administrator(state: &AppState, username: &str, by: &User, address: &str) {
+    spawn(
+        state,
+        Event::Security {
+            username: username.to_string(),
+            change: Change::Administrator,
+            address: address.to_string(),
+            by: Some(by.username.clone()),
         },
     );
 }
@@ -1511,102 +1377,149 @@ pub fn security_change(
 mod tests {
     use super::*;
 
-    fn settings(events: &str) -> NotificationSettings {
-        NotificationSettings {
-            events: events.into(),
-            ..NotificationSettings::default()
-        }
-    }
-
     #[test]
-    fn a_reader_who_never_chose_hears_of_the_defaults() {
-        let none = settings("{}");
-        assert!(wants(&none, "backup_failed"));
-        assert!(!wants(&none, "backup_done"));
-        assert!(wants(&none, "server_malware"));
-        assert!(!wants(&none, "no_such_event"));
-        let chose = settings(r#"{"backup_done":true,"sign_in":false}"#);
-        assert!(wants(&chose, "backup_done"));
-        assert!(!wants(&chose, "sign_in"));
-        assert!(wants(&settings("not json"), "security"));
-        // Every kind has a key of its own.
+    fn an_event_nobody_chose_for_takes_its_default() {
+        let mut channels = Channels::default();
+        assert!(channels.wants("backup_failed"));
+        assert!(!channels.wants("backup_done"));
+        assert!(channels.wants("security"));
+        assert!(!channels.wants("no_such_event"));
+        channels.events.insert("backup_done".into(), true);
+        channels.events.insert("sign_in".into(), false);
+        assert!(channels.wants("backup_done"));
+        assert!(!channels.wants("sign_in"));
+        // Every kind has a key of its own, and a group the page knows.
         let mut keys: Vec<&str> = KINDS.iter().map(|k| k.key).collect();
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), KINDS.len());
+        assert!(KINDS
+            .iter()
+            .all(|k| matches!(k.group, "accounts" | "server" | "admins")));
     }
 
     #[test]
-    fn a_failed_schedule_tells_the_administrators_and_each_owner_their_part() {
-        let event = Event::ScheduleRun {
+    fn a_file_saved_before_the_chat_id_sends_nothing_to_telegram() {
+        let old: Channels = serde_json::from_str(
+            r#"{"smtp":null,"telegram":{"token":"gAAAA","username":"snpanel_bot"},"language":"vi"}"#,
+        )
+        .unwrap();
+        assert!(old.telegram_chat().is_none());
+        assert!(!old.ready(), "a bot with no chat is nowhere to send");
+        assert_eq!(old.lang(), Lang::Vi);
+        let mut set = old.clone();
+        set.telegram.as_mut().unwrap().chat_id = "-1001234567890".into();
+        set.telegram.as_mut().unwrap().chat_name = "Ops".into();
+        assert!(set.ready());
+        assert_eq!(
+            chat_label(set.telegram.as_ref().unwrap()),
+            "Ops (-1001234567890)"
+        );
+    }
+
+    #[test]
+    fn a_failed_schedule_names_each_account_that_was_not_backed_up() {
+        let run = |bob: Result<String, String>| Event::ScheduleRun {
             schedule: "Nightly".into(),
             users: vec![
                 UserBackup {
-                    user_id: 2,
                     username: "alice".into(),
                     outcome: Ok("alice.tar.gz".into()),
                 },
                 UserBackup {
-                    user_id: 3,
                     username: "bob".into(),
-                    outcome: Err("disk full".into()),
+                    outcome: bob,
                 },
             ],
             problem: None,
         };
-        let messages = event.messages();
-        let admin = messages
+        let failed = run(Err("disk full".into())).messages();
+        assert_eq!(failed.len(), 1, "one message, for the administrators");
+        assert_eq!(failed[0].key, "backup_failed");
+        assert_eq!(
+            failed[0].content.subject.en,
+            "Scheduled backup failed: Nightly"
+        );
+        assert_eq!(failed[0].content.subject.vi, "Lịch sao lưu bị lỗi: Nightly");
+        assert!(failed[0]
+            .content
+            .lines
             .iter()
-            .find(|m| m.audience == Audience::Admins)
-            .unwrap();
-        assert_eq!(admin.key, "server_backup_failed");
-        assert_eq!(admin.content.subject.en, "Scheduled backup failed: Nightly");
-        assert_eq!(admin.content.subject.vi, "Lịch sao lưu bị lỗi: Nightly");
-        assert!(admin.content.lines.iter().any(|l| l.en == "bob: disk full"));
-        let bob = messages
+            .any(|l| l.en == "bob: disk full"));
+        let done = run(Ok("bob.tar.gz".into())).messages();
+        assert_eq!(done[0].key, "backup_done");
+        assert!(done[0]
+            .content
+            .lines
             .iter()
-            .find(|m| m.audience == Audience::Owner(3))
-            .unwrap();
-        assert_eq!(bob.key, "backup_failed");
-        assert!(bob.content.lines.iter().any(|l| l.vi == "Lý do: disk full"));
-        let alice = messages
-            .iter()
-            .find(|m| m.audience == Audience::Owner(2))
-            .unwrap();
-        assert_eq!(alice.key, "backup_done");
+            .any(|l| l.en == "bob: bob.tar.gz"));
     }
 
     #[test]
-    fn malware_tells_each_owner_only_of_their_own_websites() {
-        let threat = |path: &str, domain: &str, owner| Threat {
+    fn malware_names_every_website_it_was_found_on() {
+        let threat = |path: &str, domain: &str| Threat {
             path: path.into(),
             signature: "Eicar-Signature".into(),
             domain: domain.into(),
-            owner,
             quarantined: true,
         };
         let messages = Event::Malware {
             threats: vec![
-                threat("/home/a/a.com/x.php", "a.com", Some(2)),
-                threat("/home/b/b.com/y.php", "b.com", Some(3)),
-                threat("/home/b/b.com/z.php", "b.com", Some(3)),
+                threat("/home/a/a.com/x.php", "a.com"),
+                threat("/home/b/b.com/y.php", "b.com"),
+                threat("/home/b/b.com/z.php", "b.com"),
             ],
         }
         .messages();
-        let admin = messages
-            .iter()
-            .find(|m| m.audience == Audience::Admins)
-            .unwrap();
-        assert_eq!(admin.content.subject.en, "Malware found on 2 websites");
-        let bob = messages
-            .iter()
-            .find(|m| m.audience == Audience::Owner(3))
-            .unwrap();
-        assert_eq!(bob.content.subject.vi, "Phát hiện mã độc trên b.com");
-        assert!(bob.content.lines.iter().all(|l| !l.en.contains("a.com")));
-        assert!(bob.content.lines[0]
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].key, "malware");
+        assert_eq!(
+            messages[0].content.subject.en,
+            "Malware found on 2 websites"
+        );
+        assert!(messages[0].content.lines[0]
             .en
-            .starts_with("2 infected file(s); 2 moved to quarantine"));
+            .starts_with("3 infected file(s); 3 moved to quarantine"));
+    }
+
+    #[test]
+    fn a_change_names_the_account_and_who_made_it() {
+        let reset = Event::Security {
+            username: "bob".into(),
+            change: Change::TwoFactorReset,
+            address: "203.0.113.5".into(),
+            by: Some("alice".into()),
+        }
+        .messages();
+        let content = &reset[0].content;
+        assert_eq!(content.subject.vi, "Đã đặt lại xác minh 2 bước: bob");
+        assert_eq!(
+            content.lines[0].en,
+            "By the administrator alice, from 203.0.113.5."
+        );
+        // What to do names who did it.
+        assert!(content.lines[1].en.starts_with("If it was not alice,"));
+        let made = Event::Security {
+            username: "carol".into(),
+            change: Change::Administrator,
+            address: String::new(),
+            by: Some("alice".into()),
+        }
+        .messages();
+        assert_eq!(made[0].key, "security");
+        assert_eq!(made[0].content.subject.en, "carol is now an administrator");
+        let sign_in = Event::SignIn {
+            username: "alice".into(),
+            address: "198.51.100.7".into(),
+            agent: String::new(),
+            how: "passkey",
+        }
+        .messages();
+        assert_eq!(
+            sign_in[0].content.subject.en,
+            "New sign-in to the administrator account alice"
+        );
+        assert!(sign_in[0].content.lines[0].en.ends_with("with a passkey."));
     }
 
     #[test]
@@ -1620,13 +1533,13 @@ mod tests {
             &content,
             Lang::Vi,
             "SNPanel",
-            "alice",
             "https://panel.example.com:2222",
         );
         assert_eq!(out.subject, "Phát hiện mã độc trên <a.com>");
         assert!(out
             .text
             .contains("Mở panel: https://panel.example.com:2222/malware"));
+        assert!(out.text.contains("Gửi tới quản trị viên của SNPanel."));
         assert!(out.html.contains("Phát hiện mã độc trên &lt;a.com&gt;"));
         assert!(out.html.contains("x.php - &lt;script&gt;&amp;"));
         assert!(!out.html.contains("<script>"));
@@ -1637,14 +1550,13 @@ mod tests {
             .telegram
             .contains("<a href=\"https://panel.example.com:2222/malware\">Mở panel</a>"));
         // No address to link to, no link.
-        let bare = render(&content, Lang::En, "SNPanel", "alice", "");
+        let bare = render(&content, Lang::En, "SNPanel", "");
         assert!(!bare.text.contains("Open the panel"));
+        assert!(bare.text.contains("Sent to the administrators of SNPanel."));
     }
 
     #[test]
-    fn the_log_shows_which_address_not_all_of_it() {
-        assert_eq!(masked_address("alice@example.com"), "a***@example.com");
-        assert_eq!(masked_chat("-1001234567890"), "…7890");
+    fn sizes_read_as_people_read_them() {
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(512), "512 B");
     }

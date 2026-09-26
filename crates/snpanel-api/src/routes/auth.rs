@@ -429,8 +429,9 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
         Ok(t) => t,
         Err(r) => return r,
     };
-    // Not in the Python: a sign-in from an address the account has not
-    // used is told to it, when the Notifications addon is installed.
+    // Not in the Python: a sign-in to an administrator account from an
+    // address it has not used is told to the administrators, when the
+    // Notifications addon is installed.
     crate::notify::signed_in(
         &state,
         &user,

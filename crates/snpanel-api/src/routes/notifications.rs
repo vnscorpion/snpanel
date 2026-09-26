@@ -1,9 +1,10 @@
-//! `/api/notifications*` - the Notifications addon's page.
+//! `/api/notifications*` - the Notifications addon's page, which is the
+//! administrators' alone.
 //!
-//! Not in the Python. Everyone reads and sets their own choices - where they
-//! are told, of what, in which language - and links a Telegram chat. An
-//! administrator also sets how messages go out: the SMTP server, the
-//! Telegram bot, the default language, and reads what was sent. See
+//! Not in the Python. How messages go out - the SMTP server and the
+//! addresses it sends to, the Telegram bot and the chat it writes in - what
+//! is told and in which language, a test message, and what was sent. A
+//! customer is answered 403 everywhere: nothing is sent to customers. See
 //! `crate::notify`.
 //!
 //! Only `GET /api/notifications` answers while the addon is not installed,
@@ -18,53 +19,40 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use rand::Rng;
-use serde_json::{json, Map, Value};
-use snpanel_db::notifications::NotificationSettings;
-use snpanel_db::User;
+use serde_json::{json, Value};
 
 use crate::auth::CurrentUser;
 use crate::errors::{bad_request, conflict, error, internal_error, not_enough_permissions};
 use crate::notify::{self, smtp, telegram, Channels, Lang, SmtpConfig, TelegramConfig};
 use crate::state::AppState;
 
-/// How long a Telegram link code is good for.
-const LINK_TTL: Duration = Duration::from_secs(600);
-/// Between two test messages from one account.
+/// Between two test messages from one administrator.
 const TEST_GAP: Duration = Duration::from_secs(5);
+/// How many addresses e-mail goes to, at most.
+const MAX_ADDRESSES: usize = 20;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/notifications", get(overview).fallback(crate::fallback))
-        .route(
-            "/notifications/me",
-            put(save_mine).fallback(crate::fallback),
-        )
         .route(
             "/notifications/smtp",
             put(save_smtp).delete(remove_smtp).fallback(crate::fallback),
         )
         .route(
             "/notifications/telegram",
-            put(save_bot).delete(remove_bot).fallback(crate::fallback),
+            put(save_telegram)
+                .delete(remove_telegram)
+                .fallback(crate::fallback),
         )
         .route(
-            "/notifications/defaults",
-            put(save_defaults).fallback(crate::fallback),
+            "/notifications/telegram/chats",
+            post(find_chats).fallback(crate::fallback),
+        )
+        .route(
+            "/notifications/settings",
+            put(save_settings).fallback(crate::fallback),
         )
         .route("/notifications/test", post(test).fallback(crate::fallback))
-        .route(
-            "/notifications/telegram/link",
-            post(start_link).delete(unlink).fallback(crate::fallback),
-        )
-        .route(
-            "/notifications/telegram/link/check",
-            post(check_link).fallback(crate::fallback),
-        )
-        .route(
-            "/notifications/telegram/chat",
-            put(set_chat).fallback(crate::fallback),
-        )
         .route("/notifications/log", get(log).fallback(crate::fallback))
 }
 
@@ -72,9 +60,28 @@ fn not_installed() -> Response {
     conflict("The Notifications addon is not installed")
 }
 
+/// Administrators only: nothing here is a customer's.
+fn administrator(current: &CurrentUser) -> Result<(), Response> {
+    if current.user.is_admin() {
+        Ok(())
+    } else {
+        Err(not_enough_permissions())
+    }
+}
+
+/// An administrator, and the addon installed.
+fn admin_only(current: &CurrentUser) -> Result<(), Response> {
+    administrator(current)?;
+    if !notify::installed() {
+        return Err(not_installed());
+    }
+    Ok(())
+}
+
 async fn caller(state: &AppState, req: Request) -> Result<(CurrentUser, Value), Response> {
     let (mut parts, body) = req.into_parts();
     let current = CurrentUser::from_parts(&mut parts, state).await?;
+    admin_only(&current)?;
     let payload = super::auth::read_json_body(body).await?;
     Ok((current, payload))
 }
@@ -89,55 +96,17 @@ fn text<'a>(payload: &'a Value, key: &str) -> &'a str {
 
 // ---------------------------------------------------------------- reading
 
-/// The page's whole view, for the caller.
-async fn view(state: &AppState, user: &User) -> Result<Value, Response> {
+/// The page's whole view.
+async fn view(state: &AppState) -> Value {
     let channels = notify::load_channels();
-    let admin = user.is_admin();
-    let settings = state
-        .db
-        .notifications()
-        .get(user.id, &user.username)
-        .await
-        .map_err(|e| {
-            tracing::error!("reading notification settings failed: {e}");
-            internal_error()
-        })?;
-    let kinds: Vec<&notify::Kind> = notify::KINDS.iter().filter(|k| admin || !k.admin).collect();
-    let mut events = Map::new();
-    for kind in &kinds {
-        events.insert(
-            kind.key.to_string(),
-            json!(notify::wants(&settings, kind.key)),
-        );
-    }
     let smtp = channels.smtp.as_ref();
     let bot = channels.telegram.as_ref();
-    let mut out = json!({
+    json!({
         "installed": notify::installed(),
-        "admin": admin,
-        "channels": {
-            "email": { "ready": smtp.is_some(), "from": smtp.map(|s| s.from_address.clone()) },
-            "telegram": { "ready": bot.is_some(), "bot": bot.map(|b| b.username.clone()) },
-        },
-        "me": {
-            "email_enabled": settings.email_enabled,
-            "email": settings.email,
-            "account_email": user.email,
-            "telegram_enabled": settings.telegram_enabled,
-            "telegram": {
-                "linked": settings.telegram_chat_id.is_some(),
-                "name": settings.telegram_name,
-            },
-            "language": settings.language,
-            "events": events,
-        },
-        "events": kinds.iter().map(|k| json!({
-            "key": k.key, "admin": k.admin, "default": k.default_on,
-        })).collect::<Vec<_>>(),
-    });
-    if admin {
-        out["smtp"] = match smtp {
-            Some(s) => json!({
+        "ready": channels.ready(),
+        "email": {
+            "ready": smtp.is_some(),
+            "smtp": smtp.map(|s| json!({
                 "host": s.host,
                 "port": s.port,
                 "security": s.security,
@@ -145,27 +114,41 @@ async fn view(state: &AppState, user: &User) -> Result<Value, Response> {
                 "password_set": !s.password.is_empty(),
                 "from_address": s.from_address,
                 "from_name": s.from_name,
-            }),
-            None => Value::Null,
-        };
-        out["language"] = json!(channels.language.clone().unwrap_or_else(|| "vi".into()));
-    }
-    Ok(out)
+            })),
+            "to": smtp.map(|s| s.to.clone()).unwrap_or_default(),
+            // Where it goes when no address is set.
+            "administrators": notify::admin_addresses(state).await,
+        },
+        "telegram": {
+            "ready": channels.telegram_chat().is_some(),
+            "bot": bot.map(|b| b.username.clone()),
+            "chat_id": bot.map(|b| b.chat_id.clone()).unwrap_or_default(),
+            "chat_name": bot.map(|b| b.chat_name.clone()).unwrap_or_default(),
+        },
+        "language": channels.language.clone().unwrap_or_else(|| "vi".into()),
+        "events": notify::KINDS.iter().map(|k| json!({
+            "key": k.key,
+            "group": k.group,
+            "default": k.default_on,
+            "on": channels.wants(k.key),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+async fn answer(state: &AppState) -> Response {
+    Json(view(state).await).into_response()
 }
 
 async fn overview(State(state): State<AppState>, current: CurrentUser) -> Response {
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
+    if let Err(r) = administrator(&current) {
+        return r;
     }
+    answer(&state).await
 }
 
 async fn log(State(state): State<AppState>, current: CurrentUser) -> Response {
-    if !current.user.is_admin() {
-        return not_enough_permissions();
-    }
-    if !notify::installed() {
-        return not_installed();
+    if let Err(r) = admin_only(&current) {
+        return r;
     }
     match state.db.notifications().recent(100).await {
         Ok(rows) => Json(json!({
@@ -173,7 +156,6 @@ async fn log(State(state): State<AppState>, current: CurrentUser) -> Response {
                 "id": r.id,
                 "created_at": r.created_at,
                 "event": r.event,
-                "username": r.username,
                 "channel": r.channel,
                 "target": r.target,
                 "subject": r.subject,
@@ -189,95 +171,7 @@ async fn log(State(state): State<AppState>, current: CurrentUser) -> Response {
     }
 }
 
-// ---------------------------------------------------------------- an account's own
-
-async fn save_mine(State(state): State<AppState>, req: Request) -> Response {
-    let (current, payload) = match caller(&state, req).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    if !notify::installed() {
-        return not_installed();
-    }
-    let user = &current.user;
-    let repo = state.db.notifications();
-    let mut settings = match repo.get(user.id, &user.username).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("reading notification settings failed: {e}");
-            return internal_error();
-        }
-    };
-    if let Some(on) = payload.get("email_enabled").and_then(Value::as_bool) {
-        settings.email_enabled = on;
-    }
-    if let Some(on) = payload.get("telegram_enabled").and_then(Value::as_bool) {
-        settings.telegram_enabled = on;
-    }
-    if payload.get("email").is_some() {
-        let address = text(&payload, "email");
-        if address.is_empty() || address.eq_ignore_ascii_case(&user.email) {
-            settings.email = None;
-        } else if smtp::valid_address(address) {
-            settings.email = Some(address.to_string());
-        } else {
-            return bad_request("That is not an e-mail address");
-        }
-    }
-    if payload.get("language").is_some() {
-        let language = text(&payload, "language");
-        settings.language = match language {
-            "" => None,
-            code if Lang::parse(Some(code)).is_some() => Some(code.to_string()),
-            _ => return bad_request("The language is en or vi"),
-        };
-    }
-    if let Some(chosen) = payload.get("events").and_then(Value::as_object) {
-        let mut events: Map<String, Value> =
-            serde_json::from_str(&settings.events).unwrap_or_default();
-        for (key, on) in chosen {
-            let Some(kind) = notify::kind(key) else {
-                return bad_request(&format!("There is no event called {key}"));
-            };
-            if kind.admin && !user.is_admin() {
-                return not_enough_permissions();
-            }
-            let Some(on) = on.as_bool() else {
-                return bad_request("An event is on or off: true or false");
-            };
-            events.insert(key.clone(), json!(on));
-        }
-        settings.events = Value::Object(events).to_string();
-    }
-    if let Err(e) = repo
-        .save(
-            user.id,
-            &user.username,
-            &settings,
-            &snpanel_db::sqlalchemy_now(),
-        )
-        .await
-    {
-        tracing::error!("saving notification settings failed: {e}");
-        return internal_error();
-    }
-    match view(&state, user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
-}
-
-// ---------------------------------------------------------------- the administrator's
-
-fn admin_only(current: &CurrentUser) -> Result<(), Response> {
-    if !current.user.is_admin() {
-        return Err(not_enough_permissions());
-    }
-    if !notify::installed() {
-        return Err(not_installed());
-    }
-    Ok(())
-}
+// ---------------------------------------------------------------- e-mail
 
 fn host_ok(host: &str) -> bool {
     !host.is_empty()
@@ -285,6 +179,44 @@ fn host_ok(host: &str) -> bool {
         && host
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+}
+
+/// The addresses to send to - a list, or one text of them separated by
+/// commas, semicolons or spaces - each checked, each once.
+fn addresses(payload: &Value) -> Result<Vec<String>, Response> {
+    let given: Vec<String> = match payload.get("to") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(list)) => list
+            .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::Array(items)) => {
+            let mut out = Vec::new();
+            for item in items {
+                let Some(address) = item.as_str() else {
+                    return Err(bad_request("The addresses to send to are e-mail addresses"));
+                };
+                out.push(address.to_string());
+            }
+            out
+        }
+        Some(_) => return Err(bad_request("The addresses to send to are e-mail addresses")),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for address in given.iter().map(|a| a.trim()).filter(|a| !a.is_empty()) {
+        if !smtp::valid_address(address) {
+            return Err(bad_request(&format!("{address} is not an e-mail address")));
+        }
+        if !out.iter().any(|a| a.eq_ignore_ascii_case(address)) {
+            out.push(address.to_string());
+        }
+    }
+    if out.len() > MAX_ADDRESSES {
+        return Err(bad_request(&format!(
+            "E-mail goes to at most {MAX_ADDRESSES} addresses"
+        )));
+    }
+    Ok(out)
 }
 
 fn saved(channels: &Channels) -> Result<(), Response> {
@@ -299,9 +231,6 @@ async fn save_smtp(State(state): State<AppState>, req: Request) -> Response {
         Ok(v) => v,
         Err(r) => return r,
     };
-    if let Err(r) = admin_only(&current) {
-        return r;
-    }
     let host = text(&payload, "host").to_ascii_lowercase();
     if !host_ok(&host) {
         return bad_request("The SMTP server is a host name or an address, such as smtp.gmail.com");
@@ -329,6 +258,10 @@ async fn save_smtp(State(state): State<AppState>, req: Request) -> Response {
     if from_name.chars().count() > 80 {
         return bad_request("The sender's name is at most 80 characters");
     }
+    let to = match addresses(&payload) {
+        Ok(to) => to,
+        Err(r) => return r,
+    };
     let mut channels = notify::load_channels();
     // A blank password keeps the one saved - the page never gets it back to
     // send again - unless the user name changed, when it goes.
@@ -357,15 +290,13 @@ async fn save_smtp(State(state): State<AppState>, req: Request) -> Response {
         password,
         from_address,
         from_name,
+        to,
     });
     if let Err(r) = saved(&channels) {
         return r;
     }
     audit(&state, &current, "notifications_smtp", "saved").await;
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
+    answer(&state).await
 }
 
 async fn remove_smtp(State(state): State<AppState>, current: CurrentUser) -> Response {
@@ -378,45 +309,163 @@ async fn remove_smtp(State(state): State<AppState>, current: CurrentUser) -> Res
         return r;
     }
     audit(&state, &current, "notifications_smtp", "removed").await;
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
+    answer(&state).await
 }
 
-async fn save_bot(State(state): State<AppState>, req: Request) -> Response {
+// ---------------------------------------------------------------- Telegram
+
+/// What Telegram refused, and what to do about it.
+fn telegram_failed(why: &str) -> Response {
+    let said = why.to_ascii_lowercase();
+    if said.contains("chat not found") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "Telegram does not know that chat for this bot. Open the bot in Telegram and press Start - or add it to the group or channel - then try again.",
+        );
+    }
+    if said.contains("blocked by the user") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "That person has blocked the bot. Unblock it in Telegram, then try again.",
+        );
+    }
+    if said.contains("not a member") || said.contains("kicked") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "The bot is not in that group or channel. Add it - to a channel as an administrator that may post - then try again.",
+        );
+    }
+    if said.contains("not enough rights") || said.contains("administrator rights") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "The bot may not post in that chat. Let it post - in a channel, make it an administrator - then try again.",
+        );
+    }
+    if said.contains("webhook") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "This bot hands what it is sent to a webhook, so the panel cannot see who wrote to it. Enter the chat ID yourself.",
+        );
+    }
+    if said.contains("conflict") {
+        return error(
+            StatusCode::BAD_GATEWAY,
+            "Another program is reading this bot's messages. Give the panel a bot of its own, or enter the chat ID yourself.",
+        );
+    }
+    error(StatusCode::BAD_GATEWAY, why)
+}
+
+/// The token given, or - when none is - the one saved, in the clear.
+fn token_to_use(state: &AppState, given: &str) -> Result<String, Response> {
+    if !given.is_empty() {
+        if !telegram::token_shape_ok(given) {
+            return Err(bad_request(
+                "That is not a bot token: @BotFather gives one like 123456789:AA...",
+            ));
+        }
+        return Ok(given.to_string());
+    }
+    let Some(bot) = notify::load_channels().telegram else {
+        return Err(bad_request("Paste the bot token @BotFather gave you"));
+    };
+    notify::bot_token(state, &bot)
+        .map_err(|_| conflict("The saved bot token cannot be read: paste it again"))
+}
+
+/// A bot and the chat it writes in, saved once both are proved: Telegram
+/// knows the token, the bot can see the chat, and a test message reached
+/// it. A blank token keeps the one saved.
+async fn save_telegram(State(state): State<AppState>, req: Request) -> Response {
     let (current, payload) = match caller(&state, req).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    if let Err(r) = admin_only(&current) {
-        return r;
+    let token = match token_to_use(&state, text(&payload, "token")) {
+        Ok(token) => token,
+        Err(r) => return r,
+    };
+    let chat = text(&payload, "chat_id");
+    if chat.is_empty() {
+        return bad_request("Enter the chat ID, or find it with Find chat ID");
     }
-    let token = text(&payload, "token");
-    if !telegram::token_shape_ok(token) {
-        return bad_request("That is not a bot token: @BotFather gives one like 123456789:AA...");
+    if !telegram::chat_shape_ok(chat) {
+        return bad_request(
+            "A chat ID is a number, such as 123456789 or -1001234567890, or a channel's @name",
+        );
     }
-    // Whether it works is found out now, not at the first message.
-    let username = match telegram::bot_username(token).await {
+    let username = match telegram::bot_username(&token).await {
         Ok(name) => name,
-        Err(e) => return error(StatusCode::BAD_GATEWAY, &e.0),
+        Err(e) => return telegram_failed(&e.0),
+    };
+    let found = match telegram::chat(&token, chat).await {
+        Ok(found) => found,
+        Err(e) => return telegram_failed(&e.0),
     };
     let mut channels = notify::load_channels();
-    channels.telegram = Some(TelegramConfig {
-        token: notify::conceal(&state, token),
+    let rendered = notify::render(
+        &notify::test_content(),
+        channels.lang(),
+        &notify::app_name(&state),
+        &notify::base_url(&state),
+    );
+    if let Err(e) = telegram::send(&token, &found.id, &rendered.telegram).await {
+        return telegram_failed(&e.0);
+    }
+    let bot = TelegramConfig {
+        token: notify::conceal(&state, &token),
         username,
-    });
+        chat_id: found.id,
+        chat_name: found.name,
+    };
+    let label = notify::chat_label(&bot);
+    channels.telegram = Some(bot);
     if let Err(r) = saved(&channels) {
         return r;
     }
+    notify::log(
+        &state,
+        "test",
+        "telegram",
+        &label,
+        &rendered.subject,
+        &Ok(()),
+    )
+    .await;
     audit(&state, &current, "notifications_telegram", "saved").await;
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
+    answer(&state).await
+}
+
+/// The chats that wrote to the bot, or that it was added to, lately - to
+/// pick the chat from rather than look its number up.
+async fn find_chats(State(state): State<AppState>, req: Request) -> Response {
+    let (_, payload) = match caller(&state, req).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let token = match token_to_use(&state, text(&payload, "token")) {
+        Ok(token) => token,
+        Err(r) => return r,
+    };
+    let bot = match telegram::bot_username(&token).await {
+        Ok(name) => name,
+        Err(e) => return telegram_failed(&e.0),
+    };
+    match telegram::recent_chats(&token).await {
+        Ok(chats) => Json(json!({
+            "bot": bot,
+            "chats": chats.iter().map(|c| json!({
+                "id": c.id,
+                "kind": c.kind,
+                "name": c.name,
+            })).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => telegram_failed(&e.0),
     }
 }
 
-async fn remove_bot(State(state): State<AppState>, current: CurrentUser) -> Response {
+async fn remove_telegram(State(state): State<AppState>, current: CurrentUser) -> Response {
     if let Err(r) = admin_only(&current) {
         return r;
     }
@@ -426,33 +475,42 @@ async fn remove_bot(State(state): State<AppState>, current: CurrentUser) -> Resp
         return r;
     }
     audit(&state, &current, "notifications_telegram", "removed").await;
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
+    answer(&state).await
 }
 
-async fn save_defaults(State(state): State<AppState>, req: Request) -> Response {
-    let (current, payload) = match caller(&state, req).await {
+// ---------------------------------------------------------------- what is told
+
+async fn save_settings(State(state): State<AppState>, req: Request) -> Response {
+    let (_, payload) = match caller(&state, req).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    if let Err(r) = admin_only(&current) {
-        return r;
-    }
-    let language = text(&payload, "language");
-    if Lang::parse(Some(language)).is_none() {
-        return bad_request("The language is en or vi");
-    }
     let mut channels = notify::load_channels();
-    channels.language = Some(language.to_string());
+    if payload.get("language").is_some() {
+        let language = text(&payload, "language");
+        if Lang::parse(Some(language)).is_none() {
+            return bad_request("The language is en or vi");
+        }
+        channels.language = Some(language.to_string());
+    }
+    if let Some(chosen) = payload.get("events").filter(|v| !v.is_null()) {
+        let Some(chosen) = chosen.as_object() else {
+            return bad_request("The events are each on or off: true or false");
+        };
+        for (key, on) in chosen {
+            let Some(kind) = notify::kind(key) else {
+                return bad_request(&format!("There is no event called {key}"));
+            };
+            let Some(on) = on.as_bool() else {
+                return bad_request("The events are each on or off: true or false");
+            };
+            channels.events.insert(kind.key.to_string(), on);
+        }
+    }
     if let Err(r) = saved(&channels) {
         return r;
     }
-    match view(&state, &current.user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
+    answer(&state).await
 }
 
 async fn audit(state: &AppState, current: &CurrentUser, action: &str, detail: &str) {
@@ -472,8 +530,8 @@ async fn audit(state: &AppState, current: &CurrentUser, action: &str, detail: &s
 
 static LAST_TEST: Mutex<Option<HashMap<i64, Instant>>> = Mutex::new(None);
 
-/// One test message per account every few seconds: a button held down is
-/// not a mail storm.
+/// One test message per administrator every few seconds: a button held
+/// down is not a mail storm.
 fn test_allowed(user_id: i64) -> bool {
     let mut guard = LAST_TEST.lock().unwrap_or_else(|p| p.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
@@ -488,356 +546,82 @@ fn test_allowed(user_id: i64) -> bool {
     true
 }
 
+/// A test by e-mail - to the address given, or to every address messages go
+/// to - or to the Telegram chat.
 async fn test(State(state): State<AppState>, req: Request) -> Response {
     let (current, payload) = match caller(&state, req).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    if !notify::installed() {
-        return not_installed();
-    }
-    let user = &current.user;
-    if !test_allowed(user.id) {
+    if !test_allowed(current.user.id) {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "Wait a few seconds before sending another test",
         );
     }
     let channels = notify::load_channels();
-    let settings = match state.db.notifications().get(user.id, &user.username).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("reading notification settings failed: {e}");
-            return internal_error();
-        }
-    };
-    let lang = Lang::parse(settings.language.as_deref())
-        .or_else(|| Lang::parse(channels.language.as_deref()))
-        .unwrap_or(Lang::Vi);
     let rendered = notify::render(
         &notify::test_content(),
-        lang,
+        channels.lang(),
         &notify::app_name(&state),
-        &user.username,
         &notify::base_url(&state),
     );
-    let (channel, target, outcome) = match text(&payload, "channel") {
+    match text(&payload, "channel") {
         "email" => {
             let Some(config) = channels.smtp.as_ref() else {
                 return conflict("No SMTP server is set up yet");
             };
-            // An administrator may try any address; everyone else their own.
             let asked = text(&payload, "to");
-            let to = if user.is_admin() && !asked.is_empty() {
-                asked.to_string()
+            let targets = if asked.is_empty() {
+                notify::recipients(&state, config).await
+            } else if smtp::valid_address(asked) {
+                vec![asked.to_string()]
             } else {
-                settings.email.clone().unwrap_or_else(|| user.email.clone())
-            };
-            if !smtp::valid_address(&to) {
                 return bad_request("That is not an e-mail address");
+            };
+            if targets.is_empty() {
+                return conflict(
+                    "No administrator has an e-mail address: enter the addresses to send to",
+                );
             }
-            let outcome = notify::send_mail(&state, config, &to, &rendered).await;
-            ("email", to, outcome)
+            for to in &targets {
+                let outcome = notify::send_mail(&state, config, to, &rendered).await;
+                notify::log(&state, "test", "email", to, &rendered.subject, &outcome).await;
+                if let Err(why) = outcome {
+                    return error(StatusCode::BAD_GATEWAY, &why);
+                }
+            }
+            Json(json!({ "sent": true, "channel": "email", "to": targets.join(", ") }))
+                .into_response()
         }
         "telegram" => {
-            let Some(config) = channels.telegram.as_ref() else {
-                return conflict("No Telegram bot is set up yet");
+            let Some((bot, chat)) = channels.telegram_chat() else {
+                return conflict("No Telegram bot and chat are set up yet");
             };
-            let Some(chat) = settings.telegram_chat_id.clone() else {
-                return conflict("Link a Telegram chat first");
-            };
-            let outcome = notify::send_telegram(&state, config, &chat, &rendered).await;
-            ("telegram", chat, outcome)
-        }
-        _ => return bad_request("The channel is email or telegram"),
-    };
-    let masked = if channel == "email" {
-        notify::masked_address(&target)
-    } else {
-        notify::masked_chat(&target)
-    };
-    let now = snpanel_db::sqlalchemy_now();
-    let (status, detail) = match &outcome {
-        Ok(()) => ("sent", String::new()),
-        Err(why) => ("failed", why.clone()),
-    };
-    let _ = state
-        .db
-        .notifications()
-        .log(&snpanel_db::notifications::NewLogEntry {
-            created_at: &now,
-            event: "test",
-            user_id: Some(user.id),
-            username: Some(&user.username),
-            channel,
-            target: &masked,
-            subject: &rendered.subject,
-            status,
-            detail: &detail,
-        })
-        .await;
-    match outcome {
-        Ok(()) => Json(json!({ "sent": true, "channel": channel, "to": masked })).into_response(),
-        Err(why) => error(StatusCode::BAD_GATEWAY, &why),
-    }
-}
-
-// ---------------------------------------------------------------- linking Telegram
-
-#[derive(Clone)]
-struct PendingLink {
-    user_id: i64,
-    username: String,
-    code: String,
-    created: Instant,
-}
-
-static PENDING: Mutex<Vec<PendingLink>> = Mutex::new(Vec::new());
-/// The next update to ask Telegram for, so an update is read once.
-static OFFSET: Mutex<i64> = Mutex::new(0);
-/// One `getUpdates` at a time: two with the same offset would each take
-/// what the other then marks read.
-static POLLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn new_code() -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    let mut rng = rand::rngs::OsRng;
-    (0..16)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-        .collect()
-}
-
-async fn start_link(State(state): State<AppState>, req: Request) -> Response {
-    let (current, _) = match caller(&state, req).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    if !notify::installed() {
-        return not_installed();
-    }
-    let Some(bot) = notify::load_channels().telegram else {
-        return conflict("No Telegram bot is set up yet");
-    };
-    let code = new_code();
-    {
-        let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
-        pending.retain(|p| p.created.elapsed() < LINK_TTL && p.user_id != current.user.id);
-        if pending.len() >= 200 {
-            pending.remove(0);
-        }
-        pending.push(PendingLink {
-            user_id: current.user.id,
-            username: current.user.username.clone(),
-            code: code.clone(),
-            created: Instant::now(),
-        });
-    }
-    Json(json!({
-        "code": code,
-        "bot": bot.username,
-        "url": format!("https://t.me/{}?start={code}", bot.username),
-        "expires_in": LINK_TTL.as_secs(),
-    }))
-    .into_response()
-}
-
-/// Read what the bot was sent, and link every account whose code is in it -
-/// not only the caller's, since whoever reads an update marks it read.
-async fn check_link(State(state): State<AppState>, req: Request) -> Response {
-    let (current, _) = match caller(&state, req).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    if !notify::installed() {
-        return not_installed();
-    }
-    let Some(bot) = notify::load_channels().telegram else {
-        return conflict("No Telegram bot is set up yet");
-    };
-    let Some(token) = notify::reveal(&state, &bot.token).filter(|t| !t.is_empty()) else {
-        return conflict("The saved bot token cannot be read: save it again");
-    };
-    let waiting = {
-        let pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
-        pending
-            .iter()
-            .any(|p| p.user_id == current.user.id && p.created.elapsed() < LINK_TTL)
-    };
-    if !waiting {
-        return conflict("The link has expired. Start again.");
-    }
-
-    let _polling = POLLING.lock().await;
-    let offset = *OFFSET.lock().unwrap_or_else(|p| p.into_inner());
-    let (starts, next) = match telegram::starts(&token, offset).await {
-        Ok(v) => v,
-        Err(e) => {
-            let hint = if e.0.contains("webhook") || e.0.contains("Conflict") {
-                "This bot is read by something else (a webhook, or another program polling it). Give the panel a bot of its own."
-            } else {
-                ""
-            };
-            let message = if hint.is_empty() {
-                e.0
-            } else {
-                hint.to_string()
-            };
-            return error(StatusCode::BAD_GATEWAY, &message);
-        }
-    };
-    *OFFSET.lock().unwrap_or_else(|p| p.into_inner()) = next;
-
-    let mut linked_me: Option<String> = None;
-    for start in starts {
-        let found = {
-            let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
-            let index = pending
-                .iter()
-                .position(|p| p.code == start.code && p.created.elapsed() < LINK_TTL);
-            index.map(|i| pending.remove(i))
-        };
-        let Some(link) = found else {
-            continue;
-        };
-        let repo = state.db.notifications();
-        let mut settings: NotificationSettings = match repo.get(link.user_id, &link.username).await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("reading notification settings failed: {e}");
-                continue;
-            }
-        };
-        settings.telegram_chat_id = Some(start.chat_id.clone());
-        settings.telegram_name = Some(start.who.clone());
-        settings.telegram_enabled = true;
-        if let Err(e) = repo
-            .save(
-                link.user_id,
-                &link.username,
-                &settings,
-                &snpanel_db::sqlalchemy_now(),
+            let label = notify::chat_label(bot);
+            let outcome = notify::send_telegram(&state, bot, chat, &rendered).await;
+            notify::log(
+                &state,
+                "test",
+                "telegram",
+                &label,
+                &rendered.subject,
+                &outcome,
             )
-            .await
-        {
-            tracing::error!("saving a Telegram link failed: {e}");
-            continue;
+            .await;
+            match outcome {
+                Ok(()) => Json(json!({ "sent": true, "channel": "telegram", "to": label }))
+                    .into_response(),
+                Err(why) => telegram_failed(&why),
+            }
         }
-        let lang = Lang::parse(settings.language.as_deref()).unwrap_or(Lang::Vi);
-        let hello = notify::linked_hello(lang, &link.username, &notify::app_name(&state));
-        let _ = telegram::send(&token, &start.chat_id, &hello).await;
-        if link.user_id == current.user.id {
-            linked_me = Some(start.who.clone());
-        }
-    }
-    Json(json!({ "linked": linked_me.is_some(), "name": linked_me })).into_response()
-}
-
-async fn unlink(State(state): State<AppState>, current: CurrentUser) -> Response {
-    if !notify::installed() {
-        return not_installed();
-    }
-    let user = &current.user;
-    let repo = state.db.notifications();
-    let mut settings = match repo.get(user.id, &user.username).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("reading notification settings failed: {e}");
-            return internal_error();
-        }
-    };
-    settings.telegram_chat_id = None;
-    settings.telegram_name = None;
-    if let Err(e) = repo
-        .save(
-            user.id,
-            &user.username,
-            &settings,
-            &snpanel_db::sqlalchemy_now(),
-        )
-        .await
-    {
-        tracing::error!("saving notification settings failed: {e}");
-        return internal_error();
-    }
-    match view(&state, user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
-    }
-}
-
-/// A chat given by its id - a group's or a channel's, where the bot is a
-/// member - proved by a message the bot sends it.
-async fn set_chat(State(state): State<AppState>, req: Request) -> Response {
-    let (current, payload) = match caller(&state, req).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    if !notify::installed() {
-        return not_installed();
-    }
-    let chat = text(&payload, "chat");
-    if !telegram::chat_shape_ok(chat) {
-        return bad_request(
-            "A chat id is a number, such as 123456789 or -1001234567890, or a channel's @name",
-        );
-    }
-    let Some(bot) = notify::load_channels().telegram else {
-        return conflict("No Telegram bot is set up yet");
-    };
-    let rendered = notify::render(
-        &notify::test_content(),
-        Lang::Vi,
-        &notify::app_name(&state),
-        &current.user.username,
-        &notify::base_url(&state),
-    );
-    if let Err(why) = notify::send_telegram(&state, &bot, chat, &rendered).await {
-        return error(StatusCode::BAD_GATEWAY, &why);
-    }
-    let user = &current.user;
-    let repo = state.db.notifications();
-    let mut settings = match repo.get(user.id, &user.username).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("reading notification settings failed: {e}");
-            return internal_error();
-        }
-    };
-    settings.telegram_chat_id = Some(chat.to_string());
-    settings.telegram_name = Some(chat.to_string());
-    settings.telegram_enabled = true;
-    if let Err(e) = repo
-        .save(
-            user.id,
-            &user.username,
-            &settings,
-            &snpanel_db::sqlalchemy_now(),
-        )
-        .await
-    {
-        tracing::error!("saving notification settings failed: {e}");
-        return internal_error();
-    }
-    match view(&state, user).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => r,
+        _ => bad_request("The channel is email or telegram"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_link_code_is_sixteen_unambiguous_characters() {
-        let a = new_code();
-        assert_eq!(a.len(), 16);
-        assert!(a
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() && !"0O1lI".contains(c)));
-        assert_ne!(a, new_code());
-    }
 
     #[test]
     fn a_test_waits_a_few_seconds_after_the_last() {
@@ -859,5 +643,32 @@ mod tests {
         for bad in ["", "smtp.example.com\r\nX", "a b", "smtp.example.com/path"] {
             assert!(!host_ok(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_addresses_to_send_to_are_a_list_or_one_text_of_them() {
+        let list = addresses(
+            &json!({ "to": "a@example.com, B@example.com;b@example.com\nc@example.net" }),
+        )
+        .unwrap();
+        assert_eq!(list, ["a@example.com", "B@example.com", "c@example.net"]);
+        assert_eq!(
+            addresses(&json!({ "to": ["ops@example.com", " "] })).unwrap(),
+            ["ops@example.com"]
+        );
+        assert!(addresses(&json!({})).unwrap().is_empty());
+        assert!(addresses(&json!({ "to": "" })).unwrap().is_empty());
+        assert_eq!(
+            addresses(&json!({ "to": "nobody" })).unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            addresses(&json!({ "to": [1] })).unwrap_err().status(),
+            StatusCode::BAD_REQUEST
+        );
+        let many: Vec<String> = (0..=MAX_ADDRESSES)
+            .map(|i| format!("a{i}@example.com"))
+            .collect();
+        assert!(addresses(&json!({ "to": many })).is_err());
     }
 }

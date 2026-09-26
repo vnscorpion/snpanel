@@ -2,40 +2,49 @@
 // API the page calls, an SMTP server and a Telegram Bot API of this script's
 // own:
 //
-//   - an SMTP relay on 127.0.0.1:2525 that takes AUTH PLAIN, and a Telegram
-//     API on 127.0.0.1:8099 the panel is pointed at for the run
-//     (SNPANEL_TELEGRAM_API_BASE, in a drop-in that is removed again);
-//   - the SMTP server saved - its password never in an answer - a test mail
-//     through it, signed in with the saved password; no password in the clear
-//     to a server that is not this machine;
-//   - a Telegram bot saved, checked with getMe; the administrator's chat
-//     linked by /start <code>;
-//   - a customer of its own: a sign-in from a new address, a password its
-//     administrator changed, a scheduled backup that fails, malware on its
-//     website - each told to the customer (in English, its choice) and, where
-//     it is the server's business, to the administrator (by mail and on
-//     Telegram, in Vietnamese);
-//   - a service stopped, seen twice, told once, and told again when it runs;
-//   - an event turned off is not told; the log shows what went.
+//   - an SMTP relay on 127.0.0.1:2525 that takes AUTH PLAIN, and the Telegram
+//     API of telegram-mock.mjs on 127.0.0.1:8099, which the panel is pointed
+//     at for the run (a drop-in that is removed again);
+//   - everything is the administrators': a customer is refused the page, the
+//     settings, the test and the log;
+//   - the SMTP server saved - its password never in an answer, encrypted on
+//     disk - and a test to the administrators' own addresses, then to the
+//     addresses given; no password in the clear to another machine;
+//   - a Telegram bot and its chat: the chats that wrote to the bot found,
+//     a chat Telegram does not know refused in words, a test message sent
+//     before anything is saved, a blank token keeping the saved one; a bot
+//     saved before there was a chat sends nothing to Telegram;
+//   - a second administrator made by the run: told as new, its sign-in from
+//     a new address told, its password changed told and by whom;
+//   - a customer: its sign-ins and password changes told to nobody; its
+//     scheduled backup that fails (in English, chosen) and malware on its
+//     website told to the administrators - never to the customer;
+//   - an event turned off is not told; a service stopped, seen twice, is
+//     told once, and again when it runs; the log shows what went.
 //
-//     node notify-check.mjs          (on the box, as root)
+//     node notify-check.mjs          (on the box, as root, telegram-mock.mjs beside it)
 //
-// Removes the customer, its site, the schedule and destination, the channels
-// and the drop-in. The addon is left installed, with no way of sending set.
+// Removes the accounts, the site, the schedule and destination, the channels
+// and the drop-in, and puts what is sent back to the defaults. The addon is
+// left installed, with no way of sending set.
 import https from 'node:https';
-import http from 'node:http';
 import net from 'node:net';
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chownSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chownSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { BOT, GROUP, PERSON, pointPanel, startTelegramMock } from './telegram-mock.mjs';
 
 const NAME = 'notifycheck';
+const ADMIN2 = 'notifyadmin';
 const DOMAIN = `ntf${Date.now() % 1000000}.example.com`;
 const RELAY_PASSWORD = `relay-${randomBytes(9).toString('base64url')}`;
 const BOT_TOKEN = `123456789:${randomBytes(27).toString('base64url')}`;
-const DROPIN_DIR = '/etc/systemd/system/snpanel-api.service.d';
-const DROPIN = `${DROPIN_DIR}/zz-notify-check.conf`;
 const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
+const CHANNELS = '/var/lib/snpanel/notifications.json';
+const OPS = 'ops@snpanel.test';
+const ONCALL = 'oncall@snpanel.test';
+const PERSON_CHAT = String(PERSON.id);
+const GROUP_CHAT = String(GROUP.id);
 
 let ok = true;
 const check = (cond, what) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${what}`); ok &&= !!cond; };
@@ -50,6 +59,7 @@ async function until(test, seconds = 30) {
   }
   return null;
 }
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ---------------------------------------------------------------- the SMTP relay
 const mails = [];
@@ -69,6 +79,7 @@ const smtp = net.createServer((socket) => {
         if (line === '.') {
           mail.raw = data;
           mails.push({ ...mail, to: [...mail.to] });
+          mail.to = [];
           data = null;
           say('250 2.0.0 queued');
         } else {
@@ -104,41 +115,16 @@ function read(mail) {
   const plain = /Content-Type: text\/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+)/.exec(body);
   return { to: mail.to, subject: header('Subject'), from: header('From'), text: plain ? Buffer.from(plain[1].replace(/\r\n/g, ''), 'base64').toString('utf8') : '' };
 }
-const mailTo = (address, subject) => until(() => mails.map(read).find((m) => m.to.includes(address) && subject.test(m.subject)), 90);
+const mailTo = (address, subject, since = 0) => until(() => mails.slice(since).map(read).find((m) => m.to.includes(address) && subject.test(m.subject)), 90);
 
 // ---------------------------------------------------------------- the Telegram API
-const sent = [];
-let updates = [];
-let nextUpdate = 100;
-const bot = http.createServer((req, res) => {
-  let body = '';
-  req.on('data', (c) => { body += c; });
-  req.on('end', () => {
-    const answer = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
-    const m = /^\/bot([^/]+)\/(\w+)$/.exec(req.url);
-    if (!m || m[1] !== BOT_TOKEN) return answer(404, { ok: false, error_code: 404, description: 'Not Found' });
-    const payload = body ? JSON.parse(body) : {};
-    if (m[2] === 'getMe') return answer(200, { ok: true, result: { id: 123456789, is_bot: true, username: 'snpanel_check_bot' } });
-    if (m[2] === 'sendMessage') {
-      if (String(payload.chat_id) === '404') return answer(400, { ok: false, error_code: 400, description: 'Bad Request: chat not found' });
-      sent.push({ chat: String(payload.chat_id), text: payload.text, mode: payload.parse_mode });
-      return answer(200, { ok: true, result: { message_id: sent.length } });
-    }
-    if (m[2] === 'getUpdates') {
-      updates = updates.filter((u) => u.update_id >= (payload.offset || 0));
-      return answer(200, { ok: true, result: updates });
-    }
-    return answer(400, { ok: false, description: 'unknown method' });
-  });
-});
-await new Promise((r) => bot.listen(8099, '127.0.0.1', r));
-const told = (chat, text) => until(() => sent.find((s) => s.chat === chat && text.test(s.text)), 90);
+const telegram = startTelegramMock();
+await telegram.listening;
+const { sent } = telegram;
+const told = (chat, text, since = 0) => until(() => sent.slice(since).find((s) => s.chat === chat && text.test(s.text)), 90);
 
-// ---------------------------------------------------------------- the panel, pointed at them
-mkdirSync(DROPIN_DIR, { recursive: true });
-writeFileSync(DROPIN, '[Service]\nEnvironment=SNPANEL_TELEGRAM_API_BASE=http://127.0.0.1:8099\n');
-run('systemctl', ['daemon-reload']);
-run('systemctl', ['restart', 'snpanel-api']);
+// ---------------------------------------------------------------- the panel, pointed at it
+pointPanel(true);
 
 function session(base) {
   const jar = new Map();
@@ -185,114 +171,190 @@ const admin = session(LOCAL);
 const login = readFileSync('/root/login.txt', 'utf8');
 const adminName = /^User: (.+)$/m.exec(login)[1].trim();
 check((await admin('POST', '/auth/login', { username: adminName, password: /^Password: (.+)$/m.exec(login)[1].trim() })).ok, 'the administrator signs in');
-const adminUser = ((await admin('GET', '/users?usage=0')).json || []).find((u) => u.username === adminName);
+const users = async () => (await admin('GET', '/users?usage=0')).json || [];
+const adminUser = (await users()).find((u) => u.username === adminName);
+const DEFAULTS = {};
 
 let userId = null;
+let admin2Id = null;
 let siteId = null;
 let targetId = null;
 let scheduleId = null;
 try {
   const addons = (await admin('GET', '/addons')).json;
   if (!addons.items.find((a) => a.slug === 'notifications')?.installed) await admin('POST', '/addons/notifications/install');
+  await admin('DELETE', '/notifications/smtp');
+  await admin('DELETE', '/notifications/telegram');
+  for (const old of (await users()).filter((u) => [NAME, ADMIN2].includes(u.username))) await admin('DELETE', `/users/${old.id}`);
   // Only what this run sends is judged: the log keeps earlier runs' too.
   const logStart = Math.max(0, ...(((await admin('GET', '/notifications/log')).json?.items) || []).map((r) => r.id));
   let view = (await admin('GET', '/notifications')).json;
-  check(view?.installed && view.admin && view.events.length === 15, `installed, with 15 events for an administrator (${view?.events?.length})`);
+  for (const e of view?.events || []) DEFAULTS[e.key] = e.default;
+  await admin('PUT', '/notifications/settings', { language: 'vi', events: DEFAULTS });
+  view = (await admin('GET', '/notifications')).json;
+  const groups = [...new Set((view?.events || []).map((e) => e.group))];
+  check(view?.installed && !view.ready && view.events.length === 10 && groups.join() === 'accounts,server,admins',
+    `installed, nothing to send with yet; 10 events in 3 groups (${view?.events?.length}: ${groups.join()})`);
 
-  // ---------------------------------------------------------------- mail
-  const refused = await admin('PUT', '/notifications/smtp', { host: 'smtp.example.com', port: 25, security: 'none', username: 'x', password: 'y', from_address: 'panel@snpanel.test' });
-  check(refused.status === 400 && /clear/.test(refused.text), `no password in the clear to another machine (${short(refused)})`);
-  let answer = await admin('PUT', '/notifications/smtp', { host: '127.0.0.1', port: 2525, security: 'none', username: 'relayuser', password: RELAY_PASSWORD, from_address: 'panel@snpanel.test', from_name: 'SNPanel check' });
-  check(answer.ok && answer.json.smtp.password_set && !answer.text.includes(RELAY_PASSWORD), `the SMTP server is saved; its password is never sent back (${answer.status})`);
-  const stored = readFileSync('/var/lib/snpanel/notifications.json', 'utf8');
-  check(!stored.includes(RELAY_PASSWORD) && /"password": "fernet:/.test(stored) && (statSync('/var/lib/snpanel/notifications.json').mode & 0o777) === 0o600,
-    'on disk the password is encrypted, in a 0600 file');
-  answer = await admin('POST', '/notifications/test', { channel: 'email', to: 'ops@snpanel.test' });
-  const testMail = await mailTo('ops@snpanel.test', /Tin nhắn thử từ panel/);
-  check(answer.ok && testMail && testMail.from === '"SNPanel check" <panel@snpanel.test>' && mails.at(-1).auth?.pass === RELAY_PASSWORD,
-    `a test mail goes out, signed in with the saved password, in Vietnamese by default (${short(answer)})`);
-  check(/Nếu bạn đọc được tin này/.test(testMail?.text || ''), 'its plain part reads in Vietnamese too');
-
-  // ---------------------------------------------------------------- Telegram
-  answer = await admin('PUT', '/notifications/telegram', { token: 'not-a-token' });
-  check(answer.status === 400, `a token of the wrong shape is refused (${short(answer)})`);
-  answer = await admin('PUT', '/notifications/telegram', { token: BOT_TOKEN });
-  check(answer.ok && answer.json.channels.telegram.bot === 'snpanel_check_bot' && !answer.text.includes(BOT_TOKEN), `the bot is saved as getMe names it, the token never sent back (${short(answer)})`);
-  const link = (await admin('POST', '/notifications/telegram/link')).json;
-  check(link?.url === `https://t.me/snpanel_check_bot?start=${link?.code}`, `a link to the bot with a code (${link?.url})`);
-  updates.push({ update_id: nextUpdate++, message: { message_id: 1, text: `/start ${link.code}`, chat: { id: 777001, type: 'private' }, from: { id: 777001, username: 'ops_admin', first_name: 'Ops' } } });
-  answer = await admin('POST', '/notifications/telegram/link/check');
-  check(answer.json?.linked && answer.json?.name === '@ops_admin', `pressing Start links the chat (${short(answer)})`);
-  check(await told('777001', /Đã liên kết/), 'and the bot says so in it');
-  answer = await admin('POST', '/notifications/telegram/link/check');
-  check(answer.status === 409, 'a code is used once');
-  await sleep(5500);
-  answer = await admin('POST', '/notifications/test', { channel: 'telegram' });
-  check(answer.ok && await told('777001', /Tin nhắn thử từ panel/), `a test message reaches the chat (${short(answer)})`);
-
-  // ---------------------------------------------------------------- a customer of its own
-  const old = ((await admin('GET', '/users?usage=0')).json || []).find((u) => u.username === NAME);
-  if (old) await admin('DELETE', `/users/${old.id}`);
+  // ---------------------------------------------------------------- a customer is kept out
   const first = `N1-${randomBytes(12).toString('base64url')}`;
   userId = (await admin('POST', '/users', { username: NAME, email: `${NAME}@snpanel.test`, password: first, role: 'end_user', website_limit: 2, storage_limit_mb: 500 })).json?.id;
   const customer = session(LOCAL);
-  check((await customer('POST', '/auth/login', { username: NAME, password: first })).ok, 'the customer signs in - the first address on record, told to nobody');
-  const mine = (await customer('GET', '/notifications')).json;
-  check(mine && !mine.admin && mine.events.length === 7 && !('smtp' in mine), `a customer is offered its own 7 events, and nothing of the server's (${mine?.events?.length})`);
-  answer = await customer('PUT', '/notifications/me', { language: 'en', events: { server_malware: true } });
-  check(answer.status === 403, 'a customer cannot ask for the server\'s events');
-  answer = await customer('PUT', '/notifications/me', { language: 'en' });
-  check(answer.ok && answer.json.me.language === 'en', 'the customer chooses English');
-  await sleep(1500);
-  check(!mails.some((m) => m.to.includes(`${NAME}@snpanel.test`)), 'nothing told for the first sign-in');
+  check((await customer('POST', '/auth/login', { username: NAME, password: first })).ok, 'a customer signs in');
+  const refusedTo = [];
+  for (const [method, path, body] of [['GET', '/notifications'], ['PUT', '/notifications/settings', { language: 'en' }],
+    ['POST', '/notifications/test', { channel: 'email' }], ['GET', '/notifications/log'], ['PUT', '/notifications/smtp', {}],
+    ['POST', '/notifications/telegram/chats', {}], ['PUT', '/notifications/me', {}]]) {
+    const r = await customer(method, path, body);
+    if (r.status !== 403 && !(path === '/notifications/me' && [404, 405].includes(r.status))) refusedTo.push(`${method} ${path}: ${r.status}`);
+  }
+  check(refusedTo.length === 0, `the customer is refused all of it - and the old per-account settings are gone${refusedTo.length ? `: ${refusedTo.join('; ')}` : ''}`);
 
+  // ---------------------------------------------------------------- mail
+  let answer = await admin('PUT', '/notifications/smtp', { host: 'smtp.example.com', port: 25, security: 'none', username: 'x', password: 'y', from_address: 'panel@snpanel.test' });
+  check(answer.status === 400 && /clear/.test(answer.text), `no password in the clear to another machine (${short(answer)})`);
+  answer = await admin('PUT', '/notifications/smtp', { host: '127.0.0.1', port: 2525, security: 'none', username: 'relayuser', password: RELAY_PASSWORD, from_address: 'panel@snpanel.test', from_name: 'SNPanel check' });
+  check(answer.ok && answer.json.email.smtp.password_set && !answer.text.includes(RELAY_PASSWORD) && answer.json.ready,
+    `the SMTP server is saved; its password is never sent back (${answer.status})`);
+  const administrators = answer.json?.email?.administrators || [];
+  check(administrators.includes(adminUser.email) && answer.json.email.to.length === 0,
+    `with no address given, mail goes to the administrators' own: ${administrators.join(', ')}`);
+  const stored = readFileSync(CHANNELS, 'utf8');
+  check(!stored.includes(RELAY_PASSWORD) && /"password": "fernet:/.test(stored) && (statSync(CHANNELS).mode & 0o777) === 0o600,
+    'on disk the password is encrypted, in a 0600 file');
+  let since = mails.length;
+  answer = await admin('POST', '/notifications/test', { channel: 'email' });
+  const testMail = await mailTo(adminUser.email, /Tin nhắn thử từ panel/, since);
+  check(answer.ok && testMail && testMail.from === '"SNPanel check" <panel@snpanel.test>' && mails.at(-1).auth?.pass === RELAY_PASSWORD,
+    `a test goes to the administrators' addresses, signed in with the saved password, in Vietnamese (${short(answer)})`);
+  check(/Gửi tới quản trị viên của/.test(testMail?.text || ''), 'its plain part says who it is for, in Vietnamese');
+  answer = await admin('PUT', '/notifications/smtp', { host: '127.0.0.1', port: 2525, security: 'none', username: 'relayuser', password: '', from_address: 'panel@snpanel.test', from_name: 'SNPanel check', to: 'nobody' });
+  check(answer.status === 400 && /nobody is not an e-mail address/.test(answer.text), `an address that is not one is refused (${short(answer)})`);
+  answer = await admin('PUT', '/notifications/smtp', { host: '127.0.0.1', port: 2525, security: 'none', username: 'relayuser', password: '', from_address: 'panel@snpanel.test', from_name: 'SNPanel check', to: `${OPS}, ${ONCALL}; ${OPS.toUpperCase()}` });
+  check(answer.ok && answer.json.email.to.join() === `${OPS},${ONCALL}` && answer.json.email.smtp.password_set,
+    `the addresses to send to are saved, each once; a blank password keeps the saved one (${answer.json?.email?.to})`);
+  await sleep(5500);
+  since = mails.length;
+  answer = await admin('POST', '/notifications/test', { channel: 'email' });
+  check(answer.ok && await mailTo(OPS, /Tin nhắn thử/, since) && await mailTo(ONCALL, /Tin nhắn thử/, since)
+    && !mails.slice(since).some((m) => m.to.includes(adminUser.email)), `now a test goes to each of them, not the administrators' own (${answer.json?.to})`);
+
+  // ---------------------------------------------------------------- Telegram
+  answer = await admin('PUT', '/notifications/telegram', { token: 'not-a-token', chat_id: GROUP_CHAT });
+  check(answer.status === 400 && /not a bot token/.test(answer.text), `a token of the wrong shape is refused (${short(answer)})`);
+  answer = await admin('PUT', '/notifications/telegram', { token: BOT_TOKEN, chat_id: '' });
+  check(answer.status === 400 && /Enter the chat ID/.test(answer.text), `a bot with no chat is not saved (${short(answer)})`);
+  answer = await admin('POST', '/notifications/telegram/chats', { token: BOT_TOKEN });
+  const found = answer.json?.chats || [];
+  check(answer.ok && answer.json.bot === BOT && found.map((c) => `${c.id}|${c.kind}|${c.name}`).join() === `${GROUP_CHAT}|supergroup|Ops team,${PERSON_CHAT}|private|Ops (@ops_admin)`,
+    `Find chat ID lists the group the bot was added to and the person who wrote to it, newest first (${short(answer)})`);
+  answer = await admin('POST', '/notifications/telegram/chats', { token: BOT_TOKEN });
+  check(answer.ok && answer.json.chats.length === 2, 'and looking again finds them again: nothing was marked read');
+  answer = await admin('PUT', '/notifications/telegram', { token: BOT_TOKEN, chat_id: '404' });
+  check(answer.status === 502 && /does not know that chat for this bot/.test(answer.text) && !(await admin('GET', '/notifications')).json.telegram.bot,
+    `a chat Telegram does not know is refused in words, and nothing is saved (${short(answer)})`);
+  let sentBefore = sent.length;
+  answer = await admin('PUT', '/notifications/telegram', { token: BOT_TOKEN, chat_id: GROUP_CHAT });
+  check(answer.ok && answer.json.telegram.ready && answer.json.telegram.bot === BOT && answer.json.telegram.chat_name === 'Ops team' && !answer.text.includes(BOT_TOKEN),
+    `the bot and the group are saved, the token never sent back (${short(answer)})`);
+  check(await told(GROUP_CHAT, /^<b>Tin nhắn thử từ panel<\/b>/, sentBefore), 'a test message reached the group before it was saved');
+  check(!readFileSync(CHANNELS, 'utf8').includes(BOT_TOKEN), 'the token is encrypted on disk');
+  answer = await admin('PUT', '/notifications/telegram', { token: '', chat_id: PERSON_CHAT });
+  check(answer.ok && answer.json.telegram.chat_id === PERSON_CHAT && answer.json.telegram.chat_name === 'Ops (@ops_admin)',
+    `a blank token keeps the saved bot; the chat is now the person's (${answer.json?.telegram?.chat_name})`);
+  // A bot saved before there was a chat ID: nowhere to send on Telegram.
+  const saved = JSON.parse(readFileSync(CHANNELS, 'utf8'));
+  const withChat = JSON.stringify(saved, null, 2);
+  delete saved.telegram.chat_id;
+  delete saved.telegram.chat_name;
+  writeFileSync(CHANNELS, JSON.stringify(saved, null, 2));
+  view = (await admin('GET', '/notifications')).json;
+  check(view.telegram.bot === BOT && !view.telegram.ready && view.telegram.chat_id === '',
+    'a bot saved without a chat, as the first version saved it, is shown as not ready');
+  sentBefore = sent.length;
+  await sleep(5500);
+  answer = await admin('POST', '/notifications/test', { channel: 'telegram' });
+  check(answer.status === 409 && sent.length === sentBefore, `and nothing goes to Telegram (${short(answer)})`);
+  writeFileSync(CHANNELS, withChat);
+  await sleep(5500);
+  answer = await admin('POST', '/notifications/test', { channel: 'telegram' });
+  check(answer.ok && await told(PERSON_CHAT, /Tin nhắn thử từ panel/, sentBefore), `with its chat back, a test reaches it (${short(answer)})`);
+
+  // ---------------------------------------------------------------- a second administrator
+  const a2first = `A1-${randomBytes(12).toString('base64url')}`;
+  sentBefore = sent.length;
+  since = mails.length;
+  admin2Id = (await admin('POST', '/users', { username: ADMIN2, email: `${ADMIN2}@snpanel.test`, password: a2first, role: 'admin', website_limit: 0, storage_limit_mb: 0 })).json?.id;
+  let message = await told(PERSON_CHAT, new RegExp(`^<b>${ADMIN2} đã trở thành quản trị viên</b>`), sentBefore);
+  check(message && message.text.includes(`Do quản trị viên ${adminName} thực hiện`), `a new administrator is told, and by whom (${(message?.text || '').split('\n')[0]})`);
+  check(await mailTo(OPS, new RegExp(`^${ADMIN2} đã trở thành quản trị viên$`), since), 'by mail too, to the addresses given');
+  const second = session(LOCAL);
+  check((await second('POST', '/auth/login', { username: ADMIN2, password: a2first })).ok, `${ADMIN2} signs in - the first address on record, told to nobody`);
   const outside = session(OUTSIDE);
-  check((await outside('POST', '/auth/login', { username: NAME, password: first })).ok, `the customer signs in again from ${OWN_IP}`);
-  let mail = await mailTo(`${NAME}@snpanel.test`, /^A new sign-in to your account$/);
-  check(mail && mail.text.includes(`From ${OWN_IP}`) && mail.text.includes('notify-check'), `a sign-in from a new address is told, in English, with the address and browser (${mail?.subject})`);
+  sentBefore = sent.length;
+  check((await outside('POST', '/auth/login', { username: ADMIN2, password: a2first })).ok, `${ADMIN2} signs in again, from ${OWN_IP}`);
+  message = await told(PERSON_CHAT, new RegExp(`Có đăng nhập mới vào tài khoản quản trị ${ADMIN2}`), sentBefore);
+  check(message && message.text.includes(`Từ địa chỉ ${OWN_IP}`) && message.text.includes('notify-check'),
+    'a sign-in to an administrator account from a new address is told, with the address and the browser');
+  sentBefore = sent.length;
+  answer = await admin('POST', `/users/${admin2Id}/password`, { password: `A2-${randomBytes(12).toString('base64url')}` });
+  message = await told(PERSON_CHAT, new RegExp(`Đã đổi mật khẩu: ${ADMIN2}`), sentBefore);
+  check(answer.ok && message?.text.includes(`Do quản trị viên ${adminName} thực hiện, từ địa chỉ`), `its password changed by another administrator is told, and by whom (${short(answer)})`);
 
-  const second = `N2-${randomBytes(12).toString('base64url')}`;
-  answer = await admin('POST', `/users/${userId}/password`, { password: second });
-  mail = await mailTo(`${NAME}@snpanel.test`, /^Your panel password was changed$/);
-  check(answer.ok && mail?.text.includes(`By the administrator ${adminName}.`), `a password its administrator changed is told, and by whom (${short(answer)})`);
+  // ---------------------------------------------------------------- a customer's own business
+  sentBefore = sent.length;
+  since = mails.length;
+  const customerOutside = session(OUTSIDE);
+  check((await customerOutside('POST', '/auth/login', { username: NAME, password: first })).ok, `the customer signs in from ${OWN_IP} too`);
+  const secondPassword = `N2-${randomBytes(12).toString('base64url')}`;
+  answer = await admin('POST', `/users/${userId}/password`, { password: secondPassword });
+  await sleep(4000);
+  check(answer.ok && !sent.slice(sentBefore).some((s) => s.text.includes(NAME)) && !mails.slice(since).some((m) => read(m).subject.includes(NAME)),
+    'a customer\'s sign-in from a new address, and its password changed, are told to nobody');
 
-  // ---------------------------------------------------------------- a backup that fails
+  // ---------------------------------------------------------------- a customer's backup that fails, in English
+  answer = await admin('PUT', '/notifications/settings', { language: 'en' });
+  check(answer.ok && answer.json.language === 'en', 'messages are to be written in English');
   targetId = (await admin('POST', '/maintenance/sftp-targets', { name: 'notify-check', host: '127.0.0.1', port: 1, username: 'nobody', password: 'x', private_key: null, remote_path: '/tmp/notify-check' })).json?.id;
   scheduleId = (await admin('POST', '/maintenance/backup-schedules', { user_ids: [userId], schedule: '0 4 * * *', target_id: targetId, name_style: 'timestamp', retention: 1 })).json?.id;
+  sentBefore = sent.length;
+  since = mails.length;
   answer = await admin('POST', `/maintenance/backup-schedules/${scheduleId}/run`);
   check(answer.ok, `a schedule whose destination cannot be reached is run (${short(answer)})`);
-  mail = await mailTo(`${NAME}@snpanel.test`, /^Your account's backup failed$/);
-  check(mail && /Reason: /.test(mail.text), `the customer is told its backup failed, and why (${mail?.text?.split('\n')[3] || ''})`);
-  check(await told('777001', new RegExp(`Lịch sao lưu bị lỗi: #${scheduleId}`)), 'the administrator is told on Telegram, in Vietnamese');
-  check(await mailTo(adminUser.email, new RegExp(`^Lịch sao lưu bị lỗi: #${scheduleId}`)), 'and by mail');
+  message = await told(PERSON_CHAT, new RegExp(`^<b>Scheduled backup failed: #${scheduleId}`), sentBefore);
+  check(message && message.text.includes(`${NAME}: `), `the administrators are told, in English, which account was not backed up (${(message?.text || '').split('\n')[3] || ''})`);
+  check(await mailTo(ONCALL, new RegExp(`^Scheduled backup failed: #${scheduleId}`), since), 'by mail too');
+  await admin('PUT', '/notifications/settings', { language: 'vi' });
 
-  // ---------------------------------------------------------------- malware on its website
+  // ---------------------------------------------------------------- malware on the customer's website
   const site = (await admin('POST', '/websites', { domain: DOMAIN, app_type: 'static', owner_id: userId })).json;
   siteId = site?.id;
   const eicar = `${site.root_path}/eicar.php`;
   writeFileSync(eicar, EICAR);
   const owner = statSync(site.root_path);
   chownSync(eicar, owner.uid, owner.gid);
+  sentBefore = sent.length;
+  since = mails.length;
   const started = await admin('POST', '/malware/run', { website_id: siteId });
   const job = await until(async () => {
     const j = (await admin('GET', `/malware/jobs/${started.json?.job_id}`)).json;
     return j && !['queued', 'running'].includes(j.status) ? j : null;
   }, 600);
   check(job?.status === 'infected' && job?.quarantined === 1, `a scan finds eicar.php and sets it aside (${job?.status} q=${job?.quarantined})`);
-  mail = await mailTo(`${NAME}@snpanel.test`, new RegExp(`^Malware found on ${DOMAIN.replace(/\./g, '\\.')}$`));
-  check(mail && mail.text.includes('1 moved to quarantine') && mail.text.includes('eicar.php'), 'its owner is told what was found and set aside');
-  check(await told('777001', new RegExp(`Phát hiện mã độc trên ${DOMAIN.replace(/\./g, '\\.')}`)), 'and the administrator, on Telegram');
+  message = await told(PERSON_CHAT, new RegExp(`Phát hiện mã độc trên ${escape(DOMAIN)}`), sentBefore);
+  check(message && message.text.includes('đã chuyển 1 tệp vào khu cô lập') && message.text.includes('eicar.php'), 'the administrators are told what was found and set aside');
+  check(await mailTo(OPS, new RegExp(`^Phát hiện mã độc trên ${escape(DOMAIN)}$`), since), 'by mail too');
 
   // ---------------------------------------------------------------- an event turned off
-  // The password its administrator changed ended the customer's sessions.
-  check((await customer('POST', '/auth/login', { username: NAME, password: second })).ok, 'the customer signs in with the new password');
-  answer = await customer('PUT', '/notifications/me', { events: { security: false } });
-  check(answer.ok && answer.json.me.events.security === false, 'the customer turns "changes to how you sign in" off');
-  const before = mails.length;
-  const third = `N3-${randomBytes(12).toString('base64url')}`;
-  await admin('POST', `/users/${userId}/password`, { password: third });
+  answer = await admin('PUT', '/notifications/settings', { events: { security: false } });
+  check(answer.ok && answer.json.events.find((e) => e.key === 'security')?.on === false, '"Changes to an administrator account" turned off');
+  sentBefore = sent.length;
+  await admin('POST', `/users/${admin2Id}/password`, { password: `A3-${randomBytes(12).toString('base64url')}` });
   await sleep(4000);
-  check(!mails.slice(before).some((m) => m.to.includes(`${NAME}@snpanel.test`)), 'and is not told the next time');
+  check(!sent.slice(sentBefore).some((s) => s.text.includes(`Đã đổi mật khẩu: ${ADMIN2}`)), 'and not told the next time');
+  answer = await admin('PUT', '/notifications/settings', { events: { nosuch: true } });
+  check(answer.status === 400, `an event that is not one is refused (${short(answer)})`);
+  await admin('PUT', '/notifications/settings', { events: { security: true } });
 
   // ---------------------------------------------------------------- a service that stops
   // Not execFileSync: it would stop this script's relay and Telegram API
@@ -310,27 +372,25 @@ try {
   await sleep(1000);
   check(/checks ran/.test(firstLook) && !sent.slice(beforeStop).some((s) => /đã dừng/.test(s.text)), 'stopped once: not told yet - it may be a restart');
   await checks();
-  check(await told('777001', new RegExp(`Dịch vụ đã dừng: ${redis}`)), 'stopped at the second look: told');
+  check(await told(PERSON_CHAT, new RegExp(`Dịch vụ đã dừng: ${redis}`)), 'stopped at the second look: told');
   const tally = sent.filter((s) => /đã dừng/.test(s.text)).length;
   await checks();
   await sleep(1000);
   check(sent.filter((s) => /đã dừng/.test(s.text)).length === tally, 'and told once');
   run('systemctl', ['start', redis]);
   await checks();
-  check(await told('777001', new RegExp(`Dịch vụ đã chạy lại: ${redis}`)), 'running again: told');
+  check(await told(PERSON_CHAT, new RegExp(`Dịch vụ đã chạy lại: ${redis}`)), 'running again: told');
 
-  // ---------------------------------------------------------------- the log
+  // ---------------------------------------------------------------- the log, and who was never written to
   const log = ((await admin('GET', '/notifications/log')).json?.items || []).filter((r) => r.id > logStart);
   const events = new Set(log.map((r) => r.event));
-  for (const e of ['test', 'sign_in', 'security', 'backup_failed', 'server_backup_failed', 'malware', 'server_malware', 'service_down']) {
+  for (const e of ['test', 'security', 'sign_in', 'backup_failed', 'malware', 'service_down']) {
     check(events.has(e), `the log has ${e}`);
   }
   const unsent = log.filter((r) => r.status !== 'sent');
-  check(unsent.length === 0 && log.every((r) => !r.target.includes(`${NAME}@`)),
-    `every one of them sent, the addresses masked${unsent.length ? `: ${JSON.stringify(unsent.map((r) => [r.event, r.channel, r.target, r.detail]))}` : ''}`);
-  await customer('POST', '/auth/login', { username: NAME, password: third });
-  answer = await customer('GET', '/notifications/log');
-  check(answer.status === 403, 'a customer does not read the log');
+  check(unsent.length === 0, `every one of them sent${unsent.length ? `: ${JSON.stringify(unsent.map((r) => [r.event, r.channel, r.target, r.detail]))}` : ''}`);
+  check(!mails.some((m) => m.to.some((to) => to.startsWith(`${NAME}@`))) && !log.some((r) => r.target.startsWith(`${NAME}@`)),
+    'and the customer was never written to');
 } catch (err) {
   ok = false;
   console.log(`FAIL  ${err.stack || err.message}`);
@@ -339,14 +399,13 @@ try {
   if (targetId) await admin('DELETE', `/maintenance/sftp-targets/${targetId}`);
   if (siteId) await admin('DELETE', `/websites/${siteId}`);
   if (userId) await admin('DELETE', `/users/${userId}`);
-  await admin('DELETE', '/notifications/telegram/link');
+  if (admin2Id) await admin('DELETE', `/users/${admin2Id}`);
   await admin('DELETE', '/notifications/smtp');
   await admin('DELETE', '/notifications/telegram');
-  rmSync(DROPIN, { force: true });
-  run('systemctl', ['daemon-reload']);
-  run('systemctl', ['restart', 'snpanel-api']);
+  if (Object.keys(DEFAULTS).length) await admin('PUT', '/notifications/settings', { language: 'vi', events: DEFAULTS });
+  pointPanel(false);
   smtp.close();
-  bot.close();
+  telegram.server.close();
 }
 console.log(ok ? 'PASS' : 'FAIL');
 process.exit(ok ? 0 : 1);

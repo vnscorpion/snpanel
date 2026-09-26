@@ -65,11 +65,9 @@ expired wrong incorrect correct valid supported unsupported available unavailabl
 adds sets changes overrides borrows declares shares passes runs reads builds uses makes keeps`.split(/\s+/));
 
 // Not the MCP tools: what they say goes to an AI assistant, which reads
-// English, and the panel never shows it. Not the notifications either:
-// every message is written in both languages where it is made, and goes out
-// by e-mail and Telegram rather than to a page. Not the helper's argv
-// parser: the API checks what it sends first, and those checks say it.
-const SKIP_DIRS = new Set(['tests', 'benches', 'target', 'mcp', 'notify']);
+// English, and the panel never shows it. Not the helper's argv parser: the
+// API checks what it sends first, and those checks say it.
+const SKIP_DIRS = new Set(['tests', 'benches', 'target', 'mcp']);
 // And not what only a console or a log reads: the ctl and initdb commands,
 // the startup checks of the configuration, the helper's usage text.
 const SKIP_FILES = new Set([
@@ -81,6 +79,11 @@ const SKIP_FILES = new Set([
   // A passkey that fails says "The passkey could not be verified"; why goes
   // to the log.
   'crates/snpanel-core/src/crypto/webauthn.rs',
+  // The notifications themselves: every message is written in both
+  // languages where it is made, and goes out by e-mail and Telegram rather
+  // than to a page. What the SMTP server and Telegram answer, beside it in
+  // notify/, is shown on the page, and is collected.
+  'crates/snpanel-api/src/notify/mod.rs',
   // Checked when the API starts, before anyone can see a page.
   'crates/snpanel-db/src/lib.rs',
   'crates/snpanel-db/src/schema.rs',
@@ -106,6 +109,10 @@ const IGNORED = new Set([
   'WHITELISTED {path}: left in place', 'LEFT {path}: outside the folders files are moved out of', 'NOT MOVED {path}: {0}', 'is gone',
   '{0} is mounted already',
   'Automatic updates (dnf-automatic):', 'when needed', 'LocalSocket /run/clamd.scan/clamd.sock', 'apt-get install unattended-upgrades', 'dnf install dnf-automatic', 'curl docker-ce.repo', 'apt-get install ca-certificates curl gnupg', 'curl docker gpg key',
+  // An e-mail's headers and SMTP's commands, and what Telegram's refusals
+  // are recognised by.
+  'Message-ID: {message_id}', 'Auto-Submitted: auto-generated', 'Content-Transfer-Encoding: base64', 'MAIL FROM:<{0}>', 'RCPT TO:<{0}>',
+  'chat not found', 'blocked by the user', 'not a member', 'not enough rights',
 ]);
 
 function walk(dir) {

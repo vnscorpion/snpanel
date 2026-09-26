@@ -293,6 +293,29 @@ struct Conn<S> {
     stream: BufReader<S>,
 }
 
+/// A step of the conversation, for what the server refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Greeting,
+    StartTls,
+    SignIn,
+    Sender,
+    Recipient,
+    Message,
+}
+
+/// The server refused a step, and said this.
+fn refused(step: Step, said: &str) -> SmtpError {
+    fail(match step {
+        Step::Greeting => format!("The SMTP server refused the greeting: {said}"),
+        Step::StartTls => format!("The SMTP server refused STARTTLS: {said}"),
+        Step::SignIn => format!("The SMTP server refused the sign-in: {said}"),
+        Step::Sender => format!("The SMTP server refused the sender: {said}"),
+        Step::Recipient => format!("The SMTP server refused the recipient: {said}"),
+        Step::Message => format!("The SMTP server refused the message: {said}"),
+    })
+}
+
 impl<S: AsyncRead + AsyncWrite + Unpin> Conn<S> {
     fn new(stream: S) -> Self {
         Self {
@@ -345,28 +368,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Conn<S> {
         .map_err(|e| fail(format!("The connection to the SMTP server broke: {e}")))
     }
 
-    /// A command, and the reply it has to get. `what` names the step for
-    /// the message when it does not.
+    /// A command, and the reply it has to get. `step` says what was refused
+    /// when it does not.
     async fn command(
         &mut self,
         line: &str,
         expect: &[u16],
-        what: &str,
+        step: Step,
     ) -> Result<Reply, SmtpError> {
         self.send(line).await?;
         let reply = self.reply().await?;
         if expect.contains(&reply.code) {
             Ok(reply)
         } else {
-            Err(fail(format!(
-                "The SMTP server refused {what}: {}",
-                reply.said()
-            )))
+            Err(refused(step, &reply.said()))
         }
     }
 
     async fn ehlo(&mut self, name: &str) -> Result<Reply, SmtpError> {
-        self.command(&format!("EHLO {name}"), &[250], "the greeting")
+        self.command(&format!("EHLO {name}"), &[250], Step::Greeting)
             .await
     }
 
@@ -443,13 +463,13 @@ async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(
         let engine = base64::engine::general_purpose::STANDARD;
         if methods.iter().any(|m| m == "PLAIN") {
             let token = engine.encode(format!("\0{}\0{}", server.username, server.password));
-            conn.command(&format!("AUTH PLAIN {token}"), &[235], "the sign-in")
+            conn.command(&format!("AUTH PLAIN {token}"), &[235], Step::SignIn)
                 .await?;
         } else if methods.iter().any(|m| m == "LOGIN") {
-            conn.command("AUTH LOGIN", &[334], "the sign-in").await?;
-            conn.command(&engine.encode(&server.username), &[334], "the sign-in")
+            conn.command("AUTH LOGIN", &[334], Step::SignIn).await?;
+            conn.command(&engine.encode(&server.username), &[334], Step::SignIn)
                 .await?;
-            conn.command(&engine.encode(&server.password), &[235], "the sign-in")
+            conn.command(&engine.encode(&server.password), &[235], Step::SignIn)
                 .await?;
         } else {
             return Err(fail(
@@ -460,16 +480,16 @@ async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(
     conn.command(
         &format!("MAIL FROM:<{}>", mail.from_address),
         &[250],
-        "the sender",
+        Step::Sender,
     )
     .await?;
     conn.command(
         &format!("RCPT TO:<{}>", mail.to),
         &[250, 251],
-        "the recipient",
+        Step::Recipient,
     )
     .await?;
-    conn.command("DATA", &[354], "the message").await?;
+    conn.command("DATA", &[354], Step::Message).await?;
     let body = dot_stuffed(&message(mail, date));
     let stream = conn.stream.get_mut();
     tokio::time::timeout(STEP_TIMEOUT, async {
@@ -482,13 +502,12 @@ async fn deliver<S: AsyncRead + AsyncWrite + Unpin>(
     .map_err(|e| fail(format!("The connection to the SMTP server broke: {e}")))?;
     let accepted = conn.reply().await?;
     if accepted.code != 250 {
-        return Err(fail(format!(
-            "The SMTP server refused the message: {}",
-            accepted.said()
-        )));
+        return Err(refused(Step::Message, &accepted.said()));
     }
     // Politeness: the message is already accepted, whatever QUIT gets.
-    let _ = conn.command("QUIT", &[221], "QUIT").await;
+    if conn.send("QUIT").await.is_ok() {
+        let _ = conn.reply().await;
+    }
     Ok(())
 }
 
@@ -540,7 +559,7 @@ pub async fn send(server: &Server, mail: &Mail<'_>, date: &str) -> Result<(), Sm
                         "The SMTP server does not offer STARTTLS: choose SSL/TLS, or another port",
                     ));
                 }
-                conn.command("STARTTLS", &[220], "STARTTLS").await?;
+                conn.command("STARTTLS", &[220], Step::StartTls).await?;
                 let mut conn = Conn::new(tls(&server.host, conn.into_inner()?).await?);
                 let caps = conn.ehlo(&helo).await?;
                 deliver(conn, &caps, server, true, mail, date).await
