@@ -9,6 +9,7 @@ import './Security.css';
 export default function SecurityPage() {
   const {
     addPasskey,
+    changeOwnPassword,
     currentUser,
     disableTwoFactorAuth,
     enableTwoFactorAuth,
@@ -26,6 +27,7 @@ export default function SecurityPage() {
   const t = useT();
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyCode, setPasskeyCode] = useState('');
+  const [pw, setPw] = useState({ current: '', next: '', again: '', code: '' });
 
   const busy = !!loading;
   const enabled = Boolean(twoFactorStatus?.enabled || currentUser?.totp_enabled);
@@ -43,6 +45,17 @@ export default function SecurityPage() {
           ? t('This account has the most passkeys it can have. Remove one to add another.')
           : '';
 
+  const pwField = (key) => ({ value: pw[key], onChange: (e) => setPw((prev) => ({ ...prev, [key]: e.target.value })) });
+  const pwBadChar = /[:\r\n]/.test(pw.next);
+  const pwMismatch = pw.again !== '' && pw.again !== pw.next;
+  const pwReady = pw.current && pw.next.length >= 12 && !pwBadChar && pw.next === pw.again && (!enabled || pw.code.trim().length >= 6);
+
+  async function submitPassword(event) {
+    event.preventDefault();
+    const body = { current_password: pw.current, password: pw.next, ...(enabled ? { code: pw.code.trim() } : {}) };
+    if (!(await changeOwnPassword(body))) setPw((prev) => ({ ...prev, current: '', code: '' }));
+  }
+
   async function submitPasskey(event) {
     event.preventDefault();
     const added = await addPasskey(passkeyName.trim() || t('Passkey'), passkeyCode.trim());
@@ -50,6 +63,41 @@ export default function SecurityPage() {
   }
 
   return <div className="security-page">
+    <section className="section" aria-labelledby="security-password-title">
+      <div className="security-head">
+        <span className="security-icon off"><KeyRound size={22} aria-hidden="true"/></span>
+        <div className="security-head-text">
+          <h2 id="security-password-title">{t('Login password')}</h2>
+          <p className="hint">{t('The password you sign in to the panel with. When it changes, every session ends - this one too.')}</p>
+        </div>
+      </div>
+      <form className="security-password-form" onSubmit={submitPassword}>
+        <div className="security-field">
+          <label htmlFor="pw-current">{t('Current password')}</label>
+          <input id="pw-current" type="password" autoComplete="current-password" {...pwField('current')} />
+        </div>
+        <div className="security-field">
+          <label htmlFor="pw-next">{t('New password')}</label>
+          <input id="pw-next" type="password" autoComplete="new-password" placeholder={t('At least 12 characters')} {...pwField('next')}
+            aria-invalid={pwBadChar ? 'true' : undefined} />
+        </div>
+        <div className="security-field">
+          <label htmlFor="pw-again">{t('New password again')}</label>
+          <input id="pw-again" type="password" autoComplete="new-password" {...pwField('again')} aria-invalid={pwMismatch ? 'true' : undefined} />
+        </div>
+        {enabled && <div className="security-field">
+          <label htmlFor="pw-code">{t('Authenticator code')}</label>
+          <input id="pw-code" inputMode="numeric" autoComplete="one-time-code" placeholder="123456" {...pwField('code')} />
+        </div>}
+        <div className="security-password-go">
+          {pwBadChar && <small className="security-bad">{t("The password cannot contain ':'.")}</small>}
+          {pwMismatch && <small className="security-bad">{t('The two new passwords differ.')}</small>}
+          {!pwBadChar && !pwMismatch && <small className="hint">{t('An SFTP login that signs in with the panel password follows it.')}</small>}
+          <button type="submit" disabled={busy || !pwReady}><KeyRound size={14} aria-hidden="true"/> {t('Change password')}</button>
+        </div>
+      </form>
+    </section>
+
     <section className="section">
       <div className="security-head">
         <span className={`security-icon ${enabled ? 'on' : 'off'}`}>{enabled ? <ShieldCheck size={22} aria-hidden="true"/> : <ShieldOff size={22} aria-hidden="true"/>}</span>

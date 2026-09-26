@@ -3185,6 +3185,17 @@ function App() {
     if (data) { setFail2ban(data); setNotice(t('{address} can connect again.', { address })); }
   }
 
+  // The panel password, changed by its owner: the current one - and the
+  // authenticator code, when there is one - first, as the API asks. Every
+  // session ends with it, this one too.
+  async function changeOwnPassword(body) {
+    if (!currentUser?.id) return false;
+    const data = await request(`/users/${currentUser.id}/password`, { method: 'POST', body: JSON.stringify(body) }, t('Changing the password...'));
+    if (!data) return false;
+    clearSession(t('Password changed. Please log in again.'));
+    return true;
+  }
+
   // A user's SFTP login - see components/SftpAccess.jsx.
   async function loadSftpAccess(userId) {
     return await request(`/users/${userId}/sftp`);
@@ -4068,6 +4079,7 @@ function App() {
       checkSiteAppEdit,
       chmodMode,
       chmodTarget,
+      changeOwnPassword,
       clearWafAccessLogs,
       composePlan,
       controlSiteApp,
