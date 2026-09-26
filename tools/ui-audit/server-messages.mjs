@@ -83,7 +83,7 @@ await page.goto(`${BASE}/malware`, { waitUntil: 'networkidle' });
 const malware = await anyVisible(MALWARE_VI);
 check(!!malware, `the malware status line is Vietnamese (${malware})`);
 
-await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
+await page.goto(`${BASE}/panel-settings`, { waitUntil: 'networkidle' });
 const ipv6 = await anyVisible(IPV6_VI);
 check(!!ipv6, `the IPv6 line is Vietnamese (${ipv6 && ipv6.slice(0, 60)})`);
 

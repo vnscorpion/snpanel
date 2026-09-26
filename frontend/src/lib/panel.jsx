@@ -32,11 +32,12 @@ export function composeWebPorts(plan, wanted) {
 // Pages opened from inside another page instead of the sidebar. They have no
 // nav entry of their own, so without this the header falls back to the first
 // item and titles the page "Dashboard".
-export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'settings', 'malware-scan': 'malware' };
+export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'panel-settings', 'malware-scan': 'malware' };
 
-// 'waf-site' is reached from the WAF overview rather than the sidebar, but it
-// still belongs to Settings so the menu stays open and WAF stays highlighted.
-export const SETTINGS_PAGE_KEYS = ['settings', 'api-tokens', 'security', 'mcp', 'notifications', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'malware-scan', 'access-logs', 'updates', 'addons', 'services'];
+// Settings, the page of tiles, and every page it leads to: the sidebar's
+// Settings stays lit on them, and their header leads back to it. 'waf-site'
+// and 'malware-scan' are reached from inside WAF and Malware.
+export const SETTINGS_PAGE_KEYS = ['settings', 'panel-settings', 'api-tokens', 'security', 'mcp', 'notifications', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'malware-scan', 'access-logs', 'updates', 'addons', 'services'];
 export const PAGE_ROUTES = {
   dashboard: '/',
   websites: '/website',
@@ -48,6 +49,7 @@ export const PAGE_ROUTES = {
   backups: '/backups',
   users: '/users',
   settings: '/settings',
+  'panel-settings': '/panel-settings',
   'api-tokens': '/api-tokens',
   security: '/security',
   sftp: '/sftp',

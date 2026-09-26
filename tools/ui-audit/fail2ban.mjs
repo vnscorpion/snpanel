@@ -79,10 +79,10 @@ const consoleErrors = [];
 page.on('console', (m) => { if (m.type() === 'error' && !/jobs\/latest/.test(m.location()?.url || '')) consoleErrors.push(m.text()); });
 const go = async (path) => { await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' }); await page.waitForTimeout(300); };
 const addonCard = () => page.locator('.addon-card').filter({ has: page.locator('strong', { hasText: /^Fail2ban$/ }) });
-// The settings menu's entries are buttons, drawn while the menu is open.
+// Fail2ban's tile on the Settings page.
 const menuEntry = async () => {
-  if (await page.locator('#settings-submenu').count() === 0) await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  return page.locator('#settings-submenu').getByRole('button', { name: 'Fail2ban', exact: true });
+  await go('/settings');
+  return page.locator('.settings-grid').getByRole('link', { name: 'Fail2ban', exact: true });
 };
 
 try {
@@ -112,7 +112,7 @@ try {
   // ---------------------------------------------------------------- dashboard, menu
   await go('/');
   check(await page.locator('a[href="/fail2ban"]').first().isVisible(), 'the Dashboard has a Fail2ban tile');
-  check(await (await menuEntry()).isVisible(), 'and the settings menu an entry');
+  check(await (await menuEntry()).isVisible(), 'and Settings a tile');
 
   // ---------------------------------------------------------------- the page
   await go('/fail2ban');
@@ -224,7 +224,7 @@ try {
   check(!run('nft', 'list', 'tables').includes('f2b-table'), 'and every ban is lifted with it');
   await go('/');
   check(await page.locator('a[href="/fail2ban"]').count() === 0 && await (await menuEntry()).count() === 0,
-    'the tile and the menu entry are gone');
+    'the Dashboard\'s tile and the Settings tile are gone');
   await go('/fail2ban');
   check(await page.getByText('The Fail2ban addon is not installed on this server.').isVisible(), 'the page says the addon is not installed');
 

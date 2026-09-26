@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Bell, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
+import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -15,6 +15,7 @@ import {
   WAF_ACCESS_LOG_DEFAULTS,
   csvCell,
   editorParamsFromLocation,
+  followInPanel,
   formatApiError,
   isProxiedAppType,
   normalizeHttpFloodConfig,
@@ -64,6 +65,7 @@ const SftpPage = lazy(() => import('./pages/Sftp.jsx'));
 const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
 const MalwareScanPage = lazy(() => import('./pages/MalwareScan.jsx'));
 const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
+const SettingsPage = lazy(() => import('./pages/Settings.jsx'));
 const UsersPage = lazy(() => import('./pages/Users.jsx'));
 
 // What the loading line says while a service or an application is sent an
@@ -257,7 +259,6 @@ function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [panelSettings, setPanelSettings] = useState({ app_name: 'SNPanel', panel_url: '', panel_hostname: '', panel_port: 2222, logo_url: '', favicon_url: '/favicon.png', ssl_enabled: false });
   const [phpTune, setPhpTune] = useState(null);
   const [phpTuneApplied, setPhpTuneApplied] = useState(false);
@@ -3848,7 +3849,7 @@ function App() {
       loadPasskeys();
       if (!websites.length) refreshAll();
     }
-    if (isAuthenticated && ['settings', 'api-tokens'].includes(page)) {
+    if (isAuthenticated && ['panel-settings', 'api-tokens'].includes(page)) {
       loadPanelSettings();
       if (currentUser?.role === 'admin') loadApiTokens();
     }
@@ -3880,10 +3881,6 @@ function App() {
 
   useEffect(() => { setMobileMenuOpen(false); }, [page]);
 
-  useEffect(() => {
-    if (SETTINGS_PAGE_KEYS.includes(page)) setSettingsMenuOpen(true);
-  }, [page]);
-
   function roleLabel(role) {
     return role === 'admin' ? t('Admin') : t('End user');
   }
@@ -3899,31 +3896,36 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
+    // One page of tiles, one for each of settingsNavItems.
+    ['settings', t('Settings'), SettingsIcon],
   ];
 
+  // The Settings page's tiles, and the titles of their pages.
   const settingsNavItems = [
-    ...(isAdmin ? [['settings', t('Panel settings'), SettingsIcon]] : []),
-    ['security', t('Account security'), Shield],
+    ...(isAdmin ? [['panel-settings', t('Panel settings'), SlidersHorizontal]] : []),
+    ['security', t('Account security'), KeyRound],
     // An administrator sees it to install the addon from; anyone else once
     // the addon is on.
     ...((isAdmin || mcpAddonInstalled) ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
     // The administrators' alone: customers are sent nothing.
     ...(isAdmin ? [['notifications', t('Notifications'), Bell]] : []),
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
-    ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
+    ...(isAdmin ? [['firewall', t('Firewall'), BrickWall]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
-    ['waf', t('WAF'), Shield],
-    ...(isAdmin ? [['malware', t('Malware Scanner'), Search]] : []),
-    ...(isAdmin ? [['access-logs', t('Access Logs'), FileText]] : []),
+    ['waf', t('WAF'), ShieldCheck],
+    ...(isAdmin ? [['malware', t('Malware Scanner'), ScanSearch]] : []),
+    ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText]] : []),
     ...(isAdmin ? [['updates', t('Updates'), RefreshCw]] : []),
     ...(isAdmin ? [['addons', t('Addons'), Boxes]] : []),
-    ['services', t('Services Status'), Server],
+    ['services', t('Services Status'), Activity],
   ];
 
   const navItems = [...mainNavItems, ...settingsNavItems];
   const navPage = NAV_PARENT_PAGE[page] || page;
   const activeNavItem = navItems.find(([key]) => key === navPage) || navItems[0];
   const settingsIsActive = SETTINGS_PAGE_KEYS.includes(page);
+  // A page of Settings, not Settings itself: its header leads back there.
+  const inSettings = settingsIsActive && page !== 'settings';
 
   function renderNotifications() {
     const errorMessage = formatApiError(error, '').trim();
@@ -4382,6 +4384,7 @@ function App() {
       moveSelectedFiles,
       navItems,
       navigateToPage,
+      settingsNavItems,
       newApiToken,
       newBackupSchedule,
       newBotName,
@@ -4660,7 +4663,8 @@ function App() {
     if (page === 'updates') return <UpdatesPage />;
     if (page === 'services') return <ServicesPage />;
     // One page for both addresses: the tokens are a tab of Panel settings.
-    if (page === 'settings' || page === 'api-tokens') return <PanelSettingsPage />;
+    if (page === 'settings') return <SettingsPage />;
+    if (page === 'panel-settings' || page === 'api-tokens') return <PanelSettingsPage />;
     if (page === 'users') return <UsersPage />;
     return <DashboardPage />;
   }
@@ -4743,19 +4747,13 @@ function App() {
           <button className="sidebar-close" onClick={() => setMobileMenuOpen(false)} aria-label={t('Close menu')}><X size={18}/></button>
         </div>
         <nav className="sidebar-nav">
-          {mainNavItems.map(([key, label, Icon]) => <button key={key} type="button" className={navPage === key ? 'active' : ''} onClick={() => navigateToPage(key)} aria-current={navPage === key ? 'page' : undefined}>
-            <Icon size={17}/>{label}
-          </button>)}
-          <div className={`sidebar-nav-group ${settingsMenuOpen ? 'open' : ''}`}>
-            <button className={`sidebar-group-toggle ${settingsIsActive ? 'active' : ''}`} onClick={() => setSettingsMenuOpen(open => !open)} aria-expanded={settingsMenuOpen} aria-controls="settings-submenu">
-              <SettingsIcon size={17}/><span>{t('Settings')}</span><ChevronDown className="sidebar-group-chevron" size={16}/>
-            </button>
-            {settingsMenuOpen && <div className="sidebar-subnav" id="settings-submenu">
-              {settingsNavItems.map(([key, label, Icon]) => <button key={key} type="button" className={navPage === key ? 'active' : ''} onClick={() => navigateToPage(key)} aria-current={navPage === key ? 'page' : undefined}>
-                <Icon size={16}/>{label}
-              </button>)}
-            </div>}
-          </div>
+          {mainNavItems.map(([key, label, Icon]) => {
+            // Settings stays lit on each of its pages.
+            const current = key === 'settings' ? settingsIsActive : navPage === key;
+            return <button key={key} type="button" className={current ? 'active' : ''} onClick={() => navigateToPage(key)} aria-current={current ? 'page' : undefined}>
+              <Icon size={17}/>{label}
+            </button>;
+          })}
         </nav>
         {appVersion && <div className="sidebar-version">v{appVersion}</div>}
       </aside>
@@ -4765,7 +4763,9 @@ function App() {
             <Menu size={20}/><span><ActiveIcon size={17}/>{activeNavItem?.[1] || t('Menu')}</span>
           </button>
           <div className="page-title">
-            <p className="eyebrow">{t('Server Management Panel')}</p>
+            {inSettings
+              ? <a className="eyebrow page-title-back" href={routeForPage('settings')} onClick={(event) => followInPanel(event, () => navigateToPage('settings'))}><ChevronLeft size={13} aria-hidden="true"/>{t('Settings')}</a>
+              : <p className="eyebrow">{t('Server Management Panel')}</p>}
             <h1>{activeNavItem?.[1] || panelSettings.app_name || 'SNPanel'}</h1>
           </div>
           <div className="login logged-in">

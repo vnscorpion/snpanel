@@ -67,10 +67,11 @@ try {
   const page = await admin.newPage();
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('dialog', (d) => d.accept());
-  await page.goto(`${BASE}/notifications`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
+  await page.locator('.settings-grid').getByRole('link', { name: 'Notifications', exact: true }).click();
   await page.getByRole('heading', { name: 'How messages go out' }).waitFor({ timeout: 15000 });
+  check(new URL(page.url()).pathname === '/notifications', 'Settings has a Notifications tile, and it opens the page');
   check(await page.getByText('Nothing is sent until e-mail, or a Telegram bot and its chat, is set up.').isVisible(), 'with nothing set up, the page says nothing is sent');
-  check(await page.getByRole('link', { name: 'Notifications' }).count() + await page.getByRole('button', { name: 'Notifications' }).count() > 0, 'Settings has a Notifications item');
   await page.locator('section[aria-labelledby="notif-channels-title"]').screenshot({ path: `${OUT}/channels-empty-light-en.png` });
 
   const mail = page.locator('form[aria-labelledby="notif-smtp-title"]');
@@ -154,8 +155,10 @@ try {
   await cpage.getByText('Notifications go to the panel\'s administrators, and only they set them up.').waitFor({ timeout: 15000 });
   check(await cpage.getByRole('switch').count() === 0 && await cpage.getByRole('heading', { name: 'How messages go out' }).count() === 0,
     'a customer is told the page is the administrators\', and sees nothing of it');
-  check(await cpage.getByRole('link', { name: 'Notifications' }).count() + await cpage.getByRole('button', { name: 'Notifications' }).count() === 0,
-    'and has no Notifications in the menu');
+  await cpage.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
+  await cpage.locator('.settings-grid').waitFor({ timeout: 15000 });
+  check(await cpage.locator('.settings-grid').getByRole('link', { name: 'Notifications', exact: true }).count() === 0,
+    'and has no Notifications tile in Settings');
   check((await customer.request.get(`${BASE}/api/notifications`)).status() === 403, 'the API refuses it too');
   await cpage.screenshot({ path: `${OUT}/customer-light-en.png` });
 

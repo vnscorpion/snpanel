@@ -38,6 +38,7 @@ export const ROUTES = {
   backups: '/backups',
   users: '/users',
   settings: '/settings',
+  'panel-settings': '/panel-settings',
   'api-tokens': '/api-tokens',
   security: '/security',
   sftp: '/sftp',

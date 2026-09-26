@@ -4,9 +4,9 @@
 //
 // As the administrator, checks that
 //   - the sidebar has no API Tokens entry and the dashboard no tile for it;
-//   - /settings opens on General; the tokens tab moves the address to
+//   - /panel-settings opens on General; the tokens tab moves the address to
 //     /api-tokens, and /api-tokens and /api-token open on the tokens tab -
-//     with Panel settings still the highlighted entry and the page title;
+//     with Panel settings the page title and Settings the highlighted entry;
 //   - a token can be created (shown once, then hidden), is listed with its
 //     allowed address, and can be revoked from its row;
 //   - no console errors, no sideways scroll;
@@ -46,15 +46,13 @@ const selectedTab = (page) => page.locator('.settings-tabs [role="tab"][aria-sel
 const title = (page) => page.locator('.page-title h1').textContent();
 const current = (page) => page.locator('.sidebar [aria-current="page"]').textContent();
 
-const { context, page, errors } = await open('/settings');
+const { context, page, errors } = await open('/panel-settings');
 try {
   // ---------------------------------------------------------------- where it is
-  const toggle = page.locator('.sidebar-group-toggle');
-  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
   const sidebar = await page.$$eval('.sidebar-nav button', (bs) => bs.map((b) => b.textContent.trim()));
   check(!sidebar.includes('API Tokens'), 'the sidebar has no API Tokens entry');
   check(await page.getByRole('tab').count() === 4, `four tabs (${(await page.getByRole('tab').allTextContents()).join(', ')})`);
-  check(await selectedTab(page) === 'General' && new URL(page.url()).pathname === '/settings', '/settings opens on General');
+  check(await selectedTab(page) === 'General' && new URL(page.url()).pathname === '/panel-settings', '/panel-settings opens on General');
   // The selected tab under the pointer keeps a readable label.
   const selected = page.locator('.settings-tabs [role="tab"][aria-selected="true"]');
   await selected.hover();
@@ -65,11 +63,11 @@ try {
   await page.getByRole('tab', { name: 'API tokens' }).click();
   await page.waitForURL(/\/api-tokens$/);
   check(await page.getByRole('tabpanel', { name: 'API tokens' }).isVisible(), 'the tokens tab shows the tokens, at /api-tokens');
-  check(await title(page) === 'Panel settings' && await current(page) === 'Panel settings',
-    `Panel settings stays the title and the highlighted entry (${await title(page)} / ${await current(page)})`);
+  check(await title(page) === 'Panel settings' && await current(page) === 'Settings',
+    `Panel settings stays the title, Settings the highlighted entry (${await title(page)} / ${await current(page)})`);
   await page.getByRole('tab', { name: 'General' }).click();
-  await page.waitForURL(/\/settings$/);
-  check(await selectedTab(page) === 'General', 'General goes back to /settings');
+  await page.waitForURL(/\/panel-settings$/);
+  check(await selectedTab(page) === 'General', 'General goes back to /panel-settings');
 
   for (const path of ['/api-tokens', '/api-token']) {
     await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' });
@@ -103,9 +101,8 @@ try {
 
   // ---------------------------------------------------------------- the dashboard
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.dash-group');
-  const admin = await page.locator('.dash-group', { hasText: 'Administration' }).locator('.dash-tile').allTextContents();
-  check(!admin.includes('API Tokens') && admin.includes('Panel settings'), `no API Tokens tile on the dashboard (${admin.join(', ')})`);
+  await page.waitForSelector('.dashboard .dash-card');
+  check(await page.locator('.dashboard').getByText('API Tokens', { exact: true }).count() === 0, 'no API Tokens tile on the dashboard');
 
   check(errors.length === 0, `no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {
@@ -122,7 +119,7 @@ try {
 for (const theme of ['light', 'dark']) {
   for (const locale of ['en', 'vi']) {
     for (const [width, height] of [[1440, 900], [390, 844]]) {
-      for (const path of ['/settings', '/api-tokens']) {
+      for (const path of ['/panel-settings', '/api-tokens']) {
         const view = await open(path, { theme, locale, viewport: { width, height } });
         const sideways = await view.page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         check(sideways <= 0 && view.errors.length === 0, `${theme} ${locale} ${width}px ${path}: no sideways scroll (${sideways}px), no console errors`);

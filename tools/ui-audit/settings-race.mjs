@@ -2,7 +2,7 @@
 //
 //     node settings-race.mjs
 //
-// Opening /settings with a live session fires two requests for the same
+// Opening /panel-settings with a live session fires two requests for the same
 // state: the public one from mount, before the session is known, and the
 // authenticated one once it is. The public answer carries an empty hostname
 // and `ssl_enabled: false`. If it lands second and is allowed to write, the
@@ -32,7 +32,7 @@ await page.route('**/api/panel-settings/public', async (route) => {
   await route.continue();
 });
 
-await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
+await page.goto(`${BASE}/panel-settings`, { waitUntil: 'networkidle' });
 await page.waitForTimeout(3500); // past the held-back response
 
 const hostname = await page.getByRole('textbox', { name: 'Panel hostname' }).inputValue();

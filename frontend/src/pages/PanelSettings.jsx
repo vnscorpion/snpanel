@@ -59,7 +59,7 @@ export default function PanelSettingsPage() {
   function choose(next) {
     setTab(next);
     // The tokens tab keeps its old address; the others share the page's.
-    navigateToPage(next === 'tokens' ? 'api-tokens' : 'settings', { replace: true });
+    navigateToPage(next === 'tokens' ? 'api-tokens' : 'panel-settings', { replace: true });
   }
 
   return <div className="settings-page">

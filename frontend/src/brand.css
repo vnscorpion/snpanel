@@ -15,8 +15,6 @@ body{background:var(--bg);color:var(--text)}
 .settings-brand-mark{width:52px;height:52px;border-radius:var(--radius-lg);font-size:var(--text-lg)}
 .sidebar button.active{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
 .sidebar button:hover:not(.active){background:var(--surface-alt);color:var(--brand-navy);border-color:var(--border)}
-.sidebar .sidebar-group-toggle.active{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
-.sidebar .sidebar-subnav button.active{background:var(--primary-light);color:var(--primary-text);border-color:var(--primary-border)}
 .section,.card,.site-card,.service-card,.backup-item,.info-box,.user-create-card{border-color:var(--border)}
 .section:hover,.card:hover,.site-card:hover,.service-card:hover,.backup-item:hover{border-color:var(--border-hover)}
 h1,h2{color:var(--brand-navy)}

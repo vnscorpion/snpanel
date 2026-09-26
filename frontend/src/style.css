@@ -660,13 +660,6 @@ main{width:100%;max-width:none;min-height:100vh;margin:0;padding:0;background:va
 .sidebar button{justify-content:flex-start;background:transparent;color:var(--text-secondary);box-shadow:none;padding:9px 10px;width:100%;border-radius:var(--radius-sm);font-weight:500;min-height:38px;border:1px solid transparent}
 .sidebar button:hover:not(.active){background:var(--surface-alt);color:var(--text);transform:none;box-shadow:none}
 .sidebar button.active{background:var(--surface-alt);color:var(--text);font-weight:700;box-shadow:none}
-.sidebar-nav-group{display:grid;gap:2px}
-.sidebar .sidebar-group-toggle{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px}
-.sidebar-group-toggle span{min-width:0;text-align:left}
-.sidebar-group-chevron{transition:transform .15s ease}
-.sidebar-nav-group.open .sidebar-group-chevron{transform:rotate(180deg)}
-.sidebar-subnav{display:grid;gap:2px;margin-left:17px;padding:2px 0 4px 7px;border-left:1px solid var(--border)}
-.sidebar .sidebar-subnav button{position:relative;min-height:36px;padding:8px 10px;font-size:var(--text-base)}
 .sidebar-close{display:none}
 .sidebar-version{margin:auto 12px 12px;padding:8px 10px;color:var(--text-muted);font-size:var(--text-sm);font-weight:700;line-height:1;text-align:left}
 .mobile-nav-toggle,.mobile-nav-backdrop{display:none}
@@ -675,6 +668,9 @@ main{width:100%;max-width:none;min-height:100vh;margin:0;padding:0;background:va
 .topbar::before{display:none}
 .page-title{min-width:0;display:grid;gap:2px}
 .eyebrow{text-transform:none;letter-spacing:0;font-size:var(--text-sm);color:var(--text-muted);margin:0;font-weight:500;line-height:1.3;opacity:1}
+/* On a page of Settings, the line over the title leads back to Settings. */
+.page-title .page-title-back{display:inline-flex;align-items:center;gap:2px;width:max-content;color:var(--primary-text);text-decoration:none}
+.page-title .page-title-back:hover{text-decoration:underline}
 h1{font-size:var(--text-2xl);line-height:1.15;margin:0;font-weight:700;letter-spacing:0;color:var(--text)}
 h2{font-size:var(--text-xl);line-height:1.25;margin:0 0 10px;font-weight:700;letter-spacing:0;color:var(--text)}
 h3{letter-spacing:0}
@@ -886,7 +882,6 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
   .sidebar-close{display:inline-grid;place-items:center;width:32px;height:32px;min-height:32px;padding:0;background:transparent;color:var(--text-muted);border:1px solid transparent;box-shadow:none;flex:none;border-radius:var(--radius-sm);align-self:center;line-height:1}
   .sidebar-close svg{display:block;width:17px;height:17px}
   .sidebar-close:hover:not(:disabled){background:var(--surface-alt);color:var(--text);border-color:var(--border)}
-  .sidebar-subnav{margin-left:17px;padding-left:7px}
   .login.logged-in{gap:6px;flex:0 0 auto;background:transparent;border:0;padding:0;min-width:0}
   .account-pill{padding:6px 10px;min-width:0;max-width:130px;border-radius:999px}
   .account-pill span{display:none}
