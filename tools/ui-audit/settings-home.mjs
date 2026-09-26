@@ -92,7 +92,13 @@ try {
   check(wanted.every((w) => adminTiles.includes(w)) && !adminTiles.includes('Notifications') && !adminTiles.includes('AI assistants (MCP)')
     && await title(page) === 'Settings' && await current(page) === 'Settings',
     `it opens Settings: a tile for each settings page, the two addons not among them (${adminTiles.length}: ${adminTiles.join(', ')})`);
-  check(await page.locator('.settings-tile small, .settings-home .hint').count() === 0, 'each tile is an icon and a name, nothing more');
+  const layout = await page.$$eval('.settings-tile', (all) => all.map((tile) => {
+    const icon = tile.querySelector('.settings-tile-icon').getBoundingClientRect();
+    const label = tile.querySelector('.settings-tile-label').getBoundingClientRect();
+    const about = tile.querySelector('.settings-tile-about');
+    return icon.right <= label.left && !!about && about.textContent.trim() !== '' && about.getBoundingClientRect().top >= label.bottom - 1;
+  }));
+  check(layout.length > 0 && layout.every(Boolean), 'each tile: its icon on the left, its name, and a line about it under the name');
 
   // ------------------------------------------------ five a row, fewer as it narrows
   for (const [width, columns] of [[1440, 6], [1200, 5], [1000, 4], [760, 3], [390, 2]]) {
@@ -159,10 +165,10 @@ try {
   await ppage.locator('.settings-grid').waitFor();
   const phoneSideways = await ppage.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(phoneSideways <= 0 && await perRow(ppage) === 2, `in Vietnamese on a phone: two a row, nothing off the screen (${phoneSideways}px)`);
+  await ppage.screenshot({ path: `${OUT}/settings-light-vi-390.png`, fullPage: true });
   await ppage.locator('.mobile-nav-toggle').click();
   await ppage.waitForTimeout(400);
   await ppage.screenshot({ path: `${OUT}/menu-light-vi-390.png` });
-  await ppage.screenshot({ path: `${OUT}/settings-light-vi-390.png`, fullPage: true });
 
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } catch (err) {

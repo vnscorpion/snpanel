@@ -3906,18 +3906,19 @@ function App() {
   ];
 
   // The Settings page's tiles, and the titles of their pages.
+  // Each with what the tile says under its name.
   const settingsNavItems = [
-    ...(isAdmin ? [['panel-settings', t('Panel settings'), SlidersHorizontal]] : []),
-    ['security', t('Account security'), KeyRound],
-    ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
-    ...(isAdmin ? [['firewall', t('Firewall'), BrickWall]] : []),
-    ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
-    ['waf', t('WAF'), ShieldCheck],
-    ...(isAdmin ? [['malware', t('Malware Scanner'), ScanSearch]] : []),
-    ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText]] : []),
-    ...(isAdmin ? [['updates', t('Updates'), RefreshCw]] : []),
-    ...(isAdmin ? [['addons', t('Addons'), Boxes]] : []),
-    ['services', t('Services Status'), Activity],
+    ...(isAdmin ? [['panel-settings', t('Panel settings'), SlidersHorizontal, t('Hostname, SSL, branding and API tokens')]] : []),
+    ['security', t('Account security'), KeyRound, t('Password, two-step verification, passkeys')],
+    ...(isAdmin ? [['php', t('PHP config'), Code2, t('Versions, limits and extensions')]] : []),
+    ...(isAdmin ? [['firewall', t('Firewall'), BrickWall, t('Open ports and blocked addresses')]] : []),
+    ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan, t('Bans addresses that guess passwords')]] : []),
+    ['waf', t('WAF'), ShieldCheck, t('Rules against attacks on websites')],
+    ...(isAdmin ? [['malware', t('Malware Scanner'), ScanSearch, t('Scans, schedules and quarantine')]] : []),
+    ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
+    ...(isAdmin ? [['updates', t('Updates'), RefreshCw, t('The panel and system packages')]] : []),
+    ...(isAdmin ? [['addons', t('Addons'), Boxes, t('Install or remove addons')]] : []),
+    ['services', t('Services Status'), Activity, t('nginx, PHP-FPM, MariaDB and Redis')],
   ];
 
   // An addon's page opened by its address while the addon is not installed
