@@ -58,40 +58,41 @@ page.on('dialog', (d) => { dialogs.push(d.message()); d.accept(); });
 try {
   await page.goto(`${BASE}/backups`, { waitUntil: 'networkidle' });
   await page.getByRole('tab', { name: 'Restore' }).click();
-  const rows = page.locator('.bk-restore-table tbody tr:not(.invalid)');
+  const rows = page.locator('.bk-accounts .bk-account');
   await rows.first().waitFor({ timeout: 20000 });
   check(await page.getByRole('radio', { name: /This server/ }).getAttribute('aria-checked') === 'true', 'this server is the source it opens on');
 
   const valid = await localBackups();
   const accounts = new Set(valid.map((i) => i.username));
-  const names = await page.locator('.bk-restore-table tbody tr:not(.invalid) td:nth-child(2) strong').allTextContents();
+  const names = await page.locator('.bk-account-name strong').allTextContents();
   check(names.length === accounts.size && new Set(names).size === names.length,
     `one row per account: ${names.length} rows for ${valid.length} backups of ${accounts.size} accounts`);
 
   const restore = page.locator('.bk-restore-go button');
   check(await restore.isDisabled(), 'Restore waits for a choice');
   await page.locator('.bk-check-inline input').check();
-  check(await page.locator('.bk-restore-table tbody input[type=checkbox]:checked').count() === names.length, 'All ticks every account');
+  check(await page.locator('.bk-accounts input[type=checkbox]:checked').count() === names.length, 'All ticks every account');
   await page.locator('.bk-check-inline input').uncheck();
-  check(await page.locator('.bk-restore-table tbody input[type=checkbox]:checked').count() === 0, 'and again, none');
+  check(await page.locator('.bk-accounts input[type=checkbox]:checked').count() === 0, 'and again, none');
 
   // The account's dates: the newest chosen.
-  const row = rows.filter({ has: page.locator('td:nth-child(2) strong', { hasText: new RegExp(`^${ACCOUNT}$`) }) }).first();
-  const dates = row.locator('select.bk-restore-date');
+  const row = rows.filter({ has: page.locator('.bk-account-name strong', { hasText: new RegExp(`^${ACCOUNT}$`) }) }).first();
+  const dates = row.locator('.bk-account-date select');
   const theirs = valid.filter((i) => i.username === ACCOUNT)
     .sort((a, b) => String(b.generated_at || b.modified).localeCompare(String(a.generated_at || a.modified)));
   const options = await dates.locator('option').evaluateAll((list) => list.map((o) => o.value));
   check(options.length === theirs.length && options.length >= 2 && await dates.inputValue() === theirs[0].backup_file,
     `${ACCOUNT} has its ${theirs.length} backups as dates, the newest chosen`);
-  check((await row.locator('.bk-restore-count').textContent()) === `${theirs.length} backups`, 'and says how many');
+  check((await row.locator('.bk-account-name small').textContent()).startsWith(`${theirs.length} backups`), 'and says how many');
 
   // Another date: the account is ticked, and the choice says which.
   await dates.selectOption(options[1]);
-  check(await row.locator('input[type=checkbox]').isChecked(), 'picking another date ticks the account');
-  check(await row.locator('td:nth-child(5) code').textContent() === theirs[1].filename, `the row shows that backup (${theirs[1].filename})`);
-  const hint = await page.locator('.bk-restore-go .hint').textContent();
-  check(hint.startsWith('1 backup(s) chosen:') && hint.includes(`${ACCOUNT} (`), `the choice is said beside the button (${hint})`);
-  await page.locator('.bk-restore-table').screenshot({ path: `${OUT}/grouped-light-en.png` });
+  check(await row.locator('input[type=checkbox]').isChecked() && /\bon\b/.test(await row.getAttribute('class')), 'picking another date ticks the account, and the card shows it');
+  check(await row.getAttribute('title') === theirs[1].filename, `the card is that backup (${theirs[1].filename})`);
+  const hint = await page.locator('.bk-restore-chosen').textContent();
+  check(hint.startsWith('1 chosen') && hint.includes(`${ACCOUNT} · `), `the choice is said beside the button (${hint})`);
+  await row.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${OUT}/grouped-light-en.png` });
 
   // Back to the newest, and restored.
   await dates.selectOption(options[0]);

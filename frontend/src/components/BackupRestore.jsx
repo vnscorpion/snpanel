@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload } from 'lucide-react';
+import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import './BackupRestore.css';
@@ -44,6 +45,7 @@ export default function BackupRestore() {
   // another date is picked.
   const [ticked, setTicked] = useState([]);
   const [picked, setPicked] = useState({});
+  const [findAccount, setFindAccount] = useState('');
   const [job, setJob] = useState(null);
   const finishedRef = useRef('');
   const busy = !!loading;
@@ -146,10 +148,11 @@ export default function BackupRestore() {
     if (done) { setSource('local'); find('local', ''); }
   }
 
-  const when = (text) => {
-    const date = text ? new Date(text) : null;
-    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '';
-  };
+  // As every date of the panel reads: 2026-09-27 03:00.
+  const when = (text) => formatWhen(text);
+  const needle = findAccount.trim().toLowerCase();
+  const shown = needle ? groups.filter((group) => group.account.toLowerCase().includes(needle)) : groups;
+  const folderOf = (item) => (!remote && item.folder === 'restore' ? t('restore folder') : !remote && item.folder === 'uploads' ? t('uploaded') : '');
 
   return <div className="bk-restore">
     {job && <section className={`bk-restore-job ${job.status}`} aria-live="polite">
@@ -214,43 +217,44 @@ export default function BackupRestore() {
           : <>
             <div className="bk-restore-tools">
               <label className="bk-check-inline"><input type="checkbox" checked={allChosen} onChange={chooseAll} disabled={!groups.length} /> {t('All ({count})', { count: groups.length })}</label>
+              {groups.length > 6 && <input type="search" className="bk-restore-find" value={findAccount} onChange={(e) => setFindAccount(e.target.value)}
+                placeholder={t('Find an account')} aria-label={t('Find an account')} />}
             </div>
-            <div className="data-table-wrap bk-restore-table">
-              <table className="data-table">
-                <thead><tr><th aria-label={t('Choose')} /><th>{t('Account')}</th><th>{t('Date')}</th><th>{t('Size')}</th><th>{t('File')}</th></tr></thead>
-                <tbody>
-                  {groups.map((group) => {
-                    const item = chosenOf(group);
-                    return <tr key={group.account}>
-                      <td><input type="checkbox" aria-label={t('Choose {name}', { name: group.account })}
-                        checked={ticked.includes(group.account)} onChange={() => toggle(group.account)} /></td>
-                      <td><strong>{group.account}</strong>{group.backups.length > 1 && <small className="bk-restore-count">{t('{count} backups', { count: group.backups.length })}</small>}</td>
-                      <td>{group.backups.length > 1
-                        ? <select className="bk-restore-date" aria-label={t('Date of the backup of {name}', { name: group.account })}
-                          value={keyOf(item)} onChange={(e) => pickDate(group.account, e.target.value)}>
-                          {group.backups.map((backup) => <option key={keyOf(backup)} value={keyOf(backup)}>{when(dateOf(backup)) || nameOf(backup)}</option>)}
-                        </select>
-                        : when(dateOf(item))}</td>
-                      <td>{formatBytes(item.size)}</td>
-                      <td><code>{nameOf(item)}</code>{!remote && item.folder && item.folder !== group.account && <small className="bk-restore-folder">{item.folder === 'restore' ? t('restore folder') : item.folder === 'uploads' ? t('uploaded') : item.folder}</small>}</td>
-                    </tr>;
-                  })}
-                  {invalid.map((item) => <tr key={keyOf(item)} className="invalid">
-                    <td><input type="checkbox" aria-label={t('Choose {name}', { name: nameOf(item) })} disabled /></td>
-                    <td><span className="data-table-muted">{remote ? t('Not an account backup') : (item.error || t('Invalid backup'))}</span></td>
-                    <td>{when(dateOf(item))}</td>
-                    <td>{formatBytes(item.size)}</td>
-                    <td><code>{nameOf(item)}</code></td>
-                  </tr>)}
-                </tbody>
-              </table>
-            </div>
+            <ul className="bk-accounts">
+              {shown.map((group) => {
+                const item = chosenOf(group);
+                const on = ticked.includes(group.account);
+                const folder = folderOf(item);
+                return <li key={group.account} className={`bk-account${on ? ' on' : ''}`} title={nameOf(item)}>
+                  <label className="bk-account-who">
+                    <input type="checkbox" checked={on} onChange={() => toggle(group.account)} aria-label={t('Choose {name}', { name: group.account })} />
+                    <span className="bk-account-avatar" aria-hidden="true">{group.account.slice(0, 1).toUpperCase()}</span>
+                    <span className="bk-account-name">
+                      <strong>{group.account}</strong>
+                      <small>{group.backups.length === 1 ? t('1 backup') : t('{count} backups', { count: group.backups.length })}{folder && <span className="bk-account-folder">{folder}</span>}</small>
+                    </span>
+                  </label>
+                  <label className="bk-account-date">
+                    <CalendarDays size={15} aria-hidden="true" />
+                    <select aria-label={t('Date of the backup of {name}', { name: group.account })} value={keyOf(item)} onChange={(e) => pickDate(group.account, e.target.value)}>
+                      {group.backups.map((backup) => <option key={keyOf(backup)} value={keyOf(backup)}>{when(dateOf(backup)) || nameOf(backup)}</option>)}
+                    </select>
+                  </label>
+                  <span className="bk-account-size">{formatBytes(item.size)}</span>
+                </li>;
+              })}
+            </ul>
+            {shown.length === 0 && <p className="hint">{t('No account matches {text}.', { text: findAccount.trim() })}</p>}
+            {invalid.length > 0 && <details className="bk-restore-invalid">
+              <summary>{t('{count} file(s) here are not account backups', { count: invalid.length })}</summary>
+              <ul>{invalid.map((item) => <li key={keyOf(item)}><code>{nameOf(item)}</code><small>{remote ? t('Not an account backup') : (item.error || t('Invalid backup'))}</small></li>)}</ul>
+            </details>}
           </>}
     </fieldset>}
 
-    {source !== 'upload' && <div className="bk-restore-go">
-      <span className="hint">{chosen.length
-        ? t('{count} backup(s) chosen: {users}', { count: chosen.length, users: chosen.map((item) => `${accountOf(item)} (${when(dateOf(item)) || nameOf(item)})`).join(', ') })
+    {source !== 'upload' && <div className={`bk-restore-go${chosen.length ? ' ready' : ''}`}>
+      <span className="bk-restore-chosen">{chosen.length
+        ? <><strong>{t('{count} chosen', { count: chosen.length })}</strong> {chosen.map((item) => `${accountOf(item)} · ${when(dateOf(item)) || nameOf(item)}`).join(', ')}</>
         : t('Nothing chosen yet.')}</span>
       <button type="button" disabled={busy || running || !chosen.length} onClick={restore}><RotateCcw size={14} aria-hidden="true" /> {t('Restore')}</button>
     </div>}
