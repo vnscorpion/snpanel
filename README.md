@@ -517,6 +517,10 @@ snpanel change-admin-password
 
 # Make SNPanel admin use the current root password
 snpanel sync-admin-root-password
+
+# Lost the device? Turn off the admin's two-step sign-in
+# (the authenticator app and every passkey)
+snpanel reset-admin-2fa
 ```
 
 ## Security model

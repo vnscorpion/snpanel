@@ -86,8 +86,12 @@ function App() {
   const [password, setPassword] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
+  // What the second step can be, as the password step said: 'passkey',
+  // 'totp', or both. An account with passkeys alone has no code to type.
+  const [twoFactorMethods, setTwoFactorMethods] = useState(['totp']);
   // A passkey sign-in: '' none, 'waiting' on the authenticator, 'failed' when
-  // it did not work and the authenticator code is asked for instead.
+  // it did not work - and the authenticator code, if there is one, is asked
+  // for instead.
   const [passkeyStatus, setPasskeyStatus] = useState('');
   const passkeyAbort = useRef(null);
   const [rememberMe, setRememberMe] = useState(false);
@@ -487,11 +491,17 @@ function App() {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.requires_2fa) {
         setNeedsTwoFactor(true);
-        // A passkey registered at this address is tried first; the code is
-        // asked for when it does not work. Not awaited: the person may take
-        // a while, and nothing else should wait on them.
+        const methods = Array.isArray(data.methods) && data.methods.length ? data.methods : ['totp'];
+        setTwoFactorMethods(methods);
+        // A passkey registered at this address is tried first; the code, if
+        // the account has one, is asked for when it does not work. Not
+        // awaited: the person may take a while, and nothing else should wait
+        // on them.
         if (data.passkey && passkeysSupported()) {
           signInWithPasskey(data.passkey);
+        } else if (!methods.includes('totp')) {
+          setPasskeyStatus('failed');
+          setError(t('This account confirms its sign-in with a passkey, and this browser cannot use passkeys. Sign in from a browser that can.'));
         } else {
           setPasskeyStatus('');
           setNotice(t('Enter your authentication code.'));
@@ -518,7 +528,8 @@ function App() {
   // The passkey half of the second step, from the ticket and options the
   // password step returned. When it does not work - no authenticator to
   // hand, the prompt cancelled, the signature refused - the page falls back
-  // to the authenticator code.
+  // to the authenticator code, or offers the passkey again when the account
+  // has no code.
   async function signInWithPasskey(offer) {
     passkeyAbort.current?.abort();
     const controller = new AbortController();
@@ -1252,7 +1263,10 @@ function App() {
       setTwoFactorCode('');
       await loadCurrentUser();
       await loadPasskeys();
-      setNotice(t('Two-step verification is off. Your passkeys were removed with it.'));
+      // Passkeys stay: they are a second step of their own.
+      setNotice((passkeys.items || []).length > 0
+        ? t('The authenticator app is off. Sign-in goes on asking for one of your passkeys.')
+        : t('Two-step verification is off.'));
     }
   }
 
@@ -1263,16 +1277,30 @@ function App() {
 
   // A current authenticator code, then the device's own prompt. Returns
   // whether a passkey was added.
-  async function addPasskey(name, code) {
-    const options = await request('/auth/passkeys/register/options', { method: 'POST', body: JSON.stringify({ code }) }, t('Preparing the passkey...'));
+  // What a browser's refusal to make a passkey means, in words a person can
+  // act on. Chromium refuses outright on a page whose certificate it does
+  // not trust, and says so only in the error's message.
+  function passkeyRefusal(err) {
+    const name = err?.name || '';
+    const message = String(err?.message || '');
+    if (name === 'InvalidStateError') return t('This device already has a passkey for this account.');
+    if (/certificate/i.test(message)) return t('The browser will not make a passkey here: it does not trust this page\'s certificate - self-signed, or made for another name. The panel needs a valid certificate, such as a free one from Let\'s Encrypt, for the name it is opened by.');
+    if (name === 'SecurityError') return t('The browser will not make a passkey at this address. Open the panel by its domain name over HTTPS.');
+    if (name === 'NotSupportedError') return t('This device cannot make a passkey of a kind the panel accepts.');
+    return t('No passkey was made: the device prompt was closed or timed out. Try again when your device asks.');
+  }
+
+  // The current password - and the authenticator code, when that is on -
+  // then the device's own prompt. Returns whether a passkey was added.
+  async function addPasskey(name, currentPassword, code) {
+    const proof = { current_password: currentPassword, ...(code ? { code } : {}) };
+    const options = await request('/auth/passkeys/register/options', { method: 'POST', body: JSON.stringify(proof) }, t('Preparing the passkey...'));
     if (!options) return false;
     let credential;
     try {
       credential = await createPasskey(options.publicKey);
     } catch (err) {
-      setError(err?.name === 'InvalidStateError'
-        ? t('This device already has a passkey for this account.')
-        : t('No passkey was created. The device prompt was closed or not available.'));
+      setError(passkeyRefusal(err));
       return false;
     }
     const data = await request('/auth/passkeys/register', { method: 'POST', body: JSON.stringify({ name, credential }) }, t('Saving the passkey...'));
@@ -1282,13 +1310,14 @@ function App() {
     return true;
   }
 
-  async function removePasskey(item) {
-    if (!confirm(t('Remove the passkey {name}? You can still sign in with the authenticator app.', { name: item.name }))) return;
-    const data = await request(`/auth/passkeys/${item.id}`, { method: 'DELETE' }, t('Removing the passkey...'));
-    if (data) {
-      setNotice(t('Passkey removed.'));
-      await loadPasskeys();
-    }
+  // Takes the current password: a passkey can be all that stands between
+  // the account and a sign-in on the password alone.
+  async function removePasskey(item, currentPassword) {
+    const data = await request(`/auth/passkeys/${item.id}`, { method: 'DELETE', body: JSON.stringify({ current_password: currentPassword }) }, t('Removing the passkey...'));
+    if (!data) return false;
+    setNotice(t('Passkey removed.'));
+    await loadPasskeys();
+    return true;
   }
 
   async function resetUserTwoFactor(user) {
@@ -4563,18 +4592,21 @@ function App() {
           {needsTwoFactor && passkeyStatus === 'waiting' && <div className="login-passkey" role="status">
             <KeyRound size={18} aria-hidden="true"/>
             <span>{t('Confirm with your passkey…')}</span>
-            <button type="button" className="link-button" onClick={() => passkeyAbort.current?.abort()}>{t('Use the authenticator code instead')}</button>
+            {twoFactorMethods.includes('totp') && <button type="button" className="link-button" onClick={() => passkeyAbort.current?.abort()}>{t('Use the authenticator code instead')}</button>}
           </div>}
-          {needsTwoFactor && passkeyStatus === 'failed' && <p className="login-passkey-failed" role="alert">{t('The passkey did not work. Enter the code from your authenticator app instead.')}</p>}
-          {needsTwoFactor && passkeyStatus !== 'waiting' && <label className="field"><span>{t('Authentication code')}</span>
+          {needsTwoFactor && passkeyStatus === 'failed' && <p className="login-passkey-failed" role="alert">{twoFactorMethods.includes('totp')
+            ? t('The passkey did not work. Enter the code from your authenticator app instead.')
+            : t('The passkey did not work: the device prompt was closed, timed out or refused. Try it again.')}</p>}
+          {/* An account whose second step is passkeys alone has no code to type. */}
+          {needsTwoFactor && twoFactorMethods.includes('totp') && passkeyStatus !== 'waiting' && <label className="field"><span>{t('Authentication code')}</span>
             <input value={otpCode} onChange={e => setOtpCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" autoFocus />
           </label>}
           <label className="login-remember">
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
             {t('Keep me signed in for 30 days')}
           </label>
-          {passkeyStatus !== 'waiting' && <button type="submit" disabled={!!loading || !username || !password}>{loading ? t('Logging in...') : t('Login')}</button>}
-          {needsTwoFactor && passkeyStatus === 'failed' && <button type="button" className="secondary" disabled={!!loading} onClick={() => login({ otp: '' })}>{t('Try the passkey again')}</button>}
+          {passkeyStatus !== 'waiting' && (!needsTwoFactor || twoFactorMethods.includes('totp')) && <button type="submit" disabled={!!loading || !username || !password}>{loading ? t('Logging in...') : t('Login')}</button>}
+          {needsTwoFactor && passkeyStatus === 'failed' && <button type="button" className={twoFactorMethods.includes('totp') ? 'secondary' : undefined} disabled={!!loading} onClick={() => login({ otp: '' })}>{t('Try the passkey again')}</button>}
         </form>
       </section>
       {renderNotifications()}

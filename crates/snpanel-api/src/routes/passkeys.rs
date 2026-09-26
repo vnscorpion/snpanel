@@ -1,18 +1,26 @@
 //! Passkeys: `/api/auth/passkeys*` and `/api/auth/login/passkey`.
 //!
-//! Not in the Python. A passkey is a second factor **beside** the
-//! authenticator-app code, never instead of it:
+//! Not in the Python. A passkey is the second step of a sign-in, after the
+//! password - on its own, or beside the authenticator-app code:
 //!
-//! - One can be added only while the account's app code is on, and only with
-//!   a current code - a session on its own cannot enrol a factor.
-//! - At sign-in, once the password is right, the panel offers the passkeys
-//!   registered on the host in use as well as the app code. The page tries
-//!   the passkey first and falls back to the code when it does not work -
-//!   no authenticator at hand, the prompt cancelled, the signature refused.
-//!   Either one completes the sign-in.
-//! - Turning the app code off removes the account's passkeys, and deleting
-//!   the account removes them by foreign key. There is never a passkey with
-//!   no code behind it.
+//! - Anyone can add one, with their current password - and the app code as
+//!   well when that is on. A session on its own cannot enrol a factor.
+//!   Asking for the app code first read as a riddle ("turn on the
+//!   authenticator app first"), and a passkey is the stronger factor of the
+//!   two anyway.
+//! - At sign-in, once the password is right, an account with a passkey or
+//!   the app code is asked for one of them. The page tries a passkey
+//!   registered on the host in use first, and falls back to the code, when
+//!   there is one, if the passkey does not work - no authenticator at hand,
+//!   the prompt cancelled, the signature refused.
+//! - An account whose second step is passkeys alone, opened at an address
+//!   none of them was made for (by IP address, say), is told where they
+//!   work rather than let in on the password. A lost device is an
+//!   administrator's 2FA reset, or `snpanel reset-admin-2fa` for the admin.
+//! - Removing a passkey takes the current password, since it can be what
+//!   stands between the account and a password-only sign-in. Turning the app
+//!   code off leaves the passkeys; deleting the account removes them by
+//!   foreign key.
 //!
 //! The checking itself is `snpanel_core::crypto::webauthn`. What lives here
 //! is the challenge: 32 random bytes, kept in this process for three
@@ -29,7 +37,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use rand::RngCore;
 use serde_json::{json, Value};
-use snpanel_core::crypto::{token, webauthn};
+use snpanel_core::crypto::{password, token, webauthn};
 use snpanel_db::{NewPasskey, Passkey, User};
 
 use crate::auth::CurrentUser;
@@ -214,11 +222,40 @@ async fn list(State(state): State<AppState>, headers: HeaderMap, current: Curren
     .into_response()
 }
 
+/// Takes the current password: a passkey can be the only thing standing
+/// between the account and a sign-in on the password alone, and a session on
+/// its own should not be able to take that away. Not the app code as well -
+/// with the code on, the account keeps a second step whatever goes.
 async fn remove(
     State(state): State<AppState>,
-    current: CurrentUser,
     Path(passkey_id): Path<i64>,
+    req: Request,
 ) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let payload = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let limit_key = RateLimiter::username_key(&current.user.username);
+    if let Decision::Refuse {
+        detail,
+        retry_after,
+    } = state.rate_limiter.check(&limit_key).await
+    {
+        return super::auth::too_many(detail, retry_after);
+    }
+    let given = payload
+        .get("current_password")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if given.is_empty() || !password::verify_password(given, &current.user.hashed_password) {
+        state.rate_limiter.record_failure(&limit_key, false).await;
+        return error(StatusCode::UNAUTHORIZED, "Current password is incorrect");
+    }
     match state
         .db
         .passkeys()
@@ -261,14 +298,16 @@ async fn register_options(State(state): State<AppState>, req: Request) -> Respon
         Err(r) => return r,
     };
     let user = &current.user;
-    if !user.totp_enabled {
+    // Where the page is comes first: at an IP address no proof would help.
+    let Some((origin, rp_id)) = web_origin(&parts.headers, state.serves_tls) else {
         return error(
             StatusCode::BAD_REQUEST,
-            "Turn on the authenticator app first: a passkey is added beside it, not instead of it",
+            "Passkeys need the panel to be opened by its hostname over HTTPS, not by an IP address",
         );
-    }
-    // The code is the whole of the proof here, so guessing it is limited the
-    // way a sign-in is - on the same key, so guesses here count there too.
+    };
+    // The current password - and the app code, when it is on - is the proof,
+    // so guessing it is limited the way a sign-in is: on the same key, so
+    // guesses here count there too.
     let limit_key = RateLimiter::username_key(&user.username);
     if let Decision::Refuse {
         detail,
@@ -277,20 +316,10 @@ async fn register_options(State(state): State<AppState>, req: Request) -> Respon
     {
         return super::auth::too_many(detail, retry_after);
     }
-    let code = payload
-        .get("code")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !super::auth::verify_totp(&state, user, code) {
+    if let Err(refused) = super::users::require_step_up(&state, &current, &payload) {
         state.rate_limiter.record_failure(&limit_key, false).await;
-        return error(StatusCode::UNAUTHORIZED, "Invalid authentication code");
+        return refused;
     }
-    let Some((origin, rp_id)) = web_origin(&parts.headers, state.serves_tls) else {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "Passkeys need the panel to be opened by its hostname over HTTPS, not by an IP address",
-        );
-    };
     let existing = match state.db.passkeys().for_user(user.id, &user.username).await {
         Ok(p) => p,
         Err(e) => {
@@ -365,12 +394,6 @@ async fn register(State(state): State<AppState>, req: Request) -> Response {
             "The passkey request has expired. Start again.",
         );
     };
-    if !user.totp_enabled {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "Turn on the authenticator app first",
-        );
-    }
 
     let name = payload
         .get("name")
@@ -466,21 +489,16 @@ async fn register(State(state): State<AppState>, req: Request) -> Response {
 
 /// What the password step adds to its `requires_2fa` answer when the user
 /// has a passkey for this host: a ticket, and the options for
-/// `navigator.credentials.get`. `None` when there is nothing to offer here.
-pub(crate) async fn login_offer(
+/// `navigator.credentials.get`. `None` when there is nothing to offer here -
+/// the page at an IP address, or every passkey made for another host.
+pub(crate) fn login_offer(
     state: &AppState,
     headers: &HeaderMap,
     user: &User,
+    passkeys: &[Passkey],
     remember: bool,
 ) -> Option<Value> {
     let (origin, rp_id) = web_origin(headers, state.serves_tls)?;
-    let passkeys = match state.db.passkeys().for_user(user.id, &user.username).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("listing passkeys at sign-in failed: {e}");
-            return None;
-        }
-    };
     let allow: Vec<Value> = passkeys
         .iter()
         .filter(|p| p.rp_id == rp_id)
@@ -513,6 +531,15 @@ pub(crate) async fn login_offer(
             "allowCredentials": allow,
         }
     }))
+}
+
+/// The hosts an account's passkeys were made for, named for a sign-in that
+/// can use none of them where it is.
+pub(crate) fn hosts_of(passkeys: &[Passkey]) -> String {
+    let mut hosts: Vec<&str> = passkeys.iter().map(|p| p.rp_id.as_str()).collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    hosts.join(", ")
 }
 
 async fn login(State(state): State<AppState>, req: Request) -> Response {
@@ -604,16 +631,14 @@ async fn verify_login(
         .await
         .map_err(|e| format!("user lookup: {e}"))?
         .ok_or("the user is gone")?;
-    // The same account the password was checked for, still able to sign in,
-    // and still with the code a passkey stands beside.
+    // The same account the password was checked for, and still able to sign
+    // in. The passkey itself is looked up again below: one removed since the
+    // password step is not found.
     if user.username != pending.username {
         return Err("the user id now belongs to someone else".into());
     }
     if !user.is_active {
         return Err("the user is suspended".into());
-    }
-    if !user.totp_enabled {
-        return Err("two-step verification was turned off".into());
     }
 
     let credential = payload.get("credential").cloned().unwrap_or(Value::Null);

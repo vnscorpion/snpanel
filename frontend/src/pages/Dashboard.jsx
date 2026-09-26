@@ -141,7 +141,7 @@ export default function DashboardPage() {
     if (sites.suspended > 0) need('warn', 'suspended', t('{count} website(s) suspended.', { count: sites.suspended }), 'websites', t('Open Websites'));
   }
   if (summary && !isAdmin) {
-    if (!summary.two_factor?.totp) need('warn', 'twofactor', t('Two-step verification is off for your account.'), 'security', t('Turn it on'));
+    if (!summary.two_factor?.totp && !(summary.two_factor?.passkeys > 0)) need('warn', 'twofactor', t('Two-step verification is off for your account.'), 'security', t('Turn it on'));
   }
   if (!isAdmin && currentUser) {
     const limit = storageLimitBytes(currentUser);
@@ -204,6 +204,7 @@ export default function DashboardPage() {
   if (summary && !isAdmin) {
     const withSsl = Number(sites.with_ssl) || 0;
     const twoFactor = summary.two_factor || {};
+    const twoStepOn = Boolean(twoFactor.totp || twoFactor.passkeys > 0);
     cards.push(
       { key: 'ssl', icon: Lock, page: 'ssl', label: 'SSL', value: `${withSsl}/${total}`,
         tone: withSsl < total ? 'warn' : 'ok',
@@ -211,10 +212,13 @@ export default function DashboardPage() {
       { key: 'waf', icon: ShieldCheck, page: 'waf', label: 'WAF', value: `${sites.waf_on || 0}/${total}`,
         tone: total > 0 && (sites.waf_on || 0) < total ? 'warn' : 'ok',
         detail: t('{count} of {total} website(s) protected', { count: sites.waf_on || 0, total }) },
+      // The app code, passkeys, or both: either one is a second step.
       { key: 'twofactor', icon: Fingerprint, page: 'security', label: t('Two-step verification'),
-        tone: twoFactor.totp ? 'ok' : 'warn',
-        value: twoFactor.totp ? t('On') : t('Off'),
-        detail: twoFactor.totp ? t('{count} passkey(s)', { count: twoFactor.passkeys || 0 }) : t('Only a password protects the account') },
+        tone: twoStepOn ? 'ok' : 'warn',
+        value: twoStepOn ? t('On') : t('Off'),
+        detail: twoStepOn
+          ? [twoFactor.totp ? t('Authenticator app') : '', twoFactor.passkeys > 0 ? t('{count} passkey(s)', { count: twoFactor.passkeys }) : ''].filter(Boolean).join(' + ')
+          : t('Only a password protects the account') },
     );
   }
 

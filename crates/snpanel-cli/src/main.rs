@@ -169,6 +169,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             passwords::sync_admin_root_password(env_path.as_deref())?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::ResetAdmin2fa => {
+            passwords::reset_admin_two_factor(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

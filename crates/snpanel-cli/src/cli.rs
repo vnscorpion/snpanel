@@ -100,6 +100,11 @@ pub enum Command {
     ])]
     SyncAdminRootPassword,
 
+    /// Turn off the admin's two-step sign-in - the authenticator app and
+    /// every passkey - after a lost device. New in the Rust port.
+    #[command(name = "reset-admin-2fa")]
+    ResetAdmin2fa,
+
     /// Firewall maintenance.
     Firewall {
         #[command(subcommand)]

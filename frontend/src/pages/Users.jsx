@@ -52,6 +52,11 @@ export default function UsersPage() {
     websites,
   } = usePanel();
   const t = useT();
+  // What the 2FA badge stands for: the app code, passkeys, or both.
+  const twoStepOf = (user) => [
+    user.totp_enabled ? t('Authenticator app') : '',
+    user.passkeys > 0 ? t('{count} passkey(s)', { count: user.passkeys }) : '',
+  ].filter(Boolean).join(' + ');
 
   function renderUsers() {
     if (!isAdmin) return <section className="section"><h2>{t('Panel users')}</h2><p className="hint">{t('No permission.')}</p></section>;
@@ -93,7 +98,7 @@ export default function UsersPage() {
               <span className={user.is_active ? 'badge ok' : 'badge danger'}>{user.is_active ? t('Active') : t('Suspended')}</span>
               <span className="badge">{roleLabel(user.role)}</span>
               <span className="badge">{user.package_name || t('Custom')}</span>
-              {user.totp_enabled && <span className="badge ok">2FA</span>}
+              {(user.totp_enabled || user.passkeys > 0) && <span className="badge ok" title={twoStepOf(user)}>2FA</span>}
               {user.sftp && <span className={`badge ${user.sftp.enabled ? 'ok' : ''}`}>{user.sftp.enabled ? t('SFTP') : t('SFTP off')}</span>}
             </div>
             {/* The list arrives without this figure and each user's follows on
@@ -104,7 +109,7 @@ export default function UsersPage() {
             <div className="row-actions">
               <button className="mini secondary-light" disabled={!!loading} onClick={() => startEditingUser(user)}><Pencil size={14}/> {t('Edit')}</button>
               <button className="mini secondary-light" disabled={!!loading} onClick={() => quickLoginUser(user)}><LogIn size={14}/> {t('Log in as')}</button>
-              {user.totp_enabled && user.id !== currentUser?.id && <button className="mini secondary-light" disabled={!!loading} onClick={() => resetUserTwoFactor(user)}>{t('Reset 2FA')}</button>}
+              {(user.totp_enabled || user.passkeys > 0) && user.id !== currentUser?.id && <button className="mini secondary-light" disabled={!!loading} onClick={() => resetUserTwoFactor(user)}>{t('Reset 2FA')}</button>}
               {user.id !== currentUser?.id && (user.is_active
                 ? <button className="mini secondary-light" disabled={!!loading} onClick={() => suspendUser(user)}><Ban size={14}/> {t('Suspend')}</button>
                 : <button className="mini secondary-light" disabled={!!loading} onClick={() => unsuspendUser(user)}><Play size={14}/> {t('Unsuspend')}</button>

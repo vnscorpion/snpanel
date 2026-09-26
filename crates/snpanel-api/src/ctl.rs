@@ -23,6 +23,10 @@ use snpanel_db::Database;
 pub(crate) const SET_ADMIN_PASSWORD: &str = "--set-admin-password";
 pub(crate) const SET_ADMIN_PASSWORD_HASH: &str = "--set-admin-password-hash";
 
+/// `snpanel reset-admin-2fa`. New in the Rust port: no secret travels, so
+/// nothing is read from the environment.
+pub(crate) const RESET_ADMIN_2FA: &str = "--reset-admin-2fa";
+
 /// Source: `export SNPANEL_NEW_ADMIN_PASSWORD="$password"`.
 pub(crate) const NEW_PASSWORD_ENV: &str = "SNPANEL_NEW_ADMIN_PASSWORD";
 
@@ -97,6 +101,27 @@ pub(crate) async fn set_admin_password_hash(db: &Database, hash: &str) -> anyhow
         .set_password_and_invalidate_sessions(admin.id, hash)
         .await?;
     Ok(())
+}
+
+/// The admin's two-step sign-in taken away - the authenticator-app code and
+/// every passkey - for an administrator who lost the device, or whose only
+/// passkeys were made for an address that no longer reaches the panel. New
+/// in the Rust port: the Python's only way back was editing the database.
+///
+/// Root on the server is the proof, as it is for a new password. Every
+/// session ends with it: `set_totp_enabled` bumps `token_version` whether or
+/// not the code was on. Passkeys go first, so a failure halfway leaves the
+/// code, which the administrator can still turn off from the page.
+///
+/// Returns whether the code was on, and how many passkeys went.
+pub(crate) async fn reset_admin_two_factor(db: &Database) -> anyhow::Result<(bool, u64)> {
+    let users = db.users();
+    let Some(admin) = users.by_username(ADMIN_USERNAME).await? else {
+        anyhow::bail!("{NO_ADMIN}");
+    };
+    let passkeys = db.passkeys().delete_for_user(admin.id).await?;
+    users.set_totp_enabled(admin.id, false, true).await?;
+    Ok((admin.totp_enabled, passkeys))
 }
 
 /// What the flag found in the environment, or why it could not run.
@@ -212,6 +237,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// **A lost device is not a locked panel.** The code and every passkey
+    /// go, and so does every session - other accounts' passkeys stay.
+    #[tokio::test]
+    async fn resetting_two_step_sign_in_takes_the_code_and_the_passkeys() {
+        let (db, dir) = panel("reset2fa").await;
+        let admin = db
+            .users()
+            .by_username(ADMIN_USERNAME)
+            .await
+            .unwrap()
+            .unwrap();
+        let other = db
+            .users()
+            .create(&snpanel_db::NewUser {
+                username: "customer",
+                email: "customer@example.com",
+                hashed_password: "$2b$12$whatever-was-there-before",
+                role: "end_user",
+                package_id: None,
+                website_limit: 1,
+                storage_limit_mb: 100,
+                terminal_enabled: false,
+            })
+            .await
+            .unwrap();
+        db.users()
+            .set_totp_secret(admin.id, Some("fernet:x"))
+            .await
+            .unwrap();
+        db.users()
+            .set_totp_enabled(admin.id, true, false)
+            .await
+            .unwrap();
+        for (user_id, username, credential) in [
+            (admin.id, ADMIN_USERNAME, "a1"),
+            (admin.id, ADMIN_USERNAME, "a2"),
+            (other, "customer", "c1"),
+        ] {
+            db.passkeys()
+                .insert(&snpanel_db::NewPasskey {
+                    user_id,
+                    username,
+                    credential_id: credential,
+                    public_key: &[1],
+                    algorithm: -7,
+                    sign_count: 0,
+                    rp_id: "panel.example.com",
+                    name: "Laptop",
+                    aaguid: "00000000-0000-0000-0000-000000000000",
+                    created_at: "2026-09-26 10:00:00.000000",
+                })
+                .await
+                .unwrap();
+        }
+        let (_, before) = stored(&db).await;
+
+        let (had_code, passkeys) = reset_admin_two_factor(&db).await.unwrap();
+        assert!(had_code);
+        assert_eq!(passkeys, 2);
+        let after = db
+            .users()
+            .by_username(ADMIN_USERNAME)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!after.totp_enabled);
+        assert_eq!(after.totp_secret, None);
+        assert_eq!(after.token_version, before + 1, "every session ends");
+        assert!(db
+            .passkeys()
+            .for_user(admin.id, ADMIN_USERNAME)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.passkeys()
+                .for_user(other, "customer")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "another account's passkeys are not the admin's to lose"
+        );
+
+        // Nothing left to take: says so.
+        assert_eq!(reset_admin_two_factor(&db).await.unwrap(), (false, 0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn a_panel_without_an_admin_says_so() {
         let (db, dir) = panel("noadmin").await;
@@ -231,6 +345,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
+            reset_admin_two_factor(&db).await.unwrap_err().to_string(),
         ] {
             assert_eq!(outcome, NO_ADMIN, "the same words the Python raised");
         }

@@ -148,6 +148,15 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
     let sftp = crate::sftp_access::access(&state.db, user.id, &user.username)
         .await
         .unwrap_or(snpanel_db::sftp_accounts::SftpAccess::DEFAULT);
+    // Not in the Python: the account's passkeys, a second step of their own
+    // beside the app code - the list's 2FA badge and its reset go by both.
+    let passkeys = state
+        .db
+        .passkeys()
+        .for_user(user.id, &user.username)
+        .await
+        .map(|rows| rows.len())
+        .unwrap_or(0);
 
     json!({
         "id": user.id,
@@ -163,6 +172,7 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
         "storage_limit_bytes": limit_bytes,
         "storage_percent": percent,
         "totp_enabled": user.totp_enabled,
+        "passkeys": passkeys,
         "sftp": { "enabled": sftp.enabled, "own_password": sftp.own_password },
     })
 }
@@ -465,8 +475,8 @@ async fn reset_two_factor(
         return bad_request("Use the Security page to disable your own 2FA");
     }
 
-    // A reset is for someone who lost their second factor; their passkeys go
-    // with the code, first, so none is left without one.
+    // A reset is for someone who lost their second factor: the passkeys go
+    // as well as the code, since either can be the one that was lost.
     if let Err(e) = state.db.passkeys().delete_for_user(user_id).await {
         tracing::error!("removing passkeys in a 2FA reset failed: {e}");
         return internal_error();

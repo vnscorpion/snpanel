@@ -31,6 +31,8 @@ use crate::{app_dir, env_path_string};
 const RUST_API: &str = "/usr/local/bin/snpanel-api-rust";
 const HELPER: &str = "/usr/local/sbin/snpanel-helper";
 const LOGIN_FILE: &str = "/root/login.txt";
+/// The panel binary's flag for `reset-admin-2fa`.
+const RESET_2FA_FLAG: &str = "--reset-admin-2fa";
 
 /// `snpanel change-admin-password`.
 ///
@@ -54,6 +56,31 @@ pub fn change_admin_password(env_path: Option<&Path>) -> Result<()> {
 
     write_login_info(Some(&password), env)?;
     println!("Admin password changed. Existing sessions were invalidated.");
+    Ok(())
+}
+
+/// `snpanel reset-admin-2fa`. New in the Rust port.
+///
+/// Turns the admin's two-step sign-in off - the authenticator-app code and
+/// every passkey - for an administrator who lost the device, or whose only
+/// passkeys were made for an address that no longer reaches the panel. Root
+/// on the server is the proof, as it is for a new password. No secret
+/// travels, so this is the password path's command without a variable; the
+/// panel binary prints what it took away.
+pub fn reset_admin_two_factor(env_path: Option<&Path>) -> Result<()> {
+    let env = require_env(env_path)?;
+    if !is_executable(Path::new(RUST_API)) {
+        anyhow::bail!("{RUST_API} is not installed");
+    }
+    if !linux_user_exists("snpanel") {
+        anyhow::bail!("the snpanel account does not exist");
+    }
+    let status = panel_command(env, RESET_2FA_FLAG)
+        .status()
+        .with_context(|| format!("running {RUST_API} {RESET_2FA_FLAG}"))?;
+    if !status.success() {
+        anyhow::bail!("{RUST_API} {RESET_2FA_FLAG} exited {:?}", status.code());
+    }
     Ok(())
 }
 
@@ -171,6 +198,21 @@ fn admin_secret_command(env: &Path, flag: &str, var: &str, value: &str) -> Comma
         .arg(flag)
         // Never argv.
         .env(var, value)
+        .current_dir(format!("{}/backend", app_dir()));
+    cmd
+}
+
+/// The panel binary as `snpanel`, told which env file and which flag: the
+/// password paths' command, less the secret and its variable.
+fn panel_command(env: &Path, flag: &str) -> Command {
+    let mut cmd = Command::new("runuser");
+    cmd.args(["-u", "snpanel", "--", "env"])
+        .arg(format!("HOME={}", app_dir()))
+        .arg("SNPANEL_USE_HELPER=true")
+        .arg(RUST_API)
+        .arg("--env")
+        .arg(env)
+        .arg(flag)
         .current_dir(format!("{}/backend", app_dir()));
     cmd
 }
@@ -322,6 +364,7 @@ mod tests {
         for err in [
             change_admin_password(None).unwrap_err().to_string(),
             sync_admin_root_password(None).unwrap_err().to_string(),
+            reset_admin_two_factor(None).unwrap_err().to_string(),
         ] {
             assert!(err.contains(&env_path_string()), "{err}");
         }
@@ -414,6 +457,24 @@ mod tests {
             });
             assert!(carried, "{flag}: the secret reaches the child by no route");
         }
+    }
+
+    /// The reset runs the panel binary as `snpanel`, like the password
+    /// paths - a root-owned `-wal` beside the database would stop the panel
+    /// writing it - and hands it nothing but the flag.
+    #[test]
+    fn the_two_step_reset_runs_the_panel_as_snpanel_with_its_flag() {
+        let cmd = panel_command(Path::new("/somewhere/.env"), RESET_2FA_FLAG);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(cmd.get_program(), "runuser");
+        assert_eq!(&args[..3], ["-u", "snpanel", "--"], "{args:?}");
+        assert!(args.contains(&RUST_API.to_string()), "{args:?}");
+        assert!(args.contains(&"/somewhere/.env".to_string()), "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some(RESET_2FA_FLAG));
+        assert_eq!(cmd.get_envs().count(), 0, "no secret, no variable");
     }
 
     #[test]

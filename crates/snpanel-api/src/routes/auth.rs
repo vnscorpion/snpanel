@@ -331,27 +331,58 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
         return error(StatusCode::FORBIDDEN, "User is suspended");
     }
 
-    if user.totp_enabled {
-        if otp.is_empty() {
-            // Not an error: the SPA shows the code field on this reply.
+    // The second step: the app code, a passkey, or either. Read only once the
+    // password is right, and failing closed - not knowing whether an account
+    // has a passkey is not a reason to let the password through alone.
+    let passkeys = match state.db.passkeys().for_user(user.id, &user.username).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("listing passkeys during login failed: {e}");
+            return internal_error();
+        }
+    };
+    if user.totp_enabled || !passkeys.is_empty() {
+        // A code answers only where there is one to check: an account whose
+        // second step is passkeys alone is asked for a passkey whatever the
+        // form sent.
+        if otp.is_empty() || !user.totp_enabled {
+            // Not an error: the SPA shows the second step on this reply.
             //
             // Not in the Python: `methods`, and - when the user has a passkey
             // registered on this host - `passkey`, which the page tries first
-            // and falls back from to the code. See `passkeys.rs`.
+            // and, with the app code on, falls back from to the code. See
+            // `passkeys.rs`.
             let remember_me = matches!(
                 remember.trim().to_lowercase().as_str(),
                 "1" | "true" | "on" | "yes"
             );
+            let offer =
+                super::passkeys::login_offer(&state, &headers, &user, &passkeys, remember_me);
+            if offer.is_none() && !user.totp_enabled {
+                // Passkeys alone, and none of them works at this address - an
+                // IP address, or another name. Where they do work is said.
+                let hosts = super::passkeys::hosts_of(&passkeys);
+                return error(
+                    StatusCode::FORBIDDEN,
+                    &format!(
+                        "This account confirms its sign-in with a passkey, and its passkeys work only at {hosts}. Open the panel there."
+                    ),
+                );
+            }
+            let mut methods = Vec::new();
+            if offer.is_some() {
+                methods.push("passkey");
+            }
+            if user.totp_enabled {
+                methods.push("totp");
+            }
             let mut body = json!({
                 "access_token": Value::Null,
                 "token_type": "bearer",
                 "requires_2fa": true,
-                "methods": ["totp"]
+                "methods": methods
             });
-            if let Some(offer) =
-                super::passkeys::login_offer(&state, &headers, &user, remember_me).await
-            {
-                body["methods"] = json!(["passkey", "totp"]);
+            if let Some(offer) = offer {
                 body["passkey"] = offer;
             }
             return axum::Json(body).into_response();
@@ -917,14 +948,8 @@ async fn two_factor_disable(State(state): State<AppState>, req: Request) -> Resp
         return r;
     }
 
-    // Passkeys stand beside the code, never alone. They go first: if they
-    // cannot, the code stays on rather than leaving passkeys with nothing
-    // behind them.
-    if let Err(e) = state.db.passkeys().delete_for_user(current.user.id).await {
-        tracing::error!("removing passkeys before turning 2FA off failed: {e}");
-        return internal_error();
-    }
-
+    // The account's passkeys stay: they are a second step of their own, and
+    // sign-in goes on asking for one of them.
     let mut user = current.user;
     match state
         .db
@@ -1180,5 +1205,118 @@ mod tests {
         assert_eq!(t.len(), 43, "32 bytes, urlsafe base64, unpadded");
         assert!(!t.contains('='), "token_urlsafe does not pad");
         assert_ne!(t, new_csrf_token());
+    }
+
+    /// POST /login as the page sends it, at `host`.
+    async fn sign_in(state: &AppState, host: &str, form: &str) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header(header::HOST, host)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(axum::body::Body::from(form.to_string()))
+            .unwrap();
+        let res = login(State(state.clone()), req).await;
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// A passkey is a second step of its own: an account with one and no app
+    /// code is asked for it where it works, refused - with where it works -
+    /// anywhere else, and never let through on the password alone, with a
+    /// code or without one.
+    #[tokio::test]
+    async fn passkeys_alone_are_a_second_step_of_their_own() {
+        let Some(mut state) = crate::testenv::panel("passkey-login").await else {
+            eprintln!("skipped: could not build a test panel here");
+            return;
+        };
+        state.serves_tls = true;
+        // As every start does: the passkeys table is a Rust migration's.
+        state.db.apply_rust_migrations().await.unwrap();
+        let hash = password::hash_password("a long enough password").unwrap();
+        let new_user = |username| snpanel_db::NewUser {
+            username,
+            email: "someone@example.test",
+            hashed_password: &hash,
+            role: "end_user",
+            package_id: None,
+            website_limit: 1,
+            storage_limit_mb: 100,
+            terminal_enabled: false,
+        };
+        let alice = state.db.users().create(&new_user("alice")).await.unwrap();
+        state.db.users().create(&new_user("bob")).await.unwrap();
+        state
+            .db
+            .passkeys()
+            .insert(&snpanel_db::NewPasskey {
+                user_id: alice,
+                username: "alice",
+                credential_id: "Y3JlZGVudGlhbA",
+                public_key: &[1, 2, 3],
+                algorithm: -7,
+                sign_count: 0,
+                rp_id: "panel.example.com",
+                name: "Laptop",
+                aaguid: "00000000-0000-0000-0000-000000000000",
+                created_at: "2026-09-26 10:00:00.000000",
+            })
+            .await
+            .unwrap();
+        let alice_form = "username=alice&password=a+long+enough+password";
+
+        // Where the passkey works: asked for it, and only it.
+        let (status, body) = sign_in(&state, "panel.example.com:2222", alice_form).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["requires_2fa"], json!(true), "{body}");
+        assert_eq!(body["methods"], json!(["passkey"]), "{body}");
+        assert!(body["passkey"]["ticket"].is_string(), "{body}");
+        assert!(body["access_token"].is_null(), "{body}");
+
+        // A code sent anyway changes nothing: there is none to check.
+        let with_code = format!("{alice_form}&otp=123456");
+        let (status, body) = sign_in(&state, "panel.example.com:2222", &with_code).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["access_token"].is_null(), "{body}");
+        assert_eq!(body["methods"], json!(["passkey"]), "{body}");
+
+        // At an IP address no passkey can work: refused, saying where they do.
+        for form in [alice_form, with_code.as_str()] {
+            let (status, body) = sign_in(&state, "203.0.113.4:2222", form).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+            let detail = body["detail"].as_str().unwrap_or_default();
+            assert!(detail.contains("panel.example.com"), "{detail}");
+            assert!(body.get("access_token").is_none(), "{body}");
+        }
+
+        // With the app code on as well, the code is the way in at the IP.
+        state
+            .db
+            .users()
+            .set_totp_enabled(alice, true, false)
+            .await
+            .unwrap();
+        let (status, body) = sign_in(&state, "203.0.113.4:2222", alice_form).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["methods"], json!(["totp"]), "{body}");
+        let (_, body) = sign_in(&state, "panel.example.com", alice_form).await;
+        assert_eq!(body["methods"], json!(["passkey", "totp"]), "{body}");
+
+        // An account with neither is let in on its password, as before.
+        let (status, body) = sign_in(
+            &state,
+            "203.0.113.4:2222",
+            "username=bob&password=a+long+enough+password",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["access_token"].is_string(), "{body}");
     }
 }

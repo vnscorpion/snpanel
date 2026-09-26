@@ -297,6 +297,23 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `snpanel reset-admin-2fa`: the admin's app code and passkeys, for a
+    // lost device. Root on the server is the proof.
+    if args.iter().any(|a| a == ctl::RESET_ADMIN_2FA) {
+        let (had_code, passkeys) = ctl::reset_admin_two_factor(&state.db).await?;
+        println!(
+            "Two-step sign-in is off for {}: the authenticator app {}, {passkeys} passkey(s) \
+             removed, and every session ended.",
+            ctl::ADMIN_USERNAME,
+            if had_code {
+                "turned off"
+            } else {
+                "was already off"
+            },
+        );
+        return Ok(());
+    }
+
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;
 
