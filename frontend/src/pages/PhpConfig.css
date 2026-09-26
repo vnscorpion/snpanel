@@ -7,25 +7,19 @@
 .php-limit-note.bad{color:var(--danger-text);font-weight:600}
 .php-limit input[aria-invalid="true"]{border-color:var(--danger-border);background:var(--danger-bg)}
 
-/* The chosen version's extensions: the catalogue, a card each. */
-/* One column, not the settings card's four: a heading, the list, a line. */
+/* The chosen version's extensions: the catalogue, a row each - its name,
+   and Install, or Installed and Remove. */
+/* One column, not the settings card's four: a heading and the list. */
 .user-create-card.php-ext-card{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--space-3)}
-.php-ext-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
-.php-ext-head>div{flex:1 1 420px;min-width:0}
+.php-ext-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
 .php-ext-head h3{margin:0}
-.php-ext-head .hint{margin:4px 0 0;max-width:80ch}
 .php-ext-find{flex:0 1 260px;min-width:180px}
-.php-ext-count{margin:0}
-.php-ext-grid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:var(--space-2)}
-.php-ext{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-2);min-width:0;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+/* Wide enough for a name beside Installed and Remove, unbroken. */
+.php-ext-grid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:var(--space-2)}
+.php-ext{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);min-width:0;min-height:48px;padding:6px 8px 6px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
 .php-ext.on{border-color:var(--info-border)}
-.php-ext-text{display:grid;gap:2px;min-width:0}
-.php-ext-text code{font-family:var(--font-mono);font-size:var(--text-sm);font-weight:700;color:var(--text)}
-.php-ext-text small{color:var(--text-muted);font-size:var(--text-xs);line-height:1.45}
-.php-ext-state{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}
-.php-ext-base{color:var(--text-muted);font-size:var(--text-xs);white-space:nowrap}
-.php-ext-loaded{margin:0;color:var(--text-muted);font-size:var(--text-xs);line-height:1.6;overflow-wrap:anywhere}
-.php-ext-loaded strong{color:var(--text-secondary)}
+.php-ext code{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-family:var(--font-mono);font-size:var(--text-sm);font-weight:700;color:var(--text)}
+.php-ext-state{display:flex;align-items:center;gap:6px;flex:none}
 
 @media (max-width:640px){
   .php-ext-find{flex:1 1 100%}

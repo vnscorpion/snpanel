@@ -75,21 +75,23 @@ try {
   // The default version's list shows first; this version's replaces it.
   await page.getByRole('heading', { name: `Extensions of PHP ${VERSION}` }).waitFor({ timeout: 20000 });
   const card = page.locator('#php-ext-memcached');
-  await card.getByText('Not installed').waitFor({ timeout: 20000 });
+  await card.getByRole('button', { name: 'Install memcached' }).waitFor({ timeout: 20000 });
   check(await page.getByRole('heading', { name: `Extensions of PHP ${VERSION}` }).isVisible()
-    && await card.getByText('Not installed').isVisible(), `the page lists memcached for PHP ${VERSION}, not installed`);
-  check(await page.locator('#php-ext-redis').getByText('Comes with PHP').isVisible()
-    && await page.locator('#php-ext-redis').getByRole('button').count() === 0, 'redis comes with PHP: no button to remove it');
-  await page.screenshot({ path: `${OUT}/before-light-en.png`, fullPage: true });
+    && await card.getByText('Not installed').count() === 0, `memcached, not installed on PHP ${VERSION}, shows only its Install button`);
+  check(await page.locator('#php-ext-redis').getByText('Installed', { exact: true }).isVisible()
+    && await page.locator('#php-ext-redis').getByRole('button').count() === 0, 'redis comes with PHP: Installed, and no button to remove it');
+  check(await page.locator('.php-ext-card small, .php-ext-card .hint').count() === 0 && await page.locator('.php-ext').first().innerText() !== '',
+    'no descriptions or notes: a name, and Install or Installed');
+  await page.locator('.php-ext-card').screenshot({ path: `${OUT}/before-light-en.png` });
   const started = Date.now();
   await card.getByRole('button', { name: 'Install memcached' }).click();
   await card.getByText('Installed', { exact: true }).waitFor({ timeout: 300000 });
   view = await extensions();
   check(entry(view, 'memcached').installed && view.loaded.includes('memcached'),
     `installed from the page: PHP ${VERSION} loads memcached (${Math.round((Date.now() - started) / 1000)} s)`);
-  await page.screenshot({ path: `${OUT}/installed-light-en.png`, fullPage: true });
+  await page.locator('.php-ext-card').screenshot({ path: `${OUT}/installed-light-en.png` });
   await card.getByRole('button', { name: 'Remove memcached' }).click();
-  await card.getByText('Not installed').waitFor({ timeout: 300000 });
+  await card.getByRole('button', { name: 'Install memcached' }).waitFor({ timeout: 300000 });
   view = await extensions();
   check(!entry(view, 'memcached').installed && entry(view, 'redis').installed, 'removed from the page: gone, and redis still loaded');
   // What came in with it went with it: memcached brings msgpack.
