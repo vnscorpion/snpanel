@@ -57,11 +57,17 @@
    by a justify-self that `button.file-mode` overrode: the two printed on top
    of each other. A column each, so they cannot. */
 @media (max-width:760px){
-  .file-list .file-item{grid-template-columns:18px minmax(0,1fr) auto}
+  .file-list .file-item{grid-template-columns:18px minmax(0,1fr) auto;column-gap:8px}
   .file-list .file-item button.file-name{grid-column:2 / -1}
-  .file-list .file-item .file-size{grid-column:2;grid-row:2;align-self:center}
+  /* The size and the date on one line under the name. */
+  .file-list .file-item .file-facts{display:flex;align-items:center;gap:10px;min-width:0;grid-column:2;grid-row:2}
   .file-list .file-item button.file-mode{grid-column:3;grid-row:2;justify-self:end}
   .file-list .file-item .file-row-actions{grid-column:2 / -1}
+  /* One column of rows, each a grid of its own: the headings - select all,
+     the name and the count, and the two sorts - and the entries. */
+  .file-list{grid-template-columns:minmax(0,1fr)}
+  .file-list-header{grid-template-columns:18px minmax(0,1fr) auto auto;column-gap:8px}
+  .file-list-header .file-col-mode,.file-list-header .file-col-actions{display:none}
 }
 
 /* ---- the malware scan history ---- */

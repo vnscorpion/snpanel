@@ -175,17 +175,20 @@
   color: var(--text);
 }
 
+/* The headings are the list's first row, and stay at its top as it
+   scrolls; every row is a subgrid of the list, so a heading sits over its
+   column however wide the widest row's actions make the last one. */
 .file-list-header {
-  display: flex;
-  justify-content: space-between;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
   padding: 6px 8px;
   background: var(--surface-alt);
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font-size:var(--text-sm);
   font-weight: 700;
@@ -206,22 +209,30 @@
   accent-color: var(--primary);
 }
 
+/* The first column holds a row's left padding as well as its checkbox: in a
+   subgrid the padding is taken from the edge tracks. */
 .file-list {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 0;
+  grid-template-columns: 28px minmax(240px, 1fr) 92px 82px 126px auto;
+  column-gap: 8px;
+  row-gap: 0;
+  margin-top: 8px;
   max-height: min(68vh, 760px);
   overflow: auto;
   padding: 0;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  border-radius: var(--radius-sm);
+}
+
+.file-list > .empty-box {
+  grid-column: 1 / -1;
 }
 
 .file-item {
+  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: 20px minmax(240px, 1fr) 62px 82px auto;
-  gap: 8px;
+  grid-template-columns: subgrid;
   align-items: center;
   background: var(--surface);
   color: var(--text);
@@ -289,6 +300,60 @@
   flex: 0 0 auto;
   width: 15px;
   height: 15px;
+}
+
+/* The size and the date are two columns of the row; on a phone, one line
+   under the name (responsive.css). */
+.file-facts {
+  display: contents;
+}
+
+.file-date {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The column headings: the ones that sort are buttons, flat. */
+.file-col-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.file-count {
+  font-weight: 600;
+}
+
+.file-col-actions {
+  min-width: 0;
+}
+
+.file-list-header button.file-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+  min-height: 0;
+  height: auto;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.file-list-header button.file-sort:hover:not(:disabled),
+.file-list-header button.file-sort.active {
+  background: transparent;
+  color: var(--text);
 }
 
 .file-size {

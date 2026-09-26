@@ -265,6 +265,23 @@ export function formatWhen(value) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// A file's time as the server gives it - seconds since the epoch - in the
+// viewer's zone, the way formatWhen writes a date; and in full, seconds and
+// all, for a tooltip.
+export function formatUnixTime(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const d = new Date(Number(seconds) * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function formatUnixTimeFull(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const d = new Date(Number(seconds) * 1000);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+}
+
 export function formatAccessLogTime(value = '') {
   if (!value) return '';
   const date = new Date(value);

@@ -1,7 +1,25 @@
-import { AlertCircle, Archive, ArchiveRestore, Check, Clock, Copy, Download, FileText, FolderOpen, Lock, MoveRight, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
-import { PERMISSION_BITS, PERMISSION_CLASSES, PERMISSION_PRESETS, octalToPermissionBits, permissionBitsToOctal, permissionSymbols } from '../lib/panel.jsx';
+import { useMemo, useState } from 'react';
+import { AlertCircle, Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, Clock, Copy, Download, FileText, FolderOpen, Lock, MoveRight, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
+import { PERMISSION_BITS, PERMISSION_CLASSES, PERMISSION_PRESETS, formatUnixTime, formatUnixTimeFull, octalToPermissionBits, permissionBitsToOctal, permissionSymbols } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { serverText, useT } from '../i18n/index.jsx';
+
+// Folders first, whichever way the list is turned - as the server lists them -
+// then by the column chosen, and by name where that column ties. A folder has
+// no size worth sorting by, so folders keep their names' order under Size.
+function compareFiles(a, b, key, dir) {
+  if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+  const x = String(a.name).toLowerCase();
+  const y = String(b.name).toLowerCase();
+  const byName = x < y ? -1 : x > y ? 1 : 0;
+  const factor = dir === 'desc' ? -1 : 1;
+  if (key === 'modified') return ((Number(a.modified) || 0) - (Number(b.modified) || 0)) * factor || byName;
+  if (key === 'size') return (a.is_dir ? 0 : ((Number(a.size) || 0) - (Number(b.size) || 0)) * factor) || byName;
+  return byName * factor;
+}
+
+// The way a column sorts first: names A to Z, the newest and the largest on top.
+const FIRST_DIR = { name: 'asc', modified: 'desc', size: 'desc' };
 
 export default function FilesPage() {
   const t = useT();
@@ -48,6 +66,25 @@ export default function FilesPage() {
     toggleFileSelection,
     uploadSiteFile,
   } = usePanel();
+  const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
+  const shownFiles = useMemo(() => [...files].sort((a, b) => compareFiles(a, b, sort.key, sort.dir)), [files, sort]);
+  const sortBy = (key) => setSort((prev) => (prev.key === key
+    ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+    : { key, dir: FIRST_DIR[key] }));
+
+  // A column heading that sorts the list, with the way it is sorted. A
+  // function rather than a component: one made anew each render would be a
+  // new button each time, and keyboard focus would not survive a click.
+  function sortHeading(column, label, className = '') {
+    const active = sort.key === column;
+    const Arrow = sort.dir === 'asc' ? ArrowUp : ArrowDown;
+    return <button type="button" className={`file-sort ${className} ${active ? 'active' : ''}`} onClick={() => sortBy(column)}
+      aria-label={active
+        ? t('{column}: sorted {order}. Sort the other way', { column: label, order: sort.dir === 'asc' ? t('ascending') : t('descending') })
+        : t('Sort by {column}', { column: label })}>
+      {label}{active && <Arrow size={12} aria-hidden="true"/>}
+    </button>;
+  }
 
   function renderChmodDialog() {
     const targets = chmodTarget || [];
@@ -191,13 +228,20 @@ export default function FilesPage() {
               </div>)}
             </div>}
           </div>
-          <div className="file-list-header">
-            <label><input type="checkbox" checked={allSelected} onChange={toggleAllFiles} disabled={files.length === 0} /> {t('Select')}</label>
-            <span>{t('{count} item(s)', { count: files.length })}</span>
-          </div>
           <div className="file-list">
+            <div className="file-list-header">
+            <input type="checkbox" checked={allSelected} onChange={toggleAllFiles} disabled={files.length === 0} aria-label={t('Select all')} />
+            <div className="file-col-name">
+              {sortHeading('name', t('Name'))}
+              <span className="file-count">{t('{count} item(s)', { count: files.length })}</span>
+            </div>
+            <span className="file-col-mode">{t('Permissions')}</span>
+            {sortHeading('size', t('Size'), 'file-col-size')}
+            {sortHeading('modified', t('Modified'), 'file-col-date')}
+            <span className="file-col-actions" aria-hidden="true"></span>
+            </div>
             {files.length === 0 && <div className="empty-box">{t('No files in this folder.')}</div>}
-            {files.map(item => <div className={`file-item ${selectedFilePaths.includes(item.path) ? 'selected' : ''}`} key={item.path}>
+            {shownFiles.map(item => <div className={`file-item ${selectedFilePaths.includes(item.path) ? 'selected' : ''}`} key={item.path}>
               <input type="checkbox" checked={selectedFilePaths.includes(item.path)} onChange={() => toggleFileSelection(item.path)} />
               <button className="file-name" onClick={() => item.is_dir ? listFiles(item.path) : (isTextEditable(item) ? openFileEditorTab(item.path) : downloadFile(item.path))}>
                 {item.is_dir ? <FolderOpen size={16}/> : <FileText size={16}/>} <strong>{item.name}</strong>
@@ -209,7 +253,11 @@ export default function FilesPage() {
                 title={t('Permissions {value} ({value2}) - click to change', { value: item.mode || '---', value2: permissionSymbols(item.mode) })}
                 onClick={() => openChmodDialog(item)}
               >{item.mode || '---'}</button>
-              <span className="file-size">{item.is_dir ? t('Folder') : formatBytes(item.size)}</span>
+              <span className="file-facts">
+                <span className="file-size">{item.is_dir ? t('Folder') : formatBytes(item.size)}</span>
+                <time className="file-date" dateTime={item.modified ? new Date(item.modified * 1000).toISOString() : undefined}
+                  title={t('Modified {when}', { when: formatUnixTimeFull(item.modified) })}>{formatUnixTime(item.modified)}</time>
+              </span>
               <div className="file-row-actions">
                 {!item.is_dir && <button className="mini secondary-light" disabled={!!loading} onClick={() => downloadFile(item.path)}><Download size={13}/></button>}
                 {isArchiveFile(item) && <button className="mini secondary-light" disabled={!!loading} onClick={() => extractArchiveFile(item.path)}><ArchiveRestore size={13}/> {t('Extract')}</button>}
