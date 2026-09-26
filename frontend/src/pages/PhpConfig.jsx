@@ -1,4 +1,5 @@
-import { AlertCircle, Ban, Check, Cpu, Play, RotateCcw } from 'lucide-react';
+import { useState } from 'react';
+import { AlertCircle, Ban, Check, Cpu, Play, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { sortPhpVersions } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
@@ -52,21 +53,101 @@ function limitFloor(key) {
 export default function PhpConfigPage() {
   const {
     applyPhpTune,
+    installPhpExtension,
     installPhpVersion,
     isAdmin,
     loadPhpConfig,
+    loadPhpExtensions,
     loadPhpTune,
     loading,
     phpConfig,
+    phpExtensions,
     phpTune,
     phpTuneApplied,
     phpVersions,
+    removePhpExtension,
     restorePhpDefaults,
     setPhpConfig,
     toggleOpcache,
     updatePhpConfig,
   } = usePanel();
   const t = useT();
+  const [extFind, setExtFind] = useState('');
+
+  // What each extension of the catalogue is for, in a line.
+  const EXT_TEXT = {
+    mysql: t('MySQL and MariaDB, through mysqli and PDO. WordPress needs it.'),
+    sqlite3: t('SQLite databases, with PDO.'),
+    curl: t('HTTP requests from PHP.'),
+    gd: t('Resizing and drawing images.'),
+    mbstring: t('Text in any language (multi-byte strings).'),
+    xml: t('XML: DOM, SimpleXML, XMLReader, XMLWriter and XSL.'),
+    zip: t('Zip archives - plugin and theme updates use it.'),
+    opcache: t('Keeps compiled PHP in memory: much faster websites.'),
+    intl: t('Languages, dates and number formats.'),
+    bcmath: t('Arbitrary-precision arithmetic, for prices and payments.'),
+    redis: t('Redis for object caching and sessions.'),
+    imagick: t('ImageMagick: better image quality and more formats, such as PDF and WebP.'),
+    soap: t('SOAP web services - some payment and shipping APIs use them.'),
+    memcached: t('Memcached for object caching.'),
+    apcu: t('A cache in PHP\'s own memory.'),
+    mongodb: t('MongoDB databases.'),
+    igbinary: t('A compact serializer; Redis and Memcached can use it.'),
+    msgpack: t('The MessagePack serializer.'),
+    xdebug: t('Step debugging and profiling. It slows every request and turns the JIT off: for development, not production.'),
+    gmp: t('Very large integers (GNU MP).'),
+    ldap: t('Signing in against LDAP and Active Directory.'),
+    imap: t('Reading mailboxes over IMAP and POP3.'),
+    pgsql: t('PostgreSQL databases, with PDO.'),
+    tidy: t('Cleaning up HTML (HTML Tidy).'),
+    bz2: t('bzip2 compression.'),
+    yaml: t('Reading and writing YAML.'),
+    ssh2: t('SSH and SFTP from PHP.'),
+    mailparse: t('Parsing e-mail messages.'),
+    uploadprogress: t('Upload progress bars (Drupal).'),
+  };
+
+  function renderExtensions() {
+    const version = phpExtensions.version || phpConfig.php_version;
+    const needle = extFind.trim().toLowerCase();
+    const list = (phpExtensions.extensions || []).filter((e) => !needle
+      || e.key.includes(needle) || String(EXT_TEXT[e.key] || '').toLowerCase().includes(needle));
+    const installedCount = (phpExtensions.extensions || []).filter((e) => e.installed).length;
+    return <div className="user-create-card php-ext-card" style={{ marginTop: 16 }} aria-labelledby="php-ext-title">
+      <div className="php-ext-head">
+        <div>
+          <h3 id="php-ext-title">{t('Extensions of PHP {version}', { version })}</h3>
+          <p className="hint">{t('Every website on PHP {version} gets what it loads. Installing or removing one restarts PHP-FPM {version}, and its websites pause for a second.', { version })}</p>
+        </div>
+        <input type="search" className="php-ext-find" value={extFind} onChange={(e) => setExtFind(e.target.value)} placeholder={t('Find an extension')} aria-label={t('Find an extension')} />
+      </div>
+      {phpExtensions.ready && !phpExtensions.read && <p className="php-limit-note bad">{t('PHP {version} could not be asked what it loads, so nothing is shown as installed.', { version })}</p>}
+      {phpExtensions.ready && phpExtensions.read && <p className="hint php-ext-count">{t('{installed} of the {total} below are installed.', { installed: installedCount, total: (phpExtensions.extensions || []).length })}</p>}
+      <ul className="php-ext-grid">
+        {list.map((e) => <li key={e.key} className={`php-ext ${e.installed ? 'on' : ''}`} id={`php-ext-${e.key}`}>
+          <div className="php-ext-text">
+            <code>{e.key}</code>
+            <small>{EXT_TEXT[e.key] || ''}</small>
+          </div>
+          <div className="php-ext-state">
+            {e.installed
+              ? <span className="badge ok">{t('Installed')}</span>
+              : <span className="badge">{t('Not installed')}</span>}
+            {e.base && e.installed && <span className="php-ext-base">{t('Comes with PHP')}</span>}
+            {!e.installed && <button className="mini" disabled={!!loading} onClick={() => installPhpExtension(e.key)}
+              aria-label={t('Install {ext}', { ext: e.key })}><Plus size={13}/> {t('Install')}</button>}
+            {!e.base && e.installed && <button className="mini secondary-light danger-hover" disabled={!!loading} onClick={() => removePhpExtension(e.key)}
+              aria-label={t('Remove {ext}', { ext: e.key })}><Trash2 size={13}/> {t('Remove')}</button>}
+          </div>
+        </li>)}
+      </ul>
+      {list.length === 0 && phpExtensions.ready && <p className="hint">{t('No extension matches {text}.', { text: extFind.trim() })}</p>}
+      {(phpExtensions.loaded || []).length > 0 && <p className="php-ext-loaded">
+        <strong>{t('Everything PHP {version} loads ({count}):', { version, count: phpExtensions.loaded.length })}</strong>{' '}
+        {phpExtensions.loaded.join(', ')}
+      </p>}
+    </div>;
+  }
 
   function renderPhpConfig() {
     if (!isAdmin) return <section className="section"><h2>{t('PHP config')}</h2><p className="hint">{t('You do not have permission to edit PHP config.')}</p></section>;
@@ -96,7 +177,7 @@ export default function PhpConfigPage() {
         <div><h2>{t('PHP Configuration')}</h2></div>
       </div>
       <div className="user-create-card php-config-card">
-        <label><span>{t('PHP version')}</span><select value={phpConfig.php_version} onChange={e => { const v = e.target.value; setPhpConfig(prev => ({ ...prev, php_version: v })); loadPhpConfig(v); loadPhpTune(v); }}>
+        <label><span>{t('PHP version')}</span><select value={phpConfig.php_version} onChange={e => { const v = e.target.value; setPhpConfig(prev => ({ ...prev, php_version: v })); loadPhpConfig(v); loadPhpTune(v); loadPhpExtensions(v); }}>
           {phpVersions.installed.map(v => <option key={v} value={v}>PHP {v}</option>)}
         </select></label>
         <label><span>display_errors</span><select value={phpConfig.display_errors} onChange={e => setPhpConfig(prev => ({ ...prev, display_errors: e.target.value }))}>
@@ -148,6 +229,7 @@ export default function PhpConfigPage() {
           </li>)}
         </ul>}
       </div>}
+      {renderExtensions()}
       {notInstalled.length > 0 && <div className="user-create-card" style={{ marginTop: 16 }}>
         <h3>{t('Install PHP')}</h3>
         <div className="php-install-grid">

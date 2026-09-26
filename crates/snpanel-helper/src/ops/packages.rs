@@ -1947,7 +1947,7 @@ fn replace_symlink(target: &str, link: &str) -> std::io::Result<()> {
 /// references. On Ubuntu 26.04 it says yes to php7.4-fpm, which has no
 /// installable version - so a refusal built on it told the user 7.4 was
 /// available on a release that has no such package."
-fn apt_installable(package: &str) -> bool {
+pub(crate) fn apt_installable(package: &str) -> bool {
     let Ok(o) = exec::run(&["apt-cache", "policy", package]) else {
         return false;
     };

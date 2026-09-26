@@ -19,6 +19,7 @@ pub mod notifications;
 pub mod packages;
 pub mod panel_settings;
 pub mod passkeys;
+pub mod php_extensions;
 pub mod provisioning;
 pub mod refresh;
 pub mod s3_targets;
@@ -64,6 +65,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(s3_targets::router())
         .merge(mcp::router())
         .merge(notifications::router())
+        .merge(php_extensions::router())
         .merge(malware::router())
         .merge(malware_quarantine::router())
         .merge(panel_settings::router())
@@ -156,6 +158,7 @@ mod tests {
         let _ = terminal::router();
         let _ = maintenance::router();
         let _ = notifications::router();
+        let _ = php_extensions::router();
         let _ = user_restore::router();
     }
 }

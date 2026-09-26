@@ -120,7 +120,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         // The package manager, and what an install goes on to configure.
         "updates-os-run" | "node-install" | "certbot-dns-cloudflare-install" => &[Packages],
         "updates-os-auto" | "docker-install" => &[Packages, Systemd],
-        "php-install" => &[Packages, Systemd, Php],
+        "php-install" | "php-ext-install" | "php-ext-remove" => &[Packages, Systemd, Php],
         "waf-install" => &[Packages, Nginx],
         "clamav-install" => &[Packages, Systemd, Malware],
         "maldet-install" => &[Packages, Malware],

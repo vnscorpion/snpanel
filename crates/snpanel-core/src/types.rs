@@ -566,6 +566,11 @@ impl PhpVersion {
     pub fn underscored(&self) -> String {
         format!("{}_{}", self.major, self.minor)
     }
+
+    /// Whether this is `major.minor` or later.
+    pub fn at_least(&self, major: u8, minor: u8) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
 }
 
 impl fmt::Display for PhpVersion {

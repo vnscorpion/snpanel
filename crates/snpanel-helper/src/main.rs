@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 162;
+const ANSWERED_VERBS: usize = 164;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -106,7 +106,8 @@ fn print_help(sink: audit::Sink) {
         "  fix-permissions",
         "  certbot-*       issue, renew, delete;  ssl-cert-info",
         "  panel-ssl-*     selfsigned, domains;   panel-sni-sync",
-        "  php-*           opcache-set, config-write, tune-write, pools-retune",
+        "  php-*           opcache-set, config-write, tune-write, pools-retune,",
+        "                  install, ext-install, ext-remove",
         "  ipv6-*          status, enable, disable, apply",
         "  time-*          status, sync;          cron-list, cron-write",
         "  updates-*       status, os-run, os-auto",

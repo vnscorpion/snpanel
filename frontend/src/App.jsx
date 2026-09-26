@@ -195,6 +195,9 @@ function App() {
   const [editingPackageForm, setEditingPackageForm] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024 });
   const [phpConfig, setPhpConfig] = useState({ php_version: '8.4', display_errors: 'Off', max_execution_time: 300, max_input_time: 600, max_input_vars: 10000, memory_limit: '1024M', post_max_size: '1024M', upload_max_filesize: '1024M' });
   const [phpVersions, setPhpVersions] = useState({ installed: ['8.4'], supported: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'] });
+  // One PHP version's extensions: the panel's catalogue, each installed or
+  // not by what PHP loads, and everything it loads.
+  const [phpExtensions, setPhpExtensions] = useState({ version: '', extensions: [], loaded: [], read: false, ready: false });
   const [firewallStatus, setFirewallStatus] = useState(null);
   // The Firewall page's one form for adding a rule.
   const [firewallRule, setFirewallRule] = useState({ action: 'allow', ip: '', port: '', protocol: 'tcp' });
@@ -3153,6 +3156,28 @@ function App() {
     });
   }
 
+  async function loadPhpExtensions(version = phpConfig.php_version) {
+    if (!version) return;
+    const data = await request(`/maintenance/php-versions/${version}/extensions`, { silent: true });
+    setPhpExtensions(data ? { ...data, ready: true } : { version, extensions: [], loaded: [], read: false, ready: true });
+  }
+
+  // Installing or removing restarts that version's FPM; the answer is the
+  // list again, as PHP now loads it.
+  async function changePhpExtension(key, install) {
+    const version = phpExtensions.version || phpConfig.php_version;
+    const question = install
+      ? t('Install {ext} for PHP {version}? PHP-FPM {version} restarts, and its websites pause for a second.', { ext: key, version })
+      : t('Remove {ext} from PHP {version}? Websites that use it stop working until it is installed again. PHP-FPM {version} restarts.', { ext: key, version });
+    if (!confirm(question)) return false;
+    const data = await request(`/maintenance/php-versions/${version}/extensions/${key}/${install ? 'install' : 'remove'}`, { method: 'POST' },
+      install ? t('Installing {ext} for PHP {version} - this can take a minute...', { ext: key, version }) : t('Removing {ext} from PHP {version}...', { ext: key, version }));
+    if (data?.extensions) setPhpExtensions({ ...data, ready: true });
+    return !!data;
+  }
+  const installPhpExtension = (key) => changePhpExtension(key, true);
+  const removePhpExtension = (key) => changePhpExtension(key, false);
+
   async function installPhpVersion(version) {
     if (!confirm(t('Install PHP {version}? This will install php{version}-fpm via apt.', { version }))) return;
     const data = await request(`/maintenance/php-versions/${version}/install`, { method: 'POST' }, t('Installing PHP {version}...', { version }));
@@ -3808,7 +3833,7 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated && page === 'users') { loadUsers(); loadPackages(); }
-    if (isAuthenticated && page === 'php') { loadPhpConfig(); loadPhpTune(phpConfig.php_version); }
+    if (isAuthenticated && page === 'php') { loadPhpConfig(); loadPhpTune(phpConfig.php_version); loadPhpExtensions(phpConfig.php_version); }
     if (isAuthenticated && page === 'firewall') { loadFirewall(); loadFirewallBlocklists(); }
     if (isAuthenticated && ['waf', 'waf-site'].includes(page)) {
       loadBotBlocks();
@@ -4314,6 +4339,7 @@ function App() {
       installLmd,
       installManualSsl,
       installNodeMajor,
+      installPhpExtension,
       installPhpVersion,
       installSharedSsl,
       installWildcardSsl,
@@ -4340,7 +4366,10 @@ function App() {
       loadPanelSettings,
       loadPasskeys,
       loadPhpConfig,
+      loadPhpExtensions,
       loadPhpTune,
+      phpExtensions,
+      removePhpExtension,
       listRestoreSource,
       loadRestoreBackups,
       loadRestoreJob,

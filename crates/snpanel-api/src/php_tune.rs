@@ -760,6 +760,17 @@ fn fpm_dir(php_version: &str) -> PathBuf {
     Path::new("/etc/php").join(php_version).join("fpm")
 }
 
+/// The PHP binary of a version, where the platform keeps it: `/usr/bin/php8.3`
+/// on Debian, Remi's own tree on EL - where a bare `php8.3` on
+/// `/usr/bin:/bin` found nothing. `php<version>` when it cannot say.
+fn php_binary(php_version: &str) -> PathBuf {
+    snpanel_core::PhpVersion::parse(php_version)
+        .ok()
+        .and_then(|v| snpanel_osabi::detect().ok().map(|p| p.php_binary(v)))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from(format!("php{php_version}")))
+}
+
 /// Run one unprivileged `php<version>` with the FPM configuration.
 ///
 /// The environment is replaced rather than extended, exactly as the Python
@@ -768,7 +779,7 @@ fn fpm_dir(php_version: &str) -> PathBuf {
 /// answer would be confidently wrong.
 async fn run_php(php_version: &str, args: &[&str], timeout_secs: u64) -> Option<String> {
     let ini_dir = fpm_dir(php_version);
-    let mut command = tokio::process::Command::new(format!("php{php_version}"));
+    let mut command = tokio::process::Command::new(php_binary(php_version));
     command
         .arg("-c")
         .arg(ini_dir.join("php.ini"))
@@ -786,6 +797,14 @@ async fn run_php(php_version: &str, args: &[&str], timeout_secs: u64) -> Option<
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Not in the Python: the modules PHP loads with FPM's configuration, as
+/// `php -m` lists them, lowercase - what the PHP page calls installed.
+/// `None` when PHP could not be asked.
+pub async fn loaded_modules(php_version: &str) -> Option<Vec<String>> {
+    let stdout = run_php(php_version, &["-m"], 15).await?;
+    Some(snpanel_core::php_ext::parse_modules(&stdout))
 }
 
 /// Source: `_effective_values` — what PHP resolves the settings to.

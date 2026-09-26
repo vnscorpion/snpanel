@@ -61,7 +61,9 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 - Nginx ModSecurity/WAF engine installed by default, with one switch per site:
   the panel's WordPress/Laravel/PHP rules and the OWASP Core Rule Set, blocking;
   plus HTTP Flood limits and bot blocking
-- PHP-FPM config editor per version
+- PHP-FPM config editor per version, and its extensions installed or removed
+  from the page - redis, imagick, memcached, mongodb, apcu, xdebug and more,
+  from the distribution's own PHP repository
 - Cron job manager with whitelisted WP-CLI commands
 - Role-based access: Admin / End user
 - An MCP addon for AI assistants - Claude Code, Cursor, VS Code - at `/api/mcp`:

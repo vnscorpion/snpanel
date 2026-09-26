@@ -1051,6 +1051,23 @@ pub enum HelperRequest {
     PhpInstall {
         version: PhpVersion,
     },
+    /// `php-ext-install <version> <extension>` - one extension of the
+    /// panel's catalogue (`snpanel_core::php_ext`) for one PHP version, its
+    /// FPM restarted.
+    ///
+    /// A catalogue key, never a package name: what gets installed as root
+    /// is the catalogue's package for this machine's family.
+    PhpExtInstall {
+        version: PhpVersion,
+        extension: String,
+    },
+    /// `php-ext-remove <version> <extension>` - the same, taken away:
+    /// refused for the base set, and for anything whose removal would take
+    /// another package with it.
+    PhpExtRemove {
+        version: PhpVersion,
+        extension: String,
+    },
 
     /// `orphans-scan` / `orphans-clean` - what a deleted website left
     /// behind.
@@ -1352,6 +1369,8 @@ impl HelperRequest {
             Self::MariadbRetune => "mariadb-retune",
             Self::PhpTuneWrite { .. } => "php-tune-write",
             Self::PhpInstall { .. } => "php-install",
+            Self::PhpExtInstall { .. } => "php-ext-install",
+            Self::PhpExtRemove { .. } => "php-ext-remove",
             Self::OrphanCleanup { clean, .. } => {
                 if *clean {
                     "orphans-clean"

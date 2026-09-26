@@ -25,6 +25,7 @@ pub mod orphans;
 pub mod packages;
 pub mod panel;
 pub mod php;
+pub mod php_ext;
 pub mod quarantine;
 pub mod runtime;
 pub mod selinux;
@@ -430,6 +431,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
         HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
         HelperRequest::PhpInstall { version } => packages::php_install(*version),
+        HelperRequest::PhpExtInstall { version, extension } => {
+            php_ext::install(*version, extension)
+        }
+        HelperRequest::PhpExtRemove { version, extension } => php_ext::remove(*version, extension),
         HelperRequest::TerminalExec {
             user,
             cwd,

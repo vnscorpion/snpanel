@@ -166,6 +166,16 @@ fn php_or_none(raw: &str) -> Result<Option<snpanel_core::PhpVersion>, Invocation
         .map_err(|e| InvocationError::invalid(e.to_string()))
 }
 
+/// A PHP extension, as the panel's catalogue names it - never a package
+/// name, which is the catalogue's to choose.
+fn php_extension(raw: &str) -> Result<String, InvocationError> {
+    snpanel_core::php_ext::find(raw)
+        .map(|e| e.key.to_string())
+        .ok_or_else(|| {
+            InvocationError::invalid(format!("not a PHP extension the panel offers: {raw}"))
+        })
+}
+
 /// Source: `require_node_major`, `^[1-9][0-9]$` - two digits, not one.
 fn node_major_of(raw: &str) -> Result<u8, InvocationError> {
     let bad = || InvocationError::invalid(format!("invalid node major version: {raw}"));
@@ -633,6 +643,16 @@ impl HelperRequest {
             ("php-install", 1) => HelperRequest::PhpInstall {
                 version: snpanel_core::PhpVersion::parse(&rest[0])
                     .map_err(|e| InvocationError::invalid(e.to_string()))?,
+            },
+            ("php-ext-install", 2) => HelperRequest::PhpExtInstall {
+                version: snpanel_core::PhpVersion::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                extension: php_extension(&rest[1])?,
+            },
+            ("php-ext-remove", 2) => HelperRequest::PhpExtRemove {
+                version: snpanel_core::PhpVersion::parse(&rest[0])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                extension: php_extension(&rest[1])?,
             },
             ("terminal-exec", n) if n >= 3 => {
                 // `<user> <cwd> [--timeout=N] [--php-version=V] <cmd> [args...]`
