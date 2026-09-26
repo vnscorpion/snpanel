@@ -1,45 +1,48 @@
-/* The SFTP page: the account's own login, then its SFTP accounts and the
-   form that makes one. See pages/Sftp.jsx. */
+/* The SFTP page: one list of the account's logins - its own first - each
+   with its password change folding open under it, and the form that adds
+   one. See pages/Sftp.jsx. */
 
-.sftp-page{display:grid;gap:var(--space-4)}
-.sftp-page>.section{margin-bottom:0}
-.sftp-owner{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
-.sftp-owner label{font-weight:600;color:var(--text-secondary)}
-.sftp-owner select{flex:0 1 320px}
+.sftp-page{display:grid;gap:var(--space-3)}
+.sftp-page .section-title{align-items:flex-start}
+.sftp-owner{display:flex;align-items:center;gap:var(--space-2);flex:0 1 320px}
+.sftp-owner label{font-weight:600;color:var(--text-secondary);font-size:var(--text-sm)}
+.sftp-owner select{flex:1;min-width:0}
 
-.sftp-accounts{display:grid;gap:var(--space-3)}
-/* Proving it is them, once, for every change below it. */
-.sftp-proof{display:grid;grid-template-columns:repeat(2,minmax(0,280px));gap:var(--space-2) var(--space-3);align-items:end;padding:10px 12px;border:1px dashed var(--border);border-radius:var(--radius-md)}
-.sftp-proof .hint{grid-column:1 / -1;margin:0}
-.sftp-proof .sftp-field{display:grid;gap:6px;min-width:0}
-.sftp-proof .sftp-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
-@media (max-width:640px){.sftp-proof{grid-template-columns:1fr}}
-.sftp-account-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
-.sftp-account-list li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)}
-.sftp-account-list li:last-child{border-bottom:0}
-.sftp-account-list li>svg{color:var(--primary-text)}
-.sftp-account-text{display:grid;gap:2px;min-width:0}
-.sftp-account-text code{font-family:var(--font-mono);font-size:var(--text-sm)}
-.sftp-account-text small{color:var(--text-muted);font-size:var(--text-sm);overflow-wrap:anywhere}
-.sftp-account-actions{display:flex;gap:var(--space-2);flex-wrap:wrap;justify-content:flex-end}
+.sftp-shown{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);padding:10px 12px;border:1px solid var(--success-border);border-radius:var(--radius-md);background:var(--success-bg);color:var(--success-text)}
+.sftp-shown code{font-size:var(--text-md);font-weight:600;letter-spacing:.02em;user-select:all;overflow-wrap:anywhere}
+.sftp-shown small{flex-basis:100%}
 
-.sftp-account-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);align-items:end;padding:12px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-alt)}
-.sftp-account-form h3{grid-column:1 / -1;margin:0;font-size:var(--text-base)}
-.sftp-account-form .sftp-field{display:grid;gap:6px;min-width:0}
-.sftp-account-form .sftp-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.sftp-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.sftp-list li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)}
+.sftp-list li:last-child{border-bottom:0}
+.sftp-list li>svg{color:var(--primary-text)}
+.sftp-list li.off>svg,.sftp-list li.off code{color:var(--text-muted)}
+.sftp-row-text{display:grid;gap:2px;min-width:0}
+.sftp-row-text strong{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sftp-row-text code{font-family:var(--font-mono);font-size:var(--text-sm)}
+.sftp-row-text small{color:var(--text-muted);font-size:var(--text-sm);overflow-wrap:anywhere}
+.sftp-row-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;justify-content:flex-end}
+.sftp-row-actions .hint{margin:0}
+
+/* A password change, or a new account: a small form in place. */
+.sftp-inline{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);align-items:start;padding:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-alt)}
+.sftp-field{display:grid;gap:6px;min-width:0}
+.sftp-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.sftp-field>.hint{margin:0;font-size:var(--text-xs)}
 .sftp-name{display:flex;align-items:stretch;min-width:0}
-.sftp-name span{display:grid;place-items:center;padding:0 10px;border:1px solid var(--border);border-right:0;border-radius:var(--radius-sm) 0 0 var(--radius-sm);background:var(--surface-sunken);color:var(--text-secondary);font-family:var(--font-mono);font-size:var(--text-sm)}
+.sftp-name>span{display:grid;place-items:center;padding:0 10px;border:1px solid var(--border);border-right:0;border-radius:var(--radius-sm) 0 0 var(--radius-sm);background:var(--surface-sunken);color:var(--text-secondary);font-family:var(--font-mono);font-size:var(--text-sm)}
 .sftp-name input{flex:1;min-width:0;border-radius:0 var(--radius-sm) var(--radius-sm) 0}
-.sftp-account-go{grid-column:1 / -1;display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3);flex-wrap:wrap}
-.sftp-account-go .hint{flex:1 1 260px;margin:0}
-.sftp-account-form>.hint{grid-column:1 / -1;margin:0}
+.sftp-inline-actions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:var(--space-2);flex-wrap:wrap}
+.sftp-add{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.sftp-add .hint{margin:0}
 
 @media (max-width:900px){
-  .sftp-account-form{grid-template-columns:1fr}
+  .sftp-inline{grid-template-columns:1fr}
 }
 @media (max-width:640px){
-  .sftp-account-list li{grid-template-columns:auto minmax(0,1fr)}
-  .sftp-account-actions{grid-column:1 / -1;justify-content:stretch}
-  .sftp-account-actions button{flex:1 1 auto}
-  .sftp-account-go button{flex:1 1 auto}
+  .sftp-list li{grid-template-columns:auto minmax(0,1fr)}
+  .sftp-row-actions{grid-column:1 / -1;justify-content:stretch}
+  .sftp-row-actions button:not(.icon-button){flex:1 1 auto}
+  .sftp-inline-actions button,.sftp-add button{flex:1 1 auto}
+  .sftp-owner{flex-basis:100%}
 }

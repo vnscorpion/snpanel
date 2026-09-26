@@ -1,7 +1,8 @@
 // The SFTP page in a browser, as the administrator: SFTP is a page of its
-// own and no longer on Account security; picking a customer shows their
-// login and their SFTP accounts; the form makes one - its password shown
-// once - and its row deletes it again, after asking.
+// own and no longer on Account security; picking a customer shows one list,
+// their own login first (Main) and their SFTP accounts under it; "Add an
+// SFTP account" makes one - its password shown once - its row gives it a
+// new password, and deletes it again, after asking.
 //
 //     node sftp-page.mjs [customer] [out-dir]
 import { chromium } from 'playwright';
@@ -33,21 +34,36 @@ check(true, 'SFTP is a page of its own, in the menu');
 await page.getByLabel('Account', { exact: true }).selectOption({ label: CUSTOMER });
 await page.getByRole('heading', { name: 'SFTP accounts' }).waitFor();
 await page.waitForTimeout(800);
-check((await page.locator('.sftp-access dd code').allTextContents()).includes(CUSTOMER), `the customer's own login is shown (${CUSTOMER})`);
+const first = page.locator('.sftp-list li').first();
+check((await first.textContent()).includes(CUSTOMER) && await first.getByText('Main', { exact: true }).isVisible(),
+  `one list, the customer's own login first, marked Main (${CUSTOMER})`);
+check(await page.locator('.sftp-access').count() === 0, 'no second, separate SFTP section');
 
-const before = await page.locator('.sftp-account-list li').count();
-await page.getByLabel('Name', { exact: true }).fill('uitest');
-await page.getByLabel('Folder', { exact: true }).selectOption({ index: 1 });
-const folder = await page.getByLabel('Folder', { exact: true }).inputValue();
+const before = await page.locator('.sftp-list li').count();
+await page.getByRole('button', { name: 'Add an SFTP account' }).click();
+const add = page.locator('form.sftp-add-form');
+await add.getByLabel('Name', { exact: true }).fill('uitest');
+await add.getByLabel('Folder', { exact: true }).selectOption({ index: 1 });
+const folder = await add.getByLabel('Folder', { exact: true }).inputValue();
 const made = page.waitForResponse((r) => r.url().includes('/sftp/accounts') && r.request().method() === 'POST');
-await page.getByRole('button', { name: 'Create account' }).click();
+await add.getByRole('button', { name: 'Create account' }).click();
 check((await made).ok(), `the form makes the account (${folder})`);
 await page.locator('.sftp-shown code').waitFor();
-const shown = await page.locator('.sftp-shown').textContent();
-check(shown.includes(`${CUSTOMER}_uitest`) && (await page.locator('.sftp-shown code').textContent()).length >= 12, 'its password is shown once, named');
-const row = page.locator('.sftp-account-list li', { hasText: `${CUSTOMER}_uitest` });
+const firstPassword = await page.locator('.sftp-shown code').textContent();
+check((await page.locator('.sftp-shown').textContent()).includes(`${CUSTOMER}_uitest`) && firstPassword.length >= 12, 'its password is shown once, named');
+const row = page.locator('.sftp-list li', { hasText: `${CUSTOMER}_uitest` });
 await row.waitFor();
-check(await page.locator('.sftp-account-list li').count() === before + 1 && (await row.textContent()).includes(folder), `a row with its folder (${(await row.textContent()).replace(/\s+/g, ' ').trim().slice(0, 100)})`);
+check(await page.locator('.sftp-list li').count() === before + 1 && (await row.textContent()).includes(folder), `a row with its folder (${(await row.textContent()).replace(/\s+/g, ' ').trim().slice(0, 100)})`);
+check(await add.count() === 0, 'and the form folds away');
+
+// A new password, from the row itself: empty generates one.
+await row.getByRole('button', { name: 'Change password' }).click();
+const renewed = page.waitForResponse((r) => r.url().includes('/password') && r.request().method() === 'POST');
+await row.locator('form').getByRole('button', { name: 'Save' }).click();
+check((await renewed).ok(), 'Change password in the row, left empty, makes a new one');
+await page.waitForTimeout(500);
+const second = await page.locator('.sftp-shown code').textContent();
+check(second && second !== firstPassword, 'shown once, and not the old one');
 await page.screenshot({ path: `${OUT}/made-light-en.png`, fullPage: true });
 
 await row.getByRole('button', { name: `Delete ${CUSTOMER}_uitest` }).click();

@@ -1,44 +1,75 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, FolderKey, KeyRound, Plus, Trash2 } from 'lucide-react';
-import SftpAccess from '../components/SftpAccess.jsx';
+import { Copy, FolderKey, KeyRound, Plus, Power, PowerOff, Trash2 } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
-import '../components/SftpAccess.css';
 import './Sftp.css';
 
 const HOME = '.';
 const CUSTOM = 'custom';
+const MAIN = 'main';
 
-// SFTP, a page of its own: the account's own login, and the SFTP accounts
-// it made - extra logins, each shut into one folder of its home, the way
-// DirectAdmin's FTP accounts are. An administrator picks whose.
+// SFTP: every login the account has, in one list - its own first, marked
+// Main, then the ones it made, each shut into one folder the way
+// DirectAdmin's FTP accounts are. One way to change a password, one button
+// to add a login; the current panel password is asked for only when it is
+// needed. An administrator picks whose.
 export default function SftpPage() {
-  const { currentUser, isAdmin, loading, request, users, websites } = usePanel();
+  const { currentUser, isAdmin, loadSftpAccess, loading, request, setSftpPassword, switchSftpAccess, users, websites } = usePanel();
   const t = useT();
   const [ownerId, setOwnerId] = useState('');
   const owner = (isAdmin && ownerId ? users.find((u) => String(u.id) === String(ownerId)) : null) || currentUser;
   const self = owner?.id === currentUser?.id;
-  const [data, setData] = useState(null);
-  const [form, setForm] = useState({ name: '', folder: HOME, custom: '', password: '' });
-  const [stepUp, setStepUp] = useState({ current_password: '', code: '' });
+  const [main, setMain] = useState(null);
+  const [subs, setSubs] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [password, setPassword] = useState('');
+  const [proof, setProof] = useState({ current_password: '', code: '' });
+  const [form, setForm] = useState({ name: '', folder: HOME, custom: '' });
   const [shown, setShown] = useState(null);
   const [copied, setCopied] = useState(false);
   const busy = !!loading;
 
   async function load() {
-    setData(await request(`/users/${owner.id}/sftp/accounts`, { silent: true }));
+    const [own, made] = await Promise.all([
+      loadSftpAccess(owner.id),
+      request(`/users/${owner.id}/sftp/accounts`, { silent: true }),
+    ]);
+    setMain(own);
+    setSubs(made);
   }
 
   useEffect(() => {
     if (!owner?.id) return;
-    setData(null);
+    setMain(null);
+    setSubs(null);
     setShown(null);
+    close();
     load();
   }, [owner?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // The folders offered: the whole home, and each of the owner's sites and
-  // its web folder, as paths below the home.
-  const linux = data?.owner || '';
+  function close() {
+    setOpen(null);
+    setPassword('');
+    setProof({ current_password: '', code: '' });
+    setForm({ name: '', folder: HOME, custom: '' });
+  }
+
+  function toggle(which) {
+    const next = open === which ? null : which;
+    close();
+    setOpen(next);
+  }
+
+  // What the server made is shown once; the list is read again either way.
+  function took(answer, username) {
+    if (!answer) return;
+    setCopied(false);
+    setShown(answer.password ? { username: answer.username || username, password: answer.password } : null);
+    close();
+    load();
+  }
+
+  const linux = subs?.owner || main?.username || owner?.username || '';
   const folders = useMemo(() => {
     const prefix = `/home/${linux}/`;
     const theirs = websites.filter((site) => site.owner_id === owner?.id && String(site.root_path || '').startsWith(prefix));
@@ -51,32 +82,23 @@ export default function SftpPage() {
     });
   }, [websites, owner?.id, linux, t]);
 
-  const directory = form.folder === CUSTOM ? form.custom.trim().replace(/^\/+|\/+$/g, '') : form.folder;
-  const nameOk = /^[a-z0-9]{1,16}$/.test(form.name);
-  const passwordOk = !form.password || (form.password.length >= 12 && !/[:\r\n]/.test(form.password));
-  const stepUpReady = !self || (stepUp.current_password && (!owner?.totp_enabled || stepUp.code.trim().length >= 6));
-  const proof = self ? stepUp : {};
+  const passwordOk = !password || (password.length >= 12 && !/[:\r\n]/.test(password));
+  const proofOk = !self || (proof.current_password && (!owner?.totp_enabled || proof.code.trim().length >= 6));
+  const asked = () => ({ ...(password ? { password } : { generate: true }), ...(self ? proof : {}) });
 
-  function took(answer) {
-    if (!answer) return;
-    setStepUp({ current_password: '', code: '' });
-    setCopied(false);
-    if (answer.password) setShown({ username: answer.username, password: answer.password });
-    load();
+  async function changePassword(row) {
+    if (row === MAIN) {
+      took(await setSftpPassword(owner, asked()), main?.username);
+    } else {
+      took(await request(`/users/${owner.id}/sftp/accounts/${row.id}/password`,
+        { method: 'POST', body: JSON.stringify(asked()) }, t('Setting a new password...')), row.username);
+    }
   }
 
-  async function create(event) {
-    event.preventDefault();
-    const body = { name: form.name, directory, ...(form.password ? { password: form.password } : { generate: true }), ...proof };
-    const answer = await request(`/users/${owner.id}/sftp/accounts`, { method: 'POST', body: JSON.stringify(body) }, t('Creating the SFTP account...'));
-    if (answer) setForm({ name: '', folder: HOME, custom: '', password: '' });
-    took(answer);
-  }
-
-  async function renew(account) {
-    const answer = await request(`/users/${owner.id}/sftp/accounts/${account.id}/password`,
-      { method: 'POST', body: JSON.stringify({ generate: true, ...proof }) }, t('Setting a new password...'));
-    took(answer);
+  async function add() {
+    const directory = form.folder === CUSTOM ? form.custom.trim().replace(/^\/+|\/+$/g, '') : form.folder;
+    took(await request(`/users/${owner.id}/sftp/accounts`,
+      { method: 'POST', body: JSON.stringify({ name: form.name, directory, ...asked() }) }, t('Creating the SFTP account...')));
   }
 
   async function remove(account) {
@@ -96,111 +118,138 @@ export default function SftpPage() {
     }
   }
 
-  if (!owner) return <section className="section"><p className="hint">{t('Loading…')}</p></section>;
-  const items = data?.items || [];
+  if (!owner || !main) return <section className="section"><p className="hint">{t('Loading…')}</p></section>;
+  const items = subs?.items || [];
+  const active = main.active !== false;
   const host = window.location.hostname;
-  const ports = data?.ports?.length ? data.ports.join(', ') : '22';
-  const full = data && items.length >= data.max;
+  const ports = (main.ports?.length ? main.ports : subs?.ports || []).join(', ') || '22';
+  const full = subs && items.length >= subs.max;
 
-  return <div className="sftp-page">
-    {isAdmin && users.length > 1 && <section className="section sftp-owner">
-      <label htmlFor="sftp-owner">{t('Account')}</label>
-      <select id="sftp-owner" value={owner.id} onChange={(e) => setOwnerId(e.target.value)}>
-        {users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
-      </select>
-    </section>}
+  // The current panel password (and code) - asked for inside the form that
+  // needs it, only when the account is the viewer's own.
+  const proofFields = self && <>
+    <div className="sftp-field">
+      <label htmlFor="sftp-proof-password">{t('Current panel password')}</label>
+      <input id="sftp-proof-password" type="password" autoComplete="current-password" value={proof.current_password}
+        onChange={(e) => setProof((prev) => ({ ...prev, current_password: e.target.value }))} />
+    </div>
+    {owner.totp_enabled && <div className="sftp-field">
+      <label htmlFor="sftp-proof-code">{t('Authenticator code')}</label>
+      <input id="sftp-proof-code" inputMode="numeric" autoComplete="one-time-code" value={proof.code}
+        onChange={(e) => setProof((prev) => ({ ...prev, code: e.target.value }))} />
+    </div>}
+  </>;
 
-    <section className="section">
-      <SftpAccess user={owner} self={self} page />
-    </section>
+  const passwordForm = (row) => <form className="sftp-inline" aria-label={t('Change password')}
+    onSubmit={(e) => { e.preventDefault(); changePassword(row); }}>
+    <div className="sftp-field">
+      <label htmlFor="sftp-new-password">{t('New password')}</label>
+      <input id="sftp-new-password" type="password" autoComplete="new-password" value={password} placeholder={t('Empty: one is generated')}
+        onChange={(e) => setPassword(e.target.value)} autoFocus />
+    </div>
+    {proofFields}
+    <div className="sftp-inline-actions">
+      <button type="submit" disabled={busy || !passwordOk || !proofOk}>{t('Save')}</button>
+      <button type="button" className="secondary" onClick={close}>{t('Cancel')}</button>
+    </div>
+  </form>;
 
-    <section className="section sftp-accounts" aria-labelledby="sftp-accounts-title">
-      <div className="section-title">
-        <div>
-          <h2 id="sftp-accounts-title">{t('SFTP accounts')}</h2>
-          <p className="hint">{t('Extra logins, each shut into one folder - a developer gets one site, not the whole account. What they upload belongs to {owner}.', { owner: linux || owner.username })}</p>
-        </div>
+  return <section className="section sftp-page" aria-labelledby="sftp-title">
+    <div className="section-title">
+      <div>
+        <h2 id="sftp-title">{t('SFTP accounts')}</h2>
+        <p className="hint">{t('Connect with FileZilla, WinSCP or any SFTP app - host {host}, port {port}. Each account sees only its own folder.', { host, port: ports })}</p>
       </div>
+      {isAdmin && users.length > 1 && <div className="sftp-owner">
+        <label htmlFor="sftp-owner">{t('Account')}</label>
+        <select id="sftp-owner" value={owner.id} onChange={(e) => setOwnerId(e.target.value)}>
+          {users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}
+        </select>
+      </div>}
+    </div>
 
-      {self && owner.is_active !== false && <div className="sftp-proof">
-        <p className="hint">{t('Your current password proves it is you - for a new account and for a new password.')}</p>
-        <div className="sftp-field">
-          <label htmlFor="sftp-proof-current">{t('Current panel password')}</label>
-          <input id="sftp-proof-current" type="password" autoComplete="current-password" value={stepUp.current_password}
-            onChange={(e) => setStepUp((prev) => ({ ...prev, current_password: e.target.value }))} />
+    {shown && <div className="sftp-shown" role="status">
+      <span>{t('Password of {name}:', { name: shown.username })}</span>
+      <code>{shown.password}</code>
+      <button type="button" className="mini secondary-light" onClick={copy}><Copy size={13} aria-hidden="true"/> {copied ? t('Copied') : t('Copy')}</button>
+      <small>{t('Shown this once. Copy it now.')}</small>
+    </div>}
+    {!active && <p className="hint">{t('The account is suspended: SFTP stays locked until it is let back in.')}</p>}
+
+    <ul className="sftp-list">
+      <li className={main.enabled ? '' : 'off'}>
+        <FolderKey size={16} aria-hidden="true"/>
+        <div className="sftp-row-text">
+          <strong><code>{main.username}</code> <span className="badge">{t('Main')}</span>{!main.enabled && <> <span className="badge">{t('Off')}</span></>}</strong>
+          <small>{main.own_password ? t('The whole home · a password of its own') : t('The whole home · the panel password')}</small>
         </div>
-        {owner.totp_enabled && <div className="sftp-field">
-          <label htmlFor="sftp-proof-code">{t('Authenticator code')}</label>
-          <input id="sftp-proof-code" inputMode="numeric" autoComplete="one-time-code" value={stepUp.code}
-            onChange={(e) => setStepUp((prev) => ({ ...prev, code: e.target.value }))} />
-        </div>}
+        <div className="sftp-row-actions">
+          {main.enabled && active && <button type="button" className="secondary-light" disabled={busy} onClick={() => toggle(MAIN)}
+            aria-expanded={open === MAIN}><KeyRound size={14} aria-hidden="true"/> {t('Change password')}</button>}
+          {!main.enabled && isAdmin && active && <button type="button" disabled={busy}
+            onClick={async () => took(await switchSftpAccess(owner, true, { generate: true }), main.username)}><Power size={14} aria-hidden="true"/> {t('Turn on')}</button>}
+          {main.enabled && isAdmin && <button type="button" className="secondary-light icon-button danger-hover" disabled={busy}
+            onClick={async () => { const data = await switchSftpAccess(owner, false); if (data) load(); }}
+            aria-label={t('Turn SFTP off')} title={t('Turn SFTP off')}><PowerOff size={14} aria-hidden="true"/></button>}
+          {!main.enabled && !isAdmin && <small className="hint">{t('Ask an administrator to turn it on.')}</small>}
+        </div>
+        {open === MAIN && passwordForm(MAIN)}
+      </li>
+      {items.map((account) => <li key={account.id}>
+        <FolderKey size={16} aria-hidden="true"/>
+        <div className="sftp-row-text">
+          <strong><code>{account.username}</code></strong>
+          <small>{account.directory === HOME ? t('The whole home') : t('Folder: {folder}', { folder: account.directory })}</small>
+        </div>
+        <div className="sftp-row-actions">
+          {active && <button type="button" className="secondary-light" disabled={busy} onClick={() => toggle(account.id)}
+            aria-expanded={open === account.id}><KeyRound size={14} aria-hidden="true"/> {t('Change password')}</button>}
+          <button type="button" className="danger icon-button" disabled={busy} onClick={() => remove(account)}
+            aria-label={t('Delete {name}', { name: account.username })} title={t('Delete {name}', { name: account.username })}><Trash2 size={14} aria-hidden="true"/></button>
+        </div>
+        {open === account.id && passwordForm(account)}
+      </li>)}
+    </ul>
+
+    {active && open !== 'add' && <div className="sftp-add">
+      <button type="button" className="secondary" disabled={busy || full} onClick={() => toggle('add')}><Plus size={14} aria-hidden="true"/> {t('Add an SFTP account')}</button>
+      {full && <small className="hint">{t('This account has {count} SFTP accounts, the most it may have.', { count: subs.max })}</small>}
+    </div>}
+    {active && open === 'add' && <form className="sftp-inline sftp-add-form" aria-label={t('New SFTP account')}
+      onSubmit={(e) => { e.preventDefault(); add(); }}>
+      <div className="sftp-field">
+        <label htmlFor="sftp-add-name">{t('Name')}</label>
+        <span className="sftp-name"><span aria-hidden="true">{linux}_</span>
+          <input id="sftp-add-name" value={form.name} maxLength={16} autoComplete="off" spellCheck={false} placeholder="dev" autoFocus
+            aria-describedby="sftp-add-name-hint"
+            onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '') }))} />
+        </span>
+        <small id="sftp-add-name-hint" className="hint">{t('Signs in as {name}', { name: `${linux}_${form.name || '…'}` })}</small>
+      </div>
+      <div className="sftp-field">
+        <label htmlFor="sftp-add-folder">{t('Folder')}</label>
+        <select id="sftp-add-folder" value={form.folder} onChange={(e) => setForm((prev) => ({ ...prev, folder: e.target.value }))}>
+          <option value={HOME}>{t('The whole home')}</option>
+          {folders.map((folder) => <option key={folder.value} value={folder.value}>{folder.label}</option>)}
+          <option value={CUSTOM}>{t('Another folder…')}</option>
+        </select>
+      </div>
+      {form.folder === CUSTOM && <div className="sftp-field">
+        <label htmlFor="sftp-add-custom">{t('Folder below the home')}</label>
+        <input id="sftp-add-custom" value={form.custom} placeholder="example.com/public_html/uploads" spellCheck={false} autoComplete="off"
+          onChange={(e) => setForm((prev) => ({ ...prev, custom: e.target.value }))} />
       </div>}
-
-      {shown && <div className="sftp-shown" role="status">
-        <span>{t('Password of {name}:', { name: shown.username })}</span>
-        <code>{shown.password}</code>
-        <button type="button" className="mini secondary-light" onClick={copy}><Copy size={13} aria-hidden="true"/> {copied ? t('Copied') : t('Copy')}</button>
-        <small>{t('Shown this once. Copy it now.')}</small>
-      </div>}
-
-      {data === null ? <p className="hint">{t('Loading…')}</p>
-        : items.length === 0 ? <p className="empty-note">{t('No SFTP account yet.')}</p>
-          : <ul className="sftp-account-list">
-            {items.map((account) => <li key={account.id}>
-              <FolderKey size={16} aria-hidden="true"/>
-              <div className="sftp-account-text">
-                <strong><code>{account.username}</code></strong>
-                <small>{account.directory === HOME
-                  ? t('The whole home, seen as {home}', { home: account.home })
-                  : t('{folder}, seen as {home}', { folder: account.directory, home: account.home })}
-                {' · '}{host}:{ports}</small>
-              </div>
-              <div className="sftp-account-actions">
-                <button type="button" className="secondary-light" disabled={busy || !stepUpReady} onClick={() => renew(account)}
-                  title={!stepUpReady ? t('Fill in your current password first.') : undefined}><KeyRound size={14} aria-hidden="true"/> {t('New password')}</button>
-                <button type="button" className="danger" disabled={busy} onClick={() => remove(account)}
-                  aria-label={t('Delete {name}', { name: account.username })} title={t('Delete {name}', { name: account.username })}><Trash2 size={14} aria-hidden="true"/></button>
-              </div>
-            </li>)}
-          </ul>}
-
-      {!owner.is_active && owner.is_active !== undefined
-        ? <p className="hint">{t('The account is suspended: its SFTP accounts stay locked until it is let back in.')}</p>
-        : <form className="sftp-account-form" onSubmit={create} aria-label={t('New SFTP account')}>
-          <h3>{t('New SFTP account')}</h3>
-          <div className="sftp-field">
-            <label htmlFor="sftp-new-name">{t('Name')}</label>
-            <div className="sftp-name">
-              <span>{linux || owner.username}_</span>
-              <input id="sftp-new-name" value={form.name} maxLength={16} autoComplete="off" spellCheck={false} placeholder="dev"
-                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '') }))} />
-            </div>
-          </div>
-          <div className="sftp-field">
-            <label htmlFor="sftp-new-folder">{t('Folder')}</label>
-            <select id="sftp-new-folder" value={form.folder} onChange={(e) => setForm((prev) => ({ ...prev, folder: e.target.value }))}>
-              <option value={HOME}>{t('The whole home')}</option>
-              {folders.map((folder) => <option key={folder.value} value={folder.value}>{folder.label}</option>)}
-              <option value={CUSTOM}>{t('Another folder…')}</option>
-            </select>
-          </div>
-          {form.folder === CUSTOM && <div className="sftp-field">
-            <label htmlFor="sftp-new-custom">{t('Folder below the home')}</label>
-            <input id="sftp-new-custom" value={form.custom} placeholder="example.com/public_html/uploads" spellCheck={false} autoComplete="off"
-              onChange={(e) => setForm((prev) => ({ ...prev, custom: e.target.value }))} />
-          </div>}
-          <div className="sftp-field">
-            <label htmlFor="sftp-new-password">{t('Password')}</label>
-            <input id="sftp-new-password" type="password" autoComplete="new-password" value={form.password}
-              placeholder={t('Empty: one is generated')} onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))} />
-          </div>
-          <div className="sftp-account-go">
-            <button type="submit" disabled={busy || full || !nameOk || !passwordOk || !directory || !stepUpReady}>
-              <Plus size={14} aria-hidden="true"/> {t('Create account')}
-            </button>
-          </div>
-          {full && <p className="hint">{t('This account has {count} SFTP accounts, the most it may have.', { count: data.max })}</p>}
-        </form>}
-    </section>
-  </div>;
+      <div className="sftp-field">
+        <label htmlFor="sftp-add-password">{t('Password')}</label>
+        <input id="sftp-add-password" type="password" autoComplete="new-password" value={password} placeholder={t('Empty: one is generated')}
+          onChange={(e) => setPassword(e.target.value)} />
+      </div>
+      {proofFields}
+      <div className="sftp-inline-actions">
+        <button type="submit" disabled={busy || !/^[a-z0-9]{1,16}$/.test(form.name) || !passwordOk || !proofOk
+          || (form.folder === CUSTOM && !form.custom.trim())}><Plus size={14} aria-hidden="true"/> {t('Create account')}</button>
+        <button type="button" className="secondary" onClick={close}>{t('Cancel')}</button>
+      </div>
+    </form>}
+  </section>;
 }
