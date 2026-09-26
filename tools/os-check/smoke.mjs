@@ -229,13 +229,24 @@ async function main() {
   check(access.ok && access.json?.total > 0, `Access Logs reads the site's log (${access.json?.total} lines)`, detail(access));
 
   begin('PHP settings');
+  // The page saves nothing below SNPanel's floor (300 s, 600 s, 10000 vars,
+  // 1024M): the values go up to it, and memory above it, to see it arrive.
   for (const v of installed) {
     const cfg = await api('GET', `/maintenance/php-config?php_version=${v}`);
-    const set = await api('POST', '/maintenance/php-config', { ...cfg.json, php_version: v, memory_limit: '384M' });
+    const floor = {
+      max_execution_time: Math.max(Number(cfg.json?.max_execution_time) || 0, 300),
+      max_input_time: Math.max(Number(cfg.json?.max_input_time) || 0, 600),
+      max_input_vars: Math.max(Number(cfg.json?.max_input_vars) || 0, 10000),
+      post_max_size: '1024M',
+      upload_max_filesize: '1024M',
+    };
+    const low = await api('POST', '/maintenance/php-config', { ...cfg.json, ...floor, php_version: v, memory_limit: '384M' });
+    const set = await api('POST', '/maintenance/php-config', { ...cfg.json, ...floor, php_version: v, memory_limit: '1536M' });
+    check(low.status === 422, `PHP ${v}: a memory_limit below the floor is refused (${low.status})`);
     check(cfg.ok && set.ok, `PHP ${v}: settings read and written (${set.json?.target || detail(set)})`);
   }
-  p = await webUntil(phpDomain, '/probe.php', (r) => r.body.includes(' 384M '), { https: siteHttps });
-  check(p.body.includes(' 384M '), `the new memory_limit reaches PHP-FPM: ${p.body.slice(0, 60)}`, p.body.slice(0, 120));
+  p = await webUntil(phpDomain, '/probe.php', (r) => r.body.includes(' 1536M '), { https: siteHttps });
+  check(p.body.includes(' 1536M '), `the new memory_limit reaches PHP-FPM: ${p.body.slice(0, 60)}`, p.body.slice(0, 120));
   const opcOff = await api('POST', '/maintenance/php-opcache', { php_version: newest, enabled: false });
   p = await webUntil(phpDomain, '/probe.php', (r) => r.body.includes('opcache=0'), { https: siteHttps });
   check(opcOff.ok && p.body.includes('opcache=0'), `OPcache off for PHP ${newest}: ${p.body.slice(0, 60)}`, detail(opcOff));

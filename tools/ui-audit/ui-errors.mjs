@@ -6,7 +6,7 @@
 import { chromium } from 'playwright';
 import { BASE, logIn, ROUTES } from './capture.mjs';
 
-const pages = { ...ROUTES, mcp: '/ai-assistants', 'waf-site': '/waf-site', 'sftp': '/security' };
+const pages = { ...ROUTES, mcp: '/ai-assistants', 'waf-site': '/waf-site' };
 const browser = await chromium.launch();
 const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 900 }, locale: 'en-US' });
 await logIn(context);

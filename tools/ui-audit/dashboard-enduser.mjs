@@ -10,7 +10,8 @@
 //     amber while the authenticator app is off;
 //   - "Needs attention" says two-step verification is off, with the way to
 //     Account security;
-//   - its quick actions include New website and SFTP login and no
+//   - its quick actions include New website and SFTP accounts (the SFTP
+//     page) and no
 //     administrator's action;
 // saves screenshots, then deletes the user again - also when a check fails.
 import { chromium } from 'playwright';
@@ -75,7 +76,7 @@ try {
       const attention = page.locator('.dash-attention-list li', { hasText: 'Two-step verification is off' });
       check(await attention.count() === 1 && (await attention.locator('a').getAttribute('href')) === '/security', 'needs attention: two-step verification is off, with the way to Account security');
       const actions = await page.$$eval('.dash-action', (as) => as.map((a) => a.textContent));
-      check(actions.includes('New website') && actions.includes('SFTP login'), `quick actions: ${actions.join(', ')}`);
+      check(actions.includes('New website') && actions.includes('SFTP accounts'), `quick actions: ${actions.join(', ')}`);
       for (const adminOnly of ['Panel users', 'New SFTP account']) check(!actions.includes(adminOnly), `no ${adminOnly}`);
     }
     const sideways = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
