@@ -2874,8 +2874,9 @@ function App() {
   }
 
   // A restore made accounts and sites: the lists show them.
-  async function restoreFinished(job) {
-    setNotice(t('Restore finished: {done} restored, {failed} failed.', { done: job.done, failed: job.failed }));
+  // The Restore tab says what came back in a line of its own: no toast
+  // saying it again.
+  async function restoreFinished() {
     await refreshAll();
     await loadUsers();
     await loadRestoreBackups();

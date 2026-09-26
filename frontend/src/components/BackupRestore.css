@@ -55,6 +55,9 @@
 
 .bk-restore-job{display:grid;gap:var(--space-2);padding:12px;border:1px solid var(--primary-border);border-radius:var(--radius-lg);background:var(--primary-light)}
 .bk-restore-job.done{border-color:var(--border);background:var(--surface-alt)}
+.bk-restore-job.bad{border-color:var(--danger-border);background:var(--danger-bg)}
+.bk-restore-job-close{display:inline-grid;place-items:center;width:30px;height:30px;min-height:0;margin-left:auto;padding:0;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--text-muted);box-shadow:none}
+.bk-restore-job-close:hover:not(:disabled){background:var(--surface);color:var(--text);border-color:var(--border)}
 .bk-restore-job-head{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
 .bk-restore-job-head strong{color:var(--text)}
 .bk-restore-job-head small{color:var(--text-secondary);flex:1 1 160px}

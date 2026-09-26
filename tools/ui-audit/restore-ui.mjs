@@ -2,7 +2,7 @@
 // are listed one row per account, an account with several backups offers
 // their dates - the newest chosen - and picking another date ticks the
 // account; Restore - after asking - restores the chosen backup while the
-// page follows the job to its end.
+// page follows the job to its end, and says in a line what came back.
 //
 //     node restore-ui.mjs [account] [out-dir]
 //
@@ -101,15 +101,17 @@ try {
   const banner = page.locator('.bk-restore-job');
   await banner.waitFor({ timeout: 15000 });
   await page.locator('.bk-restore-job.done').waitFor({ timeout: 300000 });
-  const said = (await banner.textContent()).replace(/\s+/g, ' ');
-  check(/Restore finished: 1 restored, 0 failed/.test(said) && said.includes(ACCOUNT), `the page follows the restore to its end (${said.slice(0, 140)})`);
+  const said = (await banner.textContent()).replace(/\s+/g, ' ').trim();
+  check(new RegExp(`^Restored ${ACCOUNT}: \\d+ website\\(s\\), \\d+ database\\(s\\)\\.$`).test(said), `the page follows the restore to its end, and says what came back in a line (${said})`);
+  check(await banner.locator('.bk-restore-steps').count() === 0, 'with nothing failed, no list under it');
+  check(await page.locator('.app-toast-stack').getByText(/Restore finished|Restored/).count() === 0, 'and no toast saying it again');
   await page.screenshot({ path: `${OUT}/restored-light-en.png`, fullPage: true });
 
   // Opened again: the last restore is still there to read.
   await page.reload({ waitUntil: 'networkidle' });
   await page.getByRole('tab', { name: 'Restore' }).click();
   await banner.waitFor({ timeout: 10000 });
-  check(/1 restored/.test(await banner.textContent()), 'opened again, the page shows the last restore');
+  check((await banner.textContent()).includes(`Restored ${ACCOUNT}:`), 'opened again, the page shows the last restore');
   check(errors.length === 0, `no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } catch (err) {
   ok = false;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, CalendarDays, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload, X } from 'lucide-react';
 import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
@@ -148,6 +148,21 @@ export default function BackupRestore() {
     if (done) { setSource('local'); find('local', ''); }
   }
 
+  // What a finished restore brought back, in a line.
+  function outcome(done) {
+    const back = done.items.filter((item) => item.status === 'done');
+    const names = back.map((item) => item.username || item.name).join(', ');
+    if (done.failed > 0) {
+      return back.length
+        ? t('Restored {names}; {failed} could not be restored:', { names, failed: done.failed })
+        : t('Nothing was restored:');
+    }
+    if (back.length === 1) {
+      return t('Restored {name}: {sites} website(s), {databases} database(s).', { name: names, sites: back[0].websites, databases: back[0].databases });
+    }
+    return t('Restored {count} accounts: {names}.', { count: back.length, names });
+  }
+
   // As every date of the panel reads: 2026-09-27 03:00.
   const when = (text) => formatWhen(text);
   const needle = findAccount.trim().toLowerCase();
@@ -155,17 +170,18 @@ export default function BackupRestore() {
   const folderOf = (item) => (!remote && item.folder === 'restore' ? t('restore folder') : !remote && item.folder === 'uploads' ? t('uploaded') : '');
 
   return <div className="bk-restore">
-    {job && <section className={`bk-restore-job ${job.status}`} aria-live="polite">
+    {job && <section className={`bk-restore-job ${job.status}${!running && job.failed ? ' bad' : ''}`} aria-live="polite">
       <div className="bk-restore-job-head">
         {running ? <Loader2 size={16} className="spin" aria-hidden="true" /> : job.failed ? <AlertCircle size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
         <strong>{running
           ? t('Restoring {done} of {total}...', { done: job.done + job.failed + 1 > job.total ? job.total : job.done + job.failed + 1, total: job.total })
-          : t('Restore finished: {done} restored, {failed} failed.', { done: job.done, failed: job.failed })}</strong>
-        <small>{job.source === 'local' ? t('From this server') : t('From {name}', { name: job.target_name })}</small>
-        {!running && <button type="button" className="secondary-light mini" onClick={() => setJob(null)}>{t('Hide')}</button>}
+          : outcome(job)}</strong>
+        {running && job.source !== 'local' && <small>{t('From {name}', { name: job.target_name })}</small>}
+        {!running && <button type="button" className="bk-restore-job-close" onClick={() => setJob(null)} aria-label={t('Hide')} title={t('Hide')}><X size={15} aria-hidden="true" /></button>}
       </div>
-      <ol className="bk-restore-steps">
-        {job.items.map((item) => <li key={item.file} className={item.status}>
+      {/* While it runs, every account's progress; once done, only what failed. */}
+      {(running || job.failed > 0) && <ol className="bk-restore-steps">
+        {job.items.filter((item) => running || item.status === 'error').map((item) => <li key={item.file} className={item.status}>
           <span className={`badge ${item.status === 'done' ? 'ok' : item.status === 'error' ? 'bad' : ''}`}>{ITEM_STATES[item.status] ? t(ITEM_STATES[item.status]) : item.status}</span>
           <span className="bk-restore-step-text">
             <strong>{item.username || item.name}</strong>
@@ -174,7 +190,7 @@ export default function BackupRestore() {
               : item.message || item.name}</small>
           </span>
         </li>)}
-      </ol>
+      </ol>}
     </section>}
 
     <fieldset className="bk-restore-step" disabled={running}>
