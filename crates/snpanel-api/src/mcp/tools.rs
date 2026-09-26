@@ -1467,9 +1467,113 @@ fn run_backup_schedule(ctx: Arc<Context>, args: Arguments) -> ToolFuture {
     })
 }
 
+/// Where the AI assistants page files a tool, by what it works on. Every
+/// tool has a group - a test says so - so a new one cannot land in a
+/// section the page has no name for.
+pub fn group(name: &str) -> &'static str {
+    match name {
+        "whoami" => "account",
+        "list_websites" | "get_website" | "issue_ssl_certificate" | "set_website_waf" => "websites",
+        "read_site_log" | "read_waf_access_log" | "traffic_summary" => "traffic",
+        "list_files" | "read_file" | "search_files" | "write_file" | "create_directory"
+        | "move_file" | "delete_file" => "files",
+        "list_databases" => "databases",
+        "list_backups"
+        | "list_backup_jobs"
+        | "create_backup"
+        | "list_backup_schedules"
+        | "run_backup_schedule" => "backups",
+        "server_resources"
+        | "list_services"
+        | "restart_service"
+        | "panel_update_status"
+        | "list_users"
+        | "recent_audit_log" => "server",
+        "list_firewall_rules" | "block_ip" | "unblock_ip" | "list_waf_rules" | "add_waf_rule" => {
+            "security"
+        }
+        _ => "other",
+    }
+}
+
+/// The tools a role may call, as the AI assistants page documents them:
+/// `tools/list`'s filter for a token that allows actions, so a tool that
+/// changes something is shown - marked - rather than left out, with its
+/// group and each argument's kind, choices and range.
+pub fn catalogue(is_admin: bool) -> Vec<Value> {
+    ALL.iter()
+        .filter(|tool| super::visible(tool, is_admin, true))
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "title": tool.title,
+                "description": tool.description,
+                "group": group(tool.name),
+                "admin_only": tool.admin_only,
+                "writes": tool.writes,
+                "destructive": tool.destructive,
+                "params": tool.params.iter().map(|p| json!({
+                    "name": p.name,
+                    "type": p.kind.name(),
+                    "description": p.description,
+                    "required": p.required,
+                    "choices": p.choices,
+                    "minimum": p.minimum,
+                    "maximum": p.maximum,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the page documents is what a token of the role is offered -
+    /// every tool, each in a named group, its arguments as the schema has
+    /// them - and nothing an end user's token could not call.
+    #[test]
+    fn the_catalogue_is_what_a_role_may_call_each_in_a_group() {
+        let admin = catalogue(true);
+        let customer = catalogue(false);
+        assert_eq!(admin.len(), ALL.len());
+        assert_eq!(customer.len(), ALL.iter().filter(|t| !t.admin_only).count());
+        assert!(customer.iter().all(|t| t["admin_only"] == json!(false)));
+        for tool in ALL {
+            assert_ne!(group(tool.name), "other", "{} has no group", tool.name);
+        }
+        let write_file = admin
+            .iter()
+            .find(|t| t["name"] == "write_file")
+            .expect("write_file is documented");
+        assert_eq!(write_file["writes"], json!(true));
+        assert_eq!(write_file["group"], "files");
+        let schema = super::super::input_schema(
+            ALL.iter()
+                .find(|t| t.name == "write_file")
+                .expect("write_file is a tool"),
+        );
+        for param in write_file["params"].as_array().unwrap() {
+            let name = param["name"].as_str().unwrap();
+            assert_eq!(
+                schema["properties"][name]["type"], param["type"],
+                "{name}: the page and the schema agree"
+            );
+        }
+        // Choices and ranges travel as the schema has them.
+        let log = admin.iter().find(|t| t["name"] == "read_site_log").unwrap();
+        let lines = log["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "lines")
+            .unwrap();
+        assert_eq!(
+            (lines["minimum"].clone(), lines["maximum"].clone()),
+            (json!(1), json!(500))
+        );
+    }
 
     fn entry(ip: &str, path: &str, status: u64, verdict: &str, agent: &str, when: &str) -> Value {
         json!({ "ip": ip, "path": path, "status": status, "verdict": verdict, "user_agent": agent, "domain": "a.com", "timestamp": when })

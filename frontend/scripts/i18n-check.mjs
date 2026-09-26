@@ -1,6 +1,6 @@
 // Keeps src/i18n/vi.js and src/i18n/vi-server.js honest against the code.
 //
-//     node scripts/i18n-check.mjs [--list] [--list-server]
+//     node scripts/i18n-check.mjs [--list] [--list-server] [--list-mcp]
 //
 // vi.js translates the panel's own strings. It collects every literal passed
 // to t() or msg() under src/, then reports:
@@ -20,12 +20,18 @@
 // must come back as its own translation with the values in place, and not
 // as another template's.
 //
+// vi-mcp.js translates the MCP tools' own words - titles, descriptions,
+// arguments - for the AI assistants page, which documents them; the English
+// is what scripts/mcp-texts.mjs collects from the tools. An entry for words
+// no tool declares any more is an error, as above.
+//
 // No parser for the JavaScript, on purpose: t() and msg() take a literal
 // first argument by convention, and a regular expression over the source
 // keeps this runnable without installing anything.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { mcpTexts } from './mcp-texts.mjs';
 import { serverTemplates } from './server-messages.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -46,7 +52,7 @@ const unescape = (s, q) => s
   .replace(new RegExp(`\\\\${q}`, 'g'), q)
   .replace(/\\\\/g, '\\');
 
-const CATALOGUE_FILES = new Set(['vi.js', 'vi-server.js', 'server.js'].map((name) => join(I18N, name)));
+const CATALOGUE_FILES = new Set(['vi.js', 'vi-server.js', 'vi-mcp.js', 'server.js'].map((name) => join(I18N, name)));
 const used = new Map();
 for (const file of walk(src)) {
   if (CATALOGUE_FILES.has(file)) continue;
@@ -99,6 +105,15 @@ for (const [en, tr] of Object.entries(viServer)) {
 const serverUntranslated = [...templates.keys()].filter((k) => !(k in viServer));
 console.log(`${templates.size} server messages; ${Object.keys(viServer).length} translated; ${serverUntranslated.length} still English-only`);
 if (process.argv.includes('--list-server')) for (const k of serverUntranslated) console.log(`  ${templates.get(k)[0]}: ${JSON.stringify(k)}`);
+
+const viMcp = await load('vi-mcp.js');
+const toolTexts = mcpTexts();
+for (const en of Object.keys(viMcp)) {
+  if (!toolTexts.has(en)) problem(`MCP translation for words no tool declares any more: ${JSON.stringify(en)}`);
+}
+const mcpUntranslated = [...toolTexts].filter((k) => !(k in viMcp));
+console.log(`${toolTexts.size} MCP tool texts; ${Object.keys(viMcp).length} translated; ${mcpUntranslated.length} still English-only`);
+if (process.argv.includes('--list-mcp')) for (const k of mcpUntranslated) console.log(`  ${JSON.stringify(k)}`);
 
 console.log(errors ? `FAIL: ${errors} problem(s)` : 'PASS');
 process.exit(errors ? 1 : 0);

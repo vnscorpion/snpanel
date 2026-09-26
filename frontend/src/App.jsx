@@ -234,6 +234,9 @@ function App() {
   const [mcpInfo, setMcpInfo] = useState(null);
   const [mcpTokens, setMcpTokens] = useState([]);
   const [mcpAllTokens, setMcpAllTokens] = useState([]);
+  // What an assistant can do with a token of this account: the tools its
+  // role may call, for the AI assistants page's reference.
+  const [mcpTools, setMcpTools] = useState({ tools: [], loaded: false });
   const [scanTargetWebsiteId, setScanTargetWebsiteId] = useState('');
   const [scanResults, setScanResults] = useState(null);
   const [scanJob, setScanJob] = useState(null);
@@ -3178,6 +3181,11 @@ function App() {
     if (data?.items) setMcpTokens(data.items);
   }
 
+  async function loadMcpTools() {
+    const data = await request('/mcp/tools', { silent: true });
+    setMcpTools({ tools: data?.tools || [], loaded: true });
+  }
+
   async function loadAllMcpTokens() {
     const data = await request('/mcp/tokens?all=true', { silent: true });
     if (data?.items) setMcpAllTokens(data.items);
@@ -4189,9 +4197,11 @@ function App() {
       createMcpToken,
       loadAllMcpTokens,
       loadMcp,
+      loadMcpTools,
       mcpAllTokens,
       mcpInfo,
       mcpTokens,
+      mcpTools,
       revokeAllMcpTokens,
       revokeMcpToken,
       fileBreadcrumbs,

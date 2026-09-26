@@ -2,8 +2,9 @@
 //!
 //! `POST /api/mcp` is the Model Context Protocol for an assistant holding a
 //! token - see `crate::mcp`. The rest are for the pages, with the panel
-//! session: `GET /api/mcp/info`, and an account's tokens, made, listed and
-//! revoked.
+//! session: `GET /api/mcp/info`, `GET /api/mcp/tools` - the tools a token of
+//! the account offers, which the page documents - and an account's tokens,
+//! made, listed and revoked.
 //!
 //! A request to the endpoint is refused, in this order: when the addon is
 //! not installed (404), when it comes from a web page of another site (403 -
@@ -39,6 +40,7 @@ pub fn router() -> Router<AppState> {
                 .delete(not_allowed),
         )
         .route("/mcp/info", get(info).fallback(crate::fallback))
+        .route("/mcp/tools", get(tools).fallback(crate::fallback))
         .route(
             "/mcp/tokens",
             get(list_tokens)
@@ -83,6 +85,16 @@ async fn info(current: CurrentUser) -> Response {
         "can_manage_all": current.user.is_admin(),
     }))
     .into_response()
+}
+
+/// `GET /api/mcp/tools` - what an assistant can do with a token of this
+/// account, for the page to document: every tool the caller's role may
+/// call, with its arguments, a tool that changes something marked rather
+/// than left out. Words only, so it answers whether the addon is installed
+/// or not - an administrator deciding whether to install it reads it too.
+async fn tools(current: CurrentUser) -> Response {
+    let admin = current.user.is_admin();
+    Json(json!({ "admin": admin, "tools": mcp::tools::catalogue(admin) })).into_response()
 }
 
 /// `GET /api/mcp/tokens` - the caller's own; `?all=true`, an
