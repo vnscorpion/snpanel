@@ -321,12 +321,14 @@ mod tests {
 
     #[test]
     fn a_token_and_a_chat_have_their_shapes() {
-        assert!(token_shape_ok(
-            "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
-        ));
+        // Put together here: a whole token written out in the source is
+        // what secret scanners report, whoever's it is.
+        let secret = "Ab1_-".repeat(7);
+        assert!(token_shape_ok(&format!("123456789:{secret}")));
         assert!(!token_shape_ok("123456789:AAH/../../getMe"));
         assert!(!token_shape_ok("not a token"));
-        assert!(!token_shape_ok(":AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"));
+        assert!(!token_shape_ok(&format!(":{secret}")));
+        assert!(!token_shape_ok(&format!("123456789:{}", &secret[..19])));
         assert!(chat_shape_ok("123456789"));
         assert!(chat_shape_ok("-1001234567890"));
         assert!(chat_shape_ok("@snpanel_alerts"));
