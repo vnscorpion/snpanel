@@ -308,6 +308,19 @@ fn disk_usage() -> serde_json::Value {
     })
 }
 
+/// The root filesystem for the notifications' watcher: its size, what is
+/// available to write, and the percentage used as the Dashboard shows it.
+pub(crate) fn root_disk() -> (u64, u64, f64) {
+    let (total, free, avail) = statvfs_root();
+    let used = total.saturating_sub(free);
+    let percent = if total > 0 {
+        used as f64 * 100.0 / total as f64
+    } else {
+        0.0
+    };
+    (total, avail, percent)
+}
+
 /// `(total, free, available)` in bytes, matching `shutil.disk_usage`:
 /// total = f_blocks*f_frsize, free = f_bfree*f_frsize, available =
 /// f_bavail*f_frsize.

@@ -1,0 +1,66 @@
+/* Settings, Notifications - see pages/Notifications.jsx. */
+
+.notif-page{display:grid;gap:var(--space-4)}
+.notif-page>.section{margin-bottom:0}
+.notif-page h2{margin:0}
+.notif-page .section>.hint{margin:4px 0 0}
+.notif-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3)}
+.notif-head .hint{margin:4px 0 0;max-width:80ch}
+
+/* How messages go out: the SMTP server and the bot, side by side. */
+.notif-channel-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:var(--space-3);margin-top:var(--space-3);align-items:start}
+.notif-card{display:grid;gap:var(--space-3);min-width:0;padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.notif-card>.hint{margin:0}
+.notif-card-head{display:flex;align-items:center;gap:var(--space-2);color:var(--primary)}
+.notif-card-head h3{margin:0;font-size:var(--text-base);color:var(--text)}
+.notif-card-head .badge{margin-left:auto}
+.notif-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3)}
+.notif-wide{grid-column:1 / -1}
+.notif-field{display:grid;gap:6px;min-width:0}
+.notif-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.notif-field small{margin:0}
+.notif-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:var(--space-2)}
+.notif-test{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--space-2);align-items:center;padding-top:var(--space-3);border-top:1px dashed var(--border)}
+.notif-test label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.notif-steps{margin:0;padding-left:1.2em;display:grid;gap:4px;color:var(--text-secondary);font-size:var(--text-sm);line-height:1.5}
+.notif-default-language{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)}
+.notif-default-language label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.notif-default-language select{width:auto;min-width:160px}
+
+/* Where this account is told. */
+.notif-mine{display:grid;gap:var(--space-3);margin-top:var(--space-3)}
+.notif-way{display:grid;gap:var(--space-2);padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.notif-way.off{background:var(--surface-alt)}
+.notif-way .switch-line span{display:inline-flex;align-items:center;gap:6px}
+.notif-way>.hint{margin:0}
+.notif-way .notif-field{max-width:520px}
+.notif-linked{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2)}
+.notif-linked input{flex:1 1 220px;max-width:320px}
+.notif-linking{display:grid;gap:var(--space-2);padding:10px 12px;border:1px solid var(--info-border);border-radius:var(--radius-md);background:var(--info-bg);color:var(--info-text)}
+.notif-linking p{margin:0}
+.notif-chat summary{cursor:pointer;font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.notif-chat[open]{display:grid;gap:var(--space-2)}
+.notif-chat .hint{margin:var(--space-2) 0 0}
+
+/* What it is told of. */
+.notif-events{list-style:none;margin:var(--space-3) 0 0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-2)}
+.notif-event{display:flex;align-items:flex-start;gap:10px;height:100%;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);cursor:pointer}
+.notif-event:hover{border-color:var(--primary)}
+.notif-event input{flex:none;width:16px;height:16px;min-height:0;margin:2px 0 0;padding:0;accent-color:var(--primary)}
+.notif-event span{display:grid;gap:2px}
+.notif-event strong{font-size:var(--text-base)}
+.notif-event small{color:var(--text-muted);font-size:var(--text-sm);line-height:1.45}
+
+/* What was sent. */
+.notif-log td small{display:block;margin-top:2px;color:var(--text-muted);font-size:var(--text-xs);overflow-wrap:anywhere}
+
+@media (max-width:1000px){
+  .notif-channel-grid{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .notif-fields,.notif-events{grid-template-columns:1fr}
+  .notif-test{grid-template-columns:1fr}
+  .notif-actions button,.notif-test button{flex:1 1 auto}
+  .notif-default-language{justify-content:stretch}
+  .notif-default-language select{flex:1 1 auto}
+}

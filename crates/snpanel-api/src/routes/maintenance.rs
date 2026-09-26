@@ -8596,12 +8596,44 @@ async fn run_site_backup(state: AppState, job_id: String, user_id: i64, website_
     if let Ok(done) = &outcome {
         audit_detail(&state, user_id, "backup", &done.target, &done.backup_file).await;
     }
+    let told = match &outcome {
+        Ok(done) => (done.target.clone(), Ok(done.backup_file.clone())),
+        Err(why) => (website_named(&state, website_id).await, Err(why.clone())),
+    };
     let outcome = outcome.map(|done| crate::backup_jobs::Finished {
         backup_file: done.backup_file,
         message: "Website backup completed".to_string(),
         ..crate::backup_jobs::Finished::default()
     });
     crate::backup_jobs::finish(&job_id, outcome, "Website backup failed");
+    tell_backup(&state, user_id, told).await;
+}
+
+/// A website's domain, for a message about a job that could not find it.
+async fn website_named(state: &AppState, website_id: i64) -> String {
+    match state.db.websites().by_id(website_id).await {
+        Ok(Some(site)) => site.domain,
+        _ => format!("website #{website_id}"),
+    }
+}
+
+/// Not in the Python: the Notifications addon tells whoever started a
+/// backup how it ended - after the job is marked, so the page does not wait
+/// on the mail.
+async fn tell_backup(
+    state: &AppState,
+    requester: i64,
+    (what, outcome): (String, Result<String, String>),
+) {
+    crate::notify::deliver(
+        state,
+        crate::notify::Event::Backup {
+            owner: requester,
+            what,
+            outcome,
+        },
+    )
+    .await;
 }
 
 struct SiteArchive {
@@ -8809,6 +8841,16 @@ async fn run_user_backup(
     crate::backup_jobs::start(&job_id, "Creating full user backup");
     let outcome =
         user_backup_work(&state, requester_id, is_admin, target_user_id, destination).await;
+    let told = match &outcome {
+        Ok(done) => (done.username.clone(), Ok(done.backup_file.clone())),
+        Err(why) => {
+            let name = match state.db.users().by_id(target_user_id).await {
+                Ok(Some(user)) => user.username,
+                _ => format!("account #{target_user_id}"),
+            };
+            (name, Err(why.clone()))
+        }
+    };
     if let Ok(done) = &outcome {
         let detail = if done.remote_file.is_empty() {
             done.backup_file.clone()
@@ -8827,6 +8869,7 @@ async fn run_user_backup(
         message: "Full user backup completed".to_string(),
     });
     crate::backup_jobs::finish(&job_id, outcome, "Full user backup failed");
+    tell_backup(&state, requester_id, told).await;
 }
 
 struct UserArchive {
@@ -8946,6 +8989,11 @@ async fn run_sftp_backup(
 ) {
     crate::backup_jobs::start(&job_id, "Creating and uploading SFTP backup");
     let outcome = sftp_backup_work(&state, requester_id, website_id, target_id).await;
+    let site = website_named(&state, website_id).await;
+    let told = match &outcome {
+        Ok(done) => (site, Ok(format!("{}:{}", done.target, done.remote_file))),
+        Err(why) => (site, Err(why.clone())),
+    };
     if let Ok(done) = &outcome {
         audit_detail(
             &state,
@@ -8963,6 +9011,7 @@ async fn run_sftp_backup(
         message: "SFTP backup completed".to_string(),
     });
     crate::backup_jobs::finish(&job_id, outcome, "SFTP backup failed");
+    tell_backup(&state, requester_id, told).await;
 }
 
 async fn sftp_backup_work(

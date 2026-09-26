@@ -45,6 +45,11 @@ const FAIL2BAN: &str = "fail2ban";
 /// panel and installs nothing as root: installing it turns `/api/mcp` on.
 const MCP: &str = "mcp";
 
+/// Not in the Python: e-mail and Telegram messages about the server and each
+/// account - see `crate::notify`. It installs nothing as root either:
+/// installing it turns the messages on.
+const NOTIFICATIONS: &str = "notifications";
+
 /// Source: `addons.CATALOGUE`.
 ///
 /// Held here rather than read from a file because it is the Python's own
@@ -111,6 +116,24 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "keeps_data_on_uninstall": true,
             }),
         ),
+        (
+            NOTIFICATIONS,
+            json!({
+                "name": "Notifications",
+                "version": "1.0.0",
+                "summary": "Tells administrators and customers by e-mail and on Telegram what they would otherwise only find by opening the panel: failed backups, malware, expiring certificates, a full disk, a stopped service, a new sign-in.",
+                "details": [
+                    "E-mail goes through an SMTP server you set up - your mail host's, or a service such as Gmail, SendGrid or Amazon SES. Telegram messages come from a bot you make with @BotFather.",
+                    "Administrators hear of the server: scheduled backups, malware anywhere, certificates renewal did not renew, the disk filling, services stopping, new releases.",
+                    "Every account hears of its own: its backups, malware on its websites, its certificates and storage, a sign-in from a new address, and changes to its password, two-step verification and tokens - each chosen on its Notifications page.",
+                ],
+                "notes": [
+                    "Nothing is sent until an SMTP server or a Telegram bot is set up on the Notifications page.",
+                    "Uninstalling stops the messages and keeps every setting.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
     ]
 }
 
@@ -160,6 +183,11 @@ pub fn fail2ban_installed() -> bool {
 /// Whether the MCP addon is installed - whether `/api/mcp` answers.
 pub fn mcp_installed() -> bool {
     is_installed(MCP)
+}
+
+/// Whether the Notifications addon is installed - whether anything is sent.
+pub fn notifications_installed() -> bool {
+    is_installed(NOTIFICATIONS)
 }
 
 fn is_installed(slug: &str) -> bool {
@@ -367,6 +395,7 @@ async fn install(
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
             MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
+            NOTIFICATIONS => "Open Settings, Notifications to set up an SMTP server or a Telegram bot.",
             _ => "",
         },
     }))
@@ -449,6 +478,8 @@ async fn uninstall(
             "Fail2ban's settings are kept; installing the addon again puts them back."
         } else if slug == MCP {
             "The tokens are kept, and work again when the addon is installed again. Revoke them on the Addons page to remove them."
+        } else if slug == NOTIFICATIONS {
+            "No more messages are sent. The SMTP server, the bot and everyone's choices are kept for when it is installed again."
         } else {
             "Application folders, volumes and panel data are kept."
         },
@@ -672,7 +703,7 @@ mod tests {
         let items = addon_state();
         // Sorted by slug, as the Python sorts them.
         let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, [APPLICATION, FAIL2BAN, MCP]);
+        assert_eq!(slugs, [APPLICATION, FAIL2BAN, MCP, NOTIFICATIONS]);
         for addon in &items {
             for key in [
                 "name",

@@ -15,6 +15,7 @@ pub mod maintenance;
 pub mod malware;
 pub mod malware_quarantine;
 pub mod mcp;
+pub mod notifications;
 pub mod packages;
 pub mod panel_settings;
 pub mod passkeys;
@@ -62,6 +63,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(maintenance::router())
         .merge(s3_targets::router())
         .merge(mcp::router())
+        .merge(notifications::router())
         .merge(malware::router())
         .merge(malware_quarantine::router())
         .merge(panel_settings::router())
@@ -153,6 +155,7 @@ mod tests {
         let _ = panel_settings::router();
         let _ = terminal::router();
         let _ = maintenance::router();
+        let _ = notifications::router();
         let _ = user_restore::router();
     }
 }

@@ -67,9 +67,16 @@ ownership, quotas, backups, SSL, services, and firewall tools built in.
 - An MCP addon for AI assistants - Claude Code, Cursor, VS Code - at `/api/mcp`:
   32 tools over the websites, files, logs, backups, firewall and WAF, each
   assistant with a token of the account it acts for (read-only unless made to
-  allow actions), every action in the audit log
-- Two-step sign-in with passkeys, and an authenticator-app code (TOTP) as the
-  fallback
+  allow actions), every action in the audit log; the AI assistants page
+  documents every tool a token of the account is offered, and how to connect
+- Two-step sign-in with a passkey, an authenticator-app code (TOTP), or both;
+  `snpanel reset-admin-2fa` for an administrator who lost the device
+- A Notifications addon: e-mail through your SMTP server and Telegram through
+  your bot. Administrators hear of failed scheduled backups, malware, expiring
+  certificates, a filling disk, stopped services and new releases; every
+  account of its own backups, malware, certificates and storage, sign-ins from
+  new addresses and changes to how it signs in - each chosen on its own page,
+  in English or Vietnamese
 - A Fail2ban addon: SSH, panel sign-ins, WordPress sign-ins, password-protected
   folders and repeat offenders, banned in nftables; Cloudflare's addresses are
   never banned from a site's log

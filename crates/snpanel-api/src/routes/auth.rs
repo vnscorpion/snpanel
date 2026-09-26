@@ -429,6 +429,19 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
         Ok(t) => t,
         Err(r) => return r,
     };
+    // Not in the Python: a sign-in from an address the account has not
+    // used is told to it, when the Notifications addon is installed.
+    crate::notify::signed_in(
+        &state,
+        &user,
+        &crate::client::audit_ip(&parts),
+        user_agent(&headers),
+        if user.totp_enabled {
+            "code"
+        } else {
+            "password"
+        },
+    );
 
     (
         out_headers,
@@ -439,6 +452,14 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
         })),
     )
         .into_response()
+}
+
+/// The browser, as it names itself - for a sign-in's notification.
+pub(crate) fn user_agent(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +917,13 @@ async fn two_factor_enable(State(state): State<AppState>, req: Request) -> Respo
             Ok(v) => {
                 user.totp_enabled = true;
                 user.token_version = v;
+                crate::notify::security_change(
+                    &state,
+                    &user,
+                    crate::notify::Change::TwoFactorOn,
+                    &crate::client::audit_ip(&parts),
+                    None,
+                );
             }
             Err(e) => {
                 tracing::error!("could not enable 2FA: {e}");
@@ -961,6 +989,13 @@ async fn two_factor_disable(State(state): State<AppState>, req: Request) -> Resp
             user.totp_enabled = false;
             user.totp_secret = None;
             user.token_version = v;
+            crate::notify::security_change(
+                &state,
+                &user,
+                crate::notify::Change::TwoFactorOff,
+                &crate::client::audit_ip(&parts),
+                None,
+            );
         }
         Err(e) => {
             tracing::error!("could not disable 2FA: {e}");

@@ -223,6 +223,17 @@ async fn create_token(State(state): State<AppState>, req: axum::extract::Request
         },
     )
     .await;
+    // A key to the account, made: its owner hears of it, as of a password.
+    crate::notify::security_change(
+        &state,
+        &current.user,
+        crate::notify::Change::McpToken {
+            name: name.to_string(),
+            can_write,
+        },
+        &crate::client::audit_ip(&parts),
+        None,
+    );
     match repo.by_id(id).await {
         Ok(Some(token)) => {
             let mut answer = token_json(&token, made);

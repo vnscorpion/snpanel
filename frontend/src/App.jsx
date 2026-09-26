@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Bell, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -54,6 +54,7 @@ const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
 const McpPage = lazy(() => import('./pages/Mcp.jsx'));
+const NotificationsPage = lazy(() => import('./pages/Notifications.jsx'));
 const WafPage = lazy(() => import('./pages/Waf.jsx'));
 const WafSitePage = lazy(() => import('./pages/WafSite.jsx'));
 const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
@@ -237,6 +238,10 @@ function App() {
   // What an assistant can do with a token of this account: the tools its
   // role may call, for the AI assistants page's reference.
   const [mcpTools, setMcpTools] = useState({ tools: [], loaded: false });
+  // The Notifications addon: how messages go out, this account's choices,
+  // and - for an administrator - what was sent.
+  const [notifications, setNotifications] = useState({ loaded: false });
+  const [notificationLog, setNotificationLog] = useState([]);
   const [scanTargetWebsiteId, setScanTargetWebsiteId] = useState('');
   const [scanResults, setScanResults] = useState(null);
   const [scanJob, setScanJob] = useState(null);
@@ -280,6 +285,7 @@ function App() {
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
   const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
+  const notificationsAddonInstalled = !!addons.items.find(item => item.slug === 'notifications')?.installed;
   // Two locks, and both have to be open: the server has to have the addon
   // installed at all, and the customer's package has to include it. Admins skip
   // the second one, never the first.
@@ -1753,6 +1759,8 @@ function App() {
     const label = addon?.name || slug;
     const uninstallQuestion = slug === 'mcp'
       ? t('Uninstall the MCP addon?\n\nAssistants can no longer reach the panel. Their tokens are kept and work again if you reinstall; revoke them on the Addons page to remove them.')
+      : slug === 'notifications'
+      ? t('Uninstall the Notifications addon?\n\nNo more e-mail or Telegram messages are sent. The SMTP server, the bot and everyone\'s choices are kept, and reinstalling picks them up.')
       : slug === 'fail2ban'
       ? t('Uninstall the Fail2ban addon?\n\nFail2ban is stopped, and every address it banned can connect again. Its settings are kept, and reinstalling puts them back.')
       : t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label });
@@ -3181,6 +3189,68 @@ function App() {
     if (data?.items) setMcpTokens(data.items);
   }
 
+  // ---- Notifications - see pages/Notifications.jsx.
+  async function loadNotifications() {
+    const data = await request('/notifications', { silent: true });
+    if (data) setNotifications({ ...data, loaded: true });
+    return data;
+  }
+
+  async function loadNotificationLog() {
+    const data = await request('/notifications/log', { silent: true });
+    if (data?.items) setNotificationLog(data.items);
+  }
+
+  // Each answer is the page's whole view again.
+  async function notificationsCall(path, method, body, label, done) {
+    const data = await request(path, { method, ...(body ? { body: JSON.stringify(body) } : {}) }, label);
+    if (!data) return false;
+    if (data.me) setNotifications({ ...data, loaded: true });
+    if (done) setNotice(done);
+    return true;
+  }
+
+  const saveNotificationPrefs = (patch) => notificationsCall('/notifications/me', 'PUT', patch, t('Saving...'), t('Saved.'));
+  const saveSmtp = (form) => notificationsCall('/notifications/smtp', 'PUT', form, t('Saving the SMTP server...'), t('The SMTP server is saved. Send a test to be sure it works.'));
+  const saveTelegramBot = (token) => notificationsCall('/notifications/telegram', 'PUT', { token }, t('Checking the bot with Telegram...'), t('The bot is saved.'));
+  const saveNotificationDefaults = (language) => notificationsCall('/notifications/defaults', 'PUT', { language }, t('Saving...'), t('Saved.'));
+  const setTelegramChat = (chat) => notificationsCall('/notifications/telegram/chat', 'PUT', { chat }, t('Sending a test message there...'), t('Linked: the test message went through.'));
+
+  async function removeSmtp() {
+    if (!confirm(t('Remove the SMTP server? No e-mail is sent until another is set up.'))) return false;
+    return notificationsCall('/notifications/smtp', 'DELETE', null, t('Removing...'), t('The SMTP server is removed.'));
+  }
+
+  async function removeTelegramBot() {
+    if (!confirm(t('Remove the Telegram bot? No Telegram message is sent until another is set up.'))) return false;
+    return notificationsCall('/notifications/telegram', 'DELETE', null, t('Removing...'), t('The bot is removed.'));
+  }
+
+  async function unlinkTelegram() {
+    if (!confirm(t('Unlink Telegram? This chat gets no more messages.'))) return false;
+    return notificationsCall('/notifications/telegram/link', 'DELETE', null, t('Unlinking...'), t('Telegram is unlinked.'));
+  }
+
+  async function sendTestNotification(channel, to = '') {
+    const data = await request('/notifications/test', { method: 'POST', body: JSON.stringify({ channel, ...(to ? { to } : {}) }) },
+      channel === 'email' ? t('Sending a test e-mail...') : t('Sending a test message...'));
+    if (data?.sent) {
+      setNotice(t('Sent to {to}. If it does not arrive, look in the spam folder, then at Recently sent.', { to: data.to }));
+      if (isAdmin) loadNotificationLog();
+    }
+    return !!data?.sent;
+  }
+
+  async function startTelegramLink() {
+    return request('/notifications/telegram/link', { method: 'POST' }, t('Preparing the link...'));
+  }
+
+  async function checkTelegramLink() {
+    const data = await request('/notifications/telegram/link/check', { method: 'POST', silent: true });
+    if (data?.linked) setNotice(t('Telegram is linked.'));
+    return data;
+  }
+
   async function loadMcpTools() {
     const data = await request('/mcp/tools', { silent: true });
     setMcpTools({ tools: data?.tools || [], loaded: true });
@@ -3718,6 +3788,7 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated && page === 'mcp') loadMcp();
+    if (isAuthenticated && page === 'notifications') loadNotifications();
   }, [isAuthenticated, page, mcpAddonInstalled]);
 
   useEffect(() => {
@@ -3824,6 +3895,7 @@ function App() {
     // An administrator sees it to install the addon from; anyone else once
     // the addon is on.
     ...((isAdmin || mcpAddonInstalled) ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
+    ...((isAdmin || notificationsAddonInstalled) ? [['notifications', t('Notifications'), Bell]] : []),
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), Shield]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
@@ -4198,6 +4270,21 @@ function App() {
       loadAllMcpTokens,
       loadMcp,
       loadMcpTools,
+      loadNotificationLog,
+      loadNotifications,
+      notificationLog,
+      notifications,
+      removeSmtp,
+      removeTelegramBot,
+      saveNotificationDefaults,
+      saveNotificationPrefs,
+      saveSmtp,
+      saveTelegramBot,
+      sendTestNotification,
+      setTelegramChat,
+      startTelegramLink,
+      checkTelegramLink,
+      unlinkTelegram,
       mcpAllTokens,
       mcpInfo,
       mcpTokens,
@@ -4551,6 +4638,7 @@ function App() {
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;
     if (page === 'mcp') return <McpPage />;
+    if (page === 'notifications') return <NotificationsPage />;
     if (page === 'waf') return <WafPage />;
     if (page === 'waf-site') return <WafSitePage />;
     if (page === 'malware') return <MalwarePage />;

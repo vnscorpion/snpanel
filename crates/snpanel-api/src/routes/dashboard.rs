@@ -278,6 +278,20 @@ async fn service_states(dry_run: bool) -> Value {
     services_state(&names, &answers)
 }
 
+/// The services that are not running, by name - for the notifications'
+/// watcher, which looks at the same list the Dashboard shows.
+pub(crate) async fn stopped_services(dry_run: bool) -> Vec<String> {
+    service_states(dry_run).await["stopped"]
+        .as_array()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// `systemctl is-active` prints one word per unit, in the order asked: a unit
 /// that is not "active" is stopped for the dashboard's purposes, and so is
 /// one it printed no answer for.

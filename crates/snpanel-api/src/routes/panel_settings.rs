@@ -1351,6 +1351,15 @@ async fn update_admin_account(State(state): State<AppState>, req: Request) -> Re
         &current.user.username,
     )
     .await;
+    if password_changed {
+        crate::notify::security_change(
+            &state,
+            &current.user,
+            crate::notify::Change::Password,
+            &crate::client::audit_ip(&parts),
+            None,
+        );
+    }
 
     axum::Json(json!({
         "message": "Admin account updated",

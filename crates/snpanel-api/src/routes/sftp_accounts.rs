@@ -365,6 +365,13 @@ async fn set_password(
         &row.username,
     )
     .await;
+    crate::notify::security_change(
+        &state,
+        &user,
+        crate::notify::Change::SftpPassword(row.username.clone()),
+        &crate::client::audit_ip(&parts),
+        Some(&current.user),
+    );
     let mut body = account_json(&row, linux.as_str());
     if generated {
         body["password"] = json!(password);

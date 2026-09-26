@@ -256,6 +256,16 @@ async fn remove(
         state.rate_limiter.record_failure(&limit_key, false).await;
         return error(StatusCode::UNAUTHORIZED, "Current password is incorrect");
     }
+    // Its name, for the message that tells the owner it went.
+    let name = state
+        .db
+        .passkeys()
+        .for_user(current.user.id, &current.user.username)
+        .await
+        .ok()
+        .and_then(|all| all.into_iter().find(|p| p.id == passkey_id))
+        .map(|p| p.name)
+        .unwrap_or_else(|| format!("#{passkey_id}"));
     match state
         .db
         .passkeys()
@@ -273,6 +283,13 @@ async fn remove(
                     &passkey_id.to_string(),
                 )
                 .await;
+            crate::notify::security_change(
+                &state,
+                &current.user,
+                crate::notify::Change::PasskeyRemoved(name),
+                &crate::client::audit_ip(&parts),
+                None,
+            );
             axum::Json(json!({ "deleted": true })).into_response()
         }
         Ok(false) => not_found("Passkey not found"),
@@ -479,6 +496,13 @@ async fn register(State(state): State<AppState>, req: Request) -> Response {
         .audits()
         .log(Some(user.id), "passkey_add", &user.username, &name)
         .await;
+    crate::notify::security_change(
+        &state,
+        user,
+        crate::notify::Change::PasskeyAdded(name.clone()),
+        &crate::client::audit_ip(&parts),
+        None,
+    );
     let here = Some(pending.rp_id.as_str());
     axum::Json(item(&stored, here)).into_response()
 }
@@ -595,6 +619,13 @@ async fn login(State(state): State<AppState>, req: Request) -> Response {
                 Ok(t) => t,
                 Err(r) => return r,
             };
+            crate::notify::signed_in(
+                &state,
+                &user,
+                &crate::client::audit_ip(&parts),
+                super::auth::user_agent(&parts.headers),
+                "passkey",
+            );
             (
                 out,
                 axum::Json(json!({

@@ -125,8 +125,8 @@ pub enum Bootstrap {
 /// a migration runs once; the SQL has to be safe to run against a database
 /// at [`PYTHON_HEAD`].
 pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
-    // Passkeys: WebAuthn credentials, a second factor beside the TOTP code.
-    // See `passkeys.rs`. `username` is there on purpose: SQLite can give a
+    // Passkeys: WebAuthn credentials, a second step at sign-in on their own
+    // or beside the TOTP code. See `passkeys.rs`. `username` is there on purpose: SQLite can give a
     // deleted user's id to the next account, and a leftover passkey must not
     // follow the number.
     (
@@ -222,6 +222,39 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
     (
         "rust_0009_sftp_subaccounts_by_user",
         "CREATE INDEX IF NOT EXISTS ix_sftp_subaccounts_user_id ON sftp_subaccounts (user_id)",
+    ),
+    // The Notifications addon: an account's choices - where it hears, of
+    // what, in which language - and the addresses it has signed in from.
+    // See `notifications.rs`. An account with no row hears of the defaults.
+    (
+        "rust_0010_notification_settings",
+        "CREATE TABLE IF NOT EXISTS notification_settings (\
+            user_id INTEGER NOT NULL PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE, \
+            username VARCHAR(64) NOT NULL, \
+            email_enabled BOOLEAN DEFAULT 1 NOT NULL, \
+            email VARCHAR(255), \
+            telegram_enabled BOOLEAN DEFAULT 1 NOT NULL, \
+            telegram_chat_id VARCHAR(64), \
+            telegram_name VARCHAR(128), \
+            events TEXT DEFAULT '{}' NOT NULL, \
+            language VARCHAR(8), \
+            known_ips TEXT DEFAULT '' NOT NULL, \
+            updated_at DATETIME)",
+    ),
+    // What the addon sent, to whom and how it went; the newest thousand.
+    (
+        "rust_0011_notification_log",
+        "CREATE TABLE IF NOT EXISTS notification_log (\
+            id INTEGER NOT NULL PRIMARY KEY, \
+            created_at DATETIME NOT NULL, \
+            event VARCHAR(64) NOT NULL, \
+            user_id INTEGER, \
+            username VARCHAR(64), \
+            channel VARCHAR(16) NOT NULL, \
+            target VARCHAR(255) NOT NULL, \
+            subject VARCHAR(255) NOT NULL, \
+            status VARCHAR(16) NOT NULL, \
+            detail VARCHAR(500) DEFAULT '' NOT NULL)",
     ),
 ];
 
@@ -781,14 +814,15 @@ mod tests {
                 "ix_passkeys_user_id",
                 "ix_sftp_subaccounts_user_id",
                 "mcp_tokens",
+                "notification_log",
+                "notification_settings",
                 "passkeys",
                 "s3_backup_targets",
                 "sftp_accounts",
                 "sftp_subaccounts",
                 MIGRATIONS_TABLE
             ],
-            "only the passkeys table and its index, the SFTP decisions and the \
-             bookkeeping table are new"
+            "only what the Rust migrations name, and the bookkeeping table, are new"
         );
     }
 

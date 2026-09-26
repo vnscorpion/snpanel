@@ -65,9 +65,11 @@ expired wrong incorrect correct valid supported unsupported available unavailabl
 adds sets changes overrides borrows declares shares passes runs reads builds uses makes keeps`.split(/\s+/));
 
 // Not the MCP tools: what they say goes to an AI assistant, which reads
-// English, and the panel never shows it. Not the helper's argv parser
-// either: the API checks what it sends first, and those checks say it.
-const SKIP_DIRS = new Set(['tests', 'benches', 'target', 'mcp']);
+// English, and the panel never shows it. Not the notifications either:
+// every message is written in both languages where it is made, and goes out
+// by e-mail and Telegram rather than to a page. Not the helper's argv
+// parser: the API checks what it sends first, and those checks say it.
+const SKIP_DIRS = new Set(['tests', 'benches', 'target', 'mcp', 'notify']);
 // And not what only a console or a log reads: the ctl and initdb commands,
 // the startup checks of the configuration, the helper's usage text.
 const SKIP_FILES = new Set([

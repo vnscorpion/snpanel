@@ -1,4 +1,4 @@
-import { Bot, Boxes, Puzzle, ShieldBan } from 'lucide-react';
+import { Bell, Bot, Boxes, Puzzle, ShieldBan } from 'lucide-react';
 
 // The page and icon of each addon that has a page of its own. An addon not
 // listed here opens the Addons page, under the generic puzzle piece.
@@ -6,6 +6,7 @@ export const ADDON_META = {
   application: { page: 'applications', icon: Boxes },
   fail2ban: { page: 'fail2ban', icon: ShieldBan },
   mcp: { page: 'mcp', icon: Bot },
+  notifications: { page: 'notifications', icon: Bell },
 };
 
 export const addonPage = (slug) => ADDON_META[slug]?.page || 'addons';

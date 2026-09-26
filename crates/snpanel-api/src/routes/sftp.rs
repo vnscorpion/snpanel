@@ -346,6 +346,13 @@ async fn set_password(
         &user.username,
     )
     .await;
+    crate::notify::security_change(
+        &state,
+        &user,
+        crate::notify::Change::SftpPassword(user.username.clone()),
+        &crate::client::audit_ip(&parts),
+        Some(&current.user),
+    );
     describe(&state, &user, was_generated.then_some(password)).await
 }
 

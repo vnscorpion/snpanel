@@ -60,6 +60,7 @@ mod manual_ssl;
 mod mariadb;
 mod mcp;
 mod middleware;
+mod notify;
 mod panel_urls;
 mod php;
 mod php_tune;
@@ -236,6 +237,10 @@ async fn run() -> anyhow::Result<()> {
         upstream,
         serves_tls: tls.is_some(),
     };
+    // The Notifications addon's hooks that have no state of their own -
+    // a malware scan's end - reach it here, in the server and in the
+    // one-shot schedulers alike.
+    notify::attach(&state);
 
     // One-shot mode, for the systemd timer. Everything above is the same
     // setup the server does — the same settings, the same database, the
@@ -250,6 +255,15 @@ async fn run() -> anyhow::Result<()> {
 
     if args.iter().any(|a| a == RUN_MALWARE_SCHEDULES) {
         println!("{}", run_malware_schedules(&state).await);
+        return Ok(());
+    }
+
+    // The Notifications addon's looks - services, the disk, and the daily
+    // ones - now rather than when the server's own loop gets to them: for
+    // an administrator who wants to know, and for the end-to-end check.
+    if args.iter().any(|a| a == RUN_NOTIFICATION_CHECKS) {
+        notify::watcher::look(&state, true).await;
+        println!("SNPanel notification checks ran.");
         return Ok(());
     }
 
@@ -313,6 +327,12 @@ async fn run() -> anyhow::Result<()> {
         );
         return Ok(());
     }
+
+    // What nobody asks about until it is too late - services, the disk,
+    // certificates, storage, releases - looked at every few minutes while
+    // the Notifications addon is installed. Only the server runs it: a
+    // one-shot process above has returned already.
+    notify::watcher::start(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;
@@ -556,6 +576,9 @@ fn send_file(path: &std::path::Path) -> Response {
 pub(crate) const RUN_BACKUP_SCHEDULES: &str = "--run-backup-schedules";
 pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
 
+/// The Notifications addon's looks, once and now.
+pub(crate) const RUN_NOTIFICATION_CHECKS: &str = "--run-notification-checks";
+
 /// The flag `update.sh` passes for the orphan sweep.
 pub(crate) const CLEAN_ORPHANS: &str = "--clean-orphans";
 
@@ -769,36 +792,67 @@ pub(crate) async fn run_schedule(
     schedule: &snpanel_db::BackupSchedule,
     stamp: &str,
 ) -> bool {
+    // Not in the Python: what the Notifications addon tells - the schedule
+    // by its number and when it runs, since a schedule has no name.
+    let name = format!("#{} ({})", schedule.id, schedule.schedule);
     let users = schedule_users(state, schedule).await;
     if users.is_empty() {
         let outcome = backup_scheduler::no_users();
         record(state, schedule.id, stamp, &outcome).await;
+        notify::deliver(
+            state,
+            notify::Event::ScheduleRun {
+                schedule: name,
+                users: Vec::new(),
+                problem: Some(outcome.message.clone()),
+            },
+        )
+        .await;
         return false;
     }
 
     let mut successes = Vec::new();
     let mut errors = Vec::new();
+    let mut told = Vec::new();
+    let mut problem = None;
     // Not in the Python: where else the archives go, and their names. A
     // schedule whose options cannot be read is not run as if it had
     // none - that would keep an offsite backup on this server alone.
     match state.db.schedule_options().get(schedule.id).await {
         Ok(options) => {
             for user in users {
-                match routes::maintenance::run_scheduled_user_backup(
-                    state, schedule, options, &user,
-                )
-                .await
-                {
+                let outcome =
+                    routes::maintenance::run_scheduled_user_backup(state, schedule, options, &user)
+                        .await;
+                match &outcome {
                     Ok(went) => successes.push(format!("{}: {went}", user.username)),
                     Err(e) => errors.push(format!("{}: {e}", user.username)),
                 }
+                told.push(notify::UserBackup {
+                    user_id: user.id,
+                    username: user.username.clone(),
+                    outcome,
+                });
             }
         }
-        Err(e) => errors.push(format!("Cannot read the schedule's settings: {e}")),
+        Err(e) => {
+            let message = format!("Cannot read the schedule's settings: {e}");
+            problem = Some(message.clone());
+            errors.push(message);
+        }
     }
 
     let outcome = backup_scheduler::outcome(&successes, &errors);
     record(state, schedule.id, stamp, &outcome).await;
+    notify::deliver(
+        state,
+        notify::Event::ScheduleRun {
+            schedule: name,
+            users: told,
+            problem,
+        },
+    )
+    .await;
     outcome.counts_as_run
 }
 

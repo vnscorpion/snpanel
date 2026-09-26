@@ -499,6 +499,13 @@ async fn reset_two_factor(
         &user.username,
     )
     .await;
+    crate::notify::security_change(
+        &state,
+        &user,
+        crate::notify::Change::TwoFactorReset,
+        "",
+        Some(&current.user),
+    );
     axum::Json(json!({ "message": format!("Reset 2FA for user {}", user.username) }))
         .into_response()
 }
@@ -809,6 +816,15 @@ async fn set_password(
         &user.username,
     )
     .await;
+    // Not in the Python: the owner hears of it - from whom, when it was an
+    // administrator.
+    crate::notify::security_change(
+        &state,
+        &user,
+        crate::notify::Change::Password,
+        &crate::client::audit_ip(&parts),
+        Some(&current.user),
+    );
 
     axum::Json(serde_json::json!({
         "message": format!("Changed password for user {}", user.username)

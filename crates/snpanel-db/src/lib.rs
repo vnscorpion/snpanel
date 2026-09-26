@@ -33,6 +33,7 @@ pub mod backups;
 pub mod cloudflare;
 mod databases;
 pub mod mcp_tokens;
+pub mod notifications;
 pub mod packages;
 pub mod passkeys;
 pub mod provisioning;
@@ -209,6 +210,10 @@ impl Database {
 
     pub fn mcp_tokens(&self) -> mcp_tokens::McpTokenRepo<'_> {
         mcp_tokens::McpTokenRepo::new(&self.pool)
+    }
+
+    pub fn notifications(&self) -> notifications::NotificationRepo<'_> {
+        notifications::NotificationRepo::new(&self.pool)
     }
 
     pub fn s3_targets(&self) -> s3_targets::S3TargetRepo<'_> {
