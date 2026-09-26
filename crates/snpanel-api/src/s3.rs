@@ -364,16 +364,15 @@ fn refusal(reply: &Reply) -> S3Error {
     S3Error(text)
 }
 
-/// One request, signed now.
-async fn send(
+/// A request signed now, and where it goes.
+fn signed(
     target: &Target<'_>,
     method: &str,
     key: &str,
     query: &[(&str, &str)],
     body: Bytes,
     payload_hash: &str,
-    timeout: Duration,
-) -> Result<Reply, S3Error> {
+) -> Result<(Located, hyper::Request<axum::body::Body>), S3Error> {
     let located = locate(target, key);
     let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let headers = [
@@ -418,45 +417,69 @@ async fn send(
         .map_err(|_| {
             S3Error("The destination's settings cannot be sent in a request".to_string())
         })?;
+    Ok((located, request))
+}
 
+/// A socket to the store, TLS or not.
+trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+/// The connection a request goes out on: TCP, and TLS over it unless the
+/// endpoint is plain HTTP.
+async fn connect(target: &Target<'_>, located: &Located) -> Result<Box<dyn Io>, S3Error> {
     let port = target.endpoint.port;
-    let exchange = async {
-        let tcp = match tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            tokio::net::TcpStream::connect((located.host.as_str(), port)),
-        )
-        .await
-        {
-            Ok(Ok(tcp)) => tcp,
-            Ok(Err(e)) => {
-                return Err(S3Error(format!(
-                    "Cannot reach {}:{port}: {e}",
-                    located.host
-                )))
-            }
-            Err(_) => {
-                return Err(S3Error(format!(
-                    "Cannot reach {}:{port}: timed out",
-                    located.host
-                )))
-            }
-        };
-        if !target.endpoint.tls {
-            return round_trip(tcp, request).await;
+    let tcp = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio::net::TcpStream::connect((located.host.as_str(), port)),
+    )
+    .await
+    {
+        Ok(Ok(tcp)) => tcp,
+        Ok(Err(e)) => {
+            return Err(S3Error(format!(
+                "Cannot reach {}:{port}: {e}",
+                located.host
+            )))
         }
-        let roots = crate::cloudflare::system_roots()
-            .ok_or_else(|| S3Error("No system CA bundle found".to_string()))?;
-        let config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-        let name = rustls::pki_types::ServerName::try_from(located.host.clone())
-            .map_err(|_| S3Error(format!("{} is not a name TLS can check", located.host)))?;
-        let tls = connector
-            .connect(name, tcp)
-            .await
-            .map_err(|e| S3Error(format!("TLS with {} failed: {e}", located.host)))?;
-        round_trip(tls, request).await
+        Err(_) => {
+            return Err(S3Error(format!(
+                "Cannot reach {}:{port}: timed out",
+                located.host
+            )))
+        }
+    };
+    if !target.endpoint.tls {
+        return Ok(Box::new(tcp));
+    }
+    let roots = crate::cloudflare::system_roots()
+        .ok_or_else(|| S3Error("No system CA bundle found".to_string()))?;
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let name = rustls::pki_types::ServerName::try_from(located.host.clone())
+        .map_err(|_| S3Error(format!("{} is not a name TLS can check", located.host)))?;
+    let tls = connector
+        .connect(name, tcp)
+        .await
+        .map_err(|e| S3Error(format!("TLS with {} failed: {e}", located.host)))?;
+    Ok(Box::new(tls))
+}
+
+/// One request, signed now.
+async fn send(
+    target: &Target<'_>,
+    method: &str,
+    key: &str,
+    query: &[(&str, &str)],
+    body: Bytes,
+    payload_hash: &str,
+    timeout: Duration,
+) -> Result<Reply, S3Error> {
+    let (located, request) = signed(target, method, key, query, body, payload_hash)?;
+    let exchange = async {
+        let io = connect(target, &located).await?;
+        round_trip(io, request).await
     };
     match tokio::time::timeout(timeout, exchange).await {
         Ok(result) => result,
@@ -722,6 +745,161 @@ async fn send_parts(
 /// where a store that kept answering "there is more" would otherwise keep
 /// this asking.
 const MAX_LISTED: usize = 50_000;
+
+/// One object of a listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub key: String,
+    pub size: u64,
+    /// As the store wrote it: `2026-09-25T02:00:03.000Z`.
+    pub last_modified: String,
+}
+
+/// Every object whose key starts with `prefix`, with its size and date -
+/// ListObjectsV2, page after page.
+pub async fn list_objects(target: &Target<'_>, prefix: &str) -> Result<Vec<Listed>, S3Error> {
+    let mut objects = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let current = token.take();
+        let mut query = vec![("list-type", "2"), ("prefix", prefix)];
+        if let Some(next) = current.as_deref() {
+            query.push(("continuation-token", next));
+        }
+        let reply = send_retrying(target, "GET", "", &query, Bytes::new(), CONTROL_TIMEOUT).await?;
+        if reply.failed() {
+            return Err(refusal(&reply));
+        }
+        // `<Contents>` holds tags of its own, so each is read as raw text
+        // and its parts taken out of it.
+        for contents in raw_all(&reply.body, "Contents") {
+            let Some(key) = xml_text(contents, "Key") else {
+                continue;
+            };
+            objects.push(Listed {
+                key,
+                size: xml_text(contents, "Size")
+                    .and_then(|size| size.trim().parse().ok())
+                    .unwrap_or(0),
+                last_modified: xml_text(contents, "LastModified").unwrap_or_default(),
+            });
+        }
+        let more = xml_text(&reply.body, "IsTruncated").as_deref() == Some("true");
+        match xml_text(&reply.body, "NextContinuationToken").filter(|t| !t.is_empty()) {
+            Some(next) if more && objects.len() < MAX_LISTED => token = Some(next),
+            _ => break,
+        }
+    }
+    Ok(objects)
+}
+
+/// The inside of every `<tag>`, as it is - for a tag that holds tags.
+fn raw_all<'b>(body: &'b str, tag: &str) -> Vec<&'b str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(&open) {
+        let after = &rest[at + open.len()..];
+        let Some(end) = after.find(&close) else {
+            break;
+        };
+        out.push(&after[..end]);
+        rest = &after[end + close.len()..];
+    }
+    out
+}
+
+/// One object into `dest`, streamed: an archive is the size of a customer's
+/// sites and databases. `dest` must not exist yet; it is removed again when
+/// the transfer fails or the object is larger than `max_bytes`. How many
+/// bytes were written.
+pub async fn download(
+    target: &Target<'_>,
+    key: &str,
+    dest: &Path,
+    max_bytes: u64,
+) -> Result<u64, S3Error> {
+    use http_body_util::BodyExt;
+    use tokio::io::AsyncWriteExt;
+
+    let empty = sigv4::sha256_hex(b"");
+    let (located, request) = signed(target, "GET", key, &[], Bytes::new(), &empty)?;
+    let io = match tokio::time::timeout(CONTROL_TIMEOUT, connect(target, &located)).await {
+        Ok(io) => io?,
+        Err(_) => return Err(S3Error(format!("{} did not answer in time", located.host))),
+    };
+    let failed = |e: hyper::Error| S3Error(format!("The request failed: {e}"));
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(io))
+            .await
+            .map_err(failed)?;
+    let pump = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let response = match tokio::time::timeout(CONTROL_TIMEOUT, sender.send_request(request)).await {
+        Ok(response) => response.map_err(failed)?,
+        Err(_) => {
+            pump.abort();
+            return Err(S3Error(format!("{} did not answer in time", located.host)));
+        }
+    };
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        let body = http_body_util::Limited::new(response.into_body(), MAX_RESPONSE)
+            .collect()
+            .await
+            .map(|collected| collected.to_bytes())
+            .unwrap_or_default();
+        pump.abort();
+        return Err(refusal(&Reply {
+            status,
+            etag: None,
+            region: None,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        }));
+    }
+
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .await
+        .map_err(|e| S3Error(format!("Cannot write {}: {e}", dest.display())))?;
+    let copied = async {
+        let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, file);
+        let mut body = response.into_body();
+        let mut written: u64 = 0;
+        loop {
+            // A store that stops sending for a minute has stopped.
+            let frame = match tokio::time::timeout(CONTROL_TIMEOUT, body.frame()).await {
+                Ok(Some(frame)) => frame.map_err(failed)?,
+                Ok(None) => break,
+                Err(_) => return Err(S3Error(format!("{} stopped sending", located.host))),
+            };
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            written += data.len() as u64;
+            if written > max_bytes {
+                return Err(S3Error(format!("{key} is larger than {max_bytes} bytes")));
+            }
+            file.write_all(&data)
+                .await
+                .map_err(|e| S3Error(format!("Cannot write {}: {e}", dest.display())))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| S3Error(format!("Cannot write {}: {e}", dest.display())))?;
+        Ok(written)
+    }
+    .await;
+    pump.abort();
+    if copied.is_err() {
+        let _ = tokio::fs::remove_file(dest).await;
+    }
+    copied
+}
 
 /// Every key that starts with `prefix` - ListObjectsV2, page after page.
 pub async fn list_keys(target: &Target<'_>, prefix: &str) -> Result<Vec<String>, S3Error> {
@@ -1232,6 +1410,110 @@ mod tests {
             seen[1].query,
             "list-type=2&prefix=panel%2Fuser-alice-&continuation-token=t%2F2%3D"
         );
+    }
+
+    #[tokio::test]
+    async fn a_listing_says_each_objects_size_and_date() {
+        let (endpoint, _) = fake_store(Arc::new(|_: &Seen, _| {
+            (
+                200,
+                vec![],
+                "<ListBucketResult><IsTruncated>false</IsTruncated>\
+                <Contents><Key>panel/user-alice-20260920020000.tar.gz</Key>\
+                <LastModified>2026-09-20T02:00:03.000Z</LastModified><Size>1048576</Size></Contents>\
+                <Contents><Key>panel/bob.tar.gz</Key><Size>12</Size></Contents>\
+                </ListBucketResult>"
+                    .to_string(),
+            )
+        }))
+        .await;
+        let objects = list_objects(&target(&endpoint, true), "panel/")
+            .await
+            .unwrap();
+        assert_eq!(
+            objects,
+            [
+                Listed {
+                    key: "panel/user-alice-20260920020000.tar.gz".into(),
+                    size: 1_048_576,
+                    last_modified: "2026-09-20T02:00:03.000Z".into(),
+                },
+                Listed {
+                    key: "panel/bob.tar.gz".into(),
+                    size: 12,
+                    last_modified: String::new(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_is_a_signed_get_streamed_to_the_file() {
+        let body: String = (0..300_000)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
+        let served = body.clone();
+        let (endpoint, seen) = fake_store(Arc::new(move |request: &Seen, _| {
+            if request.path.ends_with("missing.tar.gz") {
+                (404, vec![], "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>".to_string())
+            } else {
+                (200, vec![], served.clone())
+            }
+        }))
+        .await;
+        let dir = std::env::temp_dir().join(format!("snpanel-s3-get-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let dest = dir.join("alice.tar.gz");
+        let written = download(
+            &target(&endpoint, true),
+            "panel/alice.tar.gz",
+            &dest,
+            1 << 30,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written, body.len() as u64);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), body);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0].method, "GET");
+            assert_eq!(seen[0].path, "/backups/panel/alice.tar.gz");
+            assert!(seen[0].signature_ok);
+        }
+
+        // An existing file is not overwritten.
+        assert!(download(
+            &target(&endpoint, true),
+            "panel/alice.tar.gz",
+            &dest,
+            1 << 30
+        )
+        .await
+        .is_err());
+
+        // A refusal is S3's own words, and leaves nothing behind.
+        let missing = dir.join("missing.tar.gz");
+        let error = download(
+            &target(&endpoint, true),
+            "panel/missing.tar.gz",
+            &missing,
+            1 << 30,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.0.contains("NoSuchKey"), "{}", error.0);
+        assert!(!missing.exists());
+
+        // More than the caller allows stops, and the part written is removed.
+        let big = dir.join("big.tar.gz");
+        let error = download(&target(&endpoint, true), "panel/big.tar.gz", &big, 1000)
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("larger than 1000 bytes"), "{}", error.0);
+        assert!(!big.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

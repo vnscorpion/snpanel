@@ -322,6 +322,71 @@ impl<'a> SftpTargetRepo<'a> {
         .await?)
     }
 
+    /// Whether another target than `id` has this name.
+    pub async fn name_taken_by_other(&self, name: &str, id: i64) -> Result<bool, DbError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sftp_backup_targets WHERE name = ? AND id != ?",
+        )
+        .bind(name)
+        .bind(id)
+        .fetch_one(self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// An edit. A secret passed as `None` keeps the one saved - it never
+    /// comes back to the page, so a blank field means "unchanged". A new host
+    /// or port drops the pinned key: it was the old server's, and the next
+    /// connection pins the new one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update(
+        &self,
+        id: i64,
+        name: &str,
+        host: &str,
+        port: i64,
+        username: &str,
+        encrypted_password: Option<&str>,
+        encrypted_private_key: Option<&str>,
+        remote_path: &str,
+    ) -> Result<Option<SftpTarget>, DbError> {
+        // SQLite evaluates every SET against the row as it was, so the CASE
+        // compares the old host and port with the new ones.
+        Ok(sqlx::query_as::<_, SftpTarget>(&format!(
+            "UPDATE sftp_backup_targets SET \
+             host_key_type = CASE WHEN host = ? AND port = ? THEN host_key_type ELSE NULL END, \
+             host_key_fingerprint = CASE WHEN host = ? AND port = ? THEN host_key_fingerprint ELSE NULL END, \
+             name = ?, host = ?, port = ?, username = ?, remote_path = ?, \
+             password = COALESCE(?, password), private_key = COALESCE(?, private_key) \
+             WHERE id = ? RETURNING {SFTP_COLUMNS}"
+        ))
+        .bind(host)
+        .bind(port)
+        .bind(host)
+        .bind(port)
+        .bind(name)
+        .bind(host)
+        .bind(port)
+        .bind(username)
+        .bind(remote_path)
+        .bind(encrypted_password)
+        .bind(encrypted_private_key)
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// How many backup schedules send to this target: it cannot be deleted
+    /// from under them.
+    pub async fn schedules_using(&self, id: i64) -> Result<Vec<i64>, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT id FROM backup_schedules WHERE target_id = ? ORDER BY id")
+                .bind(id)
+                .fetch_all(self.pool)
+                .await?,
+        )
+    }
+
     pub async fn delete(&self, id: i64) -> Result<Option<String>, DbError> {
         let name: Option<String> =
             sqlx::query_scalar("DELETE FROM sftp_backup_targets WHERE id = ? RETURNING name")
@@ -329,5 +394,145 @@ impl<'a> SftpTargetRepo<'a> {
                 .fetch_optional(self.pool)
                 .await?;
         Ok(name)
+    }
+}
+
+#[cfg(test)]
+mod sftp_target_tests {
+    use super::*;
+
+    async fn scratch() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for statement in [
+            "CREATE TABLE sftp_backup_targets (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL UNIQUE, \
+             host VARCHAR(255) NOT NULL, port INTEGER DEFAULT 22 NOT NULL, username VARCHAR(128) NOT NULL, \
+             password TEXT, private_key TEXT, remote_path VARCHAR(500) DEFAULT '/backups/snpanel' NOT NULL, \
+             is_active BOOLEAN DEFAULT 1 NOT NULL, created_at DATETIME, host_key_type VARCHAR(32), \
+             host_key_fingerprint VARCHAR(128))",
+            "CREATE TABLE backup_schedules (id INTEGER PRIMARY KEY, target_id INTEGER)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    async fn secrets(pool: &SqlitePool, id: i64) -> (Option<String>, Option<String>) {
+        let row = SftpTargetRepo::new(pool)
+            .secrets(id)
+            .await
+            .unwrap()
+            .unwrap();
+        (row.password, row.private_key)
+    }
+
+    #[tokio::test]
+    async fn an_edit_keeps_what_it_was_not_given_and_forgets_the_old_hosts_key() {
+        let pool = scratch().await;
+        let repo = SftpTargetRepo::new(&pool);
+        let row = repo
+            .create(
+                "Offsite",
+                "backup.example.com",
+                22,
+                "snp",
+                Some("enc-pw"),
+                None,
+                "/backups",
+            )
+            .await
+            .unwrap();
+        repo.pin_host_key(row.id, "ssh-ed25519", "SHA256:old")
+            .await
+            .unwrap();
+
+        // Same host and port: the pin stays, a blank secret keeps the saved one.
+        let same = repo
+            .update(
+                row.id,
+                "Offsite 2",
+                "backup.example.com",
+                22,
+                "snp2",
+                None,
+                None,
+                "/b2",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                same.name.as_str(),
+                same.username.as_str(),
+                same.remote_path.as_str()
+            ),
+            ("Offsite 2", "snp2", "/b2")
+        );
+        assert_eq!(same.host_key_fingerprint.as_deref(), Some("SHA256:old"));
+        assert_eq!(secrets(&pool, row.id).await, (Some("enc-pw".into()), None));
+
+        // A new secret replaces the old; a new port drops the pin.
+        let moved = repo
+            .update(
+                row.id,
+                "Offsite 2",
+                "backup.example.com",
+                2222,
+                "snp2",
+                Some("enc-pw2"),
+                Some("enc-key"),
+                "/b2",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.port, 2222);
+        assert_eq!(moved.host_key_fingerprint, None);
+        assert_eq!(moved.host_key_type, None);
+        assert_eq!(
+            secrets(&pool, row.id).await,
+            (Some("enc-pw2".into()), Some("enc-key".into()))
+        );
+
+        assert!(repo
+            .update(999, "x", "h", 22, "u", None, None, "/")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_name_is_taken_by_another_target_but_not_by_itself() {
+        let pool = scratch().await;
+        let repo = SftpTargetRepo::new(&pool);
+        let a = repo
+            .create("A", "h", 22, "u", Some("p"), None, "/")
+            .await
+            .unwrap();
+        let b = repo
+            .create("B", "h", 22, "u", Some("p"), None, "/")
+            .await
+            .unwrap();
+        assert!(!repo.name_taken_by_other("A", a.id).await.unwrap());
+        assert!(repo.name_taken_by_other("A", b.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_schedules_using_a_target_are_counted() {
+        let pool = scratch().await;
+        let repo = SftpTargetRepo::new(&pool);
+        let a = repo
+            .create("A", "h", 22, "u", Some("p"), None, "/")
+            .await
+            .unwrap();
+        assert!(repo.schedules_using(a.id).await.unwrap().is_empty());
+        for _ in 0..2 {
+            sqlx::query("INSERT INTO backup_schedules (target_id) VALUES (?)")
+                .bind(a.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(repo.schedules_using(a.id).await.unwrap(), [1, 2]);
     }
 }

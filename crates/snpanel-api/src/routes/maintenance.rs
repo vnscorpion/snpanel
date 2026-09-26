@@ -259,7 +259,13 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/maintenance/sftp-targets/{target_id}",
-            axum::routing::delete(delete_sftp_target).fallback(crate::fallback),
+            axum::routing::put(update_sftp_target)
+                .delete(delete_sftp_target)
+                .fallback(crate::fallback),
+        )
+        .route(
+            "/maintenance/sftp-targets/{target_id}/test",
+            post(test_sftp_target).fallback(crate::fallback),
         )
         .route(
             "/maintenance/php-config",
@@ -2525,72 +2531,15 @@ async fn create_sftp_target(
         Ok(v) => v,
         Err(r) => return r,
     };
-
-    let name = match string_field(&payload, "name") {
-        Ok(v) => v,
+    let fields = match sftp_fields(&payload) {
+        Ok(fields) => fields,
         Err(r) => return r,
     };
-    if !(2..=100).contains(&name.chars().count())
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b' ' | b'-'))
-    {
-        return crate::errors::validation_error(vec![json!({
-            "type": "string_pattern_mismatch",
-            "loc": ["body", "name"],
-            "msg": "String should match pattern '^[A-Za-z0-9._ -]+$'",
-            "input": name,
-            "ctx": { "pattern": "^[A-Za-z0-9._ -]+$" },
-        })]);
-    }
-    let host = match string_field(&payload, "host") {
-        Ok(v) => v.trim().to_string(),
-        Err(r) => return r,
-    };
-    if host.is_empty()
-        || !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
-    {
-        return crate::errors::validation_error(vec![json!({
-            "type": "value_error",
-            "loc": ["body", "host"],
-            "msg": "Value error, Invalid SFTP host",
-            "input": host,
-        })]);
-    }
-    let username = match string_field(&payload, "username") {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let port = payload.get("port").and_then(Value::as_i64).unwrap_or(22);
-    if !(1..=65535).contains(&port) {
-        return crate::errors::validation_error(vec![json!({
-            "type": "less_than_equal",
-            "loc": ["body", "port"],
-            "msg": "Input should be less than or equal to 65535",
-            "input": port,
-            "ctx": { "le": 65535 },
-        })]);
-    }
-    let remote_path = payload
-        .get("remote_path")
-        .and_then(Value::as_str)
-        .unwrap_or("/backups/snpanel")
-        .to_string();
-    let password = payload
-        .get("password")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty());
-    let private_key = payload
-        .get("private_key")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty());
-    if password.is_none() && private_key.is_none() {
+    if fields.password.is_none() && fields.private_key.is_none() {
         return bad_request("SFTP password or private key is required");
     }
 
-    match state.db.sftp_targets().name_taken(&name).await {
+    match state.db.sftp_targets().name_taken(&fields.name).await {
         Ok(true) => return conflict("SFTP target name already exists"),
         Ok(false) => {}
         Err(e) => {
@@ -2600,20 +2549,26 @@ async fn create_sftp_target(
     }
 
     let key = &state.settings.secret_key;
-    let encrypted_password = password.map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
-    let encrypted_key = private_key.map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+    let encrypted_password = fields
+        .password
+        .as_deref()
+        .map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+    let encrypted_key = fields
+        .private_key
+        .as_deref()
+        .map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
 
     match state
         .db
         .sftp_targets()
         .create(
-            &name,
-            &host,
-            port,
-            &username,
+            &fields.name,
+            &fields.host,
+            fields.port,
+            &fields.username,
             encrypted_password.as_deref(),
             encrypted_key.as_deref(),
-            &remote_path,
+            &fields.remote_path,
         )
         .await
     {
@@ -2635,6 +2590,207 @@ async fn create_sftp_target(
     }
 }
 
+/// What a create or an edit of an SFTP target sends, checked. A secret is
+/// `None` when it is absent or blank.
+struct SftpFields {
+    name: String,
+    host: String,
+    username: String,
+    port: i64,
+    remote_path: String,
+    password: Option<String>,
+    private_key: Option<String>,
+}
+
+/// The create's checks, in its order, for the edit to share.
+#[allow(clippy::result_large_err)]
+fn sftp_fields(payload: &Value) -> Result<SftpFields, Response> {
+    let name = string_field(payload, "name")?;
+    if !(2..=100).contains(&name.chars().count())
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b' ' | b'-'))
+    {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "string_pattern_mismatch",
+            "loc": ["body", "name"],
+            "msg": "String should match pattern '^[A-Za-z0-9._ -]+$'",
+            "input": name,
+            "ctx": { "pattern": "^[A-Za-z0-9._ -]+$" },
+        })]));
+    }
+    let host = string_field(payload, "host")?.trim().to_string();
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+    {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "value_error",
+            "loc": ["body", "host"],
+            "msg": "Value error, Invalid SFTP host",
+            "input": host,
+        })]));
+    }
+    let username = string_field(payload, "username")?;
+    let port = payload.get("port").and_then(Value::as_i64).unwrap_or(22);
+    if !(1..=65535).contains(&port) {
+        return Err(crate::errors::validation_error(vec![json!({
+            "type": "less_than_equal",
+            "loc": ["body", "port"],
+            "msg": "Input should be less than or equal to 65535",
+            "input": port,
+            "ctx": { "le": 65535 },
+        })]));
+    }
+    let remote_path = payload
+        .get("remote_path")
+        .and_then(Value::as_str)
+        .unwrap_or("/backups/snpanel")
+        .to_string();
+    let secret = |field: &str| {
+        payload
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    Ok(SftpFields {
+        name,
+        host,
+        username,
+        port,
+        remote_path,
+        password: secret("password"),
+        private_key: secret("private_key"),
+    })
+}
+
+/// `PUT /maintenance/sftp-targets/{id}` - an edit. A blank password or key
+/// keeps the saved one; a new host or port forgets the pinned host key.
+async fn update_sftp_target(
+    State(state): State<AppState>,
+    AxumPath(target_id): AxumPath<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (_, payload) = match body_and_json(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let fields = match sftp_fields(&payload) {
+        Ok(fields) => fields,
+        Err(r) => return r,
+    };
+    match state.db.sftp_targets().by_id(target_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found("SFTP target not found"),
+        Err(e) => {
+            tracing::error!("reading SFTP target {target_id} failed: {e}");
+            return internal_error();
+        }
+    }
+    match state
+        .db
+        .sftp_targets()
+        .name_taken_by_other(&fields.name, target_id)
+        .await
+    {
+        Ok(true) => return conflict("SFTP target name already exists"),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!("SFTP target lookup failed: {e}");
+            return internal_error();
+        }
+    }
+    let key = &state.settings.secret_key;
+    let encrypted_password = fields
+        .password
+        .as_deref()
+        .map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+    let encrypted_key = fields
+        .private_key
+        .as_deref()
+        .map(|p| snpanel_core::crypto::fernet::encrypt(key, p));
+    match state
+        .db
+        .sftp_targets()
+        .update(
+            target_id,
+            &fields.name,
+            &fields.host,
+            fields.port,
+            &fields.username,
+            encrypted_password.as_deref(),
+            encrypted_key.as_deref(),
+            &fields.remote_path,
+        )
+        .await
+    {
+        Ok(Some(row)) => {
+            super::packages::audit_action(
+                &state,
+                &parts,
+                current.user.id,
+                "update_sftp_target",
+                &row.name,
+            )
+            .await;
+            axum::Json(sftp_json(&row)).into_response()
+        }
+        Ok(None) => not_found("SFTP target not found"),
+        Err(e) => {
+            tracing::error!("updating SFTP target {target_id} failed: {e}");
+            internal_error()
+        }
+    }
+}
+
+/// `POST /maintenance/sftp-targets/{id}/test` - signs in, makes the folder
+/// when it is missing, writes one small file and removes it: whether
+/// backups will get there, found now rather than by the first night's run.
+async fn test_sftp_target(
+    State(state): State<AppState>,
+    AxumPath(target_id): AxumPath<i64>,
+    current: CurrentUser,
+) -> Response {
+    if let Err(r) = require_admin(&current).await {
+        return r;
+    }
+    let (row, password, private_key) = match open_sftp_target(&state, target_id).await {
+        Ok(opened) => opened,
+        Err(message) => return bad_request(&message),
+    };
+    let target = sftp_target_of(&row, password.as_deref(), private_key.as_deref());
+    match crate::sftp::check(&target).await {
+        Ok((removed, host_key)) => {
+            keep_host_key(&state, &row, &host_key).await;
+            let message = if removed {
+                format!("{} accepts backups.", row.name)
+            } else {
+                format!(
+                    "{} accepts backups. The account may not delete, so the test file {} is still there.",
+                    row.name,
+                    crate::sftp::remote_file_path(
+                        &crate::sftp::normalise_remote_dir(&row.remote_path),
+                        crate::sftp::CHECK_FILE
+                    )
+                )
+            };
+            axum::Json(json!({ "ok": true, "removed": removed, "message": message }))
+                .into_response()
+        }
+        Err(e) => crate::errors::error(axum::http::StatusCode::BAD_GATEWAY, &e.to_string()),
+    }
+}
+
 /// Source: `delete_sftp_target`.
 async fn delete_sftp_target(
     State(state): State<AppState>,
@@ -2648,6 +2804,22 @@ async fn delete_sftp_target(
     };
     if let Err(r) = require_admin(&current).await {
         return r;
+    }
+    // A schedule sending here would fail every night, or - the foreign key
+    // being on - the delete would, with a 500.
+    match state.db.sftp_targets().schedules_using(target_id).await {
+        Ok(ids) if ids.is_empty() => {}
+        Ok(ids) => {
+            let ids: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+            return conflict(&format!(
+                "Backup schedule {} uploads here. Delete the schedule first.",
+                ids.join(", ")
+            ));
+        }
+        Err(e) => {
+            tracing::error!("reading the schedules of SFTP target {target_id} failed: {e}");
+            return internal_error();
+        }
     }
     match state.db.sftp_targets().delete(target_id).await {
         Ok(Some(name)) => {
@@ -6325,7 +6497,7 @@ async fn start_da_import(State(state): State<AppState>, req: axum::extract::Requ
     if !path.exists() {
         return not_found("Backup file not found");
     }
-    if crate::da_jobs::any_running() {
+    if crate::da_jobs::any_running() || super::user_restore::running() {
         return crate::errors::error(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "An import is already running. Please wait.",
@@ -6466,7 +6638,7 @@ async fn start_da_bulk_import(
         paths.push(path);
     }
 
-    if crate::da_jobs::any_running() {
+    if crate::da_jobs::any_running() || super::user_restore::running() {
         return crate::errors::error(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "A bulk import is already running. Please wait.",
@@ -7400,7 +7572,7 @@ fn backup_username_ok(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-async fn run_user_restore(state: &AppState, backup_file: &str) -> Result<Value, String> {
+pub(crate) async fn run_user_restore(state: &AppState, backup_file: &str) -> Result<Value, String> {
     let root = &state.settings.backup_root;
     let archive = crate::backups::user_backup_path(root, backup_file).map_err(|e| e.to_string())?;
     let manifest =
@@ -8885,6 +9057,111 @@ async fn upload_archive_to_target(
     target_id: i64,
     archive: &str,
 ) -> Result<(String, String), String> {
+    let (target, password, private_key) = open_sftp_target(state, target_id).await?;
+    let uploaded = crate::sftp::upload(
+        archive,
+        &sftp_target_of(&target, password.as_deref(), private_key.as_deref()),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    keep_host_key(
+        state,
+        &target,
+        &crate::sftp::HostKey {
+            host_key_type: uploaded.host_key_type,
+            host_key_fingerprint: uploaded.host_key_fingerprint,
+        },
+    )
+    .await;
+    Ok((target.name, uploaded.remote_file))
+}
+
+/// The archives in an SFTP target's folder, newest first - what a restore
+/// from it offers.
+pub(crate) async fn sftp_archives(
+    state: &AppState,
+    target_id: i64,
+) -> Result<Vec<crate::sftp::RemoteArchive>, String> {
+    let (target, password, private_key) = open_sftp_target(state, target_id).await?;
+    let (archives, host_key) = crate::sftp::list(&sftp_target_of(
+        &target,
+        password.as_deref(),
+        private_key.as_deref(),
+    ))
+    .await
+    .map_err(|e| e.to_string())?;
+    keep_host_key(state, &target, &host_key).await;
+    Ok(archives)
+}
+
+/// One archive from an SFTP target's folder into `dest`. How many bytes.
+pub(crate) async fn sftp_fetch(
+    state: &AppState,
+    target_id: i64,
+    name: &str,
+    dest: &std::path::Path,
+    max_bytes: u64,
+) -> Result<u64, String> {
+    let (target, password, private_key) = open_sftp_target(state, target_id).await?;
+    let (written, host_key) = crate::sftp::download(
+        &sftp_target_of(&target, password.as_deref(), private_key.as_deref()),
+        name,
+        dest,
+        max_bytes,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    keep_host_key(state, &target, &host_key).await;
+    Ok(written)
+}
+
+/// Where a target points, with what signs in to it.
+fn sftp_target_of<'a>(
+    target: &'a snpanel_db::SftpTarget,
+    password: Option<&'a str>,
+    private_key: Option<&'a str>,
+) -> crate::sftp::Target<'a> {
+    crate::sftp::Target {
+        host: &target.host,
+        port: u16::try_from(target.port).unwrap_or(22),
+        username: &target.username,
+        remote_path: &target.remote_path,
+        password,
+        private_key,
+        expected_host_key_type: target.host_key_type.as_deref(),
+        expected_host_key_fingerprint: target.host_key_fingerprint.as_deref(),
+    }
+}
+
+/// `if not target.host_key_fingerprint and result[...]` — the key is written
+/// once, when there was nothing to compare against: the bootstrap half of
+/// the TOFU model.
+async fn keep_host_key(
+    state: &AppState,
+    target: &snpanel_db::SftpTarget,
+    seen: &crate::sftp::HostKey,
+) {
+    let unpinned = target
+        .host_key_fingerprint
+        .as_deref()
+        .is_none_or(str::is_empty);
+    if unpinned && !seen.host_key_fingerprint.is_empty() {
+        if let Err(e) = state
+            .db
+            .sftp_targets()
+            .pin_host_key(target.id, &seen.host_key_type, &seen.host_key_fingerprint)
+            .await
+        {
+            tracing::error!("could not pin the host key for target {}: {e}", target.id);
+        }
+    }
+}
+
+/// An active target and its secrets, decrypted.
+async fn open_sftp_target(
+    state: &AppState,
+    target_id: i64,
+) -> Result<(snpanel_db::SftpTarget, Option<String>, Option<String>), String> {
     let target = match state.db.sftp_targets().by_id(target_id).await {
         Ok(Some(target)) if target.is_active => target,
         Ok(_) => return Err("SFTP target not found".to_string()),
@@ -8915,44 +9192,7 @@ async fn upload_archive_to_target(
     };
     let password = decrypt(secrets.password, "password")?;
     let private_key = decrypt(secrets.private_key, "private key")?;
-
-    let uploaded = crate::sftp::upload(
-        archive,
-        &crate::sftp::Target {
-            host: &target.host,
-            port: u16::try_from(target.port).unwrap_or(22),
-            username: &target.username,
-            remote_path: &target.remote_path,
-            password: password.as_deref(),
-            private_key: private_key.as_deref(),
-            expected_host_key_type: target.host_key_type.as_deref(),
-            expected_host_key_fingerprint: target.host_key_fingerprint.as_deref(),
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // `if not target.host_key_fingerprint and result[...]` — written once,
-    // when there was nothing to compare against.
-    let unpinned = target
-        .host_key_fingerprint
-        .as_deref()
-        .is_none_or(str::is_empty);
-    if unpinned && !uploaded.host_key_fingerprint.is_empty() {
-        if let Err(e) = state
-            .db
-            .sftp_targets()
-            .pin_host_key(
-                target_id,
-                &uploaded.host_key_type,
-                &uploaded.host_key_fingerprint,
-            )
-            .await
-        {
-            tracing::error!("could not pin the host key for target {target_id}: {e}");
-        }
-    }
-    Ok((target.name, uploaded.remote_file))
+    Ok((target, password, private_key))
 }
 
 /// `log_action(..., request=request)` — the shape with `ip=` and `ua=` on it.

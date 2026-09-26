@@ -66,6 +66,14 @@ pub struct Target<'a> {
     pub expected_host_key_fingerprint: Option<&'a str>,
 }
 
+/// The host key a connection ends with, for the caller to pin when the
+/// target had none.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostKey {
+    pub host_key_type: String,
+    pub host_key_fingerprint: String,
+}
+
 /// What the upload learned, which the caller has to persist for the pin to
 /// mean anything next time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,23 +216,23 @@ pub fn remote_dir_chain(remote_dir: &str) -> Vec<String> {
     chain
 }
 
-/// Upload `local_file` to the target, and report the key that was seen.
-pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, SftpError> {
-    let local_path = crate::files::resolve(Path::new(local_file));
-    if !local_path.is_file() {
-        return Err(SftpError::LocalMissing);
-    }
+/// An open SFTP session, with what the handshake learned about the host.
+///
+/// The SSH handle is kept beside the session: dropping it closes the
+/// connection underneath the session.
+struct Open {
+    _ssh: russh::client::Handle<Pinned>,
+    sftp: russh_sftp::client::SftpSession,
+    seen: Arc<std::sync::Mutex<Option<(String, String)>>>,
+}
+
+/// Connect, check the host key, sign in and start SFTP.
+async fn open(target: &Target<'_>) -> Result<Open, SftpError> {
     let has_password = target.password.is_some_and(|text| !text.is_empty());
     let has_key = target.private_key.is_some_and(|text| !text.is_empty());
     if !has_password && !has_key {
         return Err(SftpError::NoCredentials);
     }
-    let name = local_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let remote_dir = normalise_remote_dir(target.remote_path);
-    let remote_file = remote_file_path(&remote_dir, &name);
 
     // `_load_private_key`: the passphrase is the configured password, which
     // is why a target may carry both.
@@ -302,7 +310,59 @@ pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, S
     let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
         .await
         .map_err(|e| SftpError::Failed(format!("Cannot start the SFTP session: {e}")))?;
+    Ok(Open {
+        _ssh: session,
+        sftp,
+        seen,
+    })
+}
 
+/// The host key the caller persists. A pinned target keeps the pin it had -
+/// the key matched, so re-recording it would only be a chance to record it
+/// wrong; one that had none gets the key this connection saw.
+fn host_key_to_keep(
+    target: &Target<'_>,
+    seen: &Arc<std::sync::Mutex<Option<(String, String)>>>,
+) -> HostKey {
+    let (seen_type, seen_fingerprint) = seen
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_default();
+    match target
+        .expected_host_key_fingerprint
+        .filter(|f| !f.is_empty())
+    {
+        Some(pinned) => HostKey {
+            host_key_type: target
+                .expected_host_key_type
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .unwrap_or(seen_type),
+            host_key_fingerprint: pinned.to_string(),
+        },
+        None => HostKey {
+            host_key_type: seen_type,
+            host_key_fingerprint: seen_fingerprint,
+        },
+    }
+}
+
+/// Upload `local_file` to the target, and report the key that was seen.
+pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, SftpError> {
+    let local_path = crate::files::resolve(Path::new(local_file));
+    if !local_path.is_file() {
+        return Err(SftpError::LocalMissing);
+    }
+    let name = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let remote_dir = normalise_remote_dir(target.remote_path);
+    let remote_file = remote_file_path(&remote_dir, &name);
+
+    let open = open(target).await?;
+    let sftp = &open.sftp;
     for directory in remote_dir_chain(&remote_dir) {
         // `except IOError: pass` — a directory that is already there is the
         // normal case, not a failure.
@@ -330,33 +390,149 @@ pub async fn upload(local_file: &str, target: &Target<'_>) -> Result<Uploaded, S
             .map_err(|e| SftpError::Failed(format!("Cannot finish {remote_file}: {e}")))?;
     }
 
-    // What the caller persists. A pinned target keeps the pin it had — the
-    // key matched, so re-recording it would only be a chance to record it
-    // wrong.
-    let (seen_type, seen_fingerprint) = seen
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .unwrap_or_default();
-    let (host_key_type, host_key_fingerprint) = match target
-        .expected_host_key_fingerprint
-        .filter(|f| !f.is_empty())
-    {
-        Some(pinned) => (
-            target
-                .expected_host_key_type
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .unwrap_or(seen_type),
-            pinned.to_string(),
-        ),
-        None => (seen_type, seen_fingerprint),
-    };
+    let key = host_key_to_keep(target, &open.seen);
     Ok(Uploaded {
         remote_file,
-        host_key_type,
-        host_key_fingerprint,
+        host_key_type: key.host_key_type,
+        host_key_fingerprint: key.host_key_fingerprint,
     })
+}
+
+/// The file the destination test writes and removes again.
+pub const CHECK_FILE: &str = ".snpanel-write-test";
+
+/// Whether the destination takes a backup: signed in, the folder made if it
+/// is missing, one small file written and removed. `removed` is false when
+/// the account may write but not delete.
+pub async fn check(target: &Target<'_>) -> Result<(bool, HostKey), SftpError> {
+    let remote_dir = normalise_remote_dir(target.remote_path);
+    let open = open(target).await?;
+    let sftp = &open.sftp;
+    for directory in remote_dir_chain(&remote_dir) {
+        let _ = sftp.create_dir(directory).await;
+    }
+    let probe = remote_file_path(&remote_dir, CHECK_FILE);
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = sftp
+            .create(probe.clone())
+            .await
+            .map_err(|e| SftpError::Failed(format!("Cannot write in {remote_dir}: {e}")))?;
+        file.write_all(b"SNPanel can write backups here.\n")
+            .await
+            .map_err(|e| SftpError::Failed(format!("Cannot write in {remote_dir}: {e}")))?;
+        file.shutdown()
+            .await
+            .map_err(|e| SftpError::Failed(format!("Cannot write in {remote_dir}: {e}")))?;
+    }
+    let removed = sftp.remove_file(probe).await.is_ok();
+    Ok((removed, host_key_to_keep(target, &open.seen)))
+}
+
+/// One archive in the destination's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteArchive {
+    pub name: String,
+    pub size: u64,
+    /// Seconds since the epoch, when the server says.
+    pub modified: Option<u32>,
+}
+
+/// The `.tar.gz` files directly in the destination's folder - not in folders
+/// under it, and not links, which could point anywhere on that server.
+pub async fn list(target: &Target<'_>) -> Result<(Vec<RemoteArchive>, HostKey), SftpError> {
+    let remote_dir = normalise_remote_dir(target.remote_path);
+    let open = open(target).await?;
+    let entries = open
+        .sftp
+        .read_dir(remote_dir.clone())
+        .await
+        .map_err(|e| SftpError::Failed(format!("Cannot list {remote_dir}: {e}")))?;
+    let mut found: Vec<RemoteArchive> = entries
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| {
+            let metadata = entry.metadata();
+            RemoteArchive {
+                name: entry.file_name(),
+                size: metadata.size.unwrap_or(0),
+                modified: metadata.mtime,
+            }
+        })
+        .filter(|archive| archive_name_ok(&archive.name))
+        .collect();
+    found.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok((found, host_key_to_keep(target, &open.seen)))
+}
+
+/// A name the restore may fetch: one file in the folder, an archive, and
+/// nothing that could step out of it.
+pub fn archive_name_ok(name: &str) -> bool {
+    name.ends_with(".tar.gz")
+        && name.len() <= 255
+        && !name.starts_with('.')
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+/// One archive from the destination's folder into `dest`, streamed. `dest`
+/// must not exist yet; it is removed again if the transfer fails, or if the
+/// server sends more than `max_bytes`.
+pub async fn download(
+    target: &Target<'_>,
+    name: &str,
+    dest: &Path,
+    max_bytes: u64,
+) -> Result<(u64, HostKey), SftpError> {
+    if !archive_name_ok(name) {
+        return Err(SftpError::Failed(format!("Not a backup archive: {name}")));
+    }
+    let remote_dir = normalise_remote_dir(target.remote_path);
+    let remote_file = remote_file_path(&remote_dir, name);
+    let open = open(target).await?;
+    let remote = open
+        .sftp
+        .open(remote_file.clone())
+        .await
+        .map_err(|e| SftpError::Failed(format!("Cannot read {remote_file}: {e}")))?;
+    let local = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .await
+        .map_err(|e| SftpError::Failed(format!("Cannot write {}: {e}", dest.display())))?;
+    let copied = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // One byte past the limit is enough to know the server sent too much.
+        let mut limited =
+            tokio::io::BufReader::with_capacity(256 * 1024, remote).take(max_bytes + 1);
+        let mut local = tokio::io::BufWriter::with_capacity(256 * 1024, local);
+        let written = tokio::io::copy_buf(&mut limited, &mut local)
+            .await
+            .map_err(|e| SftpError::Failed(format!("Cannot read {remote_file}: {e}")))?;
+        if written > max_bytes {
+            return Err(SftpError::Failed(format!(
+                "{name} is larger than {max_bytes} bytes"
+            )));
+        }
+        local
+            .flush()
+            .await
+            .map_err(|e| SftpError::Failed(format!("Cannot write {}: {e}", dest.display())))?;
+        Ok(written)
+    }
+    .await;
+    match copied {
+        Ok(written) => Ok((written, host_key_to_keep(target, &open.seen))),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(dest).await;
+            Err(e)
+        }
+    }
 }
 
 /// A connection that failed after the key was seen and rejected is a pin
@@ -396,6 +572,28 @@ mod tests {
         ))
         .expect("the corpus");
         serde_json::from_str(&text).expect("the corpus parses")
+    }
+
+    #[test]
+    fn only_a_plain_archive_name_is_fetched() {
+        for good in [
+            "user-alice-20260925020000.tar.gz",
+            "alice.tar.gz",
+            "alice-monday.tar.gz",
+        ] {
+            assert!(archive_name_ok(good), "{good}");
+        }
+        for bad in [
+            "../alice.tar.gz",
+            "dir/alice.tar.gz",
+            ".hidden.tar.gz",
+            "alice.zip",
+            "alice.tar.gz\0x",
+            "a\\b.tar.gz",
+            "",
+        ] {
+            assert!(!archive_name_ok(bad), "{bad:?}");
+        }
     }
 
     #[test]

@@ -1,0 +1,36 @@
+/* The Backups page's destinations: SFTP and S3 in one list, and one form
+   whose fields follow the type. See components/BackupDestinations.jsx. */
+
+.bk-dest{display:grid;gap:var(--space-4)}
+.bk-dest-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.bk-dest-list li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)}
+.bk-dest-list li:last-child{border-bottom:0}
+.bk-dest-list li.editing{background:var(--primary-light)}
+.bk-dest-type{display:inline-grid;place-items:center;min-width:44px;padding:3px 8px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--surface-sunken);color:var(--text-secondary);font-size:var(--text-xs);font-weight:700;letter-spacing:.04em}
+.bk-dest-type.sftp{border-color:var(--primary-border);background:var(--primary-light);color:var(--primary-text)}
+.bk-dest-text{display:grid;gap:2px;min-width:0}
+.bk-dest-text strong{color:var(--text);font-size:var(--text-base)}
+.bk-dest-text small{color:var(--text-muted);font-size:var(--text-sm);overflow-wrap:anywhere}
+.bk-dest-key{display:inline-flex;align-items:center;gap:4px}
+.bk-dest-actions{display:flex;gap:var(--space-2);flex-wrap:wrap;justify-content:flex-end}
+
+.bk-dest-form{grid-template-columns:repeat(4,minmax(0,1fr));padding:12px;background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.bk-dest-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
+.bk-dest-head h4{margin:0;font-size:var(--text-base);color:var(--text)}
+.bk-dest-kind{margin:0}
+.bk-dest-kind button:disabled{opacity:.45;cursor:not-allowed}
+.bk-dest-form textarea{min-height:84px;font-family:var(--font-mono);font-size:var(--text-sm);resize:vertical}
+.bk-dest-form .bk-field>.hint{margin:0}
+.bk-dest-form>.hint{margin:0;font-size:var(--text-sm);word-break:break-word}
+
+@media (max-width:980px){
+  .bk-dest-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:760px){
+  .bk-dest-form{grid-template-columns:1fr}
+  .bk-dest-list li{grid-template-columns:auto minmax(0,1fr)}
+  .bk-dest-actions{grid-column:1 / -1;justify-content:stretch}
+  .bk-dest-actions button{flex:1 1 auto}
+  .bk-dest-kind{width:100%}
+  .bk-dest-kind button{flex:1}
+}

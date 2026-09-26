@@ -421,6 +421,56 @@ async fn secret_of(state: &AppState, target_id: i64) -> Result<String, String> {
     })
 }
 
+/// The archives directly in an S3 destination's folder, newest first, as
+/// `(name, size, last modified)` - what a restore from it offers.
+pub(crate) async fn s3_archives(
+    state: &AppState,
+    target_id: i64,
+) -> Result<Vec<(String, u64, String)>, String> {
+    let (row, secret, endpoint) = open(state, target_id).await?;
+    let target = target_of(&row, &secret, &endpoint);
+    let lead = if row.prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", row.prefix)
+    };
+    let objects = crate::s3::list_objects(&target, &lead)
+        .await
+        .map_err(|e| e.0)?;
+    let mut archives: Vec<(String, u64, String)> = objects
+        .into_iter()
+        .filter_map(|object| {
+            let name = object.key.strip_prefix(lead.as_str())?.to_string();
+            crate::sftp::archive_name_ok(&name).then_some((name, object.size, object.last_modified))
+        })
+        .collect();
+    archives.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    Ok(archives)
+}
+
+/// One archive from an S3 destination's folder into `dest`. How many bytes.
+pub(crate) async fn s3_fetch(
+    state: &AppState,
+    target_id: i64,
+    name: &str,
+    dest: &std::path::Path,
+    max_bytes: u64,
+) -> Result<u64, String> {
+    if !crate::sftp::archive_name_ok(name) {
+        return Err(format!("Not a backup archive: {name}"));
+    }
+    let (row, secret, endpoint) = open(state, target_id).await?;
+    let target = target_of(&row, &secret, &endpoint);
+    crate::s3::download(
+        &target,
+        &crate::s3::object_key(&row.prefix, name),
+        dest,
+        max_bytes,
+    )
+    .await
+    .map_err(|e| e.0)
+}
+
 /// An archive to an S3 destination: the destination's name, and where the
 /// object went (`s3://bucket/key`).
 pub(crate) async fn upload_archive(

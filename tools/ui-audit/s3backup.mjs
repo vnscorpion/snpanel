@@ -10,7 +10,8 @@
 // end. The scheduler's timer is stopped while it runs, so the only runs are
 // its own, and started again after.
 //
-//   - A destination is added on the Destinations tab and tested on the spot.
+//   - A destination is added on the Destinations tab - S3 picked in its one
+//     form - and tested on the spot.
 //     Neither the list nor the database holds its secret. A wrong secret
 //     fails the test with S3's own words; an edit that leaves the secret
 //     blank keeps it.
@@ -144,6 +145,8 @@ try {
   // ---------------------------------------------------------------- a destination
   await go('/backups');
   await tab('Destinations');
+  // One form for both kinds: S3's fields come with its type.
+  await page.getByRole('radio', { name: 'S3 bucket' }).click();
   await page.getByLabel('Name', { exact: true }).fill('moto');
   await page.getByLabel('Endpoint', { exact: true }).fill(S3);
   await page.getByLabel('Region', { exact: true }).fill('us-east-1');
@@ -154,7 +157,7 @@ try {
   check(await page.getByText('Plain HTTP sends backups unencrypted').isVisible(), 'plain HTTP is warned about');
   await page.getByLabel('Path-style addressing').check();
   await page.screenshot({ path: `${OUT}/destinations-form-light-en.png`, fullPage: true });
-  await page.getByRole('button', { name: 'Add S3 destination' }).click();
+  await page.getByRole('button', { name: 'Add destination' }).click();
   check(await notice('moto accepts backups.'), 'a new destination is tested as it is saved, and passes');
   const listed = (await json(await api('GET', '/maintenance/s3-targets'))).find((t) => t.name === 'moto');
   targetId = listed?.id;

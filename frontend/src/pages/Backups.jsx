@@ -1,8 +1,9 @@
-import { Archive, ArchiveRestore, Check, Clock, Database, Download, Globe, Network, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Check, Clock, Database, Download, Globe, History, Network, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import CronSchedule from '../components/CronSchedule.jsx';
 import { msg, serverText, useT } from '../i18n/index.jsx';
-import S3Destinations from '../components/S3Destinations.jsx';
+import BackupDestinations from '../components/BackupDestinations.jsx';
+import BackupRestore from '../components/BackupRestore.jsx';
 import './Backups.css';
 
 const JOB_TITLES = { site_backup: msg('Website backup'), user_backup: msg('Full user backup'), sftp_backup: msg('SFTP backup') };
@@ -60,7 +61,6 @@ export default function BackupsPage() {
     bulkImportDaBackups,
     createBackup,
     createBackupSchedule,
-    createSftpTarget,
     createUserBackup,
     daBackups,
     daBulkImportJob,
@@ -71,26 +71,20 @@ export default function BackupsPage() {
     deleteBackup,
     deleteBackupSchedule,
     deleteDaBackup,
-    deleteRestoreBackup,
-    deleteSftpTarget,
     deleteUserBackup,
     downloadBackup,
     downloadUserBackup,
     importDaBackup,
     isAdmin,
     listDaBackups,
-    loadRestoreBackups,
     loadS3Targets,
     loadSftpTargets,
     loading,
     newBackupSchedule,
-    newSftpTarget,
     refreshBackupArea,
     refreshScheduledBackupArea,
     refreshUserBackupArea,
     restoreBackup,
-    restoreBackupDir,
-    restoreBackups,
     restoreUserBackup,
     s3Targets,
     scanDaBackup,
@@ -100,7 +94,6 @@ export default function BackupsPage() {
     setBackupTab,
     setDaReplaceExisting,
     setNewBackupSchedule,
-    setNewSftpTarget,
     setSelectedBackupUserId,
     setUserBackupDestination,
     sftpTargets,
@@ -108,14 +101,12 @@ export default function BackupsPage() {
     toggleSelectAllDaBackups,
     uploadBackup,
     uploadDaBackup,
-    uploadUserBackups,
     userBackupDestination,
     userBackups,
     users,
   } = usePanel();
   const t = useT();
   const busy = !!loading;
-  const setSftp = (key) => (e) => setNewSftpTarget((prev) => ({ ...prev, [key]: e.target.value }));
 
   const userNameById = (id) => users.find((user) => String(user.id) === String(id))?.username || t('User #{id}', { id });
   const scheduleUserLabel = (item) => {
@@ -134,6 +125,7 @@ export default function BackupsPage() {
     ? [
       ['website', t('Backup website'), Globe],
       ['user', t('Backup user'), Users],
+      ['restore', t('Restore'), History],
       ['schedule', t('Scheduled backups'), Clock],
       ['destination', t('Destinations'), Network],
       ['da-import', t('DA Import'), ArchiveRestore],
@@ -227,29 +219,13 @@ export default function BackupsPage() {
           </div>
         </div>)}
       </div>
+    </div>}
 
-      <div className="section-title restore-title backup-panel-heading backup-subtitle">
-        <div><h3>{t('Restore folder')}</h3><p className="hint">{restoreBackupDir || '/var/backups/snpanel/users/restore'}</p></div>
-        <div className="actions">
-          <button className="secondary-light" disabled={busy} onClick={loadRestoreBackups}><RefreshCw size={14}/> {t('Refresh')}</button>
-          <label className="upload-button secondary-light">
-            <Upload size={14}/> {t('Upload backups')}
-            <input type="file" multiple accept=".tar.gz,application/gzip" onChange={(e) => { uploadUserBackups(e.target.files); e.target.value = ''; }} />
-          </label>
-        </div>
+    {isAdmin && activeBackupTab === 'restore' && <div className="backup-tab-panel">
+      <div className="backup-panel-title">
+        <div><h3>{t('Restore')}</h3><p className="hint">{t('Put accounts back from their backups: pick where the backups are, tick the accounts, press Restore.')}</p></div>
       </div>
-      <div className="backup-list">
-        {restoreBackups.map((item) => <div className="backup-item" key={item.backup_file}>
-          <span>{item.filename || item.backup_file.split('/').pop()}<small>{item.valid
-            ? `${item.source === 'opanel' ? 'opanel · ' : ''}${t('{user} - {count} website(s)', { user: item.username || t('unknown user'), count: item.websites || 0 })}`
-            : (item.error || t('Invalid backup'))}</small></span>
-          <div className="actions">
-            <button disabled={busy} onClick={() => downloadUserBackup(item.backup_file)}><Download size={14}/> {t('Download')}</button>
-            <button disabled={busy || !item.valid} onClick={() => restoreUserBackup(item.backup_file)}><RotateCcw size={14}/> {t('Restore user')}</button>
-            <button className="danger" disabled={busy} onClick={() => deleteRestoreBackup(item.backup_file)} aria-label={t('Delete')} title={t('Delete')}><Trash2 size={14}/></button>
-          </div>
-        </div>)}
-      </div>
+      <BackupRestore />
     </div>}
 
     {isAdmin && activeBackupTab === 'schedule' && <div className="backup-tab-panel">
@@ -327,56 +303,7 @@ export default function BackupsPage() {
         <button className="secondary-light" disabled={busy} onClick={() => { loadSftpTargets(); loadS3Targets(); }}><RefreshCw size={14}/> {t('Refresh')}</button>
       </div>
 
-      <section className="bk-destination" aria-labelledby="bk-s3-title">
-        <h4 id="bk-s3-title">{t('S3 buckets')}</h4>
-        <p className="hint">{t('AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO, or any other S3-compatible storage.')}</p>
-        <S3Destinations />
-      </section>
-
-      <section className="bk-destination" aria-labelledby="bk-sftp-title">
-        <h4 id="bk-sftp-title">{t('SFTP servers')}</h4>
-        <form className="bk-form bk-sftp-form" aria-label={t('SFTP servers')} onSubmit={(e) => { e.preventDefault(); createSftpTarget(); }}>
-          <div className="bk-field">
-            <label htmlFor="sftp-name">{t('Target name')}</label>
-            <input id="sftp-name" value={newSftpTarget.name} onChange={setSftp('name')} autoComplete="off" />
-          </div>
-          <div className="bk-field bk-span-2">
-            <label htmlFor="sftp-host">{t('Host')}</label>
-            <input id="sftp-host" value={newSftpTarget.host} onChange={setSftp('host')} placeholder="backup.example.com" autoComplete="off" spellCheck={false} />
-          </div>
-          <div className="bk-field">
-            <label htmlFor="sftp-port">{t('Port')}</label>
-            <input id="sftp-port" value={newSftpTarget.port} onChange={setSftp('port')} placeholder="22" inputMode="numeric" />
-          </div>
-          <div className="bk-field">
-            <label htmlFor="sftp-user">{t('Username')}</label>
-            <input id="sftp-user" value={newSftpTarget.username} onChange={setSftp('username')} autoComplete="off" spellCheck={false} />
-          </div>
-          <div className="bk-field">
-            <label htmlFor="sftp-password">{t('Password')}</label>
-            <input id="sftp-password" type="password" value={newSftpTarget.password} onChange={setSftp('password')} autoComplete="new-password" />
-          </div>
-          <div className="bk-field bk-span-2">
-            <label htmlFor="sftp-path">{t('Remote folder')}</label>
-            <input id="sftp-path" value={newSftpTarget.remote_path} onChange={setSftp('remote_path')} placeholder="/backups/snpanel" spellCheck={false} />
-          </div>
-          <div className="bk-field bk-span-all">
-            <label htmlFor="sftp-key">{t('Private key (optional)')}</label>
-            <textarea id="sftp-key" value={newSftpTarget.private_key} onChange={setSftp('private_key')} rows={4} spellCheck={false} aria-describedby="sftp-key-hint" />
-          </div>
-          <div className="bk-actions bk-span-all">
-            <p className="hint bk-note" id="sftp-key-hint">{t('Sign in with a password, a private key, or both.')}</p>
-            <button type="submit" disabled={busy || !newSftpTarget.name || !newSftpTarget.host || !newSftpTarget.username || (!newSftpTarget.password && !newSftpTarget.private_key)}><Plus size={14}/> {t('Save target')}</button>
-          </div>
-        </form>
-        {sftpTargets.length === 0 && <EmptyState icon={Network} message={t('No SFTP destinations yet.')} />}
-        <div className="backup-list">
-          {sftpTargets.map((target) => <div className="backup-item" key={target.id}>
-            <span>{target.name}<small>{target.username}@{target.host}:{target.remote_path}</small></span>
-            <button className="danger" disabled={busy} onClick={() => deleteSftpTarget(target.id)} aria-label={t('Delete {name}', { name: target.name })} title={t('Delete {name}', { name: target.name })}><Trash2 size={14}/></button>
-          </div>)}
-        </div>
-      </section>
+      <BackupDestinations />
     </div>}
 
     {isAdmin && activeBackupTab === 'da-import' && <div className="backup-tab-panel">

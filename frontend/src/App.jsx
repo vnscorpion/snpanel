@@ -134,7 +134,6 @@ function App() {
   const [newBackupSchedule, setNewBackupSchedule] = useState({ user_ids: [], all_users: false, schedule: '0 2 * * *', destination: '', name_style: 'timestamp', retention: 7 });
   const [sftpTargets, setSftpTargets] = useState([]);
   const [selectedSftpTargetId, setSelectedSftpTargetId] = useState('');
-  const [newSftpTarget, setNewSftpTarget] = useState({ name: '', host: '', port: 22, username: '', password: '', private_key: '', remote_path: '/backups/snpanel' });
   const [s3Targets, setS3Targets] = useState([]);
   // Where a full user backup goes: '' for this server only, 'sftp:<id>' or 's3:<id>'.
   const [userBackupDestination, setUserBackupDestination] = useState('');
@@ -2629,19 +2628,31 @@ function App() {
     }
   }
 
-  async function createSftpTarget() {
-    const body = {
-      ...newSftpTarget,
-      port: Number(newSftpTarget.port || 22),
-      password: newSftpTarget.password || null,
-      private_key: newSftpTarget.private_key || null,
-    };
-    const data = await request('/maintenance/sftp-targets', { method: 'POST', body: JSON.stringify(body) }, t('Saving SFTP target...'));
+  // Creates one when `id` is null. The saved target, or null.
+  async function saveSftpTarget(id, body) {
+    const data = await request(
+      id ? `/maintenance/sftp-targets/${id}` : '/maintenance/sftp-targets',
+      { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) },
+      t('Saving SFTP target...'),
+    );
     if (data) {
       setNotice(t('Saved SFTP target {name}', { name: data.name }));
-      setNewSftpTarget({ name: '', host: '', port: 22, username: '', password: '', private_key: '', remote_path: '/backups/snpanel' });
       await loadSftpTargets();
     }
+    return data;
+  }
+
+  // Signs in, writes a small file in the folder and removes it again. The
+  // first connection also saves the server's host key, so the list reloads.
+  async function testSftpTarget(target) {
+    const data = await request(`/maintenance/sftp-targets/${target.id}/test`, { method: 'POST' }, t('Testing SFTP destination...'));
+    if (data) {
+      setNotice(data.removed
+        ? t('{name} accepts backups.', { name: target.name })
+        : t('{name} accepts backups. The account may not delete, so the test file is still in the folder.', { name: target.name }));
+      await loadSftpTargets();
+    }
+    return data;
   }
 
   async function deleteSftpTarget(id) {
@@ -2791,8 +2802,38 @@ function App() {
       setNotice(t('Uploaded {count} full user backup file(s).', { count: data.items?.length || selectedFiles.length }));
       await loadRestoreBackups();
       await listUserBackups();
+      return data;
     } catch (err) { setError(t('Full user backup upload failed.')); }
     finally { setLoading(''); }
+    return null;
+  }
+
+  // The archives a restore can take from one source - this server, or a
+  // saved SFTP or S3 destination - or null when it could not be read.
+  async function listRestoreSource(source, targetId) {
+    const path = source === 'local' ? '/maintenance/restore/local' : `/maintenance/restore/${source}/${targetId}`;
+    const data = await request(path, {}, source === 'local' ? t('Looking for backups...') : t('Connecting to the destination...'));
+    return data?.items || null;
+  }
+
+  // The chosen archives restored one after another on the server. The job.
+  async function startRestore(source, targetId, files) {
+    const body = { source, target_id: targetId ? Number(targetId) : null, files };
+    return request('/maintenance/restore/jobs', { method: 'POST', body: JSON.stringify(body) }, t('Starting the restore...'));
+  }
+
+  // One restore by id, or - without one - the restore running or the last.
+  async function loadRestoreJob(id) {
+    const data = await request(id ? `/maintenance/restore/jobs/${id}` : '/maintenance/restore/jobs', { silent: true });
+    return id ? data : (data?.job || null);
+  }
+
+  // A restore made accounts and sites: the lists show them.
+  async function restoreFinished(job) {
+    setNotice(t('Restore finished: {done} restored, {failed} failed.', { done: job.done, failed: job.failed }));
+    await refreshAll();
+    await loadUsers();
+    await loadRestoreBackups();
   }
 
   // --- DirectAdmin Import ---
@@ -4032,7 +4073,6 @@ function App() {
       createBackupSchedule,
       createDatabase,
       createPackage,
-      createSftpTarget,
       createSiteApp,
       createSiteAppId,
       createSslMode,
@@ -4157,7 +4197,9 @@ function App() {
       loadPasskeys,
       loadPhpConfig,
       loadPhpTune,
+      listRestoreSource,
       loadRestoreBackups,
+      loadRestoreJob,
       loadSftpAccess,
       loadS3Targets,
       loadSftpTargets,
@@ -4188,7 +4230,6 @@ function App() {
       newBotName,
       newDatabase,
       newPackage,
-      newSftpTarget,
       newUser,
       nginxCustomEditing,
       openAppFileManager,
@@ -4232,6 +4273,7 @@ function App() {
       // For a page that keeps what it loads to itself - one scan's details,
       // the dashboard's summary - rather than in App.
       request,
+      restoreFinished,
       resetNginxDefault,
       resetUserTwoFactor,
       resourceUsage,
@@ -4318,7 +4360,6 @@ function App() {
       setNewBotName,
       setNewDatabase,
       setNewPackage,
-      setNewSftpTarget,
       setNewUser,
       setNginxCustomEditing,
       setOsAutoUpdate,
@@ -4354,9 +4395,12 @@ function App() {
       setupTwoFactorAuth,
       s3Targets,
       saveS3Target,
+      saveSftpTarget,
       setUserBackupDestination,
       sftpTargets,
+      startRestore,
       testS3Target,
+      testSftpTarget,
       userBackupDestination,
       sharedSource,
       showMalwareScanJob,

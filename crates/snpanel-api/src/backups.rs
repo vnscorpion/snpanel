@@ -541,6 +541,45 @@ pub fn archive_name(
     }
 }
 
+/// The account an archive's name says it holds - `archive_name`'s four
+/// shapes read back - for a folder the archives were only uploaded to, where
+/// nothing but the name is known until one is fetched. `None` for a name no
+/// user backup has: a site's is `<domain>-<stamp>.tar.gz`, a stamp without
+/// `user-` in front.
+pub fn user_of_archive(file_name: &str) -> Option<String> {
+    let stem = file_name.strip_suffix(".tar.gz")?;
+    let named = |name: &str| {
+        let count = name.chars().count();
+        ((3..=64).contains(&count)
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .then(|| name.to_string())
+    };
+    if let Some((head, tail)) = stem.rsplit_once('-') {
+        if tail.len() == 14 && tail.bytes().all(|b| b.is_ascii_digit()) {
+            return head.strip_prefix("user-").and_then(named);
+        }
+        if WEEKDAYS.contains(&tail) {
+            return named(head);
+        }
+    }
+    if let Some(head) = stem
+        .len()
+        .checked_sub(11)
+        .filter(|&at| stem.is_char_boundary(at))
+        .map(|at| stem.split_at(at))
+        .and_then(|(head, date)| {
+            let date = date.strip_prefix('-')?;
+            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+            Some(head)
+        })
+    {
+        return named(head);
+    }
+    named(stem)
+}
+
 /// Whether `file_name` is one of the archives `style` names for `username`:
 /// what a schedule's retention counts, and so all its prune may delete.
 ///
@@ -1467,6 +1506,25 @@ mod remote_retention_tests {
             past_retention(&dated, "", "alice", NameStyle::Date, 0),
             keys(&["alice-2026-09-20.tar.gz"])
         );
+    }
+
+    #[test]
+    fn an_archives_name_says_whose_it_is() {
+        for (name, user) in [
+            ("user-alice-20260925020000.tar.gz", Some("alice")),
+            ("user-bob-smith-20260925020000.tar.gz", Some("bob-smith")),
+            ("alice.tar.gz", Some("alice")),
+            ("alice-monday.tar.gz", Some("alice")),
+            ("alice-2026-09-25.tar.gz", Some("alice")),
+            ("bob-jones-2026-09-25.tar.gz", Some("bob-jones")),
+            // A site's backup: a domain and a stamp.
+            ("example.com-20260925020000.tar.gz", None),
+            ("al.tar.gz", None),
+            ("alice.zip", None),
+            ("user-alice-2026.tar.gz", Some("user-alice-2026")),
+        ] {
+            assert_eq!(user_of_archive(name).as_deref(), user, "{name}");
+        }
     }
 
     #[test]

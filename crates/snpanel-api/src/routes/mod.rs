@@ -25,6 +25,7 @@ pub mod sftp;
 pub mod site_apps;
 pub mod terminal;
 pub mod updates;
+pub mod user_restore;
 pub mod users;
 pub mod waf;
 pub mod websites;
@@ -61,6 +62,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(malware::router())
         .merge(panel_settings::router())
         .merge(site_apps::router())
+        .merge(user_restore::router())
 }
 
 /// The path prefixes handled natively, for the readiness report and for
@@ -146,5 +148,6 @@ mod tests {
         let _ = panel_settings::router();
         let _ = terminal::router();
         let _ = maintenance::router();
+        let _ = user_restore::router();
     }
 }
