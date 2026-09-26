@@ -289,6 +289,7 @@ function App() {
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
   const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
+  const notificationsAddonInstalled = !!addons.items.find(item => item.slug === 'notifications')?.installed;
   // Two locks, and both have to be open: the server has to have the addon
   // installed at all, and the customer's package has to include it. Admins skip
   // the second one, never the first.
@@ -3896,6 +3897,10 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
+    // The addons with a page of their own, while they are installed: AI
+    // assistants for every account, Notifications for administrators.
+    ...(mcpAddonInstalled ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
+    ...(isAdmin && notificationsAddonInstalled ? [['notifications', t('Notifications'), Bell]] : []),
     // One page of tiles, one for each of settingsNavItems.
     ['settings', t('Settings'), SettingsIcon],
   ];
@@ -3904,11 +3909,6 @@ function App() {
   const settingsNavItems = [
     ...(isAdmin ? [['panel-settings', t('Panel settings'), SlidersHorizontal]] : []),
     ['security', t('Account security'), KeyRound],
-    // An administrator sees it to install the addon from; anyone else once
-    // the addon is on.
-    ...((isAdmin || mcpAddonInstalled) ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
-    // The administrators' alone: customers are sent nothing.
-    ...(isAdmin ? [['notifications', t('Notifications'), Bell]] : []),
     ...(isAdmin ? [['php', t('PHP config'), Code2]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), BrickWall]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
@@ -3920,7 +3920,11 @@ function App() {
     ['services', t('Services Status'), Activity],
   ];
 
-  const navItems = [...mainNavItems, ...settingsNavItems];
+  // An addon's page opened by its address while the addon is not installed
+  // has no entry, and still has its title.
+  const unlisted = [['mcp', t('AI assistants (MCP)'), Bot], ['notifications', t('Notifications'), Bell]]
+    .filter(([key]) => !mainNavItems.some(([listed]) => listed === key));
+  const navItems = [...mainNavItems, ...settingsNavItems, ...unlisted];
   const navPage = NAV_PARENT_PAGE[page] || page;
   const activeNavItem = navItems.find(([key]) => key === navPage) || navItems[0];
   const settingsIsActive = SETTINGS_PAGE_KEYS.includes(page);

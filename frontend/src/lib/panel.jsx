@@ -37,7 +37,7 @@ export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'panel-setting
 // Settings, the page of tiles, and every page it leads to: the sidebar's
 // Settings stays lit on them, and their header leads back to it. 'waf-site'
 // and 'malware-scan' are reached from inside WAF and Malware.
-export const SETTINGS_PAGE_KEYS = ['settings', 'panel-settings', 'api-tokens', 'security', 'mcp', 'notifications', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'malware-scan', 'access-logs', 'updates', 'addons', 'services'];
+export const SETTINGS_PAGE_KEYS = ['settings', 'panel-settings', 'api-tokens', 'security', 'php', 'firewall', 'fail2ban', 'waf', 'waf-site', 'malware', 'malware-scan', 'access-logs', 'updates', 'addons', 'services'];
 export const PAGE_ROUTES = {
   dashboard: '/',
   websites: '/website',

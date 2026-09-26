@@ -13,7 +13,7 @@ export default function SettingsPage() {
     <ul className="settings-grid">
       {(settingsNavItems || []).map(([key, label, Icon]) => <li key={key}>
         <a className="settings-tile" href={routeForPage(key)} onClick={(event) => followInPanel(event, () => navigateToPage(key))}>
-          <span className="settings-tile-icon"><Icon size={22} aria-hidden="true"/></span>
+          <span className="settings-tile-icon"><Icon size={19} aria-hidden="true"/></span>
           <span className="settings-tile-label">{label}</span>
         </a>
       </li>)}

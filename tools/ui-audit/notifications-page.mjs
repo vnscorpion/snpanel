@@ -67,10 +67,12 @@ try {
   const page = await admin.newPage();
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('dialog', (d) => d.accept());
-  await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
-  await page.locator('.settings-grid').getByRole('link', { name: 'Notifications', exact: true }).click();
+  await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+  const sidebar = await page.$$eval('.sidebar-nav button', (bs) => bs.map((b) => b.textContent.trim()));
+  await page.locator('.sidebar-nav').getByRole('button', { name: 'Notifications', exact: true }).click();
   await page.getByRole('heading', { name: 'How messages go out' }).waitFor({ timeout: 15000 });
-  check(new URL(page.url()).pathname === '/notifications', 'Settings has a Notifications tile, and it opens the page');
+  check(sidebar.slice(-2).join() === 'Notifications,Settings' && new URL(page.url()).pathname === '/notifications',
+    'the sidebar has Notifications just above Settings, and it opens the page');
   check(await page.getByText('Nothing is sent until e-mail, or a Telegram bot and its chat, is set up.').isVisible(), 'with nothing set up, the page says nothing is sent');
   await page.locator('section[aria-labelledby="notif-channels-title"]').screenshot({ path: `${OUT}/channels-empty-light-en.png` });
 
@@ -155,10 +157,8 @@ try {
   await cpage.getByText('Notifications go to the panel\'s administrators, and only they set them up.').waitFor({ timeout: 15000 });
   check(await cpage.getByRole('switch').count() === 0 && await cpage.getByRole('heading', { name: 'How messages go out' }).count() === 0,
     'a customer is told the page is the administrators\', and sees nothing of it');
-  await cpage.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
-  await cpage.locator('.settings-grid').waitFor({ timeout: 15000 });
-  check(await cpage.locator('.settings-grid').getByRole('link', { name: 'Notifications', exact: true }).count() === 0,
-    'and has no Notifications tile in Settings');
+  check(!(await cpage.$$eval('.sidebar-nav button', (bs) => bs.map((b) => b.textContent.trim()))).includes('Notifications'),
+    'and has no Notifications in its sidebar');
   check((await customer.request.get(`${BASE}/api/notifications`)).status() === 403, 'the API refuses it too');
   await cpage.screenshot({ path: `${OUT}/customer-light-en.png` });
 
