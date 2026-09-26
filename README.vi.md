@@ -8,6 +8,8 @@ có sẵn tài khoản và gói dịch vụ, hạn mức, sao lưu, SSL, tườn
 SNPanel viết bằng Rust: một file chạy duy nhất phục vụ panel, và một helper
 nhỏ chạy quyền root làm các việc cần đặc quyền phía sau.
 
+![Trang tổng quan của SNPanel](docs/screenshots/vi/dashboard.png)
+
 ## Tính năng
 
 **Website**
@@ -81,6 +83,35 @@ nhỏ chạy quyền root làm các việc cần đặc quyền phía sau.
   Telegram qua bot của bạn - sao lưu lỗi, mã độc, chứng chỉ sắp hết hạn, ổ đĩa
   sắp đầy, dịch vụ dừng, phiên bản mới, đăng nhập và thay đổi ở tài khoản quản
   trị
+
+## Ảnh chụp màn hình
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/websites.png" alt="Website"><br><sub>Website</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/files.png" alt="Quản lý tệp"><br><sub>Quản lý tệp</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/databases.png" alt="Cơ sở dữ liệu"><br><sub>Cơ sở dữ liệu</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/backups.png" alt="Sao lưu"><br><sub>Sao lưu</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/settings.png" alt="Cài đặt"><br><sub>Cài đặt</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/php.png" alt="Cấu hình PHP và extension"><br><sub>Cấu hình PHP và extension</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/firewall.png" alt="Tường lửa"><br><sub>Tường lửa</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/waf.png" alt="WAF"><br><sub>WAF</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/malware.png" alt="Quét mã độc"><br><sub>Quét mã độc</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/notifications.png" alt="Thông báo"><br><sub>Thông báo</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/ai-assistants.png" alt="Trợ lý AI (MCP)"><br><sub>Trợ lý AI (MCP)</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/vi/dashboard-phone.png" alt="Trên điện thoại" width="260"><br><sub>Trên điện thoại</sub></td>
+  </tr>
+</table>
 
 ## Yêu cầu
 

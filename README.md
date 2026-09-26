@@ -8,6 +8,8 @@ accounts and packages, quotas, backups, SSL, a firewall and a WAF built in.
 It is written in Rust: one binary serves the panel, and a small root helper
 does the privileged work behind it.
 
+![The SNPanel dashboard](docs/screenshots/en/dashboard.png)
+
 ## Features
 
 **Websites**
@@ -80,6 +82,35 @@ does the privileged work behind it.
   Telegram through your bot - failed backups, malware, expiring certificates,
   a filling disk, a stopped service, a new release, and sign-ins and changes
   to administrator accounts
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/websites.png" alt="Websites"><br><sub>Websites</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/files.png" alt="File manager"><br><sub>File manager</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/databases.png" alt="Databases"><br><sub>Databases</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/backups.png" alt="Backups"><br><sub>Backups</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/settings.png" alt="Settings"><br><sub>Settings</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/php.png" alt="PHP settings and extensions"><br><sub>PHP settings and extensions</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/firewall.png" alt="Firewall"><br><sub>Firewall</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/waf.png" alt="WAF"><br><sub>WAF</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/malware.png" alt="Malware scanner"><br><sub>Malware scanner</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/notifications.png" alt="Notifications"><br><sub>Notifications</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/ai-assistants.png" alt="AI assistants (MCP)"><br><sub>AI assistants (MCP)</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/dashboard-phone.png" alt="On a phone" width="260"><br><sub>On a phone</sub></td>
+  </tr>
+</table>
 
 ## Requirements
 
