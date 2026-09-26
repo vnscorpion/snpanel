@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload, UserCheck } from 'lucide-react';
+import { AlertCircle, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import './BackupRestore.css';
@@ -19,7 +19,8 @@ const ITEM_STATES = {
 };
 
 // Accounts put back from their backups, DirectAdmin's way: where the backups
-// are, which of them, one button. The restore runs on the server, one
+// are, which of them, one button. Each account is one row, its backups a
+// list of dates with the newest chosen. The restore runs on the server, one
 // account after another, and the page follows it - also when it is opened
 // again part-way through.
 export default function BackupRestore() {
@@ -39,7 +40,10 @@ export default function BackupRestore() {
   const [source, setSource] = useState('local');
   const [targetId, setTargetId] = useState('');
   const [items, setItems] = useState(null);
-  const [selected, setSelected] = useState([]);
+  // The accounts ticked, and the backup chosen for each - its newest until
+  // another date is picked.
+  const [ticked, setTicked] = useState([]);
+  const [picked, setPicked] = useState({});
   const [job, setJob] = useState(null);
   const finishedRef = useRef('');
   const busy = !!loading;
@@ -52,8 +56,11 @@ export default function BackupRestore() {
   const nameOf = (item) => (remote ? item.name : (item.filename || String(item.backup_file).split('/').pop()));
   const dateOf = (item) => item.generated_at || item.modified || '';
 
+  const accountOf = (item) => item.username || nameOf(item);
+  function clearChoice() { setTicked([]); setPicked({}); }
+
   async function find(nextSource = source, nextTarget = targetId) {
-    setSelected([]);
+    clearChoice();
     const isRemote = nextSource === 'sftp' || nextSource === 's3';
     if (isRemote && !nextTarget) { setItems(null); return; }
     setItems(null);
@@ -68,7 +75,7 @@ export default function BackupRestore() {
     const first = list[0] ? String(list[0].id) : '';
     setTargetId(first);
     setItems(null);
-    setSelected([]);
+    clearChoice();
     if (next === 'local') find('local', '');
   }
 
@@ -98,28 +105,40 @@ export default function BackupRestore() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, job?.id]);
 
-  const usable = useMemo(() => (items || []).filter((item) => item.valid), [items]);
-  const allChosen = usable.length > 0 && usable.every((item) => selected.includes(keyOf(item)));
-  const toggle = (key) => setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
-  const chooseAll = () => setSelected(allChosen ? [] : usable.map(keyOf));
-  // The newest archive of every account: the usual restore of a whole server.
-  const chooseNewest = () => {
-    const newest = new Map();
-    for (const item of usable) {
-      const user = item.username || nameOf(item);
-      const best = newest.get(user);
-      if (!best || dateOf(item) > dateOf(best)) newest.set(user, item);
+  // Every account's backups, newest first; the accounts by name.
+  const groups = useMemo(() => {
+    const byAccount = new Map();
+    for (const item of (items || []).filter((one) => one.valid)) {
+      const account = accountOf(item);
+      if (!byAccount.has(account)) byAccount.set(account, []);
+      byAccount.get(account).push(item);
     }
-    setSelected([...newest.values()].map(keyOf));
-  };
-  const chosenUsers = [...new Set(usable.filter((item) => selected.includes(keyOf(item))).map((item) => item.username || nameOf(item)))];
+    return [...byAccount.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([account, list]) => ({
+        account,
+        backups: list.sort((a, b) => String(dateOf(b)).localeCompare(String(dateOf(a))) || nameOf(b).localeCompare(nameOf(a))),
+      }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+  const invalid = useMemo(() => (items || []).filter((item) => !item.valid), [items]);
+  const chosenOf = (group) => group.backups.find((item) => keyOf(item) === picked[group.account]) || group.backups[0];
+  const chosen = groups.filter((group) => ticked.includes(group.account)).map(chosenOf);
+  const allChosen = groups.length > 0 && groups.every((group) => ticked.includes(group.account));
+  const toggle = (account) => setTicked((prev) => (prev.includes(account) ? prev.filter((a) => a !== account) : [...prev, account]));
+  const chooseAll = () => setTicked(allChosen ? [] : groups.map((group) => group.account));
+  // A date picked is an account meant.
+  function pickDate(account, key) {
+    setPicked((prev) => ({ ...prev, [account]: key }));
+    setTicked((prev) => (prev.includes(account) ? prev : [...prev, account]));
+  }
 
   async function restore() {
-    if (!selected.length) return;
-    const question = t('Restore {count} backup(s)? An account that already exists is overwritten: its websites\' files and its databases are replaced by the backup\'s.', { count: selected.length });
+    if (!chosen.length) return;
+    const question = t('Restore {count} backup(s)? An account that already exists is overwritten: its websites\' files and its databases are replaced by the backup\'s.', { count: chosen.length });
     if (!confirm(question)) return;
-    const started = await startRestore(remote ? source : 'local', remote ? targetId : '', selected);
-    if (started) { finishedRef.current = ''; setJob(started); setSelected([]); }
+    const started = await startRestore(remote ? source : 'local', remote ? targetId : '', chosen.map(keyOf));
+    if (started) { finishedRef.current = ''; setJob(started); clearChoice(); }
   }
 
   async function upload(files) {
@@ -177,7 +196,7 @@ export default function BackupRestore() {
           : <>
             <label className="bk-field">
               <span className="bk-label">{t('Destination')}</span>
-              <select value={targetId} onChange={(e) => { setTargetId(e.target.value); setItems(null); setSelected([]); }}>
+              <select value={targetId} onChange={(e) => { setTargetId(e.target.value); setItems(null); clearChoice(); }}>
                 {targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
               </select>
             </label>
@@ -194,24 +213,35 @@ export default function BackupRestore() {
           ? <EmptyState icon={RotateCcw} message={t('No account backups here.')} />
           : <>
             <div className="bk-restore-tools">
-              <label className="bk-check-inline"><input type="checkbox" checked={allChosen} onChange={chooseAll} disabled={!usable.length} /> {t('All ({count})', { count: usable.length })}</label>
-              <button type="button" className="secondary-light mini" disabled={!usable.length} onClick={chooseNewest}><UserCheck size={13} aria-hidden="true" /> {t('Newest of each account')}</button>
+              <label className="bk-check-inline"><input type="checkbox" checked={allChosen} onChange={chooseAll} disabled={!groups.length} /> {t('All ({count})', { count: groups.length })}</label>
             </div>
             <div className="data-table-wrap bk-restore-table">
               <table className="data-table">
                 <thead><tr><th aria-label={t('Choose')} /><th>{t('Account')}</th><th>{t('Date')}</th><th>{t('Size')}</th><th>{t('File')}</th></tr></thead>
                 <tbody>
-                  {items.map((item) => {
-                    const key = keyOf(item);
-                    return <tr key={key} className={item.valid ? '' : 'invalid'}>
-                      <td><input type="checkbox" aria-label={t('Choose {name}', { name: nameOf(item) })} disabled={!item.valid}
-                        checked={selected.includes(key)} onChange={() => toggle(key)} /></td>
-                      <td>{item.valid ? <strong>{item.username || t('unknown user')}</strong> : <span className="data-table-muted">{remote ? t('Not an account backup') : (item.error || t('Invalid backup'))}</span>}</td>
-                      <td>{when(dateOf(item))}</td>
+                  {groups.map((group) => {
+                    const item = chosenOf(group);
+                    return <tr key={group.account}>
+                      <td><input type="checkbox" aria-label={t('Choose {name}', { name: group.account })}
+                        checked={ticked.includes(group.account)} onChange={() => toggle(group.account)} /></td>
+                      <td><strong>{group.account}</strong>{group.backups.length > 1 && <small className="bk-restore-count">{t('{count} backups', { count: group.backups.length })}</small>}</td>
+                      <td>{group.backups.length > 1
+                        ? <select className="bk-restore-date" aria-label={t('Date of the backup of {name}', { name: group.account })}
+                          value={keyOf(item)} onChange={(e) => pickDate(group.account, e.target.value)}>
+                          {group.backups.map((backup) => <option key={keyOf(backup)} value={keyOf(backup)}>{when(dateOf(backup)) || nameOf(backup)}</option>)}
+                        </select>
+                        : when(dateOf(item))}</td>
                       <td>{formatBytes(item.size)}</td>
-                      <td><code>{nameOf(item)}</code>{!remote && item.folder && <small className="bk-restore-folder">{item.folder === 'restore' ? t('restore folder') : item.folder === 'uploads' ? t('uploaded') : item.folder}</small>}</td>
+                      <td><code>{nameOf(item)}</code>{!remote && item.folder && item.folder !== group.account && <small className="bk-restore-folder">{item.folder === 'restore' ? t('restore folder') : item.folder === 'uploads' ? t('uploaded') : item.folder}</small>}</td>
                     </tr>;
                   })}
+                  {invalid.map((item) => <tr key={keyOf(item)} className="invalid">
+                    <td><input type="checkbox" aria-label={t('Choose {name}', { name: nameOf(item) })} disabled /></td>
+                    <td><span className="data-table-muted">{remote ? t('Not an account backup') : (item.error || t('Invalid backup'))}</span></td>
+                    <td>{when(dateOf(item))}</td>
+                    <td>{formatBytes(item.size)}</td>
+                    <td><code>{nameOf(item)}</code></td>
+                  </tr>)}
                 </tbody>
               </table>
             </div>
@@ -219,10 +249,10 @@ export default function BackupRestore() {
     </fieldset>}
 
     {source !== 'upload' && <div className="bk-restore-go">
-      <span className="hint">{selected.length
-        ? t('{count} backup(s) chosen: {users}', { count: selected.length, users: chosenUsers.join(', ') })
+      <span className="hint">{chosen.length
+        ? t('{count} backup(s) chosen: {users}', { count: chosen.length, users: chosen.map((item) => `${accountOf(item)} (${when(dateOf(item)) || nameOf(item)})`).join(', ') })
         : t('Nothing chosen yet.')}</span>
-      <button type="button" disabled={busy || running || !selected.length} onClick={restore}><RotateCcw size={14} aria-hidden="true" /> {t('Restore')}</button>
+      <button type="button" disabled={busy || running || !chosen.length} onClick={restore}><RotateCcw size={14} aria-hidden="true" /> {t('Restore')}</button>
     </div>}
   </div>;
 }
