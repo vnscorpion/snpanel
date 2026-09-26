@@ -25,6 +25,7 @@ pub mod orphans;
 pub mod packages;
 pub mod panel;
 pub mod php;
+pub mod quarantine;
 pub mod runtime;
 pub mod selinux;
 pub mod site;
@@ -380,6 +381,27 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             paths,
         } => packages::maldet_scan(job, mode, days, paths),
         HelperRequest::MalwareScanServer { job } => packages::malware_scan_server(job),
+        HelperRequest::MalwareQuarantine {
+            path,
+            signature,
+            job,
+        } => quarantine::quarantine(&quarantine::Store::system(), path, signature, job),
+        HelperRequest::MalwareQuarantineRestore { id } => {
+            quarantine::restore(&quarantine::Store::system(), id)
+        }
+        HelperRequest::MalwareQuarantineDelete { id } => {
+            quarantine::delete(&quarantine::Store::system(), id)
+        }
+        HelperRequest::MalwareQuarantineList => quarantine::list(&quarantine::Store::system()),
+        HelperRequest::MalwareWhitelistAdd { path } => {
+            quarantine::whitelist_add(&quarantine::Store::system(), path)
+        }
+        HelperRequest::MalwareWhitelistRemove { path } => {
+            quarantine::whitelist_remove(&quarantine::Store::system(), path)
+        }
+        HelperRequest::MalwareWhitelistList => {
+            quarantine::whitelist_list(&quarantine::Store::system())
+        }
         HelperRequest::NodeInstall { major } => packages::node_install(major),
         HelperRequest::ClamavInstall => packages::clamav_install(),
         HelperRequest::MaldetInstall => packages::maldet_install(),

@@ -195,6 +195,7 @@ fn backup_state(schedules: &[snpanel_db::BackupSchedule]) -> Value {
 fn malware_state(jobs: &[Value], installed: bool, enabled: bool) -> Value {
     let mut seen: Vec<String> = Vec::new();
     let mut threats = 0u64;
+    let mut quarantined = 0u64;
     let mut last_scan_at: Option<String> = None;
     let mut infected_job: Option<String> = None;
     // Newest first, as `malware_jobs::list` returns them.
@@ -234,6 +235,7 @@ fn malware_state(jobs: &[Value], installed: bool, enabled: bool) -> Value {
                 .map(str::to_string);
         }
         threats += found;
+        quarantined += job.get("quarantined").and_then(Value::as_u64).unwrap_or(0);
     }
     let state = if !installed {
         "not_installed"
@@ -249,6 +251,7 @@ fn malware_state(jobs: &[Value], installed: bool, enabled: bool) -> Value {
         "installed": installed,
         "enabled": enabled,
         "threats": threats,
+        "quarantined": quarantined,
         "last_scan_at": last_scan_at,
         "infected_job": infected_job,
     })

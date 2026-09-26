@@ -267,6 +267,27 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// SHA-256 of everything `reader` yields, lowercase hex - a file hashed as
+/// it is read rather than loaded whole first.
+pub fn sha256_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
 pub fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
 

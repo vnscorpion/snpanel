@@ -938,6 +938,34 @@ pub enum HelperRequest {
     MalwareScanServer {
         job: String,
     },
+    /// `malware-quarantine <path> [signature] [job]` - a file a scan found,
+    /// set aside. The path stays a `String`: the helper walks it itself from
+    /// `/`, refusing links, and insists on a customer folder.
+    MalwareQuarantine {
+        path: String,
+        signature: String,
+        job: String,
+    },
+    /// `malware-quarantine-restore <id>` - put back where it was.
+    MalwareQuarantineRestore {
+        id: String,
+    },
+    /// `malware-quarantine-delete <id>` - gone for good.
+    MalwareQuarantineDelete {
+        id: String,
+    },
+    /// `malware-quarantine-list`.
+    MalwareQuarantineList,
+    /// `malware-whitelist-add <path>` - this content at this path is fine.
+    MalwareWhitelistAdd {
+        path: String,
+    },
+    /// `malware-whitelist-remove <path>`.
+    MalwareWhitelistRemove {
+        path: String,
+    },
+    /// `malware-whitelist-list`.
+    MalwareWhitelistList,
     /// `node-install` - one Node major under /opt/snpanel/node.
     NodeInstall {
         major: String,
@@ -1268,6 +1296,13 @@ impl HelperRequest {
             Self::WafSiteDelete { .. } => "waf-site-delete",
             Self::MaldetScan { .. } => "maldet-scan",
             Self::MalwareScanServer { .. } => "malware-scan-server",
+            Self::MalwareQuarantine { .. } => "malware-quarantine",
+            Self::MalwareQuarantineRestore { .. } => "malware-quarantine-restore",
+            Self::MalwareQuarantineDelete { .. } => "malware-quarantine-delete",
+            Self::MalwareQuarantineList => "malware-quarantine-list",
+            Self::MalwareWhitelistAdd { .. } => "malware-whitelist-add",
+            Self::MalwareWhitelistRemove { .. } => "malware-whitelist-remove",
+            Self::MalwareWhitelistList => "malware-whitelist-list",
             Self::NodeInstall { .. } => "node-install",
             Self::CertbotDnsCloudflareInstall => "certbot-dns-cloudflare-install",
             Self::ClamavInstall => "clamav-install",

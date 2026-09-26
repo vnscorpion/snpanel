@@ -13,6 +13,7 @@ pub mod firewall;
 pub mod health;
 pub mod maintenance;
 pub mod malware;
+pub mod malware_quarantine;
 pub mod mcp;
 pub mod packages;
 pub mod panel_settings;
@@ -60,6 +61,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(s3_targets::router())
         .merge(mcp::router())
         .merge(malware::router())
+        .merge(malware_quarantine::router())
         .merge(panel_settings::router())
         .merge(site_apps::router())
         .merge(user_restore::router())
@@ -145,6 +147,7 @@ mod tests {
         let _ = websites::router();
         let _ = waf::router();
         let _ = malware::router();
+        let _ = malware_quarantine::router();
         let _ = panel_settings::router();
         let _ = terminal::router();
         let _ = maintenance::router();

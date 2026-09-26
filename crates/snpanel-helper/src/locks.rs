@@ -108,6 +108,8 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "fastcgi-cache-clear"
         | "maldet-scan"
         | "malware-scan-server"
+        | "malware-quarantine-list"
+        | "malware-whitelist-list"
         | "selinux-restore-site"
         | "selinux-port-add" => &[],
 
@@ -189,6 +191,12 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
 
         "cron-write" => &[Cron],
         "maldet-update-sigs" | "maldet-monitor" => &[Malware],
+        // One store and one whitelist file, read, changed and written back.
+        "malware-quarantine"
+        | "malware-quarantine-restore"
+        | "malware-quarantine-delete"
+        | "malware-whitelist-add"
+        | "malware-whitelist-remove" => &[Malware],
 
         _ => return None,
     })

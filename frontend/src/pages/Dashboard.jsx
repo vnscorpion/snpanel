@@ -192,7 +192,10 @@ export default function DashboardPage() {
         href: mw.state === 'threats' && mw.infected_job ? scanRoute(mw.infected_job) : undefined,
         tone: mw.state === 'threats' ? 'bad' : mw.state === 'clean' ? 'ok' : 'warn',
         value: { clean: t('Clean'), threats: t('{count} threat(s)', { count: mw.threats }), never: t('Not scanned'), not_installed: t('Not installed') }[mw.state] || '—',
-        detail: mw.last_scan_at ? t('Last scan {when}', { when: ago(mw.last_scan_at) }) : (mw.installed ? t('No scan yet') : t('Scanner not installed')) },
+        detail: [
+          mw.last_scan_at ? t('Last scan {when}', { when: ago(mw.last_scan_at) }) : (mw.installed ? t('No scan yet') : t('Scanner not installed')),
+          mw.quarantined > 0 ? t('{count} quarantined', { count: mw.quarantined }) : '',
+        ].filter(Boolean).join(' · ') },
       { key: 'services', icon: Activity, page: 'services', label: t('Services'), value: `${sv.running ?? 0}/${sv.total ?? 0}`,
         tone: (sv.stopped || []).length ? 'bad' : 'ok',
         detail: (sv.stopped || []).length ? t('Stopped: {names}', { names: sv.stopped.join(', ') }) : t('All running') },

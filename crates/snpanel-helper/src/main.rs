@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 150;
+const ANSWERED_VERBS: usize = 157;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -90,6 +90,8 @@ fn print_help(sink: audit::Sink) {
         "                  runtime-ensure, runtime-move, runtime-delete",
         "  docker-*        status, prune, install;  node-list, node-install",
         "  maldet-scan, malware-scan-server",
+        "  malware-quarantine[-restore|-delete|-list] <path|id>,",
+        "  malware-whitelist-add|remove|list",
         "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
         "  fail2ban-*      install, configure (settings on stdin), status, ban,",
         "                  unban, stop",

@@ -565,6 +565,25 @@ impl HelperRequest {
             ("malware-scan-server", 1) => HelperRequest::MalwareScanServer {
                 job: rest[0].clone(),
             },
+            ("malware-quarantine", 1..=3) => HelperRequest::MalwareQuarantine {
+                path: rest[0].clone(),
+                signature: rest.get(1).cloned().unwrap_or_default(),
+                job: rest.get(2).cloned().unwrap_or_default(),
+            },
+            ("malware-quarantine-restore", 1) => HelperRequest::MalwareQuarantineRestore {
+                id: rest[0].clone(),
+            },
+            ("malware-quarantine-delete", 1) => HelperRequest::MalwareQuarantineDelete {
+                id: rest[0].clone(),
+            },
+            ("malware-quarantine-list", 0) => HelperRequest::MalwareQuarantineList,
+            ("malware-whitelist-add", 1) => HelperRequest::MalwareWhitelistAdd {
+                path: rest[0].clone(),
+            },
+            ("malware-whitelist-remove", 1) => HelperRequest::MalwareWhitelistRemove {
+                path: rest[0].clone(),
+            },
+            ("malware-whitelist-list", 0) => HelperRequest::MalwareWhitelistList,
             ("node-install", 1) => HelperRequest::NodeInstall {
                 major: rest[0].clone(),
             },

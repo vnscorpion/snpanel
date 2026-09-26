@@ -53,6 +53,7 @@ mod initdb;
 mod listen;
 mod malware;
 mod malware_jobs;
+mod malware_quarantine;
 mod malware_scan;
 mod malware_schedule;
 mod manual_ssl;
@@ -610,10 +611,12 @@ async fn run_malware_schedules(state: &AppState) -> String {
     }
 
     let mut outcomes = Vec::new();
+    let mut started: Vec<String> = Vec::new();
     for name in due {
         match routes::malware::start_scan(state, name == "server").await {
             Ok(job) => {
                 let job_id = job["job_id"].as_str().unwrap_or("").to_string();
+                started.push(job_id.clone());
                 record_malware_run(
                     name,
                     &job_id,
@@ -628,6 +631,15 @@ async fn run_malware_schedules(state: &AppState) -> String {
                 tracing::warn!("scheduled malware scan {name} could not start: {message}");
                 outcomes.push(format!("{name}: failed"));
             }
+        }
+    }
+    // What the unit's TimeoutStartSec=infinity is for: the runner waits for
+    // the scans it started - and for what they found to be set aside -
+    // before it exits. Returning at once ended the runtime, and every
+    // scheduled scan with it, part-way through.
+    for job_id in &started {
+        while malware_jobs::task_running(job_id) {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
     outcomes.join("; ")
