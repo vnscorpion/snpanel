@@ -23,6 +23,7 @@ pub mod refresh;
 pub mod s3_targets;
 pub mod services;
 pub mod sftp;
+pub mod sftp_accounts;
 pub mod site_apps;
 pub mod terminal;
 pub mod updates;
@@ -48,6 +49,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(packages::router())
         .merge(users::router())
         .merge(sftp::router())
+        .merge(sftp_accounts::router())
         .merge(firewall::router())
         .merge(fail2ban::router())
         .merge(databases::router())

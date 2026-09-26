@@ -586,8 +586,11 @@ pub const SCAN_PRUNE: &[&str] = &[
     "/var/lib/lxcfs",
     "/var/lib/clamav",
     "/var/cache/apt/archives",
-    // SNPanel's own: what a scan found and set aside would be found again.
+    // SNPanel's own: what a scan found and set aside would be found again,
+    // and the SFTP accounts' jails are customers' folders mounted a second
+    // time.
     "/var/lib/snpanel-quarantine",
+    "/srv/sftp",
 ];
 
 /// Source: `[[ "$job" =~ ^[0-9a-f]{8,64}$ ]]`.

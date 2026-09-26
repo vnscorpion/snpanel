@@ -504,6 +504,38 @@ pub enum HelperRequest {
         username: PanelUsername,
         password: SecretString,
     },
+    /// `sftp-sub-create <owner> <account> <directory>`, the password on
+    /// stdin - an SFTP login of the owner's, shut into one folder. The
+    /// folder stays a `String`: the helper walks it itself, refusing links.
+    SftpSubCreate {
+        owner: PanelUsername,
+        account: PanelUsername,
+        directory: String,
+        password: SecretString,
+    },
+    /// `sftp-sub-password <owner> <account>`, the password on stdin.
+    SftpSubPassword {
+        owner: PanelUsername,
+        account: PanelUsername,
+        password: SecretString,
+    },
+    /// `sftp-sub-delete <owner> <account>`.
+    SftpSubDelete {
+        owner: PanelUsername,
+        account: PanelUsername,
+    },
+    /// `sftp-sub-mount <owner> <account> <directory>` - what the account's
+    /// systemd unit runs, at once and at every boot.
+    SftpSubMount {
+        owner: PanelUsername,
+        account: PanelUsername,
+        directory: String,
+    },
+    /// `sftp-sub-umount <owner> <account>` - the unit's stop.
+    SftpSubUmount {
+        owner: PanelUsername,
+        account: PanelUsername,
+    },
 
     // --- nginx ---
     NginxWriteSite {
@@ -1213,6 +1245,11 @@ impl HelperRequest {
             Self::PanelUserEnsure { .. } => "panel-user-ensure",
             Self::PanelUserDelete { .. } => "panel-user-delete",
             Self::PanelUserPassword { .. } => "panel-user-password",
+            Self::SftpSubCreate { .. } => "sftp-sub-create",
+            Self::SftpSubPassword { .. } => "sftp-sub-password",
+            Self::SftpSubDelete { .. } => "sftp-sub-delete",
+            Self::SftpSubMount { .. } => "sftp-sub-mount",
+            Self::SftpSubUmount { .. } => "sftp-sub-umount",
             Self::NginxWriteSite { .. } => "nginx-write-site",
             Self::NginxTest => "nginx-test",
             Self::NginxReload => "nginx-reload",

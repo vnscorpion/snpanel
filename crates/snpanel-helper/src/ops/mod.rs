@@ -28,6 +28,7 @@ pub mod php;
 pub mod quarantine;
 pub mod runtime;
 pub mod selinux;
+pub mod sftp_sub;
 pub mod site;
 pub mod siteapp;
 pub mod ssl;
@@ -393,6 +394,24 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             quarantine::delete(&quarantine::Store::system(), id)
         }
         HelperRequest::MalwareQuarantineList => quarantine::list(&quarantine::Store::system()),
+        HelperRequest::SftpSubCreate {
+            owner,
+            account,
+            directory,
+            password,
+        } => sftp_sub::create(owner, account, directory, password),
+        HelperRequest::SftpSubPassword {
+            owner,
+            account,
+            password,
+        } => sftp_sub::set_password(owner, account, password),
+        HelperRequest::SftpSubDelete { owner, account } => sftp_sub::delete(owner, account),
+        HelperRequest::SftpSubMount {
+            owner,
+            account,
+            directory,
+        } => sftp_sub::mount(owner, account, directory),
+        HelperRequest::SftpSubUmount { owner, account } => sftp_sub::umount(owner, account),
         HelperRequest::MalwareWhitelistAdd { path } => {
             quarantine::whitelist_add(&quarantine::Store::system(), path)
         }

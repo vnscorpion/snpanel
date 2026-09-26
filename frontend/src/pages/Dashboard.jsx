@@ -228,7 +228,7 @@ export default function DashboardPage() {
       // A new panel user - who can then have SFTP logins of their own. Called
       // "New SFTP account" it read as the SFTP page's job.
       ? { key: 'new-user', icon: UserPlus, label: t('New account'), page: 'users', before: () => setUserTab('add') }
-      : { key: 'sftp', icon: FolderKey, label: t('SFTP login'), page: 'security' },
+      : { key: 'sftp', icon: FolderKey, label: t('SFTP accounts'), page: 'sftp' },
     isAdmin && { key: 'users', icon: UserCog, label: t('Panel users'), page: 'users', before: () => setUserTab('list') },
     // Every installed addon has its way in from here too.
     ...addons.items.filter((addon) => addon.installed).map((addon) => ({

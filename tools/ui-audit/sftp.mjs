@@ -1,5 +1,5 @@
 // A panel user's SFTP login, from the Users page and from the user's own
-// Account security page, checked by signing in over SFTP for real.
+// SFTP page, checked by signing in over SFTP for real.
 //
 //     node sftp.mjs [out-dir]
 //
@@ -134,9 +134,10 @@ try {
   const login = await user.request.post(`${BASE}/api/auth/login`, { form: { username: NAME, password: P3 } });
   check(login.status() === 200, `the user signs in to the panel (${login.status()})`);
   const own = await user.newPage();
+  // SFTP is a page of its own now; Account security no longer carries it.
   await own.goto(`${BASE}/security`, { waitUntil: 'networkidle' });
-  check(await own.getByRole('heading', { name: 'Account security' }).first().isVisible()
-    || await own.getByText('Account security').first().isVisible(), 'the page is called Account security');
+  check(await own.locator('.sftp-access').count() === 0, 'Account security has no SFTP section');
+  await own.goto(`${BASE}/sftp`, { waitUntil: 'networkidle' });
   const card = own.locator('.sftp-access');
   await card.locator('.sftp-details').waitFor({ timeout: 30000 });
   check(await card.getByRole('heading', { name: 'SFTP access' }).isVisible(), 'with an SFTP access section');
@@ -151,7 +152,7 @@ try {
   await card.getByRole('button', { name: 'Set this password' }).click();
   await own.waitForTimeout(1500);
   check(sftp(OWN) && !sftp(TYPED), 'the right one sets it');
-  await own.screenshot({ path: `${OUT}/account-security-light-en.png`, fullPage: true });
+  await own.screenshot({ path: `${OUT}/sftp-page-light-en.png`, fullPage: true });
   await user.close();
 
   check(consoleErrors.length === 0, `no console errors (${consoleErrors.slice(0, 3).join(' | ')})`);

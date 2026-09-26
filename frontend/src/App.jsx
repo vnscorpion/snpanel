@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AlertCircle, Archive, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
+import { AlertCircle, Archive, Bot, Boxes, ChevronDown, Clock, Code2, Database, Download, FileText, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, Search, Server, Settings as SettingsIcon, Shield, ShieldBan, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -59,6 +59,7 @@ const WafSitePage = lazy(() => import('./pages/WafSite.jsx'));
 const WafAccessLogsPage = lazy(() => import('./pages/WafAccessLogs.jsx'));
 const UpdatesPage = lazy(() => import('./pages/Updates.jsx'));
 const SecurityPage = lazy(() => import('./pages/Security.jsx'));
+const SftpPage = lazy(() => import('./pages/Sftp.jsx'));
 const MalwarePage = lazy(() => import('./pages/Malware.jsx'));
 const MalwareScanPage = lazy(() => import('./pages/MalwareScan.jsx'));
 const PanelSettingsPage = lazy(() => import('./pages/PanelSettings.jsx'));
@@ -3707,6 +3708,10 @@ function App() {
       loadWafAccessLogs(wafAccessLogFilters, true);
     }
     if (isAuthenticated && page === 'updates' && currentUser?.role === 'admin') loadUpdates();
+    if (isAuthenticated && page === 'sftp') {
+      if (currentUser?.role === 'admin') loadUsers();
+      if (!websites.length) refreshAll();
+    }
     if (isAuthenticated && page === 'security') {
       loadTwoFactorStatus();
       loadPasskeys();
@@ -3760,6 +3765,7 @@ function App() {
     ['databases', t('Database'), Database],
     ['cron', t('Cron'), Clock],
     ['files', t('File manager'), FolderOpen],
+    ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
   ];
@@ -4489,6 +4495,7 @@ function App() {
     if (page === 'files') return <FilesPage />;
     if (page === 'backups') return <BackupsPage />;
     if (page === 'security') return <SecurityPage />;
+    if (page === 'sftp') return <SftpPage />;
     if (page === 'php') return <PhpConfigPage />;
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;

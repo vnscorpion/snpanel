@@ -490,12 +490,15 @@ fn phase_modsec_conf() -> Result<(), String> {
 fn phase_sftp_access() -> Result<(), String> {
     // The group an SFTP login is matched on. Without it the block matches
     // nothing and the feature is silently off.
-    if !group_exists("snpanel-sftp") {
-        let _ = std::process::Command::new("groupadd")
-            .args(["--system", "snpanel-sftp"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    // And the customers' own SFTP accounts', matched by the second block.
+    for group in ["snpanel-sftp", "snpanel-sftp-sub"] {
+        if !group_exists(group) {
+            let _ = std::process::Command::new("groupadd")
+                .args(["--system", group])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
 
     let existing = std::fs::read_to_string(runtime::SSHD_CONFIG).unwrap_or_default();

@@ -13,4 +13,13 @@ Match Group snpanel-sftp
     X11Forwarding no
     AllowTcpForwarding no
     PermitTunnel no
+# SFTP accounts a customer made, each shut into one folder of theirs.
+Match Group snpanel-sftp-sub
+    PasswordAuthentication yes
+    ChrootDirectory /srv/sftp/%u
+    ForceCommand internal-sftp -d %d
+    PermitTTY no
+    X11Forwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
 # END SNPANEL SFTP USERS

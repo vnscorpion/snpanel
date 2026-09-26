@@ -3581,6 +3581,9 @@ async fn delete_website(
         tracing::error!("deleting the aliases of {domain} failed: {e}");
         return internal_error();
     }
+    // The owner's SFTP accounts shut into this site's folder go with it:
+    // their mount would be of a folder no longer there.
+    super::sftp_accounts::drop_for_site(&state, website.owner_id, &website.root_path).await;
     delete_website_vhost(&state, &domain).await;
 
     // The vhost is gone, so nothing reads the certificate or the rule file any

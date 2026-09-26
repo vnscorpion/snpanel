@@ -413,6 +413,32 @@ impl HelperRequest {
                 }
             }
 
+            ("sftp-sub-create", 3) => HelperRequest::SftpSubCreate {
+                owner: user_of(&rest[0])?,
+                account: user_of(&rest[1])?,
+                directory: rest[2].clone(),
+                // C37: on stdin, like every password.
+                password: snpanel_core::SecretString::new(stdin_text(stdin).trim_end_matches('\n')),
+            },
+            ("sftp-sub-password", 2) => HelperRequest::SftpSubPassword {
+                owner: user_of(&rest[0])?,
+                account: user_of(&rest[1])?,
+                password: snpanel_core::SecretString::new(stdin_text(stdin).trim_end_matches('\n')),
+            },
+            ("sftp-sub-delete", 2) => HelperRequest::SftpSubDelete {
+                owner: user_of(&rest[0])?,
+                account: user_of(&rest[1])?,
+            },
+            ("sftp-sub-mount", 3) => HelperRequest::SftpSubMount {
+                owner: user_of(&rest[0])?,
+                account: user_of(&rest[1])?,
+                directory: rest[2].clone(),
+            },
+            ("sftp-sub-umount", 2) => HelperRequest::SftpSubUmount {
+                owner: user_of(&rest[0])?,
+                account: user_of(&rest[1])?,
+            },
+
             ("mkdir-site", 1) => match SitePath::parse(&rest[0]) {
                 Ok(path) => HelperRequest::SiteMkdir { path },
                 Err(e) => return Err(InvocationError::invalid(e.to_string())),

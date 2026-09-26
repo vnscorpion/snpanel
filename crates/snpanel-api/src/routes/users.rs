@@ -1157,6 +1157,18 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Err(r) => return r,
     };
 
+    // A customer's SFTP account is a Linux account of that name, with that
+    // customer's UID: a panel user made over it would be handed their files.
+    if matches!(
+        state
+            .db
+            .sftp_subaccounts()
+            .username_taken(&fields.username.to_lowercase())
+            .await,
+        Ok(true)
+    ) {
+        return crate::errors::error(axum::http::StatusCode::CONFLICT, "Username already exists");
+    }
     match state.db.users().by_username(&fields.username).await {
         Ok(Some(_)) => {
             return crate::errors::error(

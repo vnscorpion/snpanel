@@ -110,6 +110,10 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "malware-scan-server"
         | "malware-quarantine-list"
         | "malware-whitelist-list"
+        // Run by systemd for one account's unit, while the create or delete
+        // that started it may hold the accounts lock in another process.
+        | "sftp-sub-mount"
+        | "sftp-sub-umount"
         | "selinux-restore-site"
         | "selinux-port-add" => &[],
 
@@ -125,6 +129,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
 
         // Accounts, and a site's runtime, which is an account and a pool.
         "panel-user-ensure" | "panel-user-delete" | "panel-user-password" => &[Accounts],
+        "sftp-sub-create" | "sftp-sub-password" | "sftp-sub-delete" => &[Accounts],
         "site-runtime-ensure" | "site-runtime-move" | "site-runtime-delete" | "rm-site" => {
             &[Accounts, Systemd, Php]
         }

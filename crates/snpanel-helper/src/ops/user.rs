@@ -42,6 +42,19 @@ fn exists(user: &PanelUsername) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the account is one of the customers' SFTP accounts.
+fn in_sub_group(user: &PanelUsername) -> bool {
+    exec::run(&["id", "-nG", user.as_str()])
+        .map(|out| {
+            out.ok()
+                && out
+                    .stdout
+                    .split_whitespace()
+                    .any(|g| g == crate::ops::sftp_sub::SUB_GROUP)
+        })
+        .unwrap_or(false)
+}
+
 fn group_exists(group: &str) -> bool {
     exec::run(&["getent", "group", group])
         .map(|o| o.ok())
@@ -93,6 +106,15 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
     let _ = exec::run(&["chmod", "0711", HOME_ROOT]);
     let _ = exec::run(&["chmod", "a-s", HOME_ROOT]);
     let _ = exec::run(&["chmod", "-t", HOME_ROOT]);
+
+    // An SFTP account of another customer's has that customer's UID: made a
+    // panel user of, it would be handed their files.
+    if exists(user) && in_sub_group(user) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("{user} is an SFTP account, not a panel user"),
+        );
+    }
 
     if !exists(user) {
         let out = exec::run(&[
@@ -195,6 +217,15 @@ pub fn set_password(user: &PanelUsername, password: &SecretString) -> HelperResp
 /// user when the account is removed, and the processes are killed before
 /// `userdel`, which refuses while the user has any.
 pub fn delete(user: &PanelUsername) -> HelperResponse {
+    if in_sub_group(user) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("{user} is an SFTP account, not a panel user"),
+        );
+    }
+    // Its SFTP accounts first: they share its UID and its group, and
+    // groupdel refuses a group that is still an account's own.
+    crate::ops::sftp_sub::delete_all(user);
     remove_php_pools(user);
 
     let _ = exec::run(&["crontab", "-r", "-u", user.as_str()]);

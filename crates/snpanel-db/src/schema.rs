@@ -207,6 +207,22 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
         "rust_0007_mcp_tokens_by_user",
         "CREATE INDEX IF NOT EXISTS ix_mcp_tokens_user_id ON mcp_tokens (user_id)",
     ),
+    // A user's own SFTP accounts, each shut into one folder of their home -
+    // see `sftp_subaccounts.rs` and the helper's `ops/sftp_sub.rs`. The name
+    // is unique across everyone: it is a Linux account's.
+    (
+        "rust_0008_sftp_subaccounts",
+        "CREATE TABLE IF NOT EXISTS sftp_subaccounts (\
+            id INTEGER NOT NULL PRIMARY KEY, \
+            user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE, \
+            username VARCHAR(32) NOT NULL UNIQUE, \
+            directory VARCHAR(1024) NOT NULL, \
+            created_at DATETIME NOT NULL)",
+    ),
+    (
+        "rust_0009_sftp_subaccounts_by_user",
+        "CREATE INDEX IF NOT EXISTS ix_sftp_subaccounts_user_id ON sftp_subaccounts (user_id)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -763,10 +779,12 @@ mod tests {
                 "backup_schedule_options",
                 "ix_mcp_tokens_user_id",
                 "ix_passkeys_user_id",
+                "ix_sftp_subaccounts_user_id",
                 "mcp_tokens",
                 "passkeys",
                 "s3_backup_targets",
                 "sftp_accounts",
+                "sftp_subaccounts",
                 MIGRATIONS_TABLE
             ],
             "only the passkeys table and its index, the SFTP decisions and the \

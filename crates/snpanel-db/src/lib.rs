@@ -39,6 +39,7 @@ pub mod provisioning;
 pub mod s3_targets;
 pub mod schema;
 pub mod sftp_accounts;
+pub mod sftp_subaccounts;
 pub mod site_apps;
 mod users;
 pub mod websites;
@@ -196,6 +197,10 @@ impl Database {
 
     pub fn passkeys(&self) -> PasskeyRepo<'_> {
         PasskeyRepo::new(&self.pool)
+    }
+
+    pub fn sftp_subaccounts(&self) -> sftp_subaccounts::SftpSubaccountRepo<'_> {
+        sftp_subaccounts::SftpSubaccountRepo::new(self.pool())
     }
 
     pub fn sftp_accounts(&self) -> sftp_accounts::SftpAccountRepo<'_> {

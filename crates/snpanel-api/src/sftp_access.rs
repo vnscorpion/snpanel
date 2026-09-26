@@ -134,6 +134,28 @@ pub async fn set_locked(
             );
         }
     }
+    // The user's own SFTP accounts: locked with them, and unlocked when the
+    // suspension ends - they have passwords of their own, which the owner's
+    // SFTP being switched off says nothing about.
+    let subaccounts = db
+        .sftp_subaccounts()
+        .list_for(user_id)
+        .await
+        .unwrap_or_default();
+    for sub in subaccounts {
+        let Ok(safe) = snpanel_core::types::PanelUsername::parse(&sub.username) else {
+            continue;
+        };
+        let result = if lock {
+            crate::shell::privileged(dry_run, "panel-user-lock", &[safe.as_str()], None, None).await
+        } else {
+            crate::shell::privileged(dry_run, "panel-user-unlock", &[safe.as_str()], None, None)
+                .await
+        };
+        if !result.ok() {
+            tracing::warn!("could not lock or unlock SFTP account {safe}");
+        }
+    }
 }
 
 /// The accounts a suspension locks, or its end unlocks: the user's own and

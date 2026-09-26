@@ -83,6 +83,11 @@ pub const SFTP_END: &str = "# END SNPANEL SFTP USERS";
 /// be root-owned: sshd refuses to chroot into a directory the user can write.
 /// `ForceCommand internal-sftp` means there is no shell at the other end of a
 /// successful login.
+///
+/// The second block is the customers' own SFTP accounts: each chrooted into
+/// a root-owned jail holding one folder of the customer's, bind-mounted, and
+/// started in it (`-d %d`, the account's home being that folder as seen from
+/// inside). See the helper's `ops/sftp_sub.rs`.
 pub fn sftp_block() -> String {
     format!(
         "{SFTP_BEGIN}
@@ -92,6 +97,15 @@ Match Group snpanel-sftp
     PasswordAuthentication yes
     ChrootDirectory /home/%u
     ForceCommand internal-sftp -d /
+    PermitTTY no
+    X11Forwarding no
+    AllowTcpForwarding no
+    PermitTunnel no
+# SFTP accounts a customer made, each shut into one folder of theirs.
+Match Group snpanel-sftp-sub
+    PasswordAuthentication yes
+    ChrootDirectory /srv/sftp/%u
+    ForceCommand internal-sftp -d %d
     PermitTTY no
     X11Forwarding no
     AllowTcpForwarding no

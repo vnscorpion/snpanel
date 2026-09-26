@@ -4,7 +4,6 @@ import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { passkeysSupported } from '../lib/webauthn.js';
 import { useT } from '../i18n/index.jsx';
-import SftpAccess from '../components/SftpAccess.jsx';
 import './Security.css';
 
 export default function SecurityPage() {
@@ -133,8 +132,5 @@ export default function SecurityPage() {
       {!blocked && items.length === 0 && <p className="hint passkey-first"><KeyRound size={14} aria-hidden="true"/> {t('Your device will ask you to confirm with your fingerprint, face or screen lock.')}</p>}
     </section>
 
-    {currentUser && <section className="section">
-      <SftpAccess user={currentUser} self page />
-    </section>}
   </div>;
 }

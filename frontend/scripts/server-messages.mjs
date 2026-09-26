@@ -102,6 +102,7 @@ const IGNORED = new Set([
   'available upgrades', 'Last metadata expiration',
   'this server', '{0} backup(s) from {from}', 'larger than',
   'WHITELISTED {path}: left in place', 'LEFT {path}: outside the folders files are moved out of', 'NOT MOVED {path}: {0}', 'is gone',
+  '{0} is mounted already',
   'Automatic updates (dnf-automatic):', 'when needed', 'LocalSocket /run/clamd.scan/clamd.sock', 'apt-get install unattended-upgrades', 'dnf install dnf-automatic', 'curl docker-ce.repo', 'apt-get install ca-certificates curl gnupg', 'curl docker gpg key',
 ]);
 

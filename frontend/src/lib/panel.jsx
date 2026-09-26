@@ -50,6 +50,7 @@ export const PAGE_ROUTES = {
   settings: '/settings',
   'api-tokens': '/api-tokens',
   security: '/security',
+  sftp: '/sftp',
   php: '/php',
   firewall: '/firewall',
   fail2ban: '/fail2ban',
