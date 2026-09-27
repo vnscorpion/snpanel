@@ -419,7 +419,7 @@ snpanel/
 ## Phiên bản
 
 SNPanel đánh số phiên bản theo semantic versioning (`major.minor.patch`).
-Bản phát hành hiện tại là `1.0.0`.
+Bản phát hành hiện tại là `1.1.0`.
 
 ## Giấy phép
 

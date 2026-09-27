@@ -420,7 +420,7 @@ snpanel/
 ## Versioning
 
 SNPanel uses semantic versioning (`major.minor.patch`). The current release
-is `1.0.0`.
+is `1.1.0`.
 
 ## License
 
