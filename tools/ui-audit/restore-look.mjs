@@ -1,5 +1,5 @@
 // The Restore tab as it looks: the whole tab, in English and Vietnamese, and
-// with an account's dates open - pictures only, nothing restored.
+// Another server's form - pictures only, nothing restored.
 //
 //     node restore-look.mjs [out-dir] [width]      (LOGIN_FILE: the administrator's)
 import { chromium } from 'playwright';
@@ -23,6 +23,13 @@ for (const locale of ['en', 'vi']) {
   const tab = page.locator('.backup-tab-panel');
   await tab.screenshot({ path: `${OUT}/restore-${locale}-${WIDTH}.png` });
   console.log(`saved ${OUT}/restore-${locale}-${WIDTH}.png`);
+  // Another server: its form, before it is reached.
+  await page.getByRole('radio').nth(2).click();
+  await page.locator('.bk-connection').waitFor();
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(500);
+  await tab.screenshot({ path: `${OUT}/another-${locale}-${WIDTH}.png` });
+  console.log(`saved ${OUT}/another-${locale}-${WIDTH}.png`);
   await context.close();
 }
 await browser.close();

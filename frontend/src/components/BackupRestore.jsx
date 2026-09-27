@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, CalendarDays, Check, CloudDownload, HardDrive, Loader2, Network, RotateCcw, Search, Upload, X } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, HardDrive, Loader2, Network, RefreshCw, RotateCcw, Server, ShieldAlert, Upload, X } from 'lucide-react';
 import { formatWhen } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import './BackupRestore.css';
 
 const SOURCES = [
-  { id: 'local', icon: HardDrive, title: msg('This server'), text: msg('Every account backup kept here: each account\'s own, the restore folder and uploads.') },
-  { id: 'upload', icon: Upload, title: msg('Upload'), text: msg('Archives from your computer, up to 1 GB each.') },
-  { id: 'sftp', icon: Network, title: msg('SFTP server'), text: msg('A saved SFTP destination.') },
-  { id: 's3', icon: CloudDownload, title: msg('S3 bucket'), text: msg('A saved S3 destination.') },
+  { id: 'local', icon: HardDrive, title: msg('This server'), text: msg('Backups kept here, and archives uploaded.') },
+  { id: 'destination', icon: Network, title: msg('Backup destination'), text: msg('A saved SFTP or S3 destination.') },
+  { id: 'connection', icon: Server, title: msg('Another server'), text: msg('SFTP, FTP or FTPS.') },
 ];
+const PROTOCOLS = [
+  { id: 'sftp', label: 'SFTP', port: 22 },
+  { id: 'ftp', label: 'FTP', port: 21 },
+  { id: 'ftps', label: 'FTPS', port: 21 },
+];
+const NO_CONNECTION = { protocol: 'sftp', host: '', port: '', username: '', password: '', folder: '' };
 const ITEM_STATES = {
   queued: msg('Waiting'),
   fetching: msg('Downloading'),
@@ -19,15 +24,18 @@ const ITEM_STATES = {
   error: msg('Failed'),
 };
 
-// Accounts put back from their backups, DirectAdmin's way: where the backups
-// are, which of them, one button. Each account is one row, its backups a
-// list of dates with the newest chosen. The restore runs on the server, one
+// Accounts put back from their backups, in four steps: where the backups
+// are - this server, a saved destination, or another server given by hand -
+// then that source (with an upload and a refresh beside it), the accounts
+// found there, and one button. Each account is one card, its backups a list
+// of dates with the newest chosen. The restore runs on the server, one
 // account after another, and the page follows it - also when it is opened
 // again part-way through.
 export default function BackupRestore() {
   const {
     EmptyState,
     formatBytes,
+    listRestoreConnection,
     listRestoreSource,
     loadRestoreJob,
     loading,
@@ -39,7 +47,12 @@ export default function BackupRestore() {
   } = usePanel();
   const t = useT();
   const [source, setSource] = useState('local');
-  const [targetId, setTargetId] = useState('');
+  // A saved destination: 'sftp:<id>' or 's3:<id>'.
+  const [destination, setDestination] = useState('');
+  // Another server: how to reach it, and what its listing learned - the SFTP
+  // host key the restore insists on, an FTPS certificate to trust.
+  const [connection, setConnection] = useState(NO_CONNECTION);
+  const [learned, setLearned] = useState({});
   const [items, setItems] = useState(null);
   // The accounts ticked, and the backup chosen for each - its newest until
   // another date is picked.
@@ -48,44 +61,88 @@ export default function BackupRestore() {
   const [findAccount, setFindAccount] = useState('');
   const [job, setJob] = useState(null);
   const finishedRef = useRef('');
+  const fileInput = useRef(null);
+  // Which listing is the newest: an older one still on its way is dropped.
+  const listing = useRef(0);
   const busy = !!loading;
-  const remote = source === 'sftp' || source === 's3';
-  const targets = source === 'sftp' ? sftpTargets : source === 's3' ? s3Targets : [];
+  const remote = source !== 'local';
   const running = job?.status === 'running';
+  const destinations = [
+    ...sftpTargets.map((target) => ({ value: `sftp:${target.id}`, name: target.name, kind: 'SFTP' })),
+    ...s3Targets.map((target) => ({ value: `s3:${target.id}`, name: target.name, kind: 'S3' })),
+  ];
+  const protocol = PROTOCOLS.find((p) => p.id === connection.protocol) || PROTOCOLS[0];
+  const connectionReady = !!(connection.host.trim() && connection.username.trim() && connection.password);
 
   // The key a restore names an archive by: its path here, its name there.
   const keyOf = (item) => (remote ? item.name : item.backup_file);
   const nameOf = (item) => (remote ? item.name : (item.filename || String(item.backup_file).split('/').pop()));
   const dateOf = (item) => item.generated_at || item.modified || '';
-
   const accountOf = (item) => item.username || nameOf(item);
   function clearChoice() { setTicked([]); setPicked({}); }
 
-  async function find(nextSource = source, nextTarget = targetId) {
+  // What the connection is sent as: the form, and what its listing learned.
+  const connectionBody = (extra = {}) => ({
+    ...connection,
+    port: connection.port || protocol.port,
+    host_key: learned.host_key?.fingerprint || '',
+    certificate: learned.certificate || '',
+    ...extra,
+  });
+
+  async function refresh(nextSource = source, nextDestination = destination, extra = {}) {
+    const ticket = ++listing.current;
+    const newest = () => ticket === listing.current;
     clearChoice();
-    const isRemote = nextSource === 'sftp' || nextSource === 's3';
-    if (isRemote && !nextTarget) { setItems(null); return; }
     setItems(null);
-    const found = await listRestoreSource(isRemote ? nextSource : 'local', nextTarget);
-    setItems(found || []);
+    if (nextSource === 'local') {
+      const found = await listRestoreSource('local', '');
+      if (newest()) setItems(found || []);
+    } else if (nextSource === 'destination') {
+      const [kind, id] = String(nextDestination).split(':');
+      if (!id) return;
+      const found = await listRestoreSource(kind, id);
+      if (newest()) setItems(found || []);
+    } else {
+      if (!connectionReady) return;
+      const found = await listRestoreConnection(connectionBody(extra));
+      // Not reached: the error says why, and step 3 waits for Refresh.
+      if (!newest() || !found) return;
+      setLearned({ host_key: found.host_key, certificate: found.certificate || extra.certificate || '', untrusted: found.untrusted });
+      setItems(found.untrusted ? null : (found.items || []));
+    }
   }
 
   function choose(next) {
-    if (running) return;
+    if (running || next === source) return;
+    listing.current += 1;
     setSource(next);
-    const list = next === 'sftp' ? sftpTargets : next === 's3' ? s3Targets : [];
-    const first = list[0] ? String(list[0].id) : '';
-    setTargetId(first);
     setItems(null);
     clearChoice();
-    if (next === 'local') find('local', '');
+    if (next === 'local') refresh('local');
+    if (next === 'destination') {
+      const first = destinations[0]?.value || '';
+      setDestination(first);
+      if (first) refresh('destination', first);
+    }
+  }
+
+  // Another server changed: what its last listing learned is not its.
+  function editConnection(key, value) {
+    setConnection((prev) => ({ ...prev, [key]: value }));
+    if (['protocol', 'host', 'port', 'username'].includes(key)) { listing.current += 1; setLearned({}); setItems(null); clearChoice(); }
+  }
+
+  function trust() {
+    const fingerprint = learned.untrusted?.fingerprint;
+    if (fingerprint) refresh('connection', destination, { certificate: fingerprint });
   }
 
   // What is running, or ran last, when the page opens.
   useEffect(() => {
     let live = true;
     loadRestoreJob().then((found) => { if (live && found) { setJob(found); if (found.status !== 'running') finishedRef.current = found.id; } });
-    find('local', '');
+    refresh('local');
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -100,7 +157,7 @@ export default function BackupRestore() {
       if (next.status !== 'running' && finishedRef.current !== next.id) {
         finishedRef.current = next.id;
         await restoreFinished(next);
-        if (source === 'local') find('local', '');
+        if (source === 'local') refresh('local');
       }
     }, 2000);
     return () => clearInterval(timer);
@@ -139,14 +196,27 @@ export default function BackupRestore() {
     if (!chosen.length) return;
     const question = t('Restore {count} backup(s)? An account that already exists is overwritten: its websites\' files and its databases are replaced by the backup\'s.', { count: chosen.length });
     if (!confirm(question)) return;
-    const started = await startRestore(remote ? source : 'local', remote ? targetId : '', chosen.map(keyOf));
+    const files = chosen.map(keyOf);
+    const [kind, id] = String(destination).split(':');
+    const started = source === 'local'
+      ? await startRestore('local', '', files)
+      : source === 'destination'
+        ? await startRestore(kind, id, files)
+        : await startRestore('connection', '', files, connectionBody());
     if (started) { finishedRef.current = ''; setJob(started); clearChoice(); }
   }
 
+  // An upload lands on this server, and is listed there.
   async function upload(files) {
     const done = await uploadUserBackups(files);
-    if (done) { setSource('local'); find('local', ''); }
+    if (done) { setSource('local'); refresh('local'); }
   }
+
+  // As every date of the panel reads: 2026-09-27 03:00.
+  const when = (text) => formatWhen(text);
+  const needle = findAccount.trim().toLowerCase();
+  const shown = needle ? groups.filter((group) => group.account.toLowerCase().includes(needle)) : groups;
+  const folderOf = (item) => (!remote && item.folder === 'restore' ? t('restore folder') : !remote && item.folder === 'uploads' ? t('uploaded') : '');
 
   // What a finished restore brought back, in a line.
   function outcome(done) {
@@ -163,11 +233,11 @@ export default function BackupRestore() {
     return t('Restored {count} accounts: {names}.', { count: back.length, names });
   }
 
-  // As every date of the panel reads: 2026-09-27 03:00.
-  const when = (text) => formatWhen(text);
-  const needle = findAccount.trim().toLowerCase();
-  const shown = needle ? groups.filter((group) => group.account.toLowerCase().includes(needle)) : groups;
-  const folderOf = (item) => (!remote && item.folder === 'restore' ? t('restore folder') : !remote && item.folder === 'uploads' ? t('uploaded') : '');
+  const stepTwo = source === 'local' ? t('Backups on this server') : source === 'destination' ? t('Choose the destination') : t('Connect to the server');
+  const canRefresh = source === 'local' || (source === 'destination' ? !!destination : connectionReady);
+  const waiting = source === 'local' ? t('Looking for backups...')
+    : source === 'destination' ? (destinations.length ? t('Choose a destination.') : t('No destination yet: add one in Destinations.'))
+      : learned.untrusted ? t('Trust the certificate, or check the server.') : t('Enter the server, then press Refresh.');
 
   return <div className="bk-restore">
     {job && <section className={`bk-restore-job ${job.status}${!running && job.failed ? ' bad' : ''}`} aria-live="polite">
@@ -202,32 +272,67 @@ export default function BackupRestore() {
           <span><strong>{t(title)}</strong><small>{t(text)}</small></span>
         </button>)}
       </div>
-      {source === 'upload' && <div className="bk-restore-detail">
-        <label className="upload-button">
-          <Upload size={14} aria-hidden="true" /> {t('Choose backup files')}
-          <input type="file" multiple accept=".tar.gz,application/gzip" onChange={(e) => { upload(e.target.files); e.target.value = ''; }} />
-        </label>
-        <p className="hint">{t('They go to the restore folder and are listed under This server.')}</p>
-      </div>}
-      {remote && <div className="bk-restore-detail">
-        {targets.length === 0
-          ? <p className="hint">{source === 'sftp' ? t('No SFTP destination yet. Add one in Destinations.') : t('No S3 destination yet. Add one in Destinations.')}</p>
-          : <>
-            <label className="bk-field">
-              <span className="bk-label">{t('Destination')}</span>
-              <select value={targetId} onChange={(e) => { setTargetId(e.target.value); setItems(null); clearChoice(); }}>
-                {targets.map((target) => <option key={target.id} value={target.id}>{target.name}</option>)}
-              </select>
-            </label>
-            <button type="button" disabled={busy || !targetId} onClick={() => find()}><Search size={14} aria-hidden="true" /> {t('Find backups')}</button>
-          </>}
-      </div>}
     </fieldset>
 
-    {source !== 'upload' && <fieldset className="bk-restore-step" disabled={running}>
-      <legend><span className="bk-restore-num">2</span> {t('Choose the accounts')}</legend>
+    <fieldset className="bk-restore-step" disabled={running}>
+      <legend><span className="bk-restore-num">2</span> {stepTwo}</legend>
+      {source === 'destination' && (destinations.length === 0
+        ? <p className="hint bk-restore-note">{t('No destination yet: add one in Destinations.')}</p>
+        : <label className="bk-field bk-restore-destination">
+          <span className="bk-label">{t('Destination')}</span>
+          <select value={destination} onChange={(e) => { setDestination(e.target.value); refresh('destination', e.target.value); }}>
+            {['SFTP', 'S3'].map((kind) => destinations.some((d) => d.kind === kind) && <optgroup key={kind} label={kind}>
+              {destinations.filter((d) => d.kind === kind).map((d) => <option key={d.value} value={d.value}>{d.name}</option>)}
+            </optgroup>)}
+          </select>
+        </label>)}
+      {source === 'connection' && <form className="bk-connection" autoComplete="off" onSubmit={(e) => e.preventDefault()}
+        onKeyDown={(e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); if (canRefresh && !busy) refresh('connection'); } }}>
+        <label className="bk-field">
+          <span className="bk-label">{t('Protocol')}</span>
+          <select value={connection.protocol} onChange={(e) => editConnection('protocol', e.target.value)}>
+            {PROTOCOLS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </label>
+        <label className="bk-field bk-connection-host">
+          <span className="bk-label">{t('Server')}</span>
+          <input value={connection.host} onChange={(e) => editConnection('host', e.target.value)} placeholder="backup.example.com" spellCheck={false} />
+        </label>
+        <label className="bk-field">
+          <span className="bk-label">{t('Port')}</span>
+          <input inputMode="numeric" value={connection.port} onChange={(e) => editConnection('port', e.target.value.replace(/\D/g, ''))} placeholder={String(protocol.port)} />
+        </label>
+        <label className="bk-field">
+          <span className="bk-label">{t('User name')}</span>
+          <input value={connection.username} onChange={(e) => editConnection('username', e.target.value)} spellCheck={false} autoComplete="off" />
+        </label>
+        <label className="bk-field">
+          <span className="bk-label">{t('Password')}</span>
+          <input type="password" value={connection.password} onChange={(e) => editConnection('password', e.target.value)} autoComplete="new-password" />
+        </label>
+        <label className="bk-field">
+          <span className="bk-label">{t('Folder')}</span>
+          <input value={connection.folder} onChange={(e) => editConnection('folder', e.target.value)} placeholder="/backups" spellCheck={false} />
+        </label>
+        {connection.protocol === 'ftp' && <p className="hint bk-connection-note">{t('FTP sends the password unencrypted.')}</p>}
+        {learned.host_key?.fingerprint && <p className="hint bk-connection-note">{t('Host key')}: <code>{learned.host_key.type} {learned.host_key.fingerprint}</code></p>}
+        {learned.untrusted && <div className="bk-trust" role="alert">
+          <ShieldAlert size={16} aria-hidden="true" />
+          <span>{t('The certificate of {host} is not one this machine trusts.', { host: connection.host.trim() })}<small>SHA-256 <code>{learned.untrusted.fingerprint}</code></small></span>
+          <button type="button" className="secondary-light" disabled={busy} onClick={trust}>{t('Trust this certificate')}</button>
+        </div>}
+      </form>}
+      <div className="bk-restore-actions">
+        <input ref={fileInput} type="file" multiple accept=".tar.gz,application/gzip" hidden onChange={(e) => { upload(e.target.files); e.target.value = ''; }} />
+        <button type="button" className="secondary-light" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={14} aria-hidden="true" /> {t('Upload backup')}</button>
+        <button type="button" className="secondary-light" disabled={busy || !canRefresh} onClick={() => refresh()}><RefreshCw size={14} aria-hidden="true" /> {t('Refresh')}</button>
+      </div>
+    </fieldset>
+
+    <fieldset className="bk-restore-step" disabled={running}>
+      <legend><span className="bk-restore-num">3</span> {t('Accounts to restore')}</legend>
       {items === null
-        ? <p className="hint">{remote ? t('Pick a destination and find its backups.') : t('Looking for backups...')}</p>
+        ? <p className="hint bk-restore-note">{waiting}</p>
         : items.length === 0
           ? <EmptyState icon={RotateCcw} message={t('No account backups here.')} />
           : <>
@@ -266,13 +371,14 @@ export default function BackupRestore() {
               <ul>{invalid.map((item) => <li key={keyOf(item)}><code>{nameOf(item)}</code><small>{remote ? t('Not an account backup') : (item.error || t('Invalid backup'))}</small></li>)}</ul>
             </details>}
           </>}
-    </fieldset>}
+    </fieldset>
 
-    {source !== 'upload' && <div className={`bk-restore-go${chosen.length ? ' ready' : ''}`}>
+    <div className={`bk-restore-go${chosen.length ? ' ready' : ''}`}>
+      <span className="bk-restore-num" aria-hidden="true">4</span>
       <span className="bk-restore-chosen">{chosen.length
         ? <><strong>{t('{count} chosen', { count: chosen.length })}</strong> {chosen.map((item) => `${accountOf(item)} · ${when(dateOf(item)) || nameOf(item)}`).join(', ')}</>
         : t('Nothing chosen yet.')}</span>
       <button type="button" disabled={busy || running || !chosen.length} onClick={restore}><RotateCcw size={14} aria-hidden="true" /> {t('Restore')}</button>
-    </div>}
+    </div>
   </div>;
 }

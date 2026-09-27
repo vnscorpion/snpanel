@@ -113,6 +113,8 @@ const IGNORED = new Set([
   // are recognised by.
   'Message-ID: {message_id}', 'Auto-Submitted: auto-generated', 'Content-Transfer-Encoding: base64', 'MAIL FROM:<{0}>', 'RCPT TO:<{0}>',
   'chat not found', 'blocked by the user', 'not a member', 'not enough rights',
+  // What the FTP client recognises its own "too big" by.
+  'The FTP server sent more than',
 ]);
 
 function walk(dir) {

@@ -2862,8 +2862,14 @@ function App() {
   }
 
   // The chosen archives restored one after another on the server. The job.
-  async function startRestore(source, targetId, files) {
-    const body = { source, target_id: targetId ? Number(targetId) : null, files };
+  // The archives on another server, given by hand: the listing, and what it
+  // learned - an SFTP host key, or an FTPS certificate to trust.
+  async function listRestoreConnection(connection) {
+    return request('/maintenance/restore/connection', { method: 'POST', body: JSON.stringify(connection) }, t('Connecting to the server...'));
+  }
+
+  async function startRestore(source, targetId, files, connection = null) {
+    const body = { source, target_id: targetId ? Number(targetId) : null, files, ...(connection ? { connection } : {}) };
     return request('/maintenance/restore/jobs', { method: 'POST', body: JSON.stringify(body) }, t('Starting the restore...'));
   }
 
@@ -4362,6 +4368,7 @@ function App() {
       loadPhpTune,
       phpExtensions,
       removePhpExtension,
+      listRestoreConnection,
       listRestoreSource,
       loadRestoreBackups,
       loadRestoreJob,

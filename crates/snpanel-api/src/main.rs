@@ -48,6 +48,7 @@ mod errors;
 mod fail2ban;
 mod file_jobs;
 mod files;
+mod ftp;
 mod helper_socket;
 mod initdb;
 mod listen;
