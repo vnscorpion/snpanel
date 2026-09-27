@@ -15,6 +15,7 @@ const EMPTY_SMTP = { host: '', port: 587, security: 'starttls', username: '', pa
 export default function NotificationsPage() {
   const {
     EmptyState,
+    malwareAddonInstalled,
     findTelegramChats,
     isAdmin,
     loadNotificationLog,
@@ -109,7 +110,8 @@ export default function NotificationsPage() {
     ['server', t('The server'), ''],
     ['admins', t('Administrator accounts'), t('A customer\'s own sign-ins and passwords are not told.')],
   ];
-  const events = n.events || [];
+  // What a scan found is told only while there is a scanner.
+  const events = (n.events || []).filter((e) => e.key !== 'malware' || malwareAddonInstalled);
   const logLabel = useMemo(() => {
     const labels = Object.fromEntries(Object.entries(EVENT_TEXT).map(([k, v]) => [k, v[0]]));
     // The log's older rows, from when administrators had kinds of their own.

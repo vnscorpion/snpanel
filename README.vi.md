@@ -52,9 +52,6 @@ nhỏ chạy quyền root làm các việc cần đặc quyền phía sau.
 - WAF ModSecurity cho nginx với bộ luật WordPress, Laravel, PHP của panel và
   OWASP Core Rule Set, bật tắt theo từng website; giới hạn HTTP flood và chặn
   bot
-- Quét mã độc: ClamAV kiểm tra tệp ngay khi tải lên, Linux Malware Detect
-  quét một website, mọi website hoặc toàn máy - khi cần hoặc theo lịch - và
-  chuyển những gì tìm thấy vào khu cô lập
 
 **Máy chủ**
 
@@ -75,6 +72,9 @@ nhỏ chạy quyền root làm các việc cần đặc quyền phía sau.
 - **Fail2ban**: chặn trong nftables các địa chỉ dò mật khẩu SSH, đăng nhập
   panel, đăng nhập WordPress, thư mục có mật khẩu, và các địa chỉ tái phạm;
   không bao giờ chặn địa chỉ của Cloudflare từ log của website
+- **Quét mã độc**: ClamAV kiểm tra tệp ngay khi tải lên, Linux Malware Detect
+  quét một website, mọi website hoặc toàn máy - khi cần hoặc hằng tuần - và
+  chuyển những gì tìm thấy vào khu cô lập
 - **Trợ lý AI (MCP)**: 32 công cụ cho Claude Code, Cursor, VS Code và mọi
   client MCP khác tại `/api/mcp`, trên website, tệp, log, sao lưu, tường lửa và
   WAF. Mỗi trợ lý dùng một token của tài khoản mà nó thay mặt, chỉ đọc trừ khi

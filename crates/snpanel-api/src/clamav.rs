@@ -282,7 +282,10 @@ pub fn clamd_installed() -> bool {
 /// asks this is the File Manager's upload path; the scheduled and real-time
 /// scans have their own switches and do not come here.
 pub fn is_available(env_default: bool, configured_socket: &str) -> bool {
-    crate::malware::persisted_enabled(env_default)
+    // Not in the Python: the scanner is an addon, and nothing is scanned
+    // while it is not installed.
+    crate::routes::addons::malware_installed()
+        && crate::malware::persisted_enabled(env_default)
         && crate::malware::persisted_upload_scan()
         && engine_available(configured_socket)
 }

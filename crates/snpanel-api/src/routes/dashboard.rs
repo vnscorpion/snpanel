@@ -79,13 +79,18 @@ async fn summary(State(state): State<AppState>, current: CurrentUser) -> Respons
         super::firewall::firewall_summary(&state),
         service_states(dry),
     );
-    let malware_installed =
-        crate::malware::maldet_installed() || crate::malware::clamav_installed();
-    let malware = malware_state(
-        &crate::malware_jobs::list(None),
-        malware_installed,
-        crate::malware::persisted_enabled(state.settings.malware_scan_enabled),
-    );
+    // The scanner is an addon: not installed, the dashboard says nothing of
+    // it.
+    let malware = if super::addons::malware_installed() {
+        let engine = crate::malware::maldet_installed() || crate::malware::clamav_installed();
+        malware_state(
+            &crate::malware_jobs::list(None),
+            engine,
+            crate::malware::persisted_enabled(state.settings.malware_scan_enabled),
+        )
+    } else {
+        Value::Null
+    };
 
     axum::Json(json!({
         "role": "admin",

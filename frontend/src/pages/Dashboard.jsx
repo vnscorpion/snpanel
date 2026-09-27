@@ -187,7 +187,8 @@ export default function DashboardPage() {
         tone: summary.waf?.engine ? 'ok' : 'warn',
         value: summary.waf?.engine ? t('Installed') : t('Not installed'),
         detail: t('{count} of {total} website(s) protected', { count: sites.waf_on || 0, total }) },
-      { key: 'malware', icon: Bug, page: mw.state === 'threats' && mw.infected_job ? 'malware-scan' : 'malware', label: t('Malware'),
+      // The scanner is an addon: no card while it is not installed.
+      ...(summary.malware ? [{ key: 'malware', icon: Bug, page: mw.state === 'threats' && mw.infected_job ? 'malware-scan' : 'malware', label: t('Malware'),
         onOpen: mw.state === 'threats' && mw.infected_job ? go('malware-scan', { path: scanRoute(mw.infected_job) }) : undefined,
         href: mw.state === 'threats' && mw.infected_job ? scanRoute(mw.infected_job) : undefined,
         tone: mw.state === 'threats' ? 'bad' : mw.state === 'clean' ? 'ok' : 'warn',
@@ -195,7 +196,7 @@ export default function DashboardPage() {
         detail: [
           mw.last_scan_at ? t('Last scan {when}', { when: ago(mw.last_scan_at) }) : (mw.installed ? t('No scan yet') : t('Scanner not installed')),
           mw.quarantined > 0 ? t('{count} quarantined', { count: mw.quarantined }) : '',
-        ].filter(Boolean).join(' · ') },
+        ].filter(Boolean).join(' · ') }] : []),
       { key: 'services', icon: Activity, page: 'services', label: t('Services'), value: `${sv.running ?? 0}/${sv.total ?? 0}`,
         tone: (sv.stopped || []).length ? 'bad' : 'ok',
         detail: (sv.stopped || []).length ? t('Stopped: {names}', { names: sv.stopped.join(', ') }) : t('All running') },

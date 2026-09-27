@@ -290,6 +290,7 @@ function App() {
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
   const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
   const notificationsAddonInstalled = !!addons.items.find(item => item.slug === 'notifications')?.installed;
+  const malwareAddonInstalled = !!addons.items.find(item => item.slug === 'malware')?.installed;
   // Two locks, and both have to be open: the server has to have the addon
   // installed at all, and the customer's package has to include it. Admins skip
   // the second one, never the first.
@@ -1767,6 +1768,8 @@ function App() {
       ? t('Uninstall the Notifications addon?\n\nNo more e-mail or Telegram messages are sent. The SMTP server, the bot and what is sent are kept, and reinstalling picks them up.')
       : slug === 'fail2ban'
       ? t('Uninstall the Fail2ban addon?\n\nFail2ban is stopped, and every address it banned can connect again. Its settings are kept, and reinstalling puts them back.')
+      : slug === 'malware'
+      ? t('Uninstall the Malware Scanner addon?\n\nNothing is scanned any more: no scheduled, real-time or upload scans. The quarantine, the schedules, ClamAV and LMD are kept, and reinstalling turns the scanner back on.')
       : t('Uninstall the {name} addon?\n\nRunning applications will be stopped. Their folders, volumes and panel data are kept, and reinstalling picks up where they left off.', { name: label });
     if (!install && !confirm(uninstallQuestion)) return;
     const data = await request(`/addons/${slug}/${install ? 'install' : 'uninstall'}`, { method: 'POST' },
@@ -3808,6 +3811,16 @@ function App() {
   }, [isAuthenticated, page, isAdmin, fail2banAddonInstalled]);
 
   useEffect(() => {
+    if (!isAuthenticated || page !== 'malware' || !isAdmin || !malwareAddonInstalled) return;
+    loadMalwareScanStatus();
+    // The latest job is a 404 until the first scan, and the browser logs
+    // every 404 as an error: ask for it once the history shows there is one.
+    loadMalwareScanJobs().then((jobs) => { if (jobs.length) loadLatestMalwareScanJob(); });
+    loadMalwareSchedule();
+    if (websites.length === 0) loadWebsiteList('', false);
+  }, [isAuthenticated, page, isAdmin, malwareAddonInstalled]);
+
+  useEffect(() => {
     if (isAuthenticated && page === 'mcp') loadMcp();
     if (isAuthenticated && page === 'notifications' && isAdmin) loadNotifications();
   }, [isAuthenticated, page, mcpAddonInstalled, isAdmin]);
@@ -3835,14 +3848,6 @@ function App() {
       loadBotBlocks();
       // /waf/rules and /waf/crs describe the whole server and stay admin-only.
       if (isAdmin) { loadWafRules(); loadCrs(); }
-    }
-    if (isAuthenticated && page === 'malware' && isAdmin) {
-      loadMalwareScanStatus();
-      // The latest job is a 404 until the first scan, and the browser logs
-      // every 404 as an error: ask for it once the history shows there is one.
-      loadMalwareScanJobs().then((jobs) => { if (jobs.length) loadLatestMalwareScanJob(); });
-      loadMalwareSchedule();
-      if (websites.length === 0) loadWebsiteList('', false);
     }
     if (isAuthenticated && page === 'access-logs' && currentUser?.role === 'admin') {
       loadWafAccessLogs(wafAccessLogFilters, true);
@@ -3921,7 +3926,7 @@ function App() {
     ...(isAdmin ? [['firewall', t('Firewall'), BrickWall, t('Open ports and blocked addresses')]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan, t('Bans addresses that guess passwords')]] : []),
     ['waf', t('WAF'), ShieldCheck, t('Rules against attacks on websites')],
-    ...(isAdmin ? [['malware', t('Malware Scanner'), ScanSearch, t('Scans, schedules and quarantine')]] : []),
+    ...(isAdmin && malwareAddonInstalled ? [['malware', t('Malware Scanner'), ScanSearch, t('Scans, schedules and quarantine')]] : []),
     ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
     ...(isAdmin ? [['updates', t('Updates'), RefreshCw, t('The panel and system packages')]] : []),
     ...(isAdmin ? [['addons', t('Addons'), Boxes, t('Install or remove addons')]] : []),
@@ -3930,8 +3935,9 @@ function App() {
 
   // An addon's page opened by its address while the addon is not installed
   // has no entry, and still has its title.
-  const unlisted = [['mcp', t('AI assistants (MCP)'), Bot], ['notifications', t('Notifications'), Bell]]
-    .filter(([key]) => !mainNavItems.some(([listed]) => listed === key));
+  const unlisted = [['mcp', t('AI assistants (MCP)'), Bot], ['notifications', t('Notifications'), Bell],
+    ['fail2ban', t('Fail2ban'), ShieldBan], ['malware', t('Malware Scanner'), ScanSearch]]
+    .filter(([key]) => ![...mainNavItems, ...settingsNavItems].some(([listed]) => listed === key));
   const navItems = [...mainNavItems, ...settingsNavItems, ...unlisted];
   const navPage = NAV_PARENT_PAGE[page] || page;
   const activeNavItem = navItems.find(([key]) => key === navPage) || navItems[0];
@@ -4187,6 +4193,7 @@ function App() {
       apiTokens,
       appVersion,
       applicationAddonInstalled,
+      malwareAddonInstalled,
       applyChmod,
       applyPackageToEditingUser,
       applyPackageToNewUser,

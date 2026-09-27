@@ -462,17 +462,26 @@ async function main() {
   begin('malware scanning');
   const clam = process.env.SMOKE_CLAMAV === '1';
   const maldet = process.env.SMOKE_MALDET === '1';
-  // The scanner first, for both: with it off, switching upload scanning on
-  // records the wish and installs nothing ("Uploads will be scanned once the
-  // malware scanner is on").
+  // The scanner is an addon: not installed, its API answers nothing and the
+  // dashboard says nothing of it.
+  const hadAddon = !!((await api('GET', '/addons')).json?.items || []).find((a) => a.slug === 'malware')?.installed;
+  if (!hadAddon) {
+    const closed = await api('GET', '/malware/status');
+    const board = await api('GET', '/dashboard/summary');
+    check(closed.status === 409 && board.ok && board.json?.malware === null,
+      `the Malware Scanner addon not installed: its API answers ${closed.status}, the dashboard has no malware card`, `${detail(closed)} ${JSON.stringify(board.json?.malware)}`);
+  }
+  // The addon first, for both: installing it turns the scanner on. With the
+  // scanner off, switching upload scanning on would record the wish and
+  // install nothing ("Uploads will be scanned once the malware scanner is on").
   let scanner = false;
   if (clam || maldet) {
-    const on = await api('POST', '/malware/toggle', { enabled: true }, { timeout: 1800000 });
+    const on = await api('POST', '/addons/malware/install', undefined, { timeout: 1800000 });
     // LMD, not `installed`: that is true as soon as the install has pulled in
     // ClamAV, while LMD is still arriving, and a scan started then takes the
     // ClamAV path and fails for want of the daemon.
     const st = await poll('/malware/status', (j) => j.lmd_installed, { every: 5000, limit: 1200000 });
-    scanner = check(on.ok && st?.lmd_installed, `the malware scanner on: LMD installed`, `${detail(on)} ${JSON.stringify(st).slice(0, 200)}`);
+    scanner = check(on.ok && st?.lmd_installed, `the Malware Scanner addon installed: LMD installed`, `${detail(on)} ${JSON.stringify(st).slice(0, 200)}`);
   }
   if (clam && scanner) {
     const on = await api('POST', '/malware/upload-scan', { enabled: true }, { timeout: 1800000 });
@@ -495,7 +504,8 @@ async function main() {
     const sj = scan.json?.job_id ? await poll(`/malware/jobs/${scan.json.job_id}`, (j) => ['done', 'infected', 'error', 'interrupted'].includes(j.status), { every: 3000, limit: 1200000 }) : null;
     check(scan.ok && sj?.status === 'done', `a malware scan of the site (${sj?.status}, ${sj?.scanned} files)`, `${detail(scan)} ${sj?.error || ''}`);
   } else if (!maldet) skip('Maldet scan', 'set SMOKE_MALDET=1');
-  if (clam || maldet) await api('POST', '/malware/toggle', { enabled: false });
+  // Left as it was found: an addon installed before stays installed.
+  if ((clam || maldet) && !hadAddon) await api('POST', '/addons/malware/uninstall');
 }
 
 async function cleanup() {

@@ -51,9 +51,6 @@ does the privileged work behind it.
 - An nginx ModSecurity WAF with the panel's WordPress, Laravel and PHP rules
   and the OWASP Core Rule Set, switched per site; HTTP flood limits and bot
   blocking
-- Malware scanning: ClamAV checks uploads as they arrive, and Linux Malware
-  Detect scans a site, every site or the whole machine, on demand or on a
-  schedule, moving what it finds to quarantine
 
 **Server**
 
@@ -74,6 +71,9 @@ does the privileged work behind it.
 - **Fail2ban**: SSH, panel sign-ins, WordPress sign-ins, password-protected
   folders and repeat offenders, banned in nftables; Cloudflare's addresses are
   never banned from a site's log
+- **Malware Scanner**: ClamAV checks uploads as they arrive, and Linux Malware
+  Detect scans a site, every site or the whole machine, on demand or weekly,
+  moving what it finds to quarantine
 - **AI assistants (MCP)**: 32 tools for Claude Code, Cursor, VS Code and any
   other MCP client at `/api/mcp`, over the websites, files, logs, backups,
   firewall and WAF. Each assistant has a token of the account it acts for,

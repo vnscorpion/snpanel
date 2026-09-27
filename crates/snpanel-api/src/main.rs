@@ -329,6 +329,13 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The malware scanner became an addon: where it was on, it is recorded
+    // as installed rather than taken away by the upgrade. By the server
+    // only - a one-shot process above has returned already.
+    routes::addons::adopt_malware_scanner(malware::persisted_enabled(
+        state.settings.malware_scan_enabled,
+    ));
+
     // What nobody asks about until it is too late - services, the disk,
     // certificates, storage, releases - looked at every few minutes while
     // the Notifications addon is installed. Only the server runs it: a
@@ -612,6 +619,12 @@ pub(crate) const REFRESH_SITES_STRICT: &str = "--refresh-sites-strict";
 /// scan is still running must see `last_run_at` for today and decide "not
 /// due", rather than starting a second scan of the same machine.
 async fn run_malware_schedules(state: &AppState) -> String {
+    // Not in the Python: the scanner is an addon. Not installed, nothing is
+    // scanned - and nothing recorded, so its page has no error to show for
+    // a feature that is not there.
+    if !routes::addons::malware_installed() {
+        return "the Malware Scanner addon is not installed".to_string();
+    }
     let now = chrono::Utc::now();
     let raw = routes::panel_settings::raw_settings();
     let schedules = malware_schedule::read(&raw);

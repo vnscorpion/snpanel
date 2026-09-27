@@ -389,7 +389,7 @@ fn is_link_local(address: &std::net::IpAddr) -> bool {
 }
 
 /// Source: `current_settings`.
-async fn current_settings(state: &AppState) -> Value {
+async fn settings_with(state: &AppState, scanner: bool) -> Value {
     let raw = raw_settings();
     let settings = &state.settings;
 
@@ -427,12 +427,19 @@ async fn current_settings(state: &AppState) -> Value {
     let ssl_enabled =
         panel_url.starts_with("https://") && crate::panel_urls::has_panel_certificate(settings);
 
-    let malware = crate::malware::refresh_status(
-        settings.command_dry_run,
-        &settings.clamav_socket_path,
-        settings.malware_scan_enabled,
-    )
-    .await;
+    // The scanner's state is a helper call and a look at the ClamAV socket:
+    // not asked for while its addon is not installed, nor for the sign-in
+    // page's public settings, which show none of it and are open to anyone.
+    let malware = if scanner && super::addons::malware_installed() {
+        crate::malware::refresh_status(
+            settings.command_dry_run,
+            &settings.clamav_socket_path,
+            settings.malware_scan_enabled,
+        )
+        .await
+    } else {
+        json!({ "enabled": false, "installed": false, "active": false, "detail": Value::Null })
+    };
 
     // The only field with a default that is not empty: a panel with no
     // favicon still has one.
@@ -462,6 +469,12 @@ async fn current_settings(state: &AppState) -> Value {
         "malware_scan_active": malware["active"],
         "malware_scan_detail": malware["detail"],
     })
+}
+
+/// [`settings_with`] the scanner's state, which is what every endpoint an
+/// administrator reads answers with.
+async fn current_settings(state: &AppState) -> Value {
+    settings_with(state, true).await
 }
 
 /// Source: `PanelSettingsOut`'s field defaults.
@@ -514,7 +527,7 @@ fn to_response_model(values: &Value) -> Value {
 /// No authentication: this is what the login page reads before anyone has
 /// signed in.
 async fn public(State(state): State<AppState>) -> Response {
-    let all = current_settings(&state).await;
+    let all = settings_with(&state, false).await;
     let mut projected = serde_json::Map::new();
     for field in PUBLIC_SETTING_FIELDS {
         if let Some(value) = all.get(*field) {

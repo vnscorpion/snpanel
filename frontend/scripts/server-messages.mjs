@@ -96,6 +96,7 @@ const SKIP_FILES = new Set([
 // shown as it is, lock labels, the scheduler's own outcomes, dry-run text
 // and the helper protocol's refusals of a request the API built.
 const IGNORED = new Set([
+  'the Malware Scanner addon is not installed',
   'Jail list', 'Currently failed', 'Total failed', 'Currently banned', 'Total banned', 'Banned IP list', 'already defined',
   'Engine: nftables', 'Chain active: {0}', 'Default incoming: deny (unlisted ports)', 'Protected ports (tcp): {0}', 'any port',
   'Unattended upgrades:', 'Panel update service:', 'Panel update log:', 'Failed to open /run/systemd/transient',

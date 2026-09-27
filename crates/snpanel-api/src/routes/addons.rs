@@ -41,6 +41,12 @@ const APPLICATION: &str = "application";
 /// Not in the Python: fail2ban, run with the panel's jails.
 const FAIL2BAN: &str = "fail2ban";
 
+/// Not in the Python as an addon: the malware scanner - ClamAV and Linux
+/// Malware Detect, their schedules, the real-time monitor, upload scanning
+/// and the quarantine - was part of every panel. Installing it turns the
+/// scanner on; see `adopt_malware_scanner` for the panels it was already on.
+const MALWARE: &str = "malware";
+
 /// Not in the Python: the MCP endpoint for AI assistants. It runs inside the
 /// panel and installs nothing as root: installing it turns `/api/mcp` on.
 const MCP: &str = "mcp";
@@ -94,6 +100,24 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "notes": [
                     "The address you install it from is never banned. Add the other addresses you manage the server from on the Fail2ban page.",
                     "Cloudflare's addresses are never banned from a site's log: a site behind Cloudflare logs Cloudflare, not its visitors.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
+        (
+            MALWARE,
+            json!({
+                "name": "Malware Scanner",
+                "version": "1.0.0",
+                "summary": "Scans the websites and the whole server for malware with ClamAV and Linux Malware Detect, and sets aside what it finds.",
+                "details": [
+                    "Installs ClamAV and Linux Malware Detect (LMD); they are not part of the default install.",
+                    "Scans on demand or every week, checks files uploaded through the File Manager, and can watch the users' folders as files are written.",
+                    "What it finds goes to a quarantine, where it can be restored, whitelisted or deleted.",
+                ],
+                "notes": [
+                    "ClamAV holds its signatures in memory while it scans, about 1.3 GB: on a server with less than 4 GB of RAM, scan the websites rather than the whole server, at a quiet hour.",
+                    "Uninstalling stops every scan and keeps the quarantine, the schedules, ClamAV and LMD.",
                 ],
                 "keeps_data_on_uninstall": true,
             }),
@@ -178,6 +202,38 @@ pub fn application_installed() -> bool {
 /// Whether the Fail2ban addon is installed, read the same way.
 pub fn fail2ban_installed() -> bool {
     is_installed(FAIL2BAN)
+}
+
+/// Whether the Malware Scanner addon is installed - whether anything is
+/// scanned, and whether `/api/malware` answers.
+pub fn malware_installed() -> bool {
+    is_installed(MALWARE)
+}
+
+/// Not in the Python: the scanner was part of every panel before it was an
+/// addon. On a server where it was turned on it stays installed - recorded
+/// the first time this release's server starts - so an upgrade does not take
+/// away a scanner somebody set up; anywhere else it waits for the Addons
+/// page. A record already there, installed or not, is left alone: it is the
+/// administrator's own choice.
+pub fn adopt_malware_scanner(scanner_on: bool) {
+    let mut data = stored();
+    if !adopts(&data, scanner_on) {
+        return;
+    }
+    let version = known(MALWARE)
+        .and_then(|entry| entry["version"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    install_record(&mut data, MALWARE, &version, &now_utc());
+    match write_addons(&data) {
+        Ok(()) => tracing::info!("the malware scanner was on: its addon is recorded as installed"),
+        Err(e) => tracing::error!("writing addons.json failed: {e}"),
+    }
+}
+
+/// Whether [`adopt_malware_scanner`] records the addon, given the file.
+fn adopts(data: &Value, scanner_on: bool) -> bool {
+    scanner_on && data.get(MALWARE).is_none()
 }
 
 /// Whether the MCP addon is installed - whether `/api/mcp` answers.
@@ -353,6 +409,15 @@ async fn install(
     };
 
     let version = entry["version"].as_str().unwrap_or("").to_string();
+    // Installing the scanner is turning it on: LMD and ClamAV are installed
+    // in the background when they are not there, and the answer says so.
+    let mut installing: Option<&'static str> = None;
+    if slug == MALWARE {
+        match super::malware::switch(&state, true).await {
+            Ok(switched) => installing = switched.installing.then_some(switched.message),
+            Err(r) => return r,
+        }
+    }
     if slug == FAIL2BAN {
         // The settings from last time, if it was installed before; otherwise
         // the defaults, with the installing administrator's address exempt.
@@ -391,13 +456,14 @@ async fn install(
         // The runtimes an application needs are installed from the Application
         // page itself, which can report progress; saying so here saves someone
         // wondering why Docker did not appear.
-        "next_step": match slug.as_str() {
+        "next_step": installing.unwrap_or(match slug.as_str() {
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
+            MALWARE => "Open Settings, Malware Scanner to scan the websites, set the weekly scans and see the quarantine.",
             MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
             NOTIFICATIONS => "Open Settings, Notifications to set up e-mail, or a Telegram bot and its chat.",
             _ => "",
-        },
+        }),
     }))
     .into_response()
 }
@@ -442,6 +508,15 @@ async fn uninstall(
         }
     }
 
+    // Not in the Python: the scanner turned off - the real-time monitor and
+    // the ClamAV daemon stopped, which gives their memory back - with LMD,
+    // ClamAV, the quarantine and the schedules kept for next time.
+    if slug == MALWARE {
+        if let Err(r) = super::malware::switch(&state, false).await {
+            return r;
+        }
+    }
+
     // Not in the Python: stopped rather than removed, which lifts every ban
     // and keeps the package and the settings for next time.
     if slug == FAIL2BAN {
@@ -480,6 +555,8 @@ async fn uninstall(
             "The tokens are kept, and work again when the addon is installed again. Revoke them on the Addons page to remove them."
         } else if slug == NOTIFICATIONS {
             "No more messages are sent. The SMTP server, the bot and what is told are kept for when it is installed again."
+        } else if slug == MALWARE {
+            "Nothing is scanned any more. The quarantine, the schedules, ClamAV and LMD are kept for when it is installed again."
         } else {
             "Application folders, volumes and panel data are kept."
         },
@@ -687,6 +764,7 @@ mod tests {
         // entry in the file that nothing can ever uninstall.
         assert!(known("application").is_some());
         assert!(known("fail2ban").is_some());
+        assert!(known("malware").is_some());
         for bad in [
             "",
             "Application",
@@ -703,7 +781,7 @@ mod tests {
         let items = addon_state();
         // Sorted by slug, as the Python sorts them.
         let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, [APPLICATION, FAIL2BAN, MCP, NOTIFICATIONS]);
+        assert_eq!(slugs, [APPLICATION, FAIL2BAN, MALWARE, MCP, NOTIFICATIONS]);
         for addon in &items {
             for key in [
                 "name",
@@ -724,6 +802,18 @@ mod tests {
             assert!(addon["installed_version"].is_string());
             assert!(addon["installed_at"].is_string());
         }
+    }
+
+    /// The scanner was part of every panel before it was an addon: where it
+    /// was on, the upgrade records it installed. A record already there -
+    /// even an uninstalled one - is the administrator's choice, and stays.
+    #[test]
+    fn a_scanner_that_was_on_is_adopted_once() {
+        assert!(adopts(&json!({}), true));
+        assert!(adopts(&json!({ "mcp": { "installed": true } }), true));
+        assert!(!adopts(&json!({}), false));
+        assert!(!adopts(&json!({ "malware": { "installed": false } }), true));
+        assert!(!adopts(&json!({ "malware": { "installed": true } }), true));
     }
 
     #[test]
