@@ -20,7 +20,7 @@ members = [
 #   crates/snpanel-daimport   Phase 5
 
 [workspace.package]
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
