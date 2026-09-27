@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto tune SNPanel PHP-FPM pools and MariaDB for this VPS
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=SUDO_USER=snpanel
+ExecStart=/usr/local/sbin/snpanel-helper php-fpm-retune
+ExecStart=/usr/local/sbin/snpanel-helper mariadb-retune
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

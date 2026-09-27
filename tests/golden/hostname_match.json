@@ -1,0 +1,636 @@
+{
+ "matches": [
+  {
+   "domain": "example.com",
+   "pattern": "example.com",
+   "result": true
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.b.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "www.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.com",
+   "result": true
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "shop.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "example.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*.example.com",
+   "result": true
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*.b.example.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "www.example.com",
+   "result": true
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "shop.example.com",
+   "result": false
+  },
+  {
+   "domain": "www.example.com",
+   "pattern": "*.example.com",
+   "result": true
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "example.com",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*.example.com",
+   "result": true
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*.b.example.com",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "www.example.com",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*.com",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "shop.example.com",
+   "result": true
+  },
+  {
+   "domain": "shop.example.com",
+   "pattern": "*.example.com",
+   "result": true
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "example.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*.b.example.com",
+   "result": true
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "www.example.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "shop.example.com",
+   "result": false
+  },
+  {
+   "domain": "a.b.example.com",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*.b.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "www.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "shop.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.co.uk",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "example.com",
+   "result": true
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.b.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "www.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.com",
+   "result": true
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "shop.example.com",
+   "result": false
+  },
+  {
+   "domain": "example.com",
+   "pattern": "*.example.com",
+   "result": false
+  }
+ ],
+ "covers": [
+  {
+   "sans": [],
+   "domain": "example.com",
+   "result": false
+  },
+  {
+   "sans": [],
+   "domain": "www.example.com",
+   "result": false
+  },
+  {
+   "sans": [],
+   "domain": "shop.example.com",
+   "result": false
+  },
+  {
+   "sans": [],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [],
+   "domain": "EXAMPLE.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "www.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "shop.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com"
+   ],
+   "domain": "EXAMPLE.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "www.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "shop.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    "example.com",
+    "www.example.com"
+   ],
+   "domain": "EXAMPLE.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "www.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "shop.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com"
+   ],
+   "domain": "EXAMPLE.com",
+   "result": false
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "www.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "shop.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    " *.example.com ",
+    ""
+   ],
+   "domain": "EXAMPLE.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "www.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "shop.example.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    "*.example.com",
+    "example.com"
+   ],
+   "domain": "EXAMPLE.com",
+   "result": true
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "www.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "shop.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "a.b.example.com",
+   "result": false
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "example.co.uk",
+   "result": false
+  },
+  {
+   "sans": [
+    "other.test"
+   ],
+   "domain": "EXAMPLE.com",
+   "result": false
+  }
+ ]
+}

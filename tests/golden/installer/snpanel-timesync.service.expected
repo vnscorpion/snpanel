@@ -1,0 +1,10 @@
+[Unit]
+Description=Correct the SNPanel server clock when NTP cannot reach the network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=SUDO_USER=snpanel
+ExecStart=/usr/local/sbin/snpanel-helper time-sync
+RemainAfterExit=no

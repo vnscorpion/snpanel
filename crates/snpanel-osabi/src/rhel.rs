@@ -25,6 +25,34 @@ impl Platform for AlmaLinux10 {
         Family::Rhel
     }
 
+    fn php_versions(&self) -> &'static [&'static str] {
+        &["8.3", "8.4"]
+    }
+    fn php_default(&self) -> &'static str {
+        "8.4"
+    }
+    fn php_extensions(&self) -> &'static [&'static str] {
+        // `common` and `soap` are EL-only, `mysqlnd` and `pdo` are what
+        // Debian's single `mysql` package provides, and the PECL ones carry
+        // the version suffixes Remi ships them under.
+        &[
+            "fpm",
+            "cli",
+            "common",
+            "mysqlnd",
+            "pdo",
+            "gd",
+            "xml",
+            "mbstring",
+            "opcache",
+            "intl",
+            "bcmath",
+            "soap",
+            "pecl-zip",
+            "pecl-redis6",
+            "pecl-imagick-im7",
+        ]
+    }
     fn php_repo(&self) -> PhpRepo {
         PhpRepo::Remi
     }
@@ -46,6 +74,15 @@ impl Platform for AlmaLinux10 {
     }
     fn php_fpm_pool_dir(&self, v: PhpVersion) -> PathBuf {
         PathBuf::from(format!("/etc/opt/remi/php{}/php-fpm.d", v.compact()))
+    }
+    /// One directory, shared by the CLI and FPM SAPIs — which is the
+    /// difference the compatibility shim cannot paper over, and the reason
+    /// this returns a list rather than a path.
+    fn php_conf_dirs(&self, v: PhpVersion) -> Vec<PathBuf> {
+        vec![PathBuf::from(format!(
+            "/etc/opt/remi/php{}/php.d",
+            v.compact()
+        ))]
     }
     fn php_ini_path(&self, v: PhpVersion) -> PathBuf {
         PathBuf::from(format!("/etc/opt/remi/php{}/php.ini", v.compact()))

@@ -145,5 +145,51 @@
       "domain": "application-port8080.example.com"
     },
     "expected": "tests/golden/nginx/application_port8080.expected"
+  },
+  {
+    "name": "wordpress_redirects",
+    "kwargs": {
+      "app_type": "wordpress",
+      "redirects": [
+        "old.example.com",
+        "older.example.com"
+      ],
+      "domain": "wordpress-redirects.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_redirects.expected"
+  },
+  {
+    "name": "wordpress_manual_ssl",
+    "kwargs": {
+      "app_type": "wordpress",
+      "ssl_cert_path": "/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/cert.crt",
+      "ssl_key_path": "/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/private.key",
+      "domain": "wordpress-manual-ssl.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_manual_ssl.expected"
+  },
+  {
+    "name": "wordpress_manual_ssl_ca",
+    "kwargs": {
+      "app_type": "wordpress",
+      "ssl_cert_path": "/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/cert.crt",
+      "ssl_key_path": "/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/private.key",
+      "ssl_ca_path": "/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/ca.crt",
+      "domain": "wordpress-manual-ssl-ca.example.com"
+    },
+    "expected": "tests/golden/nginx/wordpress_manual_ssl_ca.expected"
+  },
+  {
+    "name": "php_redirects_ssl",
+    "kwargs": {
+      "app_type": "php",
+      "redirects": [
+        "legacy.example.com"
+      ],
+      "ssl_cert_path": "/etc/nginx/snpanel/ssl/sites/php-redirects-ssl.example.com/cert.crt",
+      "ssl_key_path": "/etc/nginx/snpanel/ssl/sites/php-redirects-ssl.example.com/private.key",
+      "domain": "php-redirects-ssl.example.com"
+    },
+    "expected": "tests/golden/nginx/php_redirects_ssl.expected"
   }
 ]

@@ -45,6 +45,24 @@ impl User {
 /// is doubly optional because setting it to NULL (no package) is a real
 /// operation distinct from not mentioning it.
 #[derive(Debug, Default, Clone)]
+/// Every column `create_user` writes.
+///
+/// A struct rather than eight positional arguments: `username`, `email`,
+/// `hashed_password` and `role` are all `&str`, and a call that swapped two of
+/// them would compile and store a password where a name goes.
+pub struct NewUser<'a> {
+    pub username: &'a str,
+    pub email: &'a str,
+    /// Already bcrypt. C1: the column never holds a plain password.
+    pub hashed_password: &'a str,
+    pub role: &'a str,
+    pub package_id: Option<i64>,
+    pub website_limit: i64,
+    pub storage_limit_mb: i64,
+    pub terminal_enabled: bool,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct UserFields {
     pub email: Option<String>,
     pub role: Option<String>,
@@ -78,6 +96,27 @@ impl<'a> UserRepo<'a> {
         Ok(row)
     }
 
+    /// Every active user, oldest first.
+    ///
+    /// Source: `_schedule_users`' `all_users` branch —
+    /// `filter(User.is_active == True).order_by(User.id.asc())`.
+    ///
+    /// The order is part of the contract rather than incidental: the backup
+    /// scheduler reports what it did as a list of usernames, and an order
+    /// that moved between runs would make two identical runs look different
+    /// to whoever is reading the last message.
+    pub async fn active_ordered_by_id(&self) -> Result<Vec<User>, DbError> {
+        let rows = sqlx::query_as::<_, User>(
+            "SELECT id, username, email, hashed_password, role, is_active, package_id, \
+                    website_limit, storage_limit_mb, terminal_enabled, \
+                    token_version, totp_secret, totp_enabled \
+             FROM users WHERE is_active = 1 ORDER BY id ASC",
+        )
+        .fetch_all(self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn by_id(&self, id: i64) -> Result<Option<User>, DbError> {
         let row = sqlx::query_as::<_, User>(
             "SELECT id, username, email, hashed_password, role, is_active, package_id, \
@@ -89,6 +128,32 @@ impl<'a> UserRepo<'a> {
         .fetch_optional(self.pool)
         .await?;
         Ok(row)
+    }
+
+    /// Is this address already on **another** account?
+    ///
+    /// Source: `db.query(User).filter(User.email == next_email, User.id != id)`.
+    /// The exclusion is what lets an administrator submit their own address
+    /// unchanged without being told it is taken.
+    pub async fn email_taken_by_other(&self, email: &str, id: i64) -> Result<bool, DbError> {
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1")
+                .bind(email)
+                .bind(id)
+                .fetch_optional(self.pool)
+                .await?;
+        Ok(found.is_some())
+    }
+
+    /// Every address already in use.
+    ///
+    /// Source: the `while db.query(User).filter(User.email == candidate)`
+    /// loop in `_unique_email`. Read once rather than queried per
+    /// candidate: the loop can run several times and the table is small.
+    pub async fn all_emails(&self) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar::<_, String>("SELECT email FROM users")
+            .fetch_all(self.pool)
+            .await?)
     }
 
     pub async fn count(&self) -> Result<i64, DbError> {
@@ -128,6 +193,37 @@ impl<'a> UserRepo<'a> {
         .fetch_one(self.pool)
         .await?;
         Ok(new_version)
+    }
+
+    /// Set the stored hash and invalidate every session, in one statement.
+    ///
+    /// Source: `snpanelctl`'s `change_admin_password` and
+    /// `sync_admin_root_password`, which both assign `hashed_password` and
+    /// `token_version + 1` and commit once.
+    ///
+    /// **One UPDATE rather than two**, for the same reason
+    /// [`Self::set_totp_enabled`] gives: a crash between them would leave
+    /// the password changed and the old sessions still valid, which is the
+    /// half that matters. The other order is merely annoying.
+    ///
+    /// The hash is written **as given**, which is deliberate: the root-sync
+    /// path stores a crypt(3) hash out of `/etc/shadow`, not bcrypt, and
+    /// `snpanel_core::crypto::password` is what tells the two apart at
+    /// verify time.
+    pub async fn set_password_and_invalidate_sessions(
+        &self,
+        user_id: i64,
+        hash: &str,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query_scalar(
+            "UPDATE users SET hashed_password = ?, \
+             token_version = COALESCE(token_version, 0) + 1 \
+             WHERE id = ? RETURNING token_version",
+        )
+        .bind(hash)
+        .bind(user_id)
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Source: the opportunistic rehash in `login`.
@@ -237,6 +333,38 @@ impl<'a> UserRepo<'a> {
     }
 
     /// Every website root belonging to a user, for the storage figure.
+    /// Source: `db.add(User(...))` in `create_user`.
+    ///
+    /// `is_active` and `token_version` are left to their column defaults; the
+    /// Python's model sets neither on this path either.
+    pub async fn create(&self, new: &NewUser<'_>) -> Result<i64, DbError> {
+        Ok(sqlx::query(
+            "INSERT INTO users (username, email, hashed_password, role, package_id, \
+             website_limit, storage_limit_mb, terminal_enabled, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        )
+        .bind(new.username)
+        .bind(new.email)
+        .bind(new.hashed_password)
+        .bind(new.role)
+        .bind(new.package_id)
+        .bind(new.website_limit)
+        .bind(new.storage_limit_mb)
+        .bind(new.terminal_enabled)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid())
+    }
+
+    /// Source: `db.delete(user)`.
+    pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn website_roots(&self, owner_id: i64) -> Result<Vec<String>, DbError> {
         Ok(sqlx::query_scalar(
             "SELECT root_path FROM websites WHERE owner_id = ? AND root_path IS NOT NULL",

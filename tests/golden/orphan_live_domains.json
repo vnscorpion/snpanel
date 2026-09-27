@@ -1,0 +1,124 @@
+[
+ {
+  "input": "example.com\n",
+  "output": [
+   "example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "EXAMPLE.COM\n",
+  "output": [
+   "example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "  example.com  \n",
+  "output": [
+   "example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "exa mple.com\n",
+  "output": [
+   "example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "example.com\twww.example.com\n",
+  "output": [
+   "example.comwww.example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "\n\n\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "not a domain at all\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "-bad.com\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "bad-.com\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "localhost\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "192.0.2.1\n",
+  "output": [
+   "192.0.2.1"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "a.b\n",
+  "output": [
+   "a.b"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "xn--bcher-kva.example\n",
+  "output": [
+   "xn--bcher-kva.example"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "UPPER.Example.COM\nsecond.com\n",
+  "output": [
+   "upper.example.com",
+   "second.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "example.com\nexample.com\n",
+  "output": [
+   "example.com",
+   "example.com"
+  ],
+  "rc": 0
+ },
+ {
+  "input": "tr\u00e8s.com\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "example..com\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "example.com.\n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "  \t  \n",
+  "output": [],
+  "rc": 0
+ },
+ {
+  "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com\n",
+  "output": [],
+  "rc": 0
+ }
+]

@@ -1,0 +1,131 @@
+server {
+    listen 80;
+    server_name wordpress-manual-ssl.example.com www.wordpress-manual-ssl.example.com;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name wordpress-manual-ssl.example.com www.wordpress-manual-ssl.example.com;
+    ssl_certificate /etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/cert.crt;
+    ssl_certificate_key /etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/private.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    root /home/bp_wordpress_manual_s_aa383476/wordpress-manual-ssl.example.com/public_html;
+    index index.php index.html;
+
+    server_tokens off;
+    disable_symlinks if_not_owner from=/home/bp_wordpress_manual_s_aa383476/wordpress-manual-ssl.example.com;
+
+
+
+
+    # SNPANEL WAF BEGIN
+    modsecurity on;
+    modsecurity_rules_file /etc/nginx/modsec/sites/wordpress-manual-ssl.example.com.conf;
+    # SNPANEL WAF END
+
+
+    access_log /var/log/nginx/wordpress-manual-ssl.example.com.access.log;
+    error_log /var/log/nginx/wordpress-manual-ssl.example.com.error.log;
+
+    client_max_body_size 1100M;
+
+    # SNPANEL ACME CHALLENGE
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/snpanel-acme;
+        default_type text/plain;
+        try_files $uri =404;
+        access_log off;
+        auth_basic off;
+    }
+
+    # SNPANEL FASTCGI CACHE SERVER BEGIN
+    set $snpanel_skip_cache 0;
+    if ($request_method = POST) { set $snpanel_skip_cache 1; }
+    if ($query_string != "") { set $snpanel_skip_cache 1; }
+    if ($http_cache_control ~* "no-cache|no-store|max-age=0") { set $snpanel_skip_cache 1; }
+    if ($http_pragma = "no-cache") { set $snpanel_skip_cache 1; }
+    if ($request_uri ~* "/wp-admin/|/wp-login.php|/xmlrpc.php|wp-.*.php|/feed/|sitemap(_index)?\.xml") { set $snpanel_skip_cache 1; }
+    if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wordpress_logged_in|wp-postpass|woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session|edd_items_in_cart") { set $snpanel_skip_cache 1; }
+    add_header X-FastCGI-Cache $upstream_cache_status always;
+    # SNPANEL FASTCGI CACHE SERVER END
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), magnetometer=(), gyroscope=(), accelerometer=()" always;
+    add_header Content-Security-Policy "default-src 'self' https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: https: blob:; font-src 'self' data: https:; connect-src 'self' https:; frame-src 'self' https: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self' https:; frame-ancestors 'self'; upgrade-insecure-requests" always;
+
+    autoindex off;
+
+    location = /xmlrpc.php {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location = /wp-config.php {
+        deny all;
+    }
+
+    location = /readme.html {
+        deny all;
+    }
+
+    location = /license.txt {
+        deny all;
+    }
+
+    location ~* /(?:uploads|files)/.*\.php$ {
+        deny all;
+    }
+
+    location ~* ^/(?:wp-admin/includes|wp-includes)/.*\.php$ {
+        deny all;
+    }
+
+    location ~* \.(?:sql|bak|backup|old|orig|save|swp|swo|ini|log|conf|env|sh|inc)$ {
+        deny all;
+    }
+
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+        fastcgi_read_timeout 300;
+        # SNPANEL FASTCGI CACHE LOCATION BEGIN
+        fastcgi_cache SNPANEL_FASTCGI;
+        fastcgi_cache_methods GET HEAD;
+        fastcgi_cache_valid 200 15s;
+        fastcgi_cache_min_uses 2;
+        fastcgi_cache_bypass $snpanel_skip_cache;
+        fastcgi_no_cache $snpanel_skip_cache;
+        fastcgi_no_cache $upstream_http_set_cookie;
+        fastcgi_cache_lock on;
+        # SNPANEL FASTCGI CACHE LOCATION END
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+
+    # SNPANEL CUSTOM INCLUDE
+    include /etc/nginx/snpanel/custom/wordpress-manual-ssl.example.com.conf;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~* \.(jpg|jpeg|gif|png|css|js|ico|webp|svg|woff|woff2|ttf|eot)$ {
+        expires -1;
+        access_log off;
+    }
+}

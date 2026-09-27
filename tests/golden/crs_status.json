@@ -1,0 +1,169 @@
+{
+ "cases": [
+  {
+   "stdout": "",
+   "status": {
+    "mode": "off",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "mode=block\ninstalled=yes\nconf=yes\nrule_files=12\nsites_including=3",
+   "status": {
+    "mode": "block",
+    "installed": true,
+    "conf": true,
+    "rule_files": 12,
+    "sites_including": 3,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "mode=detect\ninstalled=no\nconf=no\nrule_files=0\nsites_including=0",
+   "status": {
+    "mode": "detect",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "mode=paranoid\ninstalled=yes",
+   "status": {
+    "mode": "off",
+    "installed": true,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "mode=\ninstalled=",
+   "status": {
+    "mode": "off",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "rule_files=-3\nsites_including=1.5\nnginx_pss_mb= 42 \nram_total_mb=abc",
+   "status": {
+    "mode": "off",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 42,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "mode=block=extra\nrule_files=1=2",
+   "status": {
+    "mode": "off",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "garbage\ninstalled=yes",
+   "status": {
+    "mode": "off",
+    "installed": true,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "   mode   =   BLOCK   \n  installed = yes ",
+   "status": {
+    "mode": "block",
+    "installed": true,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "nginx_pss_mb=961\nram_available_mb=2048\nram_total_mb=4096",
+   "status": {
+    "mode": "off",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 961,
+    "ram_available_mb": 2048,
+    "ram_total_mb": 4096,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  },
+  {
+   "stdout": "unknown_key=5\nmode=block",
+   "status": {
+    "mode": "block",
+    "installed": false,
+    "conf": false,
+    "rule_files": 0,
+    "sites_including": 0,
+    "nginx_pss_mb": 0,
+    "ram_available_mb": 0,
+    "ram_total_mb": 0,
+    "panel_mode": "detect",
+    "engine_available": true
+   }
+  }
+ ]
+}

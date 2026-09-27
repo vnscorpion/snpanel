@@ -1,0 +1,401 @@
+{
+ "user": "alice",
+ "cwd": "/home/alice/example.com",
+ "path_args": [
+  {
+   "args": [],
+   "ok": true
+  },
+  {
+   "args": [
+    "index.php"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "public_html/index.php"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "/home/alice/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "/home/alice"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "/home/aliceX/secret"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/home/alice2/secret"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/home/bob/site/wp-config.php"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    ".."
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "../.."
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "../other/index.php"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "x/.."
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "a/../../../etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "./index.php"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "sub/../index.php"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "-la"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "--recursive"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "--"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "-"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    ""
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "-la",
+    "index.php"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "-la",
+    "/etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "index.php",
+    "/etc/shadow"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/home/alice/../bob/x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/home/alice/./x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "file"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "a b"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "/home/alice/a b"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "sub/deep/../../x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "/home/alicealice/x"
+   ],
+   "ok": false
+  }
+ ],
+ "download_args": [
+  {
+   "args": [
+    "https://example.com/x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "-fsSL",
+    "https://example.com/x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-o",
+    "x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-o",
+    "/etc/cron.d/pwn"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-O",
+    "/home/bob/x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "--output=x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "--output=/etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "--output-document=sub/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "--output-document=../../etc/x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-O=x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-O=/root/x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-o"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-O"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "file:///etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "FILE:///etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "File://x"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "-fsSL",
+    "file:///etc/shadow"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "ftp://example.com/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "ftps://example.com/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "sftp://example.com/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "http://example.com/x"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "gopher://x/y"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "dict://x/y"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "ldap://x/y"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "/etc/passwd"
+   ],
+   "ok": false
+  },
+  {
+   "args": [
+    "x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "-k"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    ""
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-o",
+    "sub/x.zip"
+   ],
+   "ok": true
+  },
+  {
+   "args": [
+    "https://example.com/x",
+    "-o",
+    ".."
+   ],
+   "ok": false
+  }
+ ]
+}

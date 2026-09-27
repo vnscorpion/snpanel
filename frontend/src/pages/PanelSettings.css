@@ -1,0 +1,25 @@
+/* Panel settings: four tabs, one section each. See pages/PanelSettings.jsx. */
+
+.settings-page{display:grid;gap:var(--space-4)}
+.settings-page>.section{margin-bottom:0}
+.settings-tabs{justify-self:start;max-width:100%}
+.settings-tabs button{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+
+/* The new token, once: set apart so it is not missed. */
+.token-reveal{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:var(--space-2);align-items:end;padding:var(--space-3);background:var(--success-bg);border:1px solid var(--success-border);border-radius:var(--radius-md)}
+.token-reveal label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--success-text)}
+.token-reveal label span{font-size:var(--text-sm)}
+.token-reveal input{font-family:var(--font-mono);font-size:var(--text-sm)}
+
+.token-form{display:grid;grid-template-columns:minmax(160px,1fr) minmax(200px,1.4fr) auto;gap:var(--space-2);align-items:end}
+.token-form label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.token-form label span{font-size:var(--text-sm)}
+
+/* The shared tab bar goes two-up on a phone but keeps flowing sideways,
+   which squeezes four tabs into one row. Two by two instead. */
+@media (max-width:700px){
+  .settings-tabs{justify-self:stretch;width:100%;grid-auto-flow:row;grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .token-reveal,.token-form{grid-template-columns:1fr}
+}

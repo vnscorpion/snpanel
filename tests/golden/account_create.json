@@ -1,0 +1,2609 @@
+{
+ "derived": [
+  {
+   "app_type": "php",
+   "app_type_value": "php",
+   "case": "no_domain",
+   "domain": null,
+   "install_wordpress": false,
+   "install_wp": false,
+   "rewrite_mode": "none",
+   "runtime_php": "8.4"
+  },
+  {
+   "app_type": "static",
+   "app_type_value": "php",
+   "case": "no_domain_static",
+   "domain": null,
+   "install_wordpress": false,
+   "install_wp": false,
+   "rewrite_mode": "none",
+   "runtime_php": "8.4"
+  },
+  {
+   "app_type": "php",
+   "app_type_value": "php",
+   "case": "domain_php",
+   "domain": "example.com",
+   "install_wordpress": false,
+   "install_wp": false,
+   "rewrite_mode": "none",
+   "runtime_php": "8.4"
+  },
+  {
+   "app_type": "static",
+   "app_type_value": "static",
+   "case": "domain_static",
+   "domain": "example.com",
+   "install_wordpress": false,
+   "install_wp": false,
+   "rewrite_mode": "none",
+   "runtime_php": null
+  },
+  {
+   "app_type": "wordpress",
+   "app_type_value": "wordpress",
+   "case": "domain_wordpress",
+   "domain": "example.com",
+   "install_wordpress": false,
+   "install_wp": false,
+   "rewrite_mode": "front_controller",
+   "runtime_php": "8.4"
+  },
+  {
+   "app_type": "php",
+   "app_type_value": "wordpress",
+   "case": "domain_install",
+   "domain": "example.com",
+   "install_wordpress": true,
+   "install_wp": true,
+   "rewrite_mode": "front_controller",
+   "runtime_php": "8.4"
+  },
+  {
+   "app_type": "static",
+   "app_type_value": "wordpress",
+   "case": "domain_install_static",
+   "domain": "example.com",
+   "install_wordpress": true,
+   "install_wp": true,
+   "rewrite_mode": "front_controller",
+   "runtime_php": "8.4"
+  }
+ ],
+ "email": [
+  {
+   "email": "customer1@users.snpanel.dev",
+   "username": "customer1"
+  },
+  {
+   "email": "a_b-c@users.snpanel.dev",
+   "username": "a_b-c"
+  },
+  {
+   "email": "root2@users.snpanel.dev",
+   "username": "root2"
+  }
+ ],
+ "fields": [
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "minimal",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "external_id_missing",
+   "errors": [
+    {
+     "loc": [
+      "external_id"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "external_id_empty",
+   "errors": [
+    {
+     "loc": [
+      "external_id"
+     ],
+     "msg": "String should have at least 1 character",
+     "type": "string_too_short"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "external_id_long",
+   "errors": [
+    {
+     "loc": [
+      "external_id"
+     ],
+     "msg": "String should have at most 255 characters",
+     "type": "string_too_long"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "external_id_max",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": 41,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "external_id_number",
+   "errors": [
+    {
+     "loc": [
+      "external_id"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password"
+   },
+   "case": "username_missing",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "ab"
+   },
+   "case": "username_short",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should have at least 3 characters",
+     "type": "string_too_short"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "case": "username_long",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should have at most 32 characters",
+     "type": "string_too_long"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "Customer"
+   },
+   "case": "username_upper",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+     "type": "string_pattern_mismatch"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "1customer"
+   },
+   "case": "username_leading_digit",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+     "type": "string_pattern_mismatch"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "-customer"
+   },
+   "case": "username_leading_dash",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+     "type": "string_pattern_mismatch"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "_customer"
+   },
+   "case": "username_underscore_first",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "_customer"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "cus-tomer"
+   },
+   "case": "username_dash_inside",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "cus-tomer"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "cus.tomer"
+   },
+   "case": "username_dot",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+     "type": "string_pattern_mismatch"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "root"
+   },
+   "case": "username_reserved_root",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "Value error, username is reserved by the system",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "snpanel"
+   },
+   "case": "username_reserved_snpanel",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "Value error, username is reserved by the system",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "www-data"
+   },
+   "case": "username_reserved_wwwdata",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "Value error, username is reserved by the system",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": 12345
+   },
+   "case": "username_number",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_absent",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "email": null,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_null",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "email": "a@example.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_good",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": "a@example.com",
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "email": "not-an-email",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_no_at",
+   "errors": [
+    {
+     "loc": [
+      "email"
+     ],
+     "msg": "value is not a valid email address: The email address is not valid. It must have exactly one @-sign.",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "email": "a@localhost",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_localhost",
+   "errors": [
+    {
+     "loc": [
+      "email"
+     ],
+     "msg": "value is not a valid email address: The part after the @-sign is not valid. It should have a period.",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "email": 7,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "email_number",
+   "errors": [
+    {
+     "loc": [
+      "email"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "username": "customer1"
+   },
+   "case": "password_missing",
+   "errors": [
+    {
+     "loc": [
+      "password"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "short",
+    "username": "customer1"
+   },
+   "case": "password_short",
+   "errors": [
+    {
+     "loc": [
+      "password"
+     ],
+     "msg": "String should have at least 12 characters",
+     "type": "string_too_short"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "aaaaaaaaaaa",
+    "username": "customer1"
+   },
+   "case": "password_eleven",
+   "errors": [
+    {
+     "loc": [
+      "password"
+     ],
+     "msg": "String should have at least 12 characters",
+     "type": "string_too_short"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "aaaaaaaaaaaa",
+    "username": "customer1"
+   },
+   "case": "password_twelve",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "aaaaaaaaaaaa",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "username": "customer1"
+   },
+   "case": "password_72",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "username": "customer1"
+   },
+   "case": "password_73",
+   "errors": [
+    {
+     "loc": [
+      "password"
+     ],
+     "msg": "String should have at most 72 characters",
+     "type": "string_too_long"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "has:a-colon-in",
+    "username": "customer1"
+   },
+   "case": "password_colon",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "has:a-colon-in",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "has\nnewline1",
+    "username": "customer1"
+   },
+   "case": "password_newline",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "has\nnewline1",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_missing",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 0,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_zero",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": -1,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_negative",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 1,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_one",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 1,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_string_digits",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3.0,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_float",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3.5,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_float_fraction",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, got a number with a fractional part",
+     "type": "int_from_float"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": true,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_bool",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 1,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": null,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "package_null",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_absent",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": null,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_null",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_empty",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "   ",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_blank",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_good",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "Example.COM",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_upper",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "  example.com  ",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_spaces",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "a.b.example.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_sub",
+   "value": {
+    "app_type": "php",
+    "domain": "a.b.example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "-example.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_leading_dash",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "a.-b.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_label_dash",
+   "value": {
+    "app_type": "php",
+    "domain": "a.-b.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_single_label",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "example.com.",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_trailing_dot",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "example.c",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_short_tld",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "example.12",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_numeric_tld",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "under_score.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_underscore",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "a..com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_empty_label",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_long_label",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_max_label",
+   "value": {
+    "app_type": "php",
+    "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "xn--e1afmkfd.xn--p1ai",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_punycode",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "\u001cexample.com\u001d",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_file_separators",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": 7,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "domain_number",
+   "errors": [
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "php_absent",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   },
+   "case": "php_84",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "5.6",
+    "username": "customer1"
+   },
+   "case": "php_56",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "5.6",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "9.9",
+    "username": "customer1"
+   },
+   "case": "php_bad",
+   "errors": [
+    {
+     "loc": [
+      "php_version"
+     ],
+     "msg": "Value error, Unsupported PHP version. Allowed: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "",
+    "username": "customer1"
+   },
+   "case": "php_empty",
+   "errors": [
+    {
+     "loc": [
+      "php_version"
+     ],
+     "msg": "Value error, Unsupported PHP version. Allowed: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": null,
+    "username": "customer1"
+   },
+   "case": "php_null",
+   "errors": [
+    {
+     "loc": [
+      "php_version"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": 8.4,
+    "username": "customer1"
+   },
+   "case": "php_number",
+   "errors": [
+    {
+     "loc": [
+      "php_version"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_absent",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "app_type": "php",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_php",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "app_type": "static",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_static",
+   "value": {
+    "app_type": "static",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "app_type": "wordpress",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_wordpress",
+   "value": {
+    "app_type": "wordpress",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "app_type": "application",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_application",
+   "errors": [
+    {
+     "loc": [
+      "app_type"
+     ],
+     "msg": "Input should be 'wordpress', 'php' or 'static'",
+     "type": "literal_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "app_type": "drupal",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_bad",
+   "errors": [
+    {
+     "loc": [
+      "app_type"
+     ],
+     "msg": "Input should be 'wordpress', 'php' or 'static'",
+     "type": "literal_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "app_type": null,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "app_null",
+   "errors": [
+    {
+     "loc": [
+      "app_type"
+     ],
+     "msg": "Input should be 'wordpress', 'php' or 'static'",
+     "type": "literal_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_true",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "install_wordpress": "true",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_string_true",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "install_wordpress": 1,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_one",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "install_wordpress": "on",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_on",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "external_id": "whmcs:41",
+    "install_wordpress": "yes",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_yes",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "install_wordpress": 0,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_zero",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "install_wordpress": "maybe",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_bad",
+   "errors": [
+    {
+     "loc": [
+      "install_wordpress"
+     ],
+     "msg": "Input should be a valid boolean, unable to interpret input",
+     "type": "bool_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "install_wordpress": null,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_null",
+   "errors": [
+    {
+     "loc": [
+      "install_wordpress"
+     ],
+     "msg": "Input should be a valid boolean",
+     "type": "bool_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "example.com",
+    "enable_ssl": true,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "ssl_true",
+   "value": {
+    "app_type": "php",
+    "domain": "example.com",
+    "email": null,
+    "enable_ssl": true,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "enable_ssl": "off",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "ssl_string_off",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_without_domain",
+   "errors": [
+    {
+     "loc": [],
+     "msg": "Value error, domain is required for WordPress install or Auto SSL",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "enable_ssl": true,
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "ssl_without_domain",
+   "errors": [
+    {
+     "loc": [],
+     "msg": "Value error, domain is required for WordPress install or Auto SSL",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "enable_ssl": true,
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "both_without_domain",
+   "errors": [
+    {
+     "loc": [],
+     "msg": "Value error, domain is required for WordPress install or Auto SSL",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "  ",
+    "external_id": "whmcs:41",
+    "install_wordpress": true,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "install_with_blank_domain",
+   "errors": [
+    {
+     "loc": [],
+     "msg": "Value error, domain is required for WordPress install or Auto SSL",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "domain": "-bad-",
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "BAD"
+   },
+   "case": "username_and_domain",
+   "errors": [
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should match pattern '^[a-z_][a-z0-9_-]{2,31}$'",
+     "type": "string_pattern_mismatch"
+    },
+    {
+     "loc": [
+      "domain"
+     ],
+     "msg": "Value error, Invalid domain",
+     "type": "value_error"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "",
+    "package_id": 0,
+    "password": "x",
+    "username": "A"
+   },
+   "case": "everything_wrong",
+   "errors": [
+    {
+     "loc": [
+      "external_id"
+     ],
+     "msg": "String should have at least 1 character",
+     "type": "string_too_short"
+    },
+    {
+     "loc": [
+      "username"
+     ],
+     "msg": "String should have at least 3 characters",
+     "type": "string_too_short"
+    },
+    {
+     "loc": [
+      "password"
+     ],
+     "msg": "String should have at least 12 characters",
+     "type": "string_too_short"
+    },
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  }
+ ],
+ "package_id": [
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_0",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_1",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": " 3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_2",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3 ",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_3",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "+3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_4",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "-3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_5",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3.0",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_6",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3.5",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_7",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "0x3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_8",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "three",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_9",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_10",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "1_0",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_11",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 10,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "1__0",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_12",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "_1",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_13",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "1_",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_14",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "  3  ",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_15",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "\t3\n",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_16",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": " 3",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_17",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "۳",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_18",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "3.00",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_19",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": "-0",
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_20",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3.0,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_21",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 3,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 3.5,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_22",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer, got a number with a fractional part",
+     "type": "int_from_float"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": -0.0,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_23",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 1e+18,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_24",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 1000000000000000000,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": true,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_25",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 1,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": false,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_26",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": null,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_27",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": [],
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_28",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": {},
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_29",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": [
+     3
+    ],
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_30",
+   "errors": [
+    {
+     "loc": [
+      "package_id"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ]
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 9223372036854775807,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_31",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 9223372036854775807,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  },
+  {
+   "body": {
+    "external_id": "whmcs:41",
+    "package_id": 9223372036854775808,
+    "password": "a-long-enough-password",
+    "username": "customer1"
+   },
+   "case": "int_32",
+   "value": {
+    "app_type": "php",
+    "domain": null,
+    "email": null,
+    "enable_ssl": false,
+    "external_id": "whmcs:41",
+    "install_wordpress": false,
+    "package_id": 9223372036854775808,
+    "password": "a-long-enough-password",
+    "php_version": "8.4",
+    "username": "customer1"
+   }
+  }
+ ]
+}

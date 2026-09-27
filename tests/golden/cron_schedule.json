@@ -1,0 +1,737 @@
+[
+ {
+  "input": "* * * * *",
+  "ok": true,
+  "value": "* * * * *"
+ },
+ {
+  "input": "0 * * * *",
+  "ok": true,
+  "value": "0 * * * *"
+ },
+ {
+  "input": "* 0 * * *",
+  "ok": true,
+  "value": "* 0 * * *"
+ },
+ {
+  "input": "* * 0 * *",
+  "ok": true,
+  "value": "* * 0 * *"
+ },
+ {
+  "input": "* * * 0 *",
+  "ok": true,
+  "value": "* * * 0 *"
+ },
+ {
+  "input": "* * * * 0",
+  "ok": true,
+  "value": "* * * * 0"
+ },
+ {
+  "input": "5 * * * *",
+  "ok": true,
+  "value": "5 * * * *"
+ },
+ {
+  "input": "* 5 * * *",
+  "ok": true,
+  "value": "* 5 * * *"
+ },
+ {
+  "input": "* * 5 * *",
+  "ok": true,
+  "value": "* * 5 * *"
+ },
+ {
+  "input": "* * * 5 *",
+  "ok": true,
+  "value": "* * * 5 *"
+ },
+ {
+  "input": "* * * * 5",
+  "ok": true,
+  "value": "* * * * 5"
+ },
+ {
+  "input": "59 * * * *",
+  "ok": true,
+  "value": "59 * * * *"
+ },
+ {
+  "input": "* 59 * * *",
+  "ok": true,
+  "value": "* 59 * * *"
+ },
+ {
+  "input": "* * 59 * *",
+  "ok": true,
+  "value": "* * 59 * *"
+ },
+ {
+  "input": "* * * 59 *",
+  "ok": true,
+  "value": "* * * 59 *"
+ },
+ {
+  "input": "* * * * 59",
+  "ok": true,
+  "value": "* * * * 59"
+ },
+ {
+  "input": "007 * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 007 * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 007 * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 007 *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 007",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": " * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*  * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* *  * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * *  *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * ",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "- * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* - * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * - * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * - *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * -",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "/ * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* / * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * / * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * / *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * /",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": ", * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* , * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * , * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * , *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * ,",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*/5 * * * *",
+  "ok": true,
+  "value": "*/5 * * * *"
+ },
+ {
+  "input": "* */5 * * *",
+  "ok": true,
+  "value": "* */5 * * *"
+ },
+ {
+  "input": "* * */5 * *",
+  "ok": true,
+  "value": "* * */5 * *"
+ },
+ {
+  "input": "* * * */5 *",
+  "ok": true,
+  "value": "* * * */5 *"
+ },
+ {
+  "input": "* * * * */5",
+  "ok": true,
+  "value": "* * * * */5"
+ },
+ {
+  "input": "1-5 * * * *",
+  "ok": true,
+  "value": "1-5 * * * *"
+ },
+ {
+  "input": "* 1-5 * * *",
+  "ok": true,
+  "value": "* 1-5 * * *"
+ },
+ {
+  "input": "* * 1-5 * *",
+  "ok": true,
+  "value": "* * 1-5 * *"
+ },
+ {
+  "input": "* * * 1-5 *",
+  "ok": true,
+  "value": "* * * 1-5 *"
+ },
+ {
+  "input": "* * * * 1-5",
+  "ok": true,
+  "value": "* * * * 1-5"
+ },
+ {
+  "input": "1,2,3 * * * *",
+  "ok": true,
+  "value": "1,2,3 * * * *"
+ },
+ {
+  "input": "* 1,2,3 * * *",
+  "ok": true,
+  "value": "* 1,2,3 * * *"
+ },
+ {
+  "input": "* * 1,2,3 * *",
+  "ok": true,
+  "value": "* * 1,2,3 * *"
+ },
+ {
+  "input": "* * * 1,2,3 *",
+  "ok": true,
+  "value": "* * * 1,2,3 *"
+ },
+ {
+  "input": "* * * * 1,2,3",
+  "ok": true,
+  "value": "* * * * 1,2,3"
+ },
+ {
+  "input": "1- * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 1- * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 1- * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 1- *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 1-",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "-1 * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* -1 * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * -1 * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * -1 *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * -1",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "1--2 * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 1--2 * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 1--2 * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 1--2 *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 1--2",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "1//2 * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 1//2 * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 1//2 * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 1//2 *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 1//2",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*-* * * * *",
+  "ok": true,
+  "value": "*-* * * * *"
+ },
+ {
+  "input": "* *-* * * *",
+  "ok": true,
+  "value": "* *-* * * *"
+ },
+ {
+  "input": "* * *-* * *",
+  "ok": true,
+  "value": "* * *-* * *"
+ },
+ {
+  "input": "* * * *-* *",
+  "ok": true,
+  "value": "* * * *-* *"
+ },
+ {
+  "input": "* * * * *-*",
+  "ok": true,
+  "value": "* * * * *-*"
+ },
+ {
+  "input": "*/* * * * *",
+  "ok": true,
+  "value": "*/* * * * *"
+ },
+ {
+  "input": "* */* * * *",
+  "ok": true,
+  "value": "* */* * * *"
+ },
+ {
+  "input": "* * */* * *",
+  "ok": true,
+  "value": "* * */* * *"
+ },
+ {
+  "input": "* * * */* *",
+  "ok": true,
+  "value": "* * * */* *"
+ },
+ {
+  "input": "* * * * */*",
+  "ok": true,
+  "value": "* * * * */*"
+ },
+ {
+  "input": "1-2-3 * * * *",
+  "ok": true,
+  "value": "1-2-3 * * * *"
+ },
+ {
+  "input": "* 1-2-3 * * *",
+  "ok": true,
+  "value": "* 1-2-3 * * *"
+ },
+ {
+  "input": "* * 1-2-3 * *",
+  "ok": true,
+  "value": "* * 1-2-3 * *"
+ },
+ {
+  "input": "* * * 1-2-3 *",
+  "ok": true,
+  "value": "* * * 1-2-3 *"
+ },
+ {
+  "input": "* * * * 1-2-3",
+  "ok": true,
+  "value": "* * * * 1-2-3"
+ },
+ {
+  "input": "12 * * * *",
+  "ok": true,
+  "value": "12 * * * *"
+ },
+ {
+  "input": "* 12 * * *",
+  "ok": true,
+  "value": "* 12 * * *"
+ },
+ {
+  "input": "* * 12 * *",
+  "ok": true,
+  "value": "* * 12 * *"
+ },
+ {
+  "input": "* * * 12 *",
+  "ok": true,
+  "value": "* * * 12 *"
+ },
+ {
+  "input": "* * * * 12",
+  "ok": true,
+  "value": "* * * * 12"
+ },
+ {
+  "input": "123 * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 123 * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 123 * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 123 *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 123",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "a * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* a * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * a * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * a *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * a",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "1a * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* 1a * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * 1a * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * 1a *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * 1a",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "  * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*   * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* *   * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * *   *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * *  ",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*, * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* *, * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * *, * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * *, *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * *,",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": ",* * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* ,* * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * ,* * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * ,* *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * ,*",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "0/15 * * * *",
+  "ok": true,
+  "value": "0/15 * * * *"
+ },
+ {
+  "input": "* 0/15 * * *",
+  "ok": true,
+  "value": "* 0/15 * * *"
+ },
+ {
+  "input": "* * 0/15 * *",
+  "ok": true,
+  "value": "* * 0/15 * *"
+ },
+ {
+  "input": "* * * 0/15 *",
+  "ok": true,
+  "value": "* * * 0/15 *"
+ },
+ {
+  "input": "* * * * 0/15",
+  "ok": true,
+  "value": "* * * * 0/15"
+ },
+ {
+  "input": "** * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* ** * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * ** * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * ** *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * **",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "*",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "* * * * *",
+  "ok": true,
+  "value": "* * * * *"
+ },
+ {
+  "input": "* * * * * *",
+  "ok": false,
+  "error": "Invalid cron schedule"
+ },
+ {
+  "input": "0 2 * * *",
+  "ok": true,
+  "value": "0 2 * * *"
+ },
+ {
+  "input": "  0   2 * * *  ",
+  "ok": true,
+  "value": "0 2 * * *"
+ },
+ {
+  "input": "0\t2 * * *",
+  "ok": true,
+  "value": "0 2 * * *"
+ },
+ {
+  "input": "0 2 * * * ",
+  "ok": true,
+  "value": "0 2 * * *"
+ }
+]

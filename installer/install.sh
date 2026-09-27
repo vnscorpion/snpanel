@@ -210,7 +210,6 @@ validate_sources() {
   need_dir "$BACKEND_SRC"
   need_dir "$FRONTEND_SRC"
   [[ -f "${PROJECT_ROOT}/VERSION" ]] || fail "Missing VERSION"
-  [[ -f "${BACKEND_SRC}/requirements.txt" ]] || fail "Missing backend/requirements.txt"
   [[ -f "${FRONTEND_SRC}/package.json" ]] || fail "Missing frontend/package.json"
 }
 
@@ -420,6 +419,13 @@ NODE
   npm --version
 }
 
+# One archive serves every PHP version: it is fetched for the first and kept
+# here for the rest of this install, and a download that has already failed
+# is not tried again for the next version - on a slow CDN each try costs
+# minutes, and the loader is optional.
+IONCUBE_ARCHIVE_CACHE=""
+IONCUBE_DOWNLOAD_FAILED="no"
+
 install_ioncube_loader() {
   local version="$1" arch url tmp archive loader target_dir target loader_ini_dir php_bin
   if command -v dpkg >/dev/null 2>&1; then
@@ -440,13 +446,49 @@ install_ioncube_loader() {
   pkg_install ca-certificates curl tar >/dev/null
   tmp="$(mktemp -d)" || fail "Cannot create ionCube temporary directory"
   archive="${tmp}/ioncube_loaders.tar.gz"
-  if ! curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$archive"; then
+  # A slow CDN must not cost the whole installation. This function already
+  # skips when the architecture has no loader, and when the PHP version has
+  # none - so a missing loader is an outcome it is built to tolerate. Making
+  # a timeout fatal instead meant one 29MB download from a third party could
+  # end an install that had already configured nginx, PHP and the database.
+  # It is a commercial-code loader; nothing in the panel needs it.
+  if [[ "$IONCUBE_DOWNLOAD_FAILED" == "yes" ]]; then
     rm -rf -- "$tmp"
-    fail "Failed to download ionCube Loader"
+    echo "Skipping ionCube Loader for PHP ${version}: the download already failed during this install"
+    return 0
   fi
+  local attempt
+  if [[ -n "$IONCUBE_ARCHIVE_CACHE" && -s "$IONCUBE_ARCHIVE_CACHE" ]]; then
+    cp -- "$IONCUBE_ARCHIVE_CACHE" "$archive"
+  fi
+  for attempt in 1 2 3; do
+    [[ -s "$archive" ]] && break
+    # --speed-limit/--speed-time abort a transfer that has stalled rather
+    # than spending the whole budget on a connection delivering a few KB/s.
+    # Without them three attempts at 300s each is fifteen minutes of an
+    # install stopped on a component that is optional - measured, on this
+    # CDN, twice.
+    if curl -fsSL --connect-timeout 10 --max-time 300 \
+            --speed-limit 10240 --speed-time 30 "$url" -o "$archive"; then
+      break
+    fi
+    if [ "$attempt" -eq 3 ]; then
+      rm -rf -- "$tmp"
+      IONCUBE_DOWNLOAD_FAILED="yes"
+      echo "Skipping ionCube Loader: download failed after ${attempt} attempts"
+      return 0
+    fi
+    echo "ionCube Loader download failed (attempt ${attempt}); retrying"
+    sleep 5
+  done
   if ! tar -xzf "$archive" -C "$tmp"; then
     rm -rf -- "$tmp"
-    fail "Failed to unpack ionCube Loader"
+    echo "Skipping ionCube Loader: the downloaded archive could not be unpacked"
+    return 0
+  fi
+  if [[ -z "$IONCUBE_ARCHIVE_CACHE" ]]; then
+    IONCUBE_ARCHIVE_CACHE="$(mktemp /tmp/snpanel-ioncube-XXXXXX.tar.gz)" \
+      && cp -- "$archive" "$IONCUBE_ARCHIVE_CACHE" || IONCUBE_ARCHIVE_CACHE=""
   fi
   loader="${tmp}/ioncube/ioncube_loader_lin_${version}.so"
   if [[ ! -f "$loader" ]]; then
@@ -521,6 +563,19 @@ setup_php_compat_shim() {
 
   # `php8.4 -v` is used by the installer and by the panel's PHP tuning page.
   ln -sfn "$(php_binary "$version")" "/usr/local/bin/php${version}"
+
+  # The default pool keeps sessions, the WSDL cache and the opcache file cache
+  # in directories Remi gives to the apache group, for the account the pool
+  # ran as before it was moved to the web user - so phpMyAdmin, which this
+  # pool serves, could not start a session: "Cannot start signon session" on
+  # every sign-on. An ACL rather than chgrp, because the package puts the
+  # group back on every update and an ACL survives that.
+  local dir
+  for dir in session wsdlcache opcache; do
+    if [[ -d "/var/opt/remi/php${compact}/lib/php/${dir}" ]]; then
+      setfacl -m "g:${WEB_GROUP}:rwx" "/var/opt/remi/php${compact}/lib/php/${dir}"
+    fi
+  done
 }
 
 # Remi's default pool runs as apache and listens on a Remi-specific socket
@@ -528,27 +583,18 @@ setup_php_compat_shim() {
 # and its Python validation regex insists on that shape, so the pool is moved
 # to match and handed to the web user rather than the other way round.
 configure_php_fpm_pool() {
-  local version="$1" pool socket
-  pool="$(php_fpm_pool_dir "$version")/www.conf"
-  socket="$(php_fpm_socket "$version")"
-  [[ -f "$pool" ]] || return 0
-
-  # /run is a tmpfs, so the directory has to be recreated on every boot.
-  cat >/etc/tmpfiles.d/snpanel-php.conf <<'TMPFILES'
-d /run/php 0755 root root -
-TMPFILES
-  systemd-tmpfiles --create /etc/tmpfiles.d/snpanel-php.conf >/dev/null 2>&1 || true
-  install -d -o root -g root -m 0755 /run/php
-
-  sed -i -E \
-    -e "s#^;?[[:space:]]*user[[:space:]]*=.*#user = ${WEB_USER}#" \
-    -e "s#^;?[[:space:]]*group[[:space:]]*=.*#group = ${WEB_GROUP}#" \
-    -e "s#^;?[[:space:]]*listen[[:space:]]*=.*#listen = ${socket}#" \
-    -e "s#^;?[[:space:]]*listen\.owner[[:space:]]*=.*#listen.owner = ${WEB_USER}#" \
-    -e "s#^;?[[:space:]]*listen\.group[[:space:]]*=.*#listen.group = ${WEB_GROUP}#" \
-    -e "s#^;?[[:space:]]*listen\.mode[[:space:]]*=.*#listen.mode = 0660#" \
-    -e "s#^;?[[:space:]]*listen\.acl_users[[:space:]]*=.*#listen.acl_users = ${WEB_USER}#" \
-    "$pool"
+  local version="$1"
+  # `snpanel-install php-fpm-pool`. The seven settings, the tmpfiles rule for
+  # `/run/php` and the `/run/php` directory itself all move together: `/run`
+  # is a tmpfs, so that directory has to be recreated on every boot or the
+  # socket has nowhere to appear.
+  #
+  # The web account comes from the platform table on the Rust side rather
+  # than from `$WEB_USER` here - `platform.sh` and `snpanel_osabi` agree on
+  # `www-data` and `nginx`, which `the_web_account_matches_the_shell` pins.
+  "${RUST_BIN_DIR}/snpanel-install" php-fpm-pool \
+    "$(php_fpm_pool_dir "$version")/www.conf" "$(php_fpm_socket "$version")" \
+    || fail "Could not configure the PHP-FPM pool for PHP ${version}"
 }
 
 # Debian's PHP archive. There is no `add-apt-repository` here - the package
@@ -639,18 +685,12 @@ install_php() {
 
     install_ioncube_loader "$version"
 
-    ini_file="$(php_ini_path "$version")"
-    if [[ -f "$ini_file" ]]; then
-      sed -i \
-        -e 's/^\s*;\?\s*upload_max_filesize\s*=.*/upload_max_filesize = 1024M/' \
-        -e 's/^\s*;\?\s*post_max_size\s*=.*/post_max_size = 1024M/' \
-        -e 's/^\s*;\?\s*memory_limit\s*=.*/memory_limit = 1024M/' \
-        -e 's/^\s*;\?\s*max_execution_time\s*=.*/max_execution_time = 300/' \
-        -e 's/^\s*;\?\s*max_input_time\s*=.*/max_input_time = 600/' \
-        -e 's/^\s*;\?\s*max_input_vars\s*=.*/max_input_vars = 10000/' \
-        -e 's/^\s*;\?\s*max_file_uploads\s*=.*/max_file_uploads = 100/' \
-        "$ini_file"
-    fi
+    # `snpanel-install php-ini`. The seven settings and the pattern that
+    # finds them - which rewrites a *commented* default into a live setting -
+    # are `snpanel_installer::php`, with a fixture. A missing file is not an
+    # error there either.
+    "${RUST_BIN_DIR}/snpanel-install" php-ini "$(php_ini_path "$version")" \
+      || fail "Could not apply the panel's php.ini settings for PHP ${version}"
 
     systemctl enable --now "$(php_service "$version")"
   done
@@ -665,80 +705,53 @@ install_php() {
 }
 
 configure_fastcgi_cache() {
-  install -d -o "$WEB_USER" -g "$WEB_GROUP" -m 0755 /var/cache/nginx/snpanel-fastcgi
-  find /var/cache/nginx/snpanel-fastcgi -mindepth 1 -delete
-  cat >/etc/nginx/conf.d/00-snpanel-fastcgi-cache.conf <<'NGINX'
-fastcgi_cache_path /var/cache/nginx/snpanel-fastcgi levels=1:2 keys_zone=SNPANEL_FASTCGI:32m inactive=30m max_size=256m use_temp_path=off;
-fastcgi_cache_key "$scheme$request_method$host$request_uri";
-NGINX
+  # `snpanel-install nginx-conf` writes both this and the WebSocket upgrade
+  # map, which `configure_proxy_upgrade_map` used to write - that function is
+  # gone rather than left empty, because a function that does nothing is a
+  # thing for the next reader to work out. Both files have golden fixtures in
+  # `tests/golden/installer`.
+  #
+  # The map is not optional: without it a `proxy_set_header Connection
+  # $connection_upgrade` in any site config makes nginx refuse to start, so it
+  # has to exist before the first proxy vhost is written.
+  "${RUST_BIN_DIR}/snpanel-install" nginx-conf \
+    || fail "Could not write the shared nginx configuration"
 }
 
 # WebSocket upgrade map, shared by every proxied vhost. Without it a
 # `proxy_set_header Connection $connection_upgrade` in a site config makes
 # nginx fail to start, so this has to exist before any proxy vhost is written.
-configure_proxy_upgrade_map() {
-  cat >/etc/nginx/conf.d/00-snpanel-upgrade-map.conf <<'NGINX'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-NGINX
-}
 
-write_modsec_base_conf() {
-  install -d -o root -g root -m 0755 /etc/nginx/modsec /etc/nginx/modsec/sites
-  {
-    [[ -f /etc/modsecurity/modsecurity.conf ]] && echo "Include /etc/modsecurity/modsecurity.conf"
-    echo "SecRuleEngine On"
-    echo "SecRequestBodyAccess Off"
-  } >/etc/nginx/modsec/snpanel-base.conf
-}
 
 write_modsec_main_conf() {
-  write_waf_default_rules
-  write_modsec_base_conf
-  touch /etc/nginx/modsec/snpanel-custom.conf
-  {
-    echo "Include /etc/nginx/modsec/snpanel-base.conf"
-    echo "Include /etc/nginx/modsec/snpanel-default.conf"
-    echo "Include /etc/nginx/modsec/snpanel-custom.conf"
-  } >/etc/nginx/modsec/snpanel-main.conf
+  # `snpanel-install modsec-conf` writes all three files and the default
+  # rules with them: base, the untouched custom file, and the main include
+  # chain that reads them in order.
+  "${RUST_BIN_DIR}/snpanel-install" modsec-conf \
+    || fail "Could not write the ModSecurity configuration"
 }
 
 write_http_flood_nginx_conf() {
-  install -d -o root -g root -m 0755 /etc/nginx/snpanel /etc/nginx/conf.d
-  if [[ ! -f /etc/nginx/snpanel/http-flood-zones.conf ]]; then
-    cat >/etc/nginx/snpanel/http-flood-zones.conf <<'CONF'
-# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
-map $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {
-    default $binary_remote_addr;
-    1 "";
-}
-limit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;
-CONF
-  fi
-  cat >/etc/nginx/conf.d/00-snpanel-http-flood.conf <<'CONF'
-# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
-include /etc/nginx/snpanel/http-flood-zones.conf;
-CONF
-  rm -f /etc/nginx/conf.d/snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-server.conf 2>/dev/null || true
-  chown root:root /etc/nginx/conf.d/00-snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-zones.conf
-  chmod 0644 /etc/nginx/conf.d/00-snpanel-http-flood.conf /etc/nginx/snpanel/http-flood-zones.conf
+  # `snpanel-install http-flood`. The zones file is written only when absent,
+  # because `limit_conn_zone` allocates shared memory and rewriting it under a
+  # running nginx resets the counters an operator is relying on during an
+  # attack.
+  "${RUST_BIN_DIR}/snpanel-install" http-flood \
+    || fail "Could not write the HTTP flood protection config"
 }
 
 write_waf_default_rules() {
-  install -d -o root -g root -m 0755 /etc/nginx/modsec
-  cat >/etc/nginx/modsec/snpanel-default.conf <<'RULES'
-# SNPanel default WAF rules: lightweight WordPress, Laravel, and PHP probes only.
-SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/\.user\.ini(?:\.|$)|/\.git/|/composer\.(?:json|lock)(?:$|[?])|/(?:phpinfo|info)\.php(?:$|[?])|/(?:config|database|db)\.php\.(?:bak|old|save|txt)(?:$|[?]))" "id:1001301,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP sensitive file probe'"
-SecRule REQUEST_URI|ARGS "@rx (?i)(?:\.\./|\.\.\\|%2e%2e%2f|%252e%252e%252f)" "id:1001302,phase:2,deny,status:403,log,msg:'SNPanel blocked PHP path traversal'"
-SecRule REQUEST_URI "@rx (?i)(?:/(?:c99|r57|shell|cmd|wso)\.php(?:$|[?])|/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin\.php(?:$|[?]))" "id:1001303,phase:1,deny,status:403,log,msg:'SNPanel blocked PHP runtime probe'"
-SecRule REQUEST_URI "@rx (?i)(?:/\.env(?:\.|$)|/artisan(?:$|[?])|/server\.php(?:$|[?])|/storage/logs/[^?]*\.log(?:$|[?])|/bootstrap/cache/[^?]*\.php(?:$|[?]))" "id:1001201,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel sensitive path'"
-SecRule REQUEST_URI "@rx (?i)(?:/_ignition/execute-solution(?:$|[?]))" "id:1001202,phase:1,deny,status:403,log,msg:'SNPanel blocked Laravel Ignition RCE probe'"
-SecRule REQUEST_URI "@rx (?i)(?:/wp-config\.php(?:\.|$|[?])|/wp-content/(?:uploads|cache|upgrade)/[^?]*\.php(?:$|[?])|/wp-admin/includes/[^?]*\.php(?:$|[?])|/wp-includes/[^?]*\.php(?:$|[?]))" "id:1001101,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress sensitive path'"
-SecRule ARGS:author "@rx ^[0-9]+$" "id:1001103,phase:2,deny,status:403,log,msg:'SNPanel blocked WordPress author enumeration'"
-SecRule REQUEST_URI "@rx (?i)(?:/wp-admin/install\.php(?:$|[?])|/wp-admin/setup-config\.php(?:$|[?]))" "id:1001104,phase:1,deny,status:403,log,msg:'SNPanel blocked WordPress installer probe'"
-RULES
+  # `snpanel-install waf-default-rules`. The rules themselves are
+  # `snpanel_installer::nginx_conf::WAF_DEFAULT_RULES`, pinned to
+  # `tests/golden/installer/snpanel-default.conf.expected` - the same fixture
+  # the helper's `waf-update` copy is pinned to, so the two cannot drift.
+  #
+  # Every rule is `phase:1`, and that is not a style choice: on the nginx
+  # connector a `phase:2` rule loads, is counted, shows the WAF as enabled and
+  # matches nothing. Two rules here were `phase:2` and were dead on every box
+  # this installer had set up.
+  "${RUST_BIN_DIR}/snpanel-install" waf-default-rules \
+    || fail "Could not write the default WAF rules"
 }
 
 install_waf_engine() {
@@ -811,8 +824,11 @@ build_frontend() {
   if [[ ! -f dist/index.html ]]; then
     fail "Frontend build failed: ${APP_DIR}/frontend/dist/index.html is missing"
   fi
-  # Nginx (as ${WEB_USER}) needs to read the bundle. The frontend is public anyway.
-  chmod o+rX "${APP_DIR}" "${APP_DIR}/frontend" 2>/dev/null || true
+  # Nginx (as ${WEB_USER}) needs to read the bundle. The frontend is public
+  # anyway; the app directory above it is passed through, not listed (0711,
+  # setup_panel_user).
+  chmod o+x "${APP_DIR}" 2>/dev/null || true
+  chmod o+rX "${APP_DIR}/frontend" 2>/dev/null || true
   chmod -R o+rX "${APP_DIR}/frontend/dist"
   echo "Frontend built: $(grep -oE 'index-[a-zA-Z0-9_-]+\.js' dist/index.html | head -n1 || echo 'unknown')"
 }
@@ -839,7 +855,16 @@ setup_panel_user() {
   chmod g+s /etc/nginx/snpanel/custom 2>/dev/null || true
 
   # Make the panel data dirs writable by snpanel.
-  install -d -o snpanel -g snpanel -m 0750 "$APP_DIR"
+  #
+  # The app directory is 0711, not 0750: the Node runtimes applications run
+  # on live under it (/opt/snpanel/node), and they run as the site's own
+  # user, who at 0750 could not reach them - every application failed with
+  # "Permission denied" on a fresh install. Traversal is all that grants: the
+  # directory cannot be listed, and the panel's secrets - .env and the
+  # database - are in backend/, which is 0750.
+  install -d -o snpanel -g snpanel -m 0711 "$APP_DIR"
+  install -d -o snpanel -g snpanel -m 0750 "$APP_DIR/backend"
+  chmod 0750 "$APP_DIR/backend"
   install -d -o snpanel -g snpanel -m 0750 "$BACKUP_ROOT"
   # DirectAdmin import staging dirs
   install -d -o snpanel -g snpanel -m 0750 /home/admin/snpanel_backups/da
@@ -882,39 +907,29 @@ MYCNF
 
   # The file and the account have to agree. They did not, once, and the symptom
   # was a 500 from every database page rather than anything pointing here.
-  if ! sudo -u snpanel env HOME="$APP_DIR" mariadb -e "SELECT 1" >/dev/null 2>&1; then
-    fail "the panel cannot authenticate to MariaDB with the credentials just written to ${APP_DIR}/.my.cnf"
+  # Say what actually failed. This probe runs the client through sudo, so it
+  # reports "bad credentials" for a missing sudo, an unreadable file or a
+  # server that is not listening - and it did, for half an hour, on a box
+  # where the credentials were perfectly good and sudo was not installed.
+  if ! command -v sudo >/dev/null 2>&1; then
+    fail "sudo is not installed; the panel runs every privileged action through it"
+  fi
+  local probe
+  if ! probe=$(sudo -u snpanel env HOME="$APP_DIR" mariadb -e "SELECT 1" 2>&1); then
+    fail "the panel cannot reach MariaDB as the snpanel user: ${probe}"
   fi
 }
 
 setup_sftp_access() {
-  local sshd_config="/etc/ssh/sshd_config" backup
-  getent group snpanel-sftp >/dev/null || groupadd --system snpanel-sftp
-  install -d -o root -g root -m 0755 /run/sshd
-  rm -f /etc/ssh/sshd_config.d/99-snpanel-sftp.conf 2>/dev/null || true
-  touch "$sshd_config"
-  backup="${sshd_config}.snpanel.bak"
-  cp "$sshd_config" "$backup"
-  sed -i '/^# BEGIN SNPANEL SFTP USERS$/,/^# END SNPANEL SFTP USERS$/d' "$sshd_config"
-  cat >>"$sshd_config" <<'SSHD'
-# BEGIN SNPANEL SFTP USERS
-# Allow SNPanel Linux users to log in with SFTP using their panel password.
-# SSH shells are intentionally disabled; /home/%u is a root-owned chroot.
-Match Group snpanel-sftp
-    PasswordAuthentication yes
-    ChrootDirectory /home/%u
-    ForceCommand internal-sftp -d /
-    PermitTTY no
-    X11Forwarding no
-    AllowTcpForwarding no
-    PermitTunnel no
-# END SNPANEL SFTP USERS
-SSHD
-  if ! sshd -t; then
-    cp "$backup" "$sshd_config"
-    fail "Invalid SSHD configuration for SNPanel SFTP users"
-  fi
-  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  # `snpanel-install sftp-access`. The block is
+  # `snpanel_installer::backend_env::sftp_block`, with a fixture; the splice,
+  # the `sshd -t` and the rollback are `runtime::apply_sftp_block`, shared
+  # with `snpanel fix-permissions` so there is one copy of the rollback.
+  #
+  # Fatal here and a warning there: an installer that cannot finish
+  # configuring a box must not report it as installed.
+  "${RUST_BIN_DIR}/snpanel-install" sftp-access \
+    || fail "Invalid SSHD configuration for SNPanel SFTP users"
 }
 
 # Does this sudo still have the `requiretty` setting? Asked by handing visudo a
@@ -929,9 +944,93 @@ sudoers_understands_requiretty() {
   return "$rc"
 }
 
+# --- the Rust binaries ------------------------------------------------------
+#
+# A fresh install has to end with the Rust helper in place. It did not: this
+# script installed the bash helper and the Rust one arrived later, through
+# a migration script rather than
+# part of installing the panel. Stage D's exit says a new installation carries
+# no bash helper, and that clause was not met while this file said otherwise.
+#
+# The binaries cannot be built here. A Rust toolchain is about a gigabyte and
+# several minutes of one vCPU, which is not a thing to ask of a customer's VPS
+# during an install - so they are built once, for musl, and attached to the
+# release. `file` reports them static-pie, so one build serves every supported
+# distribution.
+#
+# Empty when no binaries are available, and everything below degrades to what
+# this script did before.
+# Fetching them is shared with update.sh: the checksum check is the only
+# thing between a release asset and a binary that runs as root, and two
+# copies of it is two places for one of them to drift into being weaker.
+RUST_SOURCE_ROOT="${PROJECT_ROOT}"
+if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/lib/rust-binaries.sh" ]]; then
+  # shellcheck source=lib/rust-binaries.sh
+  source "${SCRIPT_DIR}/lib/rust-binaries.sh"
+else
+  # No tree behind this script - the `curl | bash` path. There is nothing to
+  # fetch binaries with, which is the same state as a release that published
+  # none, and everything below already degrades from an empty RUST_BIN_DIR.
+  RUST_BIN_DIR=""
+  RUST_BIN_TMP=""
+  fetch_rust_binaries() { return 1; }
+fi
+
+install_rust_helper() {
+  # One helper. The bash script that used to be installed beside this, at the
+  # name the binary `exec`d for a verb it did not answer, is gone: every verb
+  # is answered here.
+  install -m 0750 -o root -g snpanel "${RUST_BIN_DIR}/snpanel-helper" \
+    /usr/local/sbin/snpanel-helper
+  install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-extract" \
+    /usr/local/sbin/snpanel-extract
+  # The phase runner stays on the box rather than only in the release
+  # directory. `update.sh` runs phases before it has fetched anything, and a
+  # box whose update cannot reach the release still has the previous one
+  # here - which is the same tolerance the other binaries already get.
+  install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
+    /usr/local/sbin/snpanel-install
+
+  # The socket, so the panel reaches the helper without a sudo fork per call.
+  # `sudo` still works and is still what an administrator uses by hand.
+  local unit
+  for unit in snpanel-helper.service snpanel-helper.socket; do
+    if [[ -f "${SCRIPT_DIR}/files/${unit}" ]]; then
+      install -m 0644 -o root -g root "${SCRIPT_DIR}/files/${unit}" \
+        "/etc/systemd/system/${unit}"
+    fi
+  done
+  systemctl daemon-reload
+  systemctl enable --now snpanel-helper.socket >/dev/null 2>&1 \
+    || log "WARNING: snpanel-helper.socket did not start; the panel will use sudo"
+}
+
+# The binaries have to be on disk before the first phase that runs one, and
+# that is no longer `install_privileged_helper`: `configure_fastcgi_cache` and
+# the WAF step both call `snpanel-install` and both run earlier in `main()`.
+# Fetching from inside the helper phase left `RUST_BIN_DIR` empty for them.
+#
+# Idempotent: `fetch_rust_binaries` prefers a built tree and otherwise
+# downloads once, and a second call with `RUST_BIN_DIR` already set returns
+# it unchanged.
+require_rust_binaries() {
+  [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel-install" ]] && return 0
+  fetch_rust_binaries || true
+  # The panel *is* the Rust binary now, so this is no longer a nice-to-have.
+  # There is no Python left to fall back to, and the installer itself is one
+  # of them.
+  [[ -n "$RUST_BIN_DIR" ]] || fail \
+    "No Rust binaries for this release. The panel is built from them, so the \
+install cannot continue; publish the release archive or build the tree first."
+}
+
 install_privileged_helper() {
-  install -m 0750 -o root -g snpanel "${SCRIPT_DIR}/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
-  sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
+  require_rust_binaries
+  # The `fail` above already refused an empty RUST_BIN_DIR, so there is no
+  # second branch here any more. The one it had installed the bash helper
+  # under the binary's name, which cannot work now that the panel calls verbs
+  # only the binary answers.
+  install_rust_helper
   install -m 0755 -o root -g root "${SCRIPT_DIR}/update.sh" /usr/local/sbin/snpanel-update
   install -m 0440 -o root -g root "${SCRIPT_DIR}/files/snpanel-sudoers" /etc/sudoers.d/snpanel
   # `requiretty` was removed in sudo 1.9.17. Ubuntu 26.04's build rejects the
@@ -946,15 +1045,47 @@ install_privileged_helper() {
   visudo -c -f /etc/sudoers.d/snpanel >/dev/null
   install -m 0755 -o root -g root "${SCRIPT_DIR}/rescue-firewall.sh" /usr/local/sbin/snpanel-rescue-firewall
   ln -sfn /usr/local/sbin/snpanel-rescue-firewall /usr/local/sbin/snpanel-rescue-ufw-blocklist
-  if [[ -f "${PROJECT_ROOT}/change_IP.sh" ]]; then
-    install -m 0755 -o root -g root "${PROJECT_ROOT}/change_IP.sh" /usr/local/sbin/snpanel-change-ip
-  fi
+  # `change_IP.sh` used to be installed here as `snpanel-change-ip`. It was
+  # never in the repository, so the guard above was always false and no
+  # release ever installed it - `snpanel change-ip` does the work itself now.
 }
 
 install_panel_cli() {
-  install -m 0755 -o root -g root "${SCRIPT_DIR}/files/snpanelctl" /usr/local/sbin/snpanel
-  ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
-  sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
+  # The Rust binary *is* `snpanel` now. It was installed beside the bash
+  # rescue menu as `snpanel-cli` while the menu still served eight of its own
+  # subcommands; it serves all of them, so the script is gone and the binary
+  # takes the name.
+  #
+  # Both old names become symlinks. `snpanelctl` is in runbooks and in muscle
+  # memory, and `snpanel-cli` is what a box installed before this release
+  # learned - neither should stop working because a file moved.
+  if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel" ]]; then
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
+  fi
+  # The API binary, which the archive has always carried and nothing ever
+  # installed: the unit written below names this path,
+  # and until now only out-of-band deploy scripts created it.
+  #
+  # /usr/local/bin, not sbin, and 0755 root:root: the panel's own units run
+  # it as the unprivileged `snpanel` user, so it has to be executable by
+  # somebody who is not root. It holds no privilege of its own - everything
+  # privileged still goes through the helper.
+  #
+  # Installing it here does more than enable the seed below. The `snpanel`
+  # CLI and update.sh reach for this one-shot for the site refresh, the
+  # orphan sweep and the two password writes, so from here a fresh box uses
+  # them. Each was checked against the implementation it replaced before that
+  # switch was made.
+  if [[ -n "$RUST_BIN_DIR" && -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
+      /usr/local/bin/snpanel-api-rust
+  fi
+  # The `sed` that used to run here rewrote the bash menu's own `APP_DIR=`
+  # line, which is how a non-default install directory reached it. A binary
+  # cannot be rewritten that way, so `snpanel` reads `APP_DIR` from the
+  # environment with the same default - see `app_dir()` in the CLI.
 }
 
 validate_privileged_helper() {
@@ -962,48 +1093,23 @@ validate_privileged_helper() {
 }
 
 setup_backend() {
-  cd "${APP_DIR}/backend"
-  python3 -m venv .venv
-  source .venv/bin/activate
-  pip install --upgrade pip
-  pip install -r requirements.txt
-
+  # The password is generated here and not in the phase, because this script
+  # needs the value afterwards - `/root/login.txt` and the summary it prints.
+  # The `SECRET_KEY` is not needed here, so the phase generates that one and
+  # it never becomes a shell variable at all.
   ADMIN_PASSWORD="${SNPANEL_ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -d '\n')}"
 
-  cat > .env <<ENV
-APP_ENV=production
-SECRET_KEY=$(openssl rand -hex 32)
-COMMAND_DRY_RUN=false
-DATABASE_URL=sqlite:///${APP_DIR}/backend/snpanel.db
-REDIS_URL=redis://localhost:6379/0
-RATE_LIMIT_BACKEND=redis
-ALLOWED_ORIGINS=${PANEL_URL}
-BACKUP_ROOT=${BACKUP_ROOT}
-SSL_EMAIL=${SSL_EMAIL}
-PANEL_URL=${PANEL_URL}
-PANEL_DOMAIN=${PANEL_DOMAIN}
-PANEL_PORT=${PANEL_PORT}
-PANEL_SSL_CERT=
-PANEL_SSL_KEY=
-FRONTEND_DIST=${APP_DIR}/frontend/dist
-# Which PHP version the panel acts on when a site does not name one. Written
-# here because this is the only place that knows what was installed: Ubuntu
-# 24.04 gets 8.3 and 8.4, 26.04 carries 8.5 alone, and EL gets 8.3 and 8.4 from
-# Remi. Without it the panel fell back to a constant and asked the helper about
-# a version the machine did not have.
-DEFAULT_PHP_VERSION=${PHP_DEFAULT}
-ENV
-
-  # Lock down the env file: contains SECRET_KEY and ALLOWED_ORIGINS.
-  chmod 0640 "${APP_DIR}/backend/.env"
-
-  # Make panel files writable before seed creates the SQLite DB and admin Linux user.
-  chown -R snpanel:snpanel "${APP_DIR}/backend"
-  chown -R snpanel:snpanel "${APP_DIR}/frontend" 2>/dev/null || true
-
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
-    "${APP_DIR}/backend/.venv/bin/python" -m app.seed
-  deactivate || true
+  # C37: the password travels in the environment, never in argv.
+  # `/proc/<pid>/cmdline` is mode 444 and on a hosting box every customer's
+  # PHP can read it; `/proc/<pid>/environ` is 400. `snpanel-install` inherits
+  # it from here and hands it to the seed the same way.
+  export SNPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+  APP_DIR="$APP_DIR" PANEL_URL="$PANEL_URL" PANEL_DOMAIN="$PANEL_DOMAIN" \
+  PANEL_PORT="$PANEL_PORT" BACKUP_ROOT="$BACKUP_ROOT" SSL_EMAIL="$SSL_EMAIL" \
+  PHP_DEFAULT="$PHP_DEFAULT" \
+    "${RUST_BIN_DIR}/snpanel-install" backend-env \
+    || { unset SNPANEL_ADMIN_PASSWORD; fail "Could not set up the panel backend"; }
+  unset SNPANEL_ADMIN_PASSWORD
 }
 
 wait_for_backend() {
@@ -1018,294 +1124,33 @@ wait_for_backend() {
 }
 
 setup_systemd() {
-  cat >/usr/local/sbin/snpanel-api-start <<STARTER
-#!/usr/bin/env bash
-# app.serve builds the uvicorn server in Python: the same options the command
-# line used to take, plus one certificate per hostname. The panel is therefore
-# reachable on every domain on this machine that has a certificate, instead of
-# only on the one PANEL_DOMAIN names.
-#
-# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
-# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
-# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
-set -euo pipefail
-cd ${APP_DIR}/backend
-exec ${APP_DIR}/backend/.venv/bin/python -m app.serve
-STARTER
-  chmod 0755 /usr/local/sbin/snpanel-api-start
-
-  cat >/etc/systemd/system/snpanel-api.service <<SERVICE
-[Unit]
-Description=SNPanel API
-After=network.target mariadb.service
-
-[Service]
-Type=exec
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=/usr/local/sbin/snpanel-api-start
-Restart=always
-RestartSec=3
-
-# Hardening. These settings must not block the sudo helper; privileged work is
-# restricted by /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel.
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT} /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-ProtectProc=invisible
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=false
-LockPersonality=true
-MemoryDenyWriteExecute=false
-SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=~
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel /var/lib/snpanel/geoip
-  cat >/etc/systemd/system/snpanel-backup-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel scheduled backup runner
-After=network.target mariadb.service
-
-[Service]
-Type=oneshot
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.backup_scheduler
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT} /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-backup-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Run SNPanel scheduled backups every minute
-
-[Timer]
-OnBootSec=90s
-OnUnitActiveSec=60s
-AccuracySec=15s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel weekly malware scan runner
-After=network.target ${CLAMAV_SERVICE}
-
-[Service]
-Type=oneshot
-# The runner blocks until the scan it starts finishes (a whole-server scan can
-# take hours). Without this, systemd's 90s default start timeout kills it and
-# the scan lands in 'interrupted'.
-TimeoutStartSec=infinity
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.malware_schedule
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT:-/var/backups/snpanel} /tmp /var/lib/snpanel
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Ask every quarter of an hour whether the weekly malware scan is due
-
-[Timer]
-# Often enough that a server asleep at the appointed hour still scans when it
-# comes back, while the runner itself refuses to start twice in one window.
-OnBootSec=5min
-OnUnitActiveSec=15min
-AccuracySec=1min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  # snpanel-helper refuses to run unless SUDO_USER names the panel account, so
-  # this unit sets it. The sibling boot units (firewall, blocklist) do the same:
-  # the helper then runs as root here with no real sudo in front of it.
-  cat >/etc/systemd/system/snpanel-autotune.service <<'SERVICE'
-[Unit]
-Description=Auto tune SNPanel PHP-FPM pools and MariaDB for this VPS
-After=network-online.target mariadb.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper php-fpm-retune
-ExecStart=/usr/local/sbin/snpanel-helper mariadb-retune
-RemainAfterExit=no
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  # Keep the clock honest. TOTP logins reject every code once it drifts past
-  # ~30s, and many budget VPS hosts block outbound UDP 123 so systemd-timesyncd
-  # never converges - snpanel-helper time-sync then falls back to an HTTPS Date
-  # header.
-  timedatectl set-ntp true >/dev/null 2>&1 || true
-  # Timezone is the operator's call - only touched when PANEL_TIMEZONE is set.
-  if [[ -n "$PANEL_TIMEZONE" ]]; then
-    if timedatectl set-timezone "$PANEL_TIMEZONE" >/dev/null 2>&1; then
-      log "Server timezone set to ${PANEL_TIMEZONE}"
-    else
-      log "WARNING: PANEL_TIMEZONE='${PANEL_TIMEZONE}' is not a valid zone; timezone left unchanged"
-    fi
-  fi
-  cat >/etc/systemd/system/snpanel-timesync.service <<'SERVICE'
-[Unit]
-Description=Correct the SNPanel server clock when NTP cannot reach the network
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper time-sync
-RemainAfterExit=no
-SERVICE
-  cat >/etc/systemd/system/snpanel-timesync.timer <<'SERVICE'
-[Unit]
-Description=Check the SNPanel server clock at boot and hourly
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=1h
-AccuracySec=30s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  systemctl daemon-reload
-  systemctl disable --now snpanel-auto-update.timer 2>/dev/null || true
-  rm -f /etc/systemd/system/snpanel-auto-update.service /etc/systemd/system/snpanel-auto-update.timer
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now snpanel-api
-  systemctl enable --now snpanel-backup-scheduler.timer
-  systemctl enable --now snpanel-malware-scheduler.timer
-  systemctl enable snpanel-autotune.service >/dev/null 2>&1 || true
-  systemctl start snpanel-autotune.service >/dev/null 2>&1 || true
-  systemctl enable snpanel-timesync.timer >/dev/null 2>&1 || true
-  if id -u snpanel >/dev/null 2>&1; then
-    # Start the clock unit only once the helper that answers `time-sync` is in
-    # place, so it never flashes up as a failed unit mid-install.
-    systemctl start snpanel-timesync.timer >/dev/null 2>&1 || true
-    systemctl start snpanel-timesync.service >/dev/null 2>&1 || true
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper certbot-auto-renew-install >/dev/null 2>&1 || true
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper firewall-blocklist-timer-install >/dev/null 2>&1 || true
-    # Certificates the panel can answer a handshake with, plus the renewal hook
-    # that keeps them fresh.
-    sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper panel-sni-sync >/dev/null 2>&1 || true
-  fi
+  # The eight unit files, the reload and the enabling are
+  # `snpanel-install systemd-units`. The bodies live in
+  # `snpanel_installer::systemd_units`, where each one has a golden fixture
+  # recorded from this script running on a real Debian 13.
+  #
+  # Moving it fixes something the shell had drifted into: it wrote
+  # `After=network.target clamav-daemon` without the `.service` suffix, and
+  # systemd silently drops a dependency it cannot resolve - the malware
+  # scheduler was not waiting for ClamAV at all.
+  APP_DIR="$APP_DIR" BACKUP_ROOT="$BACKUP_ROOT" PANEL_PORT="$PANEL_PORT" \
+    "${RUST_BIN_DIR}/snpanel-install" systemd-units \
+    || fail "Could not install the panel's systemd units"
   wait_for_backend
 }
 
 write_tools_nginx_config() {
-  local api_scheme="http" tools_scheme="http" pma_secure="false" ssl_block=""
-  if [[ -n "${PANEL_SSL_CERT:-}" && -n "${PANEL_SSL_KEY:-}" && -f "${PANEL_SSL_CERT}" && -f "${PANEL_SSL_KEY}" ]]; then
-    api_scheme="https"
-    tools_scheme="https"
-    pma_secure="true"
-    printf -v ssl_block '\n    listen 443 ssl http2 default_server;\n    ssl_certificate %s;\n    ssl_certificate_key %s;' "$PANEL_SSL_CERT" "$PANEL_SSL_KEY"
-  fi
-
-  cat >/etc/nginx/conf.d/00-snpanel-tools.conf <<NGINX
-server {
-    listen 80 default_server;${ssl_block}
-    server_name _;
-    client_max_body_size 1100M;
-
-    # Panel certificates are issued through this, so the panel no longer has to
-    # stop nginx to prove it owns its own hostname.
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/snpanel-acme;
-        default_type text/plain;
-        try_files \$uri =404;
-        access_log off;
-        auth_basic off;
-    }
-
-    location = /phpmyadmin {
-        return 301 /phpmyadmin/;
-    }
-
-    location /phpmyadmin/ {
-        alias ${PHPMYADMIN_ROOT}/;
-        index index.php;
-        try_files \$uri \$uri/ =404;
-    }
-
-    location ~ ^/phpmyadmin/(.+\.php)$ {
-        alias ${PHPMYADMIN_ROOT}/\$1;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME ${PHPMYADMIN_ROOT}/\$1;
-        fastcgi_param SCRIPT_NAME /phpmyadmin/\$1;
-        # Twig raises its deprecations as E_USER_DEPRECATED, which php.ini's
-        # E_ALL & ~E_DEPRECATED does not exclude, so Debian's pairing of
-        # phpMyAdmin 5.2 with Twig 3.21 shows the administrator a wall of
-        # notices about a library they cannot change. Silenced here and only
-        # here: a customer's own site may well want its deprecations.
-        fastcgi_param PHP_VALUE "error_reporting=E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED";
-        fastcgi_pass unix:/run/php/php${PHP_DEFAULT}-fpm.sock;
-        fastcgi_read_timeout 300;
-    }
-}
-NGINX
-
-  local host
-  host="${PANEL_DOMAIN:-$SERVER_IP}"
-  [[ -n "$host" ]] || host="$(detect_server_ip)"
-  sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${api_scheme}://127.0.0.1:${PANEL_PORT}/api/databases/phpmyadmin-sso/'#" ${PHPMYADMIN_ROOT}/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "s#('secure' => )(true|false)#\1${pma_secure}#" ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php ${PHPMYADMIN_ROOT}/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "/PmaAbsoluteUri/s#'https?://[^']+/phpmyadmin/'#'${tools_scheme}://${host}/phpmyadmin/'#" ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php 2>/dev/null || true
+  # `snpanel-install tools-vhost`. The block is
+  # `snpanel_installer::tools_vhost`, with a fixture for each of its two
+  # shapes - with a panel certificate and without.
+  #
+  # The certificate has to be on disk and not only named in `.env`: an
+  # `ssl_certificate` pointing at a file that is not there stops nginx from
+  # starting at all, which takes every site on the box with it.
+  PANEL_SSL_CERT="${PANEL_SSL_CERT:-}" PANEL_SSL_KEY="${PANEL_SSL_KEY:-}" \
+  PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" PHP_DEFAULT="$PHP_DEFAULT" \
+    "${RUST_BIN_DIR}/snpanel-install" tools-vhost \
+    || fail "Could not write the tools vhost"
 }
 
 
@@ -1361,118 +1206,27 @@ setup_phpmyadmin_control_user() {
 }
 
 setup_phpmyadmin_sso() {
-  local blowfish_secret
-  blowfish_secret="$(openssl rand -hex 32)"
-  local pma_host pma_scheme pma_secure
-  pma_host="${PANEL_DOMAIN:-$SERVER_IP}"
-  [[ -n "$pma_host" ]] || pma_host="$(detect_server_ip)"
-  pma_scheme="http"
-  pma_secure="false"
-  if [[ "$ENABLE_SSL" == "yes" ]]; then
-    pma_scheme="https"
-    pma_secure="true"
-  fi
-
-  cat >${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php <<PHP
-<?php
-\$cfg['blowfish_secret'] = '${blowfish_secret}';
-\$i = 1;
-\$cfg['Servers'][\$i]['auth_type'] = 'signon';
-\$cfg['Servers'][\$i]['SignonSession'] = 'SNPanelPmaSignon';
-\$cfg['Servers'][\$i]['SignonCookieParams'] = [
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => ${pma_secure},
-    'httponly' => true,
-    'samesite' => 'Lax',
-];
-\$cfg['Servers'][\$i]['SignonURL'] = '/phpmyadmin/snpanel-signon.php';
-\$cfg['Servers'][\$i]['host'] = 'localhost';
-\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
-\$cfg['Servers'][\$i]['only_db'] = '';
-\$cfg['SessionSavePath'] = '/var/lib/php/sessions';
-\$cfg['PmaAbsoluteUri'] = '${pma_scheme}://${pma_host}/phpmyadmin/';
-PHP
-
-  cat >${PHPMYADMIN_ROOT}/snpanel-signon.php <<'PHP'
-<?php
-declare(strict_types=1);
-
-session_save_path('/var/lib/php/sessions');
-ini_set('session.use_cookies', 'true');
-session_set_cookie_params([
-    'lifetime' => 0,
-    'path' => '/',
-    'domain' => '',
-    'secure' => __SNPANEL_PMA_COOKIE_SECURE__,
-    'httponly' => true,
-    'samesite' => 'Lax',
-]);
-session_name('SNPanelPmaSignon');
-if (!session_start()) {
-    http_response_code(500);
-    exit('Cannot start signon session');
-}
-
-$token = $_GET['snpanel_sso'] ?? '';
-if (!preg_match('/^[A-Za-z0-9_-]{20,}$/', $token)) {
-    http_response_code(403);
-    exit('Invalid token');
-}
-
-$apiUrl = '__SNPANEL_API_BASE__' . rawurlencode($token);
-$ch = curl_init($apiUrl);
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT => 5,
-    CURLOPT_SSL_VERIFYPEER => false,
-    CURLOPT_SSL_VERIFYHOST => false,
-    CURLOPT_HTTPHEADER => ['Accept: application/json'],
-]);
-$response = curl_exec($ch);
-$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
-
-if ($status !== 200 || !$response) {
-    http_response_code(403);
-    exit('Expired token');
-}
-
-$data = json_decode($response, true);
-if (!is_array($data) || empty($data['db_user']) || empty($data['db_password'])) {
-    http_response_code(403);
-    exit('Invalid signon data');
-}
-
-session_regenerate_id(true);
-$_SESSION = [];
-$_SESSION['PMA_single_signon_user'] = $data['db_user'];
-$_SESSION['PMA_single_signon_password'] = $data['db_password'];
-$_SESSION['PMA_single_signon_host'] = 'localhost';
-$_SESSION['PMA_single_signon_port'] = '';
-$_SESSION['PMA_single_signon_cfgupdate'] = [
-    'only_db' => $data['db_name'] ?? '',
-];
-$_SESSION['PMA_single_signon_HMAC_secret'] = bin2hex(random_bytes(16));
-session_write_close();
-
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
-header('Location: /phpmyadmin/index.php?server=1');
-exit;
-PHP
-
-  local api_scheme="http"
-  if [[ "$ENABLE_SSL" == "yes" ]]; then
-    api_scheme="https"
-  fi
-  sed -i "s#__SNPANEL_API_BASE__#${api_scheme}://127.0.0.1:${PANEL_PORT}/api/databases/phpmyadmin-sso/#" ${PHPMYADMIN_ROOT}/snpanel-signon.php
-  sed -i "s#__SNPANEL_PMA_COOKIE_SECURE__#${pma_secure}#" ${PHPMYADMIN_ROOT}/snpanel-signon.php
-
-  chown root:${WEB_GROUP} ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php
-  chmod 640 ${PHPMYADMIN_CONF_DIR}/conf.d/snpanel-signon.php
-  chmod 644 ${PHPMYADMIN_ROOT}/snpanel-signon.php
+  # `snpanel-install phpmyadmin-sso`. Both file bodies are
+  # `snpanel_installer::phpmyadmin`, which has had fixtures recorded from this
+  # function for some time and until now no caller.
+  #
+  # The blowfish secret goes with it. It was `openssl rand -hex 32` here, so
+  # it passed through a shell variable and a heredoc on its way to a file that
+  # is 0640; now it is read from /dev/urandom inside the phase and written
+  # straight out, and no other process ever sees it.
+  #
+  # The shim used to be written with `__SNPANEL_API_BASE__` and
+  # `__SNPANEL_PMA_COOKIE_SECURE__` placeholders and then `sed`ed. The phase
+  # takes both as values, so there is no window in which the served file
+  # names a placeholder.
+  #
+  # `SERVER_IP` is resolved here because this script already has
+  # `detect_server_ip`; the phase takes the answer.
+  PHPMYADMIN_CONF_DIR="$PHPMYADMIN_CONF_DIR" PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" \
+  PANEL_DOMAIN="${PANEL_DOMAIN:-}" SERVER_IP="${SERVER_IP:-$(detect_server_ip)}" \
+  ENABLE_SSL="$ENABLE_SSL" PANEL_PORT="$PANEL_PORT" WEB_GROUP="$WEB_GROUP" \
+    "${RUST_BIN_DIR}/snpanel-install" phpmyadmin-sso \
+    || fail "Could not write the phpMyAdmin single sign-on files"
 }
 
 # EL ships its default `server { listen 80 default_server; ... }` inside
@@ -1538,6 +1292,26 @@ setup_firewall() {
   return 0
 }
 
+# The sign-on endpoint redeems each token over 127.0.0.1, in whatever scheme
+# the panel serves. `setup_phpmyadmin_sso` writes it before the certificate
+# exists and can only follow ENABLE_SSL - which is "no" on this path, and "no"
+# still gets the self-signed certificate below. The endpoint then asked
+# http:// of a port that speaks only TLS, and every phpMyAdmin sign-on on the
+# box answered "Expired token".
+#
+# `snpanel-install phpmyadmin-signon` is what update.sh runs after it writes
+# the tools vhost: the address, the cookie's `secure` flag and
+# `PmaAbsoluteUri`, all from the certificate the panel now has. Never fatal:
+# phpMyAdmin is optional, and the panel itself is up by now.
+point_phpmyadmin_sso_at_panel() {
+  PANEL_PORT="$PANEL_PORT" PANEL_DOMAIN="${PANEL_DOMAIN:-}" \
+  SERVER_IP="${SERVER_IP:-$(detect_server_ip)}" \
+  PANEL_SSL_CERT="${PANEL_SSL_CERT:-}" PANEL_SSL_KEY="${PANEL_SSL_KEY:-}" \
+  PHPMYADMIN_ROOT="$PHPMYADMIN_ROOT" PHPMYADMIN_CONF_DIR="$PHPMYADMIN_CONF_DIR" \
+    "${RUST_BIN_DIR}/snpanel-install" phpmyadmin-signon \
+    || echo "WARNING: could not point phpMyAdmin's single sign-on at the panel" >&2
+}
+
 setup_selfsigned_ssl() {
   # No domain, or Let's Encrypt declined. The panel still takes an admin
   # password, so it gets a certificate of its own rather than answering in the
@@ -1575,6 +1349,7 @@ setup_selfsigned_ssl() {
   systemctl restart snpanel-api
   for _ in {1..20}; do
     if curl -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:${PANEL_PORT}/api/health" >/dev/null 2>&1; then
+      point_phpmyadmin_sso_at_panel
       return 0
     fi
     sleep 1
@@ -1592,6 +1367,7 @@ setup_selfsigned_ssl() {
     -e "s#^ALLOWED_ORIGINS=.*#ALLOWED_ORIGINS=${PANEL_URL}#" \
     "${APP_DIR}/backend/.env"
   systemctl restart snpanel-api
+  point_phpmyadmin_sso_at_panel
 }
 
 setup_ssl() {
@@ -1665,12 +1441,17 @@ INFO
   chmod 600 /root/login.txt
 }
 
+# `validate_sources` refuses to start without ${PROJECT_ROOT}/VERSION, so this
+# always has a file to read. The fallback under it used to be
+# backend/app/core/version.py, which went with the Python backend - a `sed`
+# over a file that cannot exist, whose empty output then became the stale
+# default in `write_update_state`.
 source_version() {
-  if [[ -f "${PROJECT_ROOT}/VERSION" ]]; then
-    tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION"
-    return 0
-  fi
-  sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "${PROJECT_ROOT}/backend/app/core/version.py" 2>/dev/null | head -n 1
+  # `return 0`, not 1: the caller is `version="$(source_version)"` under
+  # `set -e`, so a non-zero status here would abort the install at its
+  # second-to-last phase rather than fall through to the default below it.
+  [[ -f "${PROJECT_ROOT}/VERSION" ]] || return 0
+  tr -d '[:space:]' <"${PROJECT_ROOT}/VERSION"
 }
 
 write_update_state() {
@@ -1694,7 +1475,15 @@ STATE
   chmod 0640 /var/lib/snpanel/update-status.json
 }
 
+cleanup_rust_binaries() {
+  [[ -n "${RUST_BIN_TMP:-}" ]] || return 0
+  rm -rf -- "$RUST_BIN_TMP"
+  RUST_BIN_TMP=""
+}
+
 cleanup_release_source() {
+  # The ionCube archive kept for the PHP versions after the first.
+  [[ -n "$IONCUBE_ARCHIVE_CACHE" ]] && rm -f -- "$IONCUBE_ARCHIVE_CACHE"
   [[ "${CLEAN_RELEASE_SOURCE:-true}" == "true" ]] || return 0
   [[ "$PROJECT_ROOT" == "/opt/snpanel-source" ]] || return 0
   [[ ! -d "${PROJECT_ROOT}/.git" ]] || return 0
@@ -1731,44 +1520,11 @@ enable_ipv6_when_available() {
 }
 
 configure_log_limits() {
-  # systemd-journald ships with no size limit: it falls back to 10% of the
-  # filesystem, which on a 72G disk is 7.2G. Measured on a live server, the
-  # journal had reached 2.7G - 53 times the size of every nginx log put
-  # together - fed mostly by SSH password-guessing hitting sshd thousands of
-  # times an hour. nginx's own logs were never the problem; they rotate daily,
-  # keep 14 days and compress, and totalled 51M.
-  #
-  # A drop-in rather than an edit of journald.conf, so a distribution upgrade
-  # cannot quietly revert it.
-  mkdir -p /etc/systemd/journald.conf.d
-  cat >/etc/systemd/journald.conf.d/99-snpanel-size.conf <<'JOURNALD'
-# Managed by SNPanel.
-[Journal]
-SystemMaxUse=500M
-SystemKeepFree=1G
-MaxRetentionSec=2week
-JOURNALD
-  systemctl restart systemd-journald 2>/dev/null || true
-  journalctl --vacuum-size=500M >/dev/null 2>&1 || true
-
-  # btmp records every failed login and Ubuntu ships no rule for it. On the
-  # same server it had grown to 130M across two files, holding 62,000 failed
-  # SSH attempts. `su root root` is required because /var/log is root:syslog
-  # and group-writable, and logrotate refuses to act on a file in a directory
-  # it considers unsafe unless told whose identity to use.
-  cat >/etc/logrotate.d/btmp <<'BTMP'
-# Managed by SNPanel.
-/var/log/btmp {
-    su root root
-    missingok
-    weekly
-    create 0660 root utmp
-    rotate 4
-    compress
-    notifempty
-}
-BTMP
-  chmod 644 /etc/logrotate.d/btmp
+  # `snpanel-install log-limits`. Both files come from
+  # `snpanel_installer::systemd_units`, with fixtures; the vacuum and the
+  # journald restart are the acting half. Nothing here is fatal: a box whose
+  # journald will not restart keeps its old limits.
+  "${RUST_BIN_DIR}/snpanel-install" log-limits || true
 }
 
 main() {
@@ -1783,6 +1539,13 @@ main() {
   log "Installing base packages"
   install_base_packages
 
+  # Before the first phase that runs one, and after the packages, because
+  # fetching a release needs curl. Everything from here on that writes a
+  # managed file does it through `snpanel-install` - `install_php` included,
+  # which is why this moved up from where it first landed.
+  log "Fetching the Rust binaries"
+  require_rust_binaries
+
   log "Installing Node.js"
   install_nodejs
 
@@ -1791,7 +1554,6 @@ main() {
 
   log "Configuring Nginx FastCGI cache"
   configure_fastcgi_cache
-  configure_proxy_upgrade_map
 
   log "Configuring WAF engine and HTTP flood protection"
   if ! install_waf_engine; then
@@ -1851,6 +1613,7 @@ main() {
   write_update_state
 
   print_summary
+  cleanup_rust_binaries
   cleanup_release_source
 }
 

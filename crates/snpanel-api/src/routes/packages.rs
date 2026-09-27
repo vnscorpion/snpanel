@@ -332,9 +332,7 @@ fn read_common_fields(payload: &Value, fields: &mut PackageFields) -> Result<(),
         if raw.is_null() {
             continue;
         }
-        let Some(value) = raw.as_bool() else {
-            return Err(crate::errors::bool_parsing(name, raw));
-        };
+        let value = crate::errors::read_bool(name, Some(raw), false)?;
         match name {
             "terminal_enabled" => fields.terminal_enabled = Some(value),
             "waf_enabled" => fields.waf_enabled = Some(value),
@@ -366,13 +364,30 @@ pub(super) async fn audit_action(
     action: &str,
     target: &str,
 ) {
+    audit_action_detail(state, parts, actor_id, action, target, "").await
+}
+
+/// [`audit_action`] with the Python's `detail=` argument.
+///
+/// `delete_website` passes the certificate note, which is the only record
+/// that a lineage was **kept** - the row it was attached to is gone, and
+/// without this the next administrator has no way to know the certificate is
+/// still on the machine.
+pub(super) async fn audit_action_detail(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    actor_id: i64,
+    action: &str,
+    target: &str,
+    detail: &str,
+) {
     let ip = crate::client::audit_ip(parts);
     let ua = parts
         .headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let detail = snpanel_db::AuditRepo::detail_with_request("", &ip, ua);
+    let detail = snpanel_db::AuditRepo::detail_with_request(detail, &ip, ua);
     if let Err(e) = state
         .db
         .audits()
@@ -432,9 +447,16 @@ mod tests {
     fn a_wrong_type_is_a_validation_error_not_a_silent_zero() {
         let mut f = PackageFields::default();
         assert!(read_common_fields(&json!({"website_limit": "abc"}), &mut f).is_err());
-        assert!(read_common_fields(&json!({"terminal_enabled": "yes"}), &mut f).is_err());
         // A float is not an integer either.
         assert!(read_common_fields(&json!({"website_limit": 1.5}), &mut f).is_err());
+        // But `"yes"` **is** a boolean: FastAPI validates a body in
+        // pydantic's lax mode. This line asserted the opposite until the
+        // real pydantic was asked — see the corpus test in `errors.rs`.
+        assert!(read_common_fields(&json!({"terminal_enabled": "yes"}), &mut f).is_ok());
+        assert_eq!(f.terminal_enabled, Some(true));
+        assert!(read_common_fields(&json!({"terminal_enabled": "maybe"}), &mut f).is_err());
+        assert!(read_common_fields(&json!({"terminal_enabled": 2}), &mut f).is_err());
+        assert!(read_common_fields(&json!({"terminal_enabled": []}), &mut f).is_err());
     }
 
     #[test]

@@ -356,7 +356,8 @@ fn unix_seconds() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn random_hex(bytes: usize) -> String {
+/// `secrets.token_hex(n)` — *n* random bytes as 2n hex characters.
+pub fn random_hex(bytes: usize) -> String {
     use rand::RngCore;
     let mut buf = vec![0u8; bytes];
     rand::rngs::OsRng.fill_bytes(&mut buf);

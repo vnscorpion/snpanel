@@ -1,412 +1,265 @@
 # SNPanel
 
-Lightweight hosting management panel for Ubuntu, Debian and AlmaLinux. SNPanel helps you run
-WordPress and PHP websites from a single clean web UI with user
-ownership, quotas, backups, SSL, services, and firewall tools built in.
+**English** | [Tiếng Việt](README.vi.md)
 
-> **SNPanel is a fork of [BPanel](https://github.com/BNIX-VN/bpanel), being
-> rewritten in Rust, and it is not an upgrade of it.**
->
-> A server running BPanel cannot update into SNPanel. The two install to
-> different places, run under different system users and service names, and
-> set different session cookies, so they share no file on disk:
->
-> | | BPanel | SNPanel |
-> |---|---|---|
-> | install root | `/opt/bpanel` | `/opt/snpanel` |
-> | configuration | `/etc/bpanel` | `/etc/snpanel` |
-> | state | `/var/lib/bpanel` | `/var/lib/snpanel` |
-> | system user | `bpanel` | `snpanel` |
-> | services | `bpanel-api`, `bpanel-helper` | `snpanel-api`, `snpanel-helper` |
-> | session cookie | `bpanel_session` | `snpanel_session` |
->
-> The separation is deliberate: the two can sit on one machine without
-> touching each other, and a BPanel server pointed at this repository by
-> mistake cannot "update" itself into a layout it knows nothing about. There
-> is no migration path today - moving an existing server means a fresh install
-> and carrying the data across by hand.
->
-> Version numbering restarts at `1.0.0` for the same reason. BPanel is at
-> 1.0.134, so a BPanel machine that did somehow read this repository's tags
-> would see a *lower* number and offer no update at all, which is the safe
-> direction for that mistake to fail in.
+SNPanel is a lightweight hosting control panel for Ubuntu, Debian and
+AlmaLinux. It runs WordPress and PHP websites from one clean web interface -
+accounts and packages, quotas, backups, SSL, a firewall and a WAF built in.
+It is written in Rust: one binary serves the panel, and a small root helper
+does the privileged work behind it.
 
-- Dashboard resource monitoring for CPU, RAM, disk, and network throughput
-- WordPress one-click installer (PHP 8.4 default, 8.3/8.4 supported) with WP-CLI
-- WordPress and PHP sites with editable full Nginx vhosts
-- Panel users map to Linux/SFTP users; website source lives in `/home/<panel-user>/<domain>/public_html`
-- Admin quick-login for creating sites as a selected user, plus one-owner assignment per website
-- Website count limits and SNPanel soft storage quotas per end user
-- User packages for reusable website/storage limits on panel accounts
-- MariaDB database creation and management with phpMyAdmin SSO (60s tokens)
-- Let's Encrypt SSL via certbot
-- Native SNPanel file manager with upload, edit, archive, and extract support
-- Backups: archive site files + SQL, scheduled full-user backups, restore, upload, download
-- SFTP backup targets for off-server backup copies
-- iptables + ipset firewall with protected panel/web/mail ports, per-IP allow/deny rules,
-  and URL blocklists loaded straight into an ipset
-- Update controls for apt-based OS packages and SNPanel source updates
-- Nginx ModSecurity/WAF engine installed by default, using lightweight WordPress/Laravel/PHP rules, per-site toggles, and HTTP Flood limits
-- PHP-FPM config editor per version
-- Cron job manager with whitelisted WP-CLI commands
-- Role-based access: Admin / End user
-- Google Authenticator compatible 2FA
+![The SNPanel dashboard](docs/screenshots/en/dashboard.png)
 
-## Tech stack
+## Features
 
-- Front door: Rust - axum, rustls, sqlx, tokio. Terminates TLS on the panel
-  port, serves the routers it has ported, and forwards the rest to the Python
-  process on loopback (the strangler pattern; see `RUST_MIGRATION_STATUS.md`)
-- Backend: FastAPI, SQLAlchemy, SQLite (default), Pydantic v2
-- Frontend: React 18, Vite, lucide-react
-- Server: Nginx, OpenSSH/SFTP, ModSecurity/WAF, systemd, MariaDB, Redis, PHP-FPM, certbot
+**Websites**
 
-Both implementations share one SQLite file, one Redis, and one `SECRET_KEY`,
-so a session started through either is valid through the other. The Rust side
-is being grown router by router; nothing is switched over until it answers
-byte-for-byte the same as the Python it replaces.
+- WordPress one-click installer with WP-CLI; PHP 8.4 by default with 8.3
+  beside it, and more versions installable from the panel
+- WordPress and PHP sites, each with an editable nginx vhost
+- Let's Encrypt SSL through certbot
+- A file manager: upload, edit, archive and extract
+- MariaDB databases with phpMyAdmin single sign-on (60-second tokens); a
+  database belongs to a panel user and travels with them in their backups
+- A cron manager with whitelisted WP-CLI commands
+- A terminal per site, running allowlisted commands as the site's own Linux
+  user
 
-## Versioning
+**Accounts**
 
-Current release: `1.0.0`.
+- Two roles: administrator and end user (customer)
+- Every panel user is a Linux user with an SFTP login chrooted to their home;
+  websites live in `/home/<user>/<domain>/public_html`
+- Website limits, storage quotas and reusable packages per user
+- Administrators can sign in as a customer to create sites for them, and move
+  a website to another owner
+- Two-step sign-in with a passkey, an authenticator-app code (TOTP), or both
 
-SNPanel versions use semantic versioning: `major.minor.patch`, and the count
-restarts at the fork rather than continuing BPanel's - see the note at the top
-of this file for why that matters.
+**Backups**
 
-## System requirements
+- Site files and their databases; scheduled full-user backups; restore,
+  upload and download
+- Copies off the server to SFTP servers and S3 buckets - AWS S3, Cloudflare
+  R2, Backblaze B2, Wasabi, MinIO or any S3-compatible store
+- Archives named by date and time, by user name, by weekday or by date, each
+  kept as long as its schedule says
 
-- Ubuntu 24.04 LTS, Debian 12 / 13, or AlmaLinux 10 (clean install recommended)
-  - **Debian 13 carries the most PHP versions.** Its packages come from
-    packages.sury.org, which publishes 7.4 through 8.5 for trixie, so the panel
-    can offer more versions there than anywhere else.
-  - **Ubuntu 26.04 is not supported.** It was ported and then withdrawn:
-    Ondrej's PPA publishes no `resolute` suite, so the only PHP available on
-    it is the distribution's 8.5. A panel that cannot install the PHP version
-    a customer's site runs on is not support, and claiming it would mean the
-    first honest test happened on somebody's server. This will be revisited
-    when the PPA publishes for the release.
-  - On AlmaLinux the installer enables EPEL and Remi, and PHP comes from
-    Remi's `php83`/`php84` packages. Two panel features are unavailable
-    there and say so rather than failing quietly: the nginx ModSecurity
-    rule engine, which the distribution does not package at all, and
-    installing an additional PHP version from the panel.
-- Root access
-- Optional: a domain pointing to the server's public IP (for SSL on the panel)
-- 1 vCPU / 1 GB RAM minimum, 2 vCPU / 2 GB RAM recommended
+**Security**
 
-## Fresh install
+- An nftables firewall: the panel, web and mail ports always open, allow and
+  deny rules per address, and URL blocklists loaded into nftables sets
+- An nginx ModSecurity WAF with the panel's WordPress, Laravel and PHP rules
+  and the OWASP Core Rule Set, switched per site; HTTP flood limits and bot
+  blocking
 
-Run as root on a fresh Ubuntu, Debian or AlmaLinux server.
+**Server**
 
-Single-command install:
+- A dashboard: CPU, RAM, disk and network; a card for each area, green, amber
+  or red; and what needs attention, worst first, with the way to fix it
+- PHP settings per version, and PHP extensions installed or removed from the
+  page - redis, imagick, memcached, mongodb, apcu, xdebug and more
+- PHP-FPM and MariaDB tuned to the machine's RAM and CPU
+- Services at a glance, with restart; OS updates through apt or dnf, now or
+  automatically; SNPanel updates from its releases
+- English and Vietnamese, switched from the header - pages and server
+  messages alike
+
+**Addons**, installed from Settings > Addons
+
+- **Applications**: Node.js apps, Docker containers and Compose projects, each
+  on its own port with its own memory limit, served on a domain through nginx
+- **Fail2ban**: SSH, panel sign-ins, WordPress sign-ins, password-protected
+  folders and repeat offenders, banned in nftables; Cloudflare's addresses are
+  never banned from a site's log
+- **Malware Scanner**: ClamAV checks uploads as they arrive, and Linux Malware
+  Detect scans a site, every site or the whole machine, on demand or weekly,
+  moving what it finds to quarantine
+- **AI assistants (MCP)**: 32 tools for Claude Code, Cursor, VS Code and any
+  other MCP client at `/api/mcp`, over the websites, files, logs, backups,
+  firewall and WAF. Each assistant has a token of the account it acts for,
+  read-only unless allowed to act, and every action is in the audit log
+- **Notifications**, for administrators: e-mail through your SMTP server and
+  Telegram through your bot - failed backups, malware, expiring certificates,
+  a filling disk, a stopped service, a new release, and sign-ins and changes
+  to administrator accounts
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/websites.png" alt="Websites"><br><sub>Websites</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/files.png" alt="File manager"><br><sub>File manager</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/databases.png" alt="Databases"><br><sub>Databases</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/backups.png" alt="Backups"><br><sub>Backups</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/settings.png" alt="Settings"><br><sub>Settings</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/php.png" alt="PHP settings and extensions"><br><sub>PHP settings and extensions</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/firewall.png" alt="Firewall"><br><sub>Firewall</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/waf.png" alt="WAF"><br><sub>WAF</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/malware.png" alt="Malware scanner"><br><sub>Malware scanner</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/notifications.png" alt="Notifications"><br><sub>Notifications</sub></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><img src="docs/screenshots/en/ai-assistants.png" alt="AI assistants (MCP)"><br><sub>AI assistants (MCP)</sub></td>
+    <td width="50%" align="center"><img src="docs/screenshots/en/dashboard-phone.png" alt="On a phone" width="260"><br><sub>On a phone</sub></td>
+  </tr>
+</table>
+
+## Requirements
+
+- A clean server running Ubuntu 24.04 LTS, Debian 13 or AlmaLinux 10, with
+  root access
+  - Debian 13 has the most PHP versions: 7.4 to 8.5, from packages.sury.org
+  - On AlmaLinux the installer enables EPEL and Remi, and PHP comes from Remi.
+    The nginx ModSecurity engine is not packaged there, so the WAF page offers
+    HTTP flood limits and bot blocking only. SELinux is not configured by the
+    installer.
+  - Ubuntu 26.04 is not supported yet: the PHP repository for Ubuntu does not
+    publish for it, which leaves only the distribution's PHP 8.5
+  - Debian 12 is accepted by the installer, but not tested as thoroughly
+- 1 vCPU and 1 GB RAM at least; 2 vCPU and 2 GB RAM recommended
+- Optional: a domain pointing at the server, for the panel's own SSL
+
+## Installation
+
+Run as root on a fresh server:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vnscorpion/snpanel/refs/heads/main/install.sh | bash
 ```
 
-The bootstrap script downloads the newest semantic release tag from GitHub,
-then runs the installer from that tag. It also copies `VERSION` into the
-runtime root so the panel shows the installed release, not the fallback.
+The script installs the newest release. It asks for:
 
-The installer will:
+- the panel hostname - optional; left blank, the panel uses the server's IP
+- the panel port - `2222` by default; the firewall opens only that port for
+  the panel
+- whether to issue Let's Encrypt SSL for the panel hostname, and an e-mail
+  address for it
 
-1. Install git, Nginx, MariaDB, Redis, OpenSSH/SFTP, PHP 8.4 default (8.3/8.4 supported), Node.js 22,
-   certbot, phpMyAdmin, WP-CLI, iptables, ipset.
-2. Copy source to `/opt/snpanel`, build the frontend, set up the Python venv.
-3. Create the `snpanel` service account and the `admin` Linux/SFTP account.
-4. Create the systemd service `snpanel-api`.
-5. Configure phpMyAdmin SSO.
-6. Auto-tune PHP-FPM and MariaDB from VPS RAM/CPU and keep that tuning on reboot.
-7. Start the panel directly on the configured panel port without relying on Nginx for login.
-8. Issue Let's Encrypt SSL for the panel domain (optional).
-9. Install `/usr/local/sbin/snpanel-update` and `/usr/local/sbin/snpanel-rescue-firewall`.
-10. Remove the extracted release source.
-11. Print only the panel URL, user, and password; save the same fields to
-   `/root/login.txt`.
-
-You will be prompted for:
-
-- Panel hostname (optional; blank uses the server IP)
-- Panel port (default `2222`; the firewall opens only the selected panel port)
-- Whether to enable Let's Encrypt SSL for the panel domain
-- An email for SSL registration
-
-After install, open the `Panel URL` printed at the end of the installer. The
-admin password is shown there and saved to `/root/login.txt`; store it in a
+It installs nginx, MariaDB, Redis, OpenSSH/SFTP, PHP 8.4 and 8.3, Node.js,
+certbot, phpMyAdmin, WP-CLI and nftables; creates the `snpanel` service
+account, the `admin` account and the `snpanel-api` service; tunes PHP-FPM
+and MariaDB to the machine; and prints the panel's address, user and
+password, which are also saved to `/root/login.txt`. Keep the password in a
 password manager.
 
-The panel is not tied to that one hostname. It holds a copy of every
-certificate on the machine and picks one per TLS handshake (SNI), so
-`https://<any domain hosted here>:<panel port>` opens the same panel with a
-certificate the browser accepts. `snpanel login` and the Panel settings page
-both list the hostnames that work. `PANEL_URL` only decides which certificate
-a browser gets when it asks for a name that has none of its own, and which
-address the installer prints.
+The panel answers on every domain hosted on the server: it keeps a
+certificate for each and picks one per connection, so
+`https://<any hosted domain>:<panel port>` opens it with a certificate the
+browser accepts. `snpanel login` lists those addresses.
 
-## The Rust front door
+To check an installation, run `xtask acceptance` as root on the server: it
+creates a throwaway website, checks that PHP runs through nginx and that the
+WAF reports honestly, and removes the site again.
 
-SNPanel is being rewritten in Rust one router at a time, using the strangler
-pattern: a Rust process holds the panel port and the TLS certificate, answers
-the routes it has ported, and forwards everything else to the Python process
-on loopback. Both share one SQLite file, one Redis and one `SECRET_KEY`, so a
-session started through either is valid through the other.
+## Updating
 
-**`installer/install.sh` sets up the Python panel only.** Turning the Rust
-front door on is a second, deliberate step - it is not done for you, and the
-panel is fully functional without it.
+From the panel's **Updates** page, or over SSH:
 
 ```bash
-# Build the static binaries (on a build host, not the server)
-cargo build --release --target x86_64-unknown-linux-musl -p snpanel-api -p xtask
-
-# Copy them to the server, then switch the front door over
-install -m755 snpanel-api /usr/local/bin/snpanel-api-rust
-install -m755 xtask       /usr/local/bin/xtask-rust
-bash installer/files/api-cutover.sh
+snpanel-update --release      # the newest release
+snpanel-update --tag v1.0.0   # a particular release
 ```
 
-The cutover moves Python to `127.0.0.1:8000`, starts `snpanel-rust` on the
-panel port, and checks that the new front door answers before it returns. If
-anything fails it rolls back to the Python front door by itself, and
-`api-cutover.sh rollback` does the same on demand.
+If the browser still shows the old interface afterwards, reload with
+Ctrl + Shift + R.
 
-Two checks come with it and are worth running after any change:
+## Rescue over SSH
+
+`snpanel`, run as root, opens a menu for when the web panel cannot be
+reached: the saved login, recent logs, restarting the panel, reopening the
+firewall's ports, resetting the panel's address and port, repairing its SSL,
+fixing permissions, changing the admin password and updating.
 
 ```bash
-bash installer/files/api-shadow-check.sh    # both implementations, same requests
-bash installer/files/api-browser-check.sh   # the flow a browser actually performs
+snpanel change-ip OLD_IP NEW_IP      # the server's IP address changed
+snpanel change-admin-password
+snpanel sync-admin-root-password     # the admin password becomes root's
+snpanel reset-admin-2fa              # the authenticator or passkey is lost
+snpanel-rescue-firewall              # locked out: back up the rules, rebuild with the protected ports only
 ```
 
-The shadow check sends the same request to the Rust and the Python side and
-compares the answers. Any difference is a bug in the Rust side, never a new
-API: the frontend cannot tell which one served it, and it must not be able to.
+## Where things are
 
-`RUST_MIGRATION_STATUS.md` records which routers have moved, which have moved
-only in part, and why the remaining ones are waiting.
-
-## SSH rescue menu
-
-Run as root:
-
-```bash
-snpanel
-```
-
-Use this menu when the web panel is unavailable. It can show the saved login,
-show rescue status, print recent logs, restart panel services, reopen required
-firewall ports, reset the panel URL/port, repair panel SSL, fix runtime
-permissions, change the `admin` password, and update SNPanel from the latest
-release tag. Website and user management stays in the web panel.
-
-Common SSH rescue commands:
+| | |
+|---|---|
+| Program | `/opt/snpanel` |
+| Configuration | `/opt/snpanel/backend/.env`, `/etc/snpanel` |
+| State | `/var/lib/snpanel` |
+| Backups | `/var/backups/snpanel` |
+| Websites | `/home/<user>/<domain>/public_html` |
+| System user | `snpanel` |
+| Services | `snpanel-api`, `snpanel-helper` |
+| Logs | `journalctl -u snpanel-api` |
 
 ```bash
-# Change the server IP without prompts
-snpanel change-ip OLD_IP NEW_IP
-
-# Make the SNPanel admin password match the current Linux root password
-snpanel sync-admin-root-password
-
-# Last resort when a firewall rule locked you out: back up the current state,
-# drop every SNPanel/UFW filter rule, and rebuild with protected ports only
-snpanel-rescue-firewall
+systemctl restart snpanel-api
+systemctl status snpanel-api nginx mariadb redis-server php8.3-fpm php8.4-fpm
+nginx -t && systemctl reload nginx
 ```
 
 ## Firewall
 
-IP filtering runs on **iptables + ipset**. The panel never writes rules by
-hand at request time: `/var/lib/snpanel/firewall/rules.tsv` is the source of
-truth, and every change rebuilds the `SNPANEL-INPUT` chain and reloads the
-ipsets from disk. `snpanel-firewall.service` replays the same apply at boot, so
-no `iptables-save` state can drift.
+Filtering runs on nftables, in a table of the panel's own (`inet snpanel`).
+`/var/lib/snpanel/firewall/rules.tsv` holds the rules; every change renders
+the whole table, checks it with `nft --check` and loads it at once, and
+`snpanel-firewall.service` loads it again at boot, before the network and
+nginx.
 
-- **Protected ports** (SSH from `sshd -T`, the panel port, 80/443/465/587) are
-  always allowed and cannot be deleted from the panel.
-- **Allow/deny IP** rules go into `hash:net` sets; rules with a port go into
-  `hash:net,port` sets. Allow rules are evaluated before deny rules.
-- **URL blocklists** are fetched daily into `snpanel-block4` / `snpanel-block6`.
-  A million-entry list costs one hash lookup per packet instead of a million
-  Nginx `geo` entries or UFW rules.
-- The chain uses `RETURN` (not `ACCEPT`) for allowed traffic, so fail2ban and
-  any other `INPUT` rules still see the packet.
-- Disabling the firewall removes the jump from `INPUT`; it does not change the
-  `INPUT` policy, so nothing else on the box is affected.
+- The SSH port, the panel port and 80, 443, 465 and 587 are always open, and
+  cannot be closed from the panel.
+- Allow and deny rules, with or without a port, are elements of nftables
+  sets; allow rules are checked first.
+- URL blocklists are fetched daily into sets of their own, IPv4 and IPv6: a
+  list of a million addresses costs one lookup per packet.
+- Allowed traffic leaves the table with `return`, not `accept`, so fail2ban
+  and any other rules on the machine still see it.
+- Turning the firewall off removes the panel's table and nothing else.
 
-Upgrades from a SNPanel release that used UFW/Nginx run `snpanel-helper
-firewall-migrate`, which imports surviving UFW user rules, purges UFW and its
-config, removes the Nginx `geo` blocklist (`snpanel-ip-blocklist.conf`,
-`ip-blocklist-geo.conf`, and the per-vhost `include`), then applies the new
-chain.
+An older install that filtered with UFW, iptables or an nginx `geo`
+blocklist has its rules carried over when it updates. If no firewall was
+active there, the rules are staged but not enforced until it is turned on
+from the Firewall page.
 
-The migration inherits the previous enforcement state rather than assuming it:
-if UFW was active, or blocklist URLs were configured, the new firewall is
-enabled; on a box that had no active firewall the rules are staged but not
-enforced, so nothing the panel does not know about gets cut off. Turn it on
-from the Firewall page when you are ready. Fresh installs always enforce.
+## Accounts, ownership and quotas
 
-## Updates
+| Role | Can |
+|------|-----|
+| `admin` | Everything: websites, users and their packages, ownership, services, the firewall, PHP, backups and the panel's settings |
+| `end_user` | Its own websites and their files, databases, SSL, WordPress tools and cron, and its own backups |
 
-SNPanel can update itself from the latest stable GitHub release tag. Run it from
-SSH:
-
-```bash
-snpanel-update --release
-```
-
-The same action is available in the panel's **Updates** page. The update script
-checks release tags, downloads the selected release zip to a temporary
-directory, syncs source to `/opt/snpanel`, rebuilds the frontend, refreshes
-helper scripts, restarts the API, reloads Nginx, and removes the temporary
-source. `/opt/snpanel-source` is not kept for normal release updates; it is only a
-developer `--branch` or `--skip-pull` source directory.
-
-The panel stores release check and update progress in
-`/var/lib/snpanel/update-status.json`. The Updates page compares the installed
-version with the newest release tag and enables the panel update button only
-when a newer release is available.
-
-To stay on a specific release:
-
-```bash
-snpanel-update --tag v1.0.0
-```
-
-If the browser still shows the old UI, do a hard refresh (Ctrl + Shift + R) or
-open in incognito.
-
-## Project layout
-
-```
-snpanel/
-|-- backend/                    FastAPI application
-|   |-- app/
-|   |   |-- api/                  HTTP routes
-|   |   |-- core/                 config, db, security, permissions, secrets
-|   |   |-- models/               SQLAlchemy entities
-|   |   |-- schemas/              Pydantic v2 schemas
-|   |   |-- services/             nginx, mariadb, wp, firewall, backup, etc.
-|   |   |-- templates/nginx/      Jinja2 vhost templates
-|   |   |-- main.py
-|   |   `-- seed.py               Seeds the first admin user
-|   |-- tests/                   pytest smoke tests for validators
-|   `-- requirements.txt
-|-- frontend/                   React + Vite SPA
-|   `-- src/
-|-- crates/                     The Rust rewrite
-|   |-- snpanel-core/             config, crypto (bcrypt, Fernet, JWT, TOTP), roles
-|   |-- snpanel-osabi/            per-distro differences, nftables rendering
-|   |-- snpanel-ipc/              the helper protocol
-|   |-- snpanel-db/               the shared SQLite database
-|   |-- snpanel-helper/           the privileged operations, behind SO_PEERCRED
-|   |-- snpanel-cli/              the `snpanel` command
-|   `-- snpanel-api/              the HTTP front door, and the strangler proxy
-|-- xtask/                      build and verification tasks, incl. shadow-diff
-|-- installer/
-|   |-- files/                   snpanel-helper.sh, sudoers, systemd units,
-|   |                            the API cutover and its two check scripts
-|   |-- install.sh               Full first-time install (Python side)
-|   |-- rescue-firewall.sh       Emergency firewall reset (locked-out recovery)
-|   `-- update.sh                Pull from GitHub and redeploy
-|-- RUST_MIGRATION_STATUS.md    What has moved to Rust, and what has not
-|-- IMPROVEMENTS.md             Things the port deliberately did not fix
-`-- README.md
-```
-
-## Provisioning API and the shared billing module
-
-`modules/servers/snpanel/` is a single WHMCS server module used against **both
-SNPanel and OPanel**. The module is the fixed side of this contract: SNPanel
-matches what the module already expects, rather than the module being adapted
-per panel. `backend/app/tests/test_provisioning_module_contract.py` pins the
-response keys it reads.
-
-It authenticates with a Bearer token (created under **API Tokens**, pasted into
-the server's Access Hash). Every hook maps to one endpoint:
-
-| WHMCS hook | Endpoint |
-|---|---|
-| `TestConnection`, `PackageLoader` | `GET /plans` |
-| `CreateAccount` | `POST /accounts` |
-| `SuspendAccount` | `POST /accounts/{external_id}/suspend` |
-| `UnsuspendAccount` | `POST /accounts/{external_id}/unsuspend` |
-| `TerminateAccount` | `DELETE /accounts/{external_id}` |
-| `ChangePassword` | `PATCH /accounts/{external_id}/password` |
-| `ChangePackage` | `PATCH /accounts/{external_id}/package` |
-| `UsageUpdate` | `GET /accounts/{external_id}/usage` |
-| `LoginLink`, `ClientArea` | `POST /accounts/{external_id}/login` |
-
-`external_id` is `whmcs:<serviceid>`, so a service maps to exactly one panel
-account across renames.
-
-Cross-panel notes:
-
-- **Response envelope**: OPanel replies with `{"success": ..., "data": ...}`;
-  SNPanel replies with bare objects. The module unwraps a body only when it
-  carries *both* keys, so no SNPanel response may use that pair together.
-- **SSO**: the module reads `data.login_url` only. SNPanel returns it as an
-  absolute URL built from the hostname the API call arrived on - so the
-  customer lands on the domain the billing system already uses - falling back
-  to `PANEL_URL` when that hostname is not one this panel serves, and to a
-  relative path the module prefixes itself. `url` and `path` come along too. The token is single-use
-  and expires after 5 minutes; `/api/auth/sso/<token>` sets the session cookie
-  and redirects. A suspended account is redirected to
-  `/?error=account_suspended` instead of being logged in.
-- **Suspend** disables the panel login, bumps `token_version` (killing live
-  sessions), rewrites each vhost as a static "suspended" site, and locks the
-  site Linux users. **Unsuspend** restores the real vhost, aliases, WAF and
-  flood settings from the database.
-- **Terminate** takes no query string from the module, so `backup` defaults to
-  off. Pass `?backup=true` to write a full user backup to `/var/backups/snpanel`
-  before the account is deleted; it runs inline, so only use it from a caller
-  that can wait. A failed backup is recorded on the account and never blocks
-  the termination.
-- A terminated account keeps its billing row with empty `username`/`email`, so
-  the client area can still render the service.
-
-## Roles
-
-| Role | Capabilities |
-|------|--------------|
-| `admin` | Full control: websites, users, ownership assignment, services, firewall, PHP config, backups, and security settings. |
-| `end_user` | Manage only websites assigned to the account, including files, databases, SSL, WordPress tools, cron, and own backups. |
-
-## User and website ownership
-
-- Each panel user also has a Linux user with the same normalized username.
-- The panel password is synced to the Linux password so the same account can
-  log in with chrooted SFTP, for example `admin` -> `/home/admin`.
-- Panel Linux users are members of `snpanel-sftp`; the installer adds an SSHD
-  `Match Group snpanel-sftp` block for password-based SFTP access. SSH shells,
-  TTYs and forwarding are disabled for these users.
-- New websites are created under `/home/<panel-user>/<domain>/public_html`.
-- If an admin creates a website without impersonating another user, the website
-  belongs to the admin account.
-- Admins can quick-login as another panel user before creating websites for
-  that account.
-- Admins can assign a website to exactly one panel user. Moving ownership also
-  moves the site path to the new Linux user and rewrites the PHP-FPM/Nginx
-  runtime configuration.
-- Deleting a panel user permanently deletes all websites, files, databases,
-  backup schedule links, cron entries, PHP-FPM pools, and Linux-user data owned
-  by that user.
-
-## Quotas
-
-- End users have a website count limit and a storage limit in MB.
-- Admin users are not storage-limited.
-- Storage usage is calculated from all websites owned by the user.
-- SNPanel enforces the storage limit before site creation, upload, edit, archive,
-  extract, and ownership assignment operations.
-- This is an application-level soft quota, not an OS disk quota.
+- A panel user's Linux account has the same name, and is its SFTP login,
+  chrooted to its home - `admin` is `/home/admin`. The SFTP password follows
+  the panel password, unless an administrator turns SFTP off for the user or
+  gives it a password of its own; users see their SFTP details, and can
+  change the password, on their Account security page.
+- These accounts are in the `snpanel-sftp` group: SFTP only - no shell, no
+  terminal, no forwarding.
+- Every database has an owner. An administrator can create one for any user,
+  and change its owner and website; moving a website to another user takes
+  its databases along, and moves its files and its PHP-FPM and nginx
+  configuration.
+- Deleting a user deletes everything it owns: websites, files, databases,
+  cron jobs, PHP-FPM pools and its Linux account.
+- An end user has a website limit and a storage limit in MB, counted over all
+  its websites and checked before anything that writes - creating a site,
+  uploading, editing, archiving, extracting, taking over a site. It is the
+  panel's own quota, not a disk quota; administrators have none.
 
 ## Configuration
 
-`/opt/snpanel/backend/.env` is generated by the installer and contains:
+The installer writes `/opt/snpanel/backend/.env`:
 
 ```ini
 APP_ENV=production
-SECRET_KEY=<random-32-bytes>
+SECRET_KEY=<random, 32 bytes or more>
 COMMAND_DRY_RUN=false
 DATABASE_URL=sqlite:////opt/snpanel/backend/snpanel.db
 REDIS_URL=redis://localhost:6379/0
@@ -414,26 +267,23 @@ RATE_LIMIT_BACKEND=redis
 ALLOWED_ORIGINS=https://panel.example.com
 BACKUP_ROOT=/var/backups/snpanel
 SSL_EMAIL=admin@example.com
-PANEL_URL=http://SERVER_IP:2222  # uses the selected panel port
+PANEL_URL=http://SERVER_IP:2222
 PANEL_DOMAIN=
-PANEL_PORT=2222                  # default; installer can set another port
-PANEL_SSL_CERT=                  # default certificate, for hostnames with none
+PANEL_PORT=2222
+PANEL_SSL_CERT=                   # the certificate for names that have none of their own
 PANEL_SSL_KEY=
-PANEL_SNI_DIR=/etc/snpanel/sni    # one certificate per hostname, kept by the helper
+PANEL_SNI_DIR=/etc/snpanel/sni    # one certificate per hostname
 FRONTEND_DIST=/opt/snpanel/frontend/dist
 ```
 
-### PHP-FPM auto tuning
+In production the panel refuses to start with `COMMAND_DRY_RUN=true`,
+`ALLOWED_ORIGINS=*` or a `SECRET_KEY` shorter than 32 characters.
 
-SNPanel creates one PHP-FPM pool per managed PHP site. Pool sizing is tuned when
-a site runtime is created or refreshed: the helper reads total RAM, CPU count,
-and the number of managed PHP-FPM pools, then sets conservative `ondemand`
-values for `pm.max_children`, idle timeout, request recycling, and hard request
-timeout. Small VPS plans keep fewer children alive and recycle sooner; larger
-plans receive a higher per-pool cap without using the same static values as a
-1 GB server.
-
-Optional overrides can be added to `/opt/snpanel/backend/.env`:
+**PHP-FPM and MariaDB tuning.** Every PHP site has a PHP-FPM pool of its own
+(`ondemand`), sized from the machine's RAM, CPU count and number of pools;
+MariaDB gets `/etc/mysql/mariadb.conf.d/90-snpanel-tuning.cnf`, sized from RAM
+and CPU, leaving room for nginx, PHP-FPM, Redis and the panel. To override,
+add any of these to `.env`, then retune:
 
 ```ini
 SNPANEL_PHP_FPM_WORKER_MB=128
@@ -441,25 +291,6 @@ SNPANEL_PHP_FPM_MAX_CHILDREN=
 SNPANEL_PHP_FPM_IDLE_TIMEOUT=
 SNPANEL_PHP_FPM_MAX_REQUESTS=
 SNPANEL_PHP_FPM_REQUEST_TERMINATE_TIMEOUT=300
-```
-
-After changing overrides, retune existing pools:
-
-```bash
-sudo -u snpanel env HOME=/opt/snpanel sudo -n /usr/local/sbin/snpanel-helper php-fpm-retune
-```
-
-### MariaDB auto tuning
-
-SNPanel also writes `/etc/mysql/mariadb.conf.d/90-snpanel-tuning.cnf` with VPS
-sized MariaDB defaults. The helper tunes InnoDB buffer pool, connection count,
-thread/table caches, temporary table limits, packet size, and slow-query logging
-from total RAM and CPU count. The defaults leave memory for Nginx, PHP-FPM,
-Redis, and the panel process instead of giving MariaDB a fixed oversized cache.
-
-Optional overrides can be added to `/opt/snpanel/backend/.env`:
-
-```ini
 SNPANEL_MARIADB_BUFFER_POOL_SIZE=
 SNPANEL_MARIADB_MAX_CONNECTIONS=
 SNPANEL_MARIADB_THREAD_CACHE_SIZE=
@@ -471,181 +302,126 @@ SNPANEL_MARIADB_IO_CAPACITY=
 SNPANEL_MARIADB_OPEN_FILES_LIMIT=
 ```
 
-After changing overrides, retune MariaDB:
-
 ```bash
+sudo -u snpanel env HOME=/opt/snpanel sudo -n /usr/local/sbin/snpanel-helper php-fpm-retune
 sudo -u snpanel env HOME=/opt/snpanel sudo -n /usr/local/sbin/snpanel-helper mariadb-retune
-```
-
-The backend refuses to start in production with `COMMAND_DRY_RUN=true` or
-`ALLOWED_ORIGINS=*`. SECRET_KEY must be at least 32 chars in production.
-
-## Service commands
-
-```bash
-# API logs
-journalctl -u snpanel-api -f
-
-# Restart the API after backend changes
-systemctl restart snpanel-api
-
-# Reload Nginx after vhost edits
-nginx -t && systemctl reload nginx
-
-# Service status
-systemctl status snpanel-api nginx mariadb redis-server php8.3-fpm php8.4-fpm
-
-# SSH rescue menu
-snpanel
-
-# Change the server IP
-snpanel change-ip
-snpanel change-ip OLD_IP NEW_IP
-
-# Change the SNPanel admin login password
-snpanel change-admin-password
-
-# Make SNPanel admin use the current root password
-snpanel sync-admin-root-password
 ```
 
 ## Security model
 
-The panel daemon does **not** run as root. The installer creates a system user
-`snpanel` and a single root-owned helper script that does all privileged work.
+The panel does not run as root. `snpanel-api` runs as the `snpanel` system
+user in a hardened systemd unit, and asks a root helper for everything
+privileged:
 
 ```
-snpanel-api  (uvicorn, user=snpanel, hardened systemd unit)
-   |
-   |  sudo -n /usr/local/sbin/snpanel-helper <subcommand> ...
+snpanel-api      (user snpanel, hardened systemd unit)
+   |  /run/snpanel/helper.sock - typed requests; the caller checked by SO_PEERCRED
    v
-snpanel-helper  (root, runs only whitelisted operations)
+snpanel-helper   (root; answers its own list of operations, and nothing else)
 ```
 
-What the helper allows:
+The helper validates every domain, port, address and path before it runs
+anything: services from a whitelist, `nginx -t` and reload, certbot for one
+checked domain, panel users and their PHP-FPM pools, firewall rules, the
+ownership of site paths under `/home`, WP-CLI and cron as the site's user,
+and the terminal's allowlisted commands. Were the API itself compromised, it
+could write only to nginx's `conf.d`, managed site paths and the backups
+folder, and ask the helper for those operations - there is no way from it to
+root.
 
-- `systemctl start/stop/restart/reload <whitelisted service>`
-- `nginx -t`, `nginx reload`
-- `certbot --nginx ...` for a single validated domain
-- create/delete panel Linux users, sync their SFTP password, and manage per-user PHP-FPM pools
-- `firewall-status/enable/disable/allow-port/allow-ip/deny-ip/delete` (iptables + ipset)
-- fix ownership/ACLs for managed site paths under `/home/<panel-user>/<domain>`
-- `rm -rf <managed site path>`
-- WP-CLI and crontab management as the website's Linux user
-- `terminal-exec`: an allowlisted command as the website's Linux user
+The terminal runs commands without a shell - `;`, `|`, backticks and globs are
+plain arguments - checks that every path stays in the user's home, runs PHP
+tools with the site's PHP version, and stops a command at 60 seconds, or 900
+for installers such as `composer`, `npm`, `wp` and `git`. Its allowlist is a
+guardrail rather than a boundary: sites are kept apart by their own Linux
+users, chrooted homes, PHP-FPM `open_basedir` and the helper's path checks.
 
-### Website terminal
+- Sign-in is rate-limited in Redis - 8 attempts a minute, locked after 20
+  failures - and takes the same time whether the user exists or not.
+- Sessions are HttpOnly cookies (`snpanel_session`) with a CSRF token
+  (`snpanel_csrf`) echoed in the `X-CSRF-Token` header; the token is never
+  exposed to JavaScript. A password, role or two-step change, disabling an
+  account or signing out revokes the sessions issued before it.
+- A strict Content-Security-Policy (`script-src 'self'`,
+  `frame-ancestors 'none'`).
+- Database and WordPress passwords reach commands on stdin, never on the
+  command line; database passwords are encrypted at rest.
+- Custom nginx blocks are checked: balanced braces, at most 16 KB, and no
+  `server`, `http`, `include`, `load_module`, `proxy_pass`, `alias`, log or
+  `ssl_*` directives.
+- The file manager refuses symlinks anywhere in a path, and paths that leave
+  the site.
+- In a site, files are `644` and folders `755`; `wp-config.php`, `.env` and
+  `.my.cnf` are kept at `640`.
 
-The per-site terminal runs commands as the website's own Linux user through
-`snpanel-helper terminal-exec`. Commands are split into argv in Python (no shell
-is involved, so `;`, `|`, backticks and globs are ordinary arguments) and the
-executable must be on the allowlist, which covers the PHP toolchain
-(`php`, `composer`, `artisan`, `wp`, `phpunit`), the JS toolchain
-(`node`, `npm`, `npx`, `yarn`), `git`, and the usual file/text utilities
-(`ls`, `cat`, `sed`, `awk`, `grep`, `find`, `tar`, `wc`, `stat`, …).
+## Provisioning API (WHMCS)
 
-- Every path argument to a file utility must resolve inside
-  `/home/<panel-user>/`; `curl`/`wget` additionally reject `file://` and any
-  output path outside that home.
-- `php`/`composer`/`wp` run against the site's configured PHP version
-  (`php8.4`, not the system default), so Composer platform checks pass.
-- Each command gets a wall-clock budget enforced by `timeout` inside the
-  helper: 60s for quick utilities, 900s for installers and updaters
-  (`composer`, `npm`, `wp`, `git`, `php`, …). The API adds a slightly longer
-  backstop so a wedged helper cannot pin a worker.
-- The allowlist is a guardrail, not a privilege boundary: `php -r` can already
-  run arbitrary code **as that site's Linux user**. Isolation comes from the
-  per-site Unix user, the chrooted home, and the helper's path checks.
+The WHMCS server module in `modules/servers/snpanel/` creates and manages
+panel accounts over the provisioning API, with a Bearer token made on the
+API tokens tab of Panel settings and pasted into the server's Access Hash.
+The module is shared with OPanel, so SNPanel answers the way the module
+expects.
 
-Anything else is rejected. The helper validates domains, ports, IPs, and
-filesystem paths before invoking the real binary.
+| WHMCS | Endpoint |
+|---|---|
+| `TestConnection`, `PackageLoader` | `GET /plans` |
+| `CreateAccount` | `POST /accounts` |
+| `SuspendAccount` | `POST /accounts/{external_id}/suspend` |
+| `UnsuspendAccount` | `POST /accounts/{external_id}/unsuspend` |
+| `TerminateAccount` | `DELETE /accounts/{external_id}` |
+| `ChangePassword` | `PATCH /accounts/{external_id}/password` |
+| `ChangePackage` | `PATCH /accounts/{external_id}/package` |
+| `UsageUpdate` | `GET /accounts/{external_id}/usage` |
+| `LoginLink`, `ClientArea` | `POST /accounts/{external_id}/login` |
 
-The installer also creates a local MariaDB `snpanel` account used by the API to
-create per-site databases and users for WordPress installs.
+- `external_id` is `whmcs:<serviceid>`, so a service is one panel account
+  across renames.
+- SNPanel answers with bare objects - never one carrying both `success` and
+  `data`, which the module would unwrap.
+- Single sign-on returns `login_url`, an absolute address on the hostname the
+  call came to (or `PANEL_URL`), good once for 5 minutes. A suspended account
+  lands on `/?error=account_suspended` instead.
+- Suspending disables the panel login, ends the account's sessions, serves
+  each of its websites as a "suspended" page and locks their Linux users;
+  unsuspending puts everything back.
+- Terminating takes no backup unless asked with `?backup=true`, which writes a
+  full backup to `/var/backups/snpanel` first; a failed backup never blocks
+  the termination. The billing row stays, emptied, so the client area can
+  still show the service.
 
-Additional hardening on the systemd unit:
+## Development
 
-- Runs as `snpanel` with only the `www-data` and `snpanel-sites` supplementary groups.
-  `snpanel` is the service account for the API, not a panel login user; fresh
-  installs do not create `/home/snpanel` or `/home/snpanel-sites`.
-- Panel login users are Linux users in the `snpanel-sftp` group. Their
-  home directories live directly under `/home/<username>`, are root-owned
-  SFTP chroots, and contain user-owned site directories. `/home` is
-  executable-only for non-root users, so panel users cannot list other
-  usernames.
-- Malware scanning is a page of its own, not a toggle on the Security page.
-  It scans one website, every website, or every file on the machine, and can do
-  the last one on a weekly schedule the admin sets. A whole-machine scan runs
-  through the helper so clamd can read files its own user cannot, skips the
-  kernel filesystems and the signature database, and is niced to the floor so a
-  scan is never the reason a website goes slow.
-- A fresh install turns IPv6 on by itself when the machine already holds a
-  global IPv6 address, and says so in the summary it prints. A server that
-  updates into this release is left as its admin set it. Neither can conjure
-  an address a provider assigned but never configured: on most VPS the
-  metadata service publishes no network data at all.
-- Otherwise IPv6 is off until an admin turns it on in Panel settings. Turning it on
-  checks for a global IPv6 address first and refuses on a server without one:
-  nginx cannot bind an address family the machine does not have, and it would
-  refuse to start, taking every website with it. When it is on, the helper adds
-  the IPv6 twin of every listen directive it manages - including the
-  certbot-written `listen 443 ssl` lines - runs `nginx -t`, and restores every
-  file it touched if nginx refuses. `/etc/snpanel/ipv6-enabled` is the switch;
-  an update re-applies it, and it turns itself off if the address ever goes
-  away. The firewall was already dual-stack.
-- Inside a site tree the defaults are `644` for files and `755` for folders,
-  the same modes every hosting panel and every PHP application expects.
-  `wp-config.php`, `.env` and `.my.cnf` are put back to `640` after any bulk
-  permission pass. Sites are kept apart by the per-pool PHP-FPM `open_basedir`,
-  by the SFTP chroot, by `nologin` shells and by the panel terminal's path
-  checks - not by the mode bits.
-- Uses `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`,
-  `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`,
-  `ProtectClock`, `ProtectHostname`, and `ProtectProc=invisible`.
-- Uses `RestrictNamespaces`, `RestrictRealtime`, `LockPersonality`,
-  `MemoryDenyWriteExecute`, `SystemCallArchitectures=native`, and
-  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`.
-- Drops ambient capabilities with `CapabilityBoundingSet=~`.
+- **Panel**: Rust - axum, rustls, sqlx (SQLite), tokio; one static binary
+  serves the API and the interface over TLS on the panel port
+- **Helper**: Rust, root, behind a Unix socket that checks its caller
+- **Interface**: React 18, Vite, lucide-react
+- **Server**: nginx, OpenSSH/SFTP, ModSecurity, nftables, systemd, MariaDB,
+  Redis (Valkey on AlmaLinux), PHP-FPM, certbot
 
-`NoNewPrivileges=false`, `ProtectSystem=false`, `ProtectHome=false`, and
-`RestrictSUIDSGID=false` are intentional because the API must invoke the sudo
-helper and manage website files under `/home`. Privileged operations stay
-constrained by the root-owned helper and sudoers allowlist.
+```
+snpanel/
+|-- crates/
+|   |-- snpanel-api/         the HTTP API and the panel's jobs
+|   |-- snpanel-helper/      the privileged operations
+|   |-- snpanel-ipc/         the protocol between the two
+|   |-- snpanel-core/        configuration, cryptography, roles
+|   |-- snpanel-db/          the database schema and queries
+|   |-- snpanel-nginx/       vhost templates
+|   |-- snpanel-osabi/       what differs between distributions
+|   |-- snpanel-installer/   what the install and update scripts call
+|   `-- snpanel-cli/         the `snpanel` command
+|-- frontend/                the React interface
+|-- installer/               install, update and firewall rescue scripts
+|-- modules/servers/snpanel/ the WHMCS module
+|-- xtask/                   build and verification tasks
+`-- backend/                 on a server: `.env` and the SQLite database
+```
 
-If the API itself were ever compromised, the attacker would be limited to:
-- writing into `/etc/nginx/conf.d/`, managed site paths under `/home`, and `/var/backups/snpanel/`
-- running the helper subcommands above (no arbitrary code execution as root)
+## Versioning
 
-There is no path back to root via the API process.
-
-## Security notes
-
-- Login is rate-limited in Redis (8 attempts / minute, lockout after 20 fails),
-  so counters are shared across uvicorn workers.
-- Google Authenticator compatible TOTP 2FA can be enabled per account.
-- Constant-time login path: bcrypt is verified even when the user does not
-  exist, to avoid username enumeration via timing.
-- DB and WordPress passwords are passed via stdin / `--prompt`, never as
-  command-line args, so they don't appear in `ps`.
-- DB passwords are encrypted at rest (Fernet, key derived from SECRET_KEY).
-- Custom Nginx blocks are validated: braces must balance, dangerous directives
-  (`server {`, `http {`, `events {`, `include`, `load_module`, `user`, `lua_*`,
-  `proxy_pass`, `alias`, `*_log`, `ssl_*`) are rejected, max 16 KB.
-- File manager rejects symlinks anywhere in the path. Website owners can manage
-  their own deploy sources, including PHP, `.htaccess`, `.env`, and
-  `wp-config.php`, with quota and ownership checks enforced by SNPanel.
-- Path traversal is blocked at every layer that touches the filesystem.
-- Auth uses HttpOnly cookies (`snpanel_session`) plus a CSRF token cookie
-  (`snpanel_csrf`) echoed in the `X-CSRF-Token` header. The JWT is never
-  exposed to JavaScript, mitigating token theft via XSS.
-- Strict `Content-Security-Policy` (`script-src 'self'`, `frame-ancestors 'none'`).
-- JWTs include a `jti`; revoked session IDs are stored server-side, and
-  `token_version` invalidates previously issued JWTs on password change, role
-  change, account disable, 2FA changes, or explicit logout.
-- Production installs require `RATE_LIMIT_BACKEND=redis`, reject
-  `ALLOWED_ORIGINS=*`, enforce `COMMAND_DRY_RUN=false`, and return generic
-  500 responses for unhandled errors.
+SNPanel uses semantic versioning (`major.minor.patch`). The current release
+is `1.0.0`.
 
 ## License
 
-MIT - see LICENSE.
+MIT.

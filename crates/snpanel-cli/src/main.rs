@@ -9,10 +9,15 @@
 //! reimplementing privileged work - that is deliberate, and it is what lets
 //! this ship before Phase 2 exists.
 
+mod change_ip;
 mod cli;
 mod doctor;
 mod menu;
 mod ops;
+mod panel_address;
+mod passwords;
+mod permissions;
+mod secret;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -22,7 +27,25 @@ use clap::Parser;
 use cli::{Cli, Command, FirewallCommand};
 
 /// Where the installer puts the panel's environment file.
-const ENV_PATH: &str = "/opt/snpanel/backend/.env";
+/// Where the panel is installed.
+///
+/// `install.sh` takes `APP_DIR` from the environment and defaults it to
+/// `/opt/snpanel`. The bash rescue menu learned the value at install time,
+/// by `sed`: the installer rewrote the script's own `APP_DIR=` line. A
+/// binary cannot be rewritten that way, so the same override arrives the
+/// other way round - from the environment, at run time, with the same
+/// default. A box that never set it sees no difference.
+pub(crate) fn app_dir() -> String {
+    std::env::var("APP_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/opt/snpanel".to_string())
+}
+
+/// The panel's `.env`, under whichever `APP_DIR` this box uses.
+pub(crate) fn env_path_string() -> String {
+    format!("{}/backend/.env", app_dir())
+}
 
 /// Restore the default SIGPIPE disposition.
 ///
@@ -51,7 +74,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let env_path = PathBuf::from(ENV_PATH);
+    let env_path = PathBuf::from(env_path_string());
     let env_path = env_path.exists().then_some(env_path);
 
     match cli.command.unwrap_or(Command::Menu) {
@@ -93,43 +116,93 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 ops::firewall_migrate_nft(dry_run, env_path.as_deref())?;
                 Ok(ExitCode::SUCCESS)
             }
-            FirewallCommand::Reopen => ops::delegate_to_helper(&["firewall-reopen"]),
+            FirewallCommand::Reopen => {
+                ops::repair_firewall(env_path.as_deref())?;
+                Ok(ExitCode::SUCCESS)
+            }
             FirewallCommand::Rescue => ops::delegate_to_helper(&["firewall-flush"]),
         },
 
         // Phase 1 ships these by delegating to the existing helper, which is
         // still the bash one until Phase 2 lands. The command surface is what
         // moves now; the privileged implementation moves next.
-        Command::RepairFirewall => ops::delegate_to_snpanelctl(&["repair-firewall"]),
+        Command::RepairFirewall => {
+            ops::repair_firewall(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Update {
             release,
             tag,
             branch,
         } => {
-            let mut args = vec!["update".to_string()];
-            if let Some(t) = tag {
-                args.push("--tag".into());
-                args.push(t);
-            } else if let Some(b) = branch {
-                args.push("--branch".into());
-                args.push(b);
-            } else if release {
-                args.push("--release".into());
-            }
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            ops::delegate_to_snpanelctl(&refs)
+            // `--release` is also the default: the bash only ever did that.
+            let _ = release;
+            let target = match (tag, branch) {
+                (Some(t), _) => ops::UpdateTarget::Tag(t),
+                (_, Some(b)) => ops::UpdateTarget::Branch(b),
+                _ => ops::UpdateTarget::Release,
+            };
+            ops::run_update(target)?;
+            Ok(ExitCode::SUCCESS)
         }
         Command::ChangeIp { addresses } => {
-            let mut args = vec!["change-ip"];
-            args.extend(addresses.iter().map(String::as_str));
-            ops::delegate_to_snpanelctl(&args)
+            ops::change_ip(&addresses)?;
+            Ok(ExitCode::SUCCESS)
         }
-        Command::SetPanelUrl => ops::delegate_to_snpanelctl(&["set-panel-url"]),
-        Command::InstallPanelSsl => ops::delegate_to_snpanelctl(&["install-panel-ssl"]),
-        Command::FixPermissions => ops::delegate_to_snpanelctl(&["fix-permissions"]),
-        Command::ChangeAdminPassword => ops::delegate_to_snpanelctl(&["change-admin-password"]),
+        Command::SetPanelUrl => {
+            panel_address::set_panel_url(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::InstallPanelSsl => {
+            panel_address::install_panel_ssl(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::FixPermissions => {
+            permissions::fix_permissions(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::ChangeAdminPassword => {
+            passwords::change_admin_password(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::SyncAdminRootPassword => {
-            ops::delegate_to_snpanelctl(&["sync-admin-root-password"])
+            passwords::sync_admin_root_password(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
         }
+        Command::ResetAdmin2fa => {
+            passwords::reset_admin_two_factor(env_path.as_deref())?;
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The override the installer's `sed` used to bake into the bash.
+    ///
+    /// `install.sh` takes `APP_DIR` from the environment, and the bash
+    /// rescue menu learned it at install time because the installer rewrote
+    /// the script's own `APP_DIR=` line. A binary cannot be rewritten that
+    /// way, so the value arrives from the environment instead - and a box
+    /// that never set one must see exactly what it saw before.
+    #[test]
+    fn the_app_dir_defaults_to_the_one_every_box_has() {
+        // Not set, or set to nothing, is the default. An empty `APP_DIR=`
+        // exported by a wrapper script would otherwise make every path start
+        // with `/backend/...`.
+        std::env::remove_var("APP_DIR");
+        assert_eq!(app_dir(), "/opt/snpanel");
+        assert_eq!(env_path_string(), "/opt/snpanel/backend/.env");
+
+        std::env::set_var("APP_DIR", "");
+        assert_eq!(app_dir(), "/opt/snpanel");
+
+        std::env::set_var("APP_DIR", "/srv/panel");
+        assert_eq!(app_dir(), "/srv/panel");
+        assert_eq!(env_path_string(), "/srv/panel/backend/.env");
+
+        std::env::remove_var("APP_DIR");
     }
 }

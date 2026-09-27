@@ -1,0 +1,82 @@
+/* Settings, AI assistants (MCP) - see pages/Mcp.jsx - and the tokens panel of
+   the MCP addon's card on the Addons page (components/McpTokens.jsx). */
+
+.mcp-page{display:grid;gap:var(--space-4)}
+.mcp-page>.section{margin-bottom:0}
+.mcp-tokens-section,.mcp-connect,.mcp-docs{display:grid;gap:var(--space-3)}
+.mcp-connect h2,.mcp-docs h2{margin:0}
+.mcp-connect>.hint{margin:0;max-width:80ch}
+.mcp-connect-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);align-items:start}
+.mcp-head h2{margin:0}
+.mcp-head .hint{margin-top:4px;max-width:72ch}
+.mcp-copy{display:grid;align-content:start;gap:6px;min-width:0}
+.mcp-copy-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2)}
+.mcp-copy-head span{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.mcp-copy pre{margin:0;padding:10px 12px;border:1px solid var(--code-border);border-radius:var(--radius-md);background:var(--code-bg);color:var(--code-fg);font-family:var(--font-mono);font-size:var(--text-sm);white-space:pre-wrap;word-break:break-all}
+.mcp-warn{display:flex;align-items:center;gap:var(--space-2);margin:0;padding:8px 12px;border:1px solid var(--warning-border);border-radius:var(--radius-md);background:var(--warning-bg);color:var(--warning-text);font-size:var(--text-sm)}
+.mcp-warn svg{flex:none}
+.mcp-made{display:grid;gap:var(--space-2);padding:14px;border:1px solid var(--success-border);border-radius:var(--radius-lg);background:var(--success-bg)}
+.mcp-made h3{display:flex;align-items:center;gap:var(--space-2);margin:0;font-size:var(--text-base);color:var(--success-text)}
+.mcp-made .hint{margin:0}
+.mcp-form{display:grid;grid-template-columns:minmax(200px,1.4fr) minmax(160px,1fr) minmax(240px,2fr);gap:var(--space-3);align-items:end;padding:12px;background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg)}
+.mcp-field{display:grid;gap:6px;min-width:0}
+.mcp-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.mcp-check{display:flex;align-items:flex-start;gap:var(--space-2);cursor:pointer;padding:6px 0}
+.mcp-check input{flex:none;width:16px;height:16px;min-height:0;margin:2px 0 0;padding:0;accent-color:var(--primary)}
+.mcp-check span{display:grid;gap:2px;font-weight:600;color:var(--text)}
+.mcp-check small{font-weight:500;color:var(--text-muted);font-size:var(--text-sm)}
+.mcp-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:var(--space-2);grid-column:1 / -1}
+.mcp-full{grid-column:1 / -1;margin:0}
+.mcp-list-title{margin:var(--space-2) 0 0;font-size:var(--text-base)}
+/* Words, not a path: they wrap whole, even in the Addons page's narrow card. */
+.mcp-tokens .backup-item>span{word-break:normal;overflow-wrap:anywhere}
+.mcp-tokens code{font-family:var(--font-mono);font-size:var(--text-sm);font-weight:600;color:var(--text-muted)}
+.mcp-tokens small .badge{margin-right:2px}
+.mcp-expired{opacity:.65}
+
+/* What an assistant can do: every tool the viewer's role may call, by group,
+   each with its badges and arguments - all of it shown, nothing folded. */
+.mcp-docs-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap}
+.mcp-docs-head>div{flex:1 1 420px;min-width:0}
+.mcp-docs-head .hint{margin:4px 0 0;max-width:86ch}
+.mcp-find{display:flex;align-items:center;gap:6px;flex:0 1 280px;min-width:200px;padding:0 10px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);color:var(--text-muted)}
+.mcp-find:focus-within{border-color:var(--primary)}
+.mcp-find input{flex:1;min-width:0;border:0;background:transparent;box-shadow:none;padding-left:0}
+.mcp-find input:focus{outline:none;box-shadow:none}
+.mcp-groups{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.mcp-groups a{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border:1px solid var(--border);border-radius:999px;background:var(--surface-alt);color:var(--text);font-size:var(--text-sm);font-weight:600;text-decoration:none}
+.mcp-groups a:hover,.mcp-groups a:focus-visible{border-color:var(--primary);color:var(--primary)}
+.mcp-groups a span{color:var(--text-muted);font-weight:500}
+.mcp-group{display:grid;gap:var(--space-2);scroll-margin-top:80px}
+.mcp-group h3{margin:var(--space-2) 0 0;font-size:var(--text-base)}
+.mcp-tool-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3)}
+.mcp-tool{display:grid;align-content:start;gap:var(--space-2);min-width:0;padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);scroll-margin-top:80px}
+.mcp-tool header{display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-2);flex-wrap:wrap}
+.mcp-tool h4{margin:0;font-size:var(--text-base)}
+.mcp-tool header code{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--text-muted);overflow-wrap:anywhere}
+.mcp-tool>p{margin:0;color:var(--text-secondary);font-size:var(--text-sm);line-height:1.5}
+.mcp-tool-badges{display:flex;flex-wrap:wrap;gap:6px}
+.badge.mcp-admin{background:var(--info-bg);color:var(--info-text);border-color:var(--info-border)}
+.mcp-params{display:grid;gap:8px;margin:0;padding-top:var(--space-2);border-top:1px dashed var(--border)}
+.mcp-param dt{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.mcp-param dt code{font-family:var(--font-mono);font-size:var(--text-sm);font-weight:700;color:var(--text)}
+.mcp-param-kind{color:var(--text-muted);font-size:var(--text-xs)}
+.mcp-required{font-size:var(--text-xs)}
+.mcp-param dd{margin:2px 0 0;color:var(--text-secondary);font-size:var(--text-sm);line-height:1.45}
+.mcp-param dd small{display:block;margin-top:2px;color:var(--text-muted);font-size:var(--text-xs)}
+.mcp-no-args{margin:0}
+
+/* The Addons page's panel. */
+.mcp-panel{display:grid;gap:var(--space-2);margin-top:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--border)}
+.mcp-panel-head{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);flex-wrap:wrap}
+.mcp-panel-head strong{font-size:var(--text-sm)}
+
+@media (max-width:1100px){
+  .mcp-tool-grid,.mcp-connect-grid{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .mcp-form{grid-template-columns:1fr}
+  .mcp-find{flex:1 1 100%}
+  .mcp-actions{justify-content:stretch}
+  .mcp-actions button{flex:1 1 auto}
+}

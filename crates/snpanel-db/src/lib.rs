@@ -9,10 +9,15 @@
 //! The plan calls for turning WAL on in Phase 0 as a backwards-compatible
 //! change; [`Database::connect`] asserts it rather than assuming somebody did.
 //!
-//! **C11: the schema is not touched.** No migrations run from here. Alembic
-//! owns the schema while Python is alive, and a Rust migration that "helpfully"
-//! adjusted a column would be the one change neither side could recover from.
-//! This crate reads and writes rows in tables that already exist.
+//! **C11 has been withdrawn: this crate may migrate.** It previously ran
+//! nothing at all, on the grounds that Alembic owned the schema while Python
+//! was alive. New schema changes now go to `schema::RUST_MIGRATIONS`, which
+//! the runner applies from its own bookkeeping table.
+//!
+//! The handover is unchanged: Alembic owns revisions `0001`–`0031`, frozen,
+//! and `alembic_version` is read and never written except by the fresh-install
+//! bootstrap, which stamps a database this side created so Python can pick it
+//! up unchanged.
 //!
 //! **The column names are the Python ones.** `hashed_password`, not
 //! `password_hash`; `totp_secret` holds a Fernet ciphertext with the
@@ -23,15 +28,35 @@ use std::str::FromStr;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-pub mod databases;
+pub mod api_tokens;
+pub mod backups;
+pub mod cloudflare;
+mod databases;
+pub mod mcp_tokens;
+pub mod notifications;
 pub mod packages;
-pub mod users;
+pub mod passkeys;
+pub mod provisioning;
+pub mod s3_targets;
+pub mod schema;
+pub mod sftp_accounts;
+pub mod sftp_subaccounts;
+pub mod site_apps;
+mod users;
 pub mod websites;
 
+pub use api_tokens::{ApiToken, ApiTokenRepo};
+pub use backups::{
+    BackupSchedule, BackupScheduleRepo, ScheduleUsers, SftpSecrets, SftpTarget, SftpTargetRepo,
+};
+pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
-pub use users::{AuditEntry, AuditRepo, RevokedTokenRepo, User, UserFields, UserRepo};
-pub use websites::{Website, WebsiteAlias, WebsiteRepo};
+pub use passkeys::{NewPasskey, Passkey, PasskeyRepo};
+pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
+pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
+pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
+pub use websites::{NewWebsite, RestoredWebsite, Website, WebsiteAlias, WebsiteRepo};
 
 /// A timestamp in the form SQLAlchemy stores `DateTime` columns as on SQLite.
 ///
@@ -73,15 +98,32 @@ impl Database {
     pub async fn connect(url: &str) -> Result<Self, DbError> {
         let path =
             sqlite_path(url).ok_or_else(|| DbError::Open(format!("unsupported URL: {url}")))?;
+        // Never create it: an empty database appearing where the panel's
+        // should be looks like total data loss to whoever finds it. Where
+        // creating one is actually wanted, [`Database::create`] says so.
         if !Path::new(&path).exists() {
             return Err(DbError::Open(format!("{path} does not exist")));
         }
+        Self::open(&path, false).await
+    }
 
+    /// Open the panel's database, making the file if it is not there.
+    ///
+    /// **Asked for by name, and only by the installer's `--init-db`.** The
+    /// refusal in [`Database::connect`] is the one that matters day to day:
+    /// a panel that silently made itself an empty database after a mount
+    /// went missing would come up looking healthy with no customers in it.
+    /// Creating one is a thing somebody decides to do.
+    pub async fn create(url: &str) -> Result<Self, DbError> {
+        let path =
+            sqlite_path(url).ok_or_else(|| DbError::Open(format!("unsupported URL: {url}")))?;
+        Self::open(&path, true).await
+    }
+
+    async fn open(path: &str, create_if_missing: bool) -> Result<Self, DbError> {
         let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))
             .map_err(|e| DbError::Open(e.to_string()))?
-            // Never create it: an empty database appearing where the panel's
-            // should be looks like total data loss to whoever finds it.
-            .create_if_missing(false)
+            .create_if_missing(create_if_missing)
             .journal_mode(SqliteJournalMode::Wal)
             // §9.2. Without this the second writer fails instantly instead of
             // waiting for a transaction that is about to finish anyway.
@@ -121,6 +163,15 @@ impl Database {
         }
     }
 
+    /// A `Database` over an existing pool.
+    ///
+    /// For tests, which build an in-memory schema rather than connecting to
+    /// a file.
+    #[cfg(test)]
+    pub(crate) fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -141,12 +192,64 @@ impl Database {
         PackageRepo::new(&self.pool)
     }
 
+    pub fn api_tokens(&self) -> ApiTokenRepo<'_> {
+        ApiTokenRepo::new(&self.pool)
+    }
+
+    pub fn passkeys(&self) -> PasskeyRepo<'_> {
+        PasskeyRepo::new(&self.pool)
+    }
+
+    pub fn sftp_subaccounts(&self) -> sftp_subaccounts::SftpSubaccountRepo<'_> {
+        sftp_subaccounts::SftpSubaccountRepo::new(self.pool())
+    }
+
+    pub fn sftp_accounts(&self) -> sftp_accounts::SftpAccountRepo<'_> {
+        sftp_accounts::SftpAccountRepo::new(&self.pool)
+    }
+
+    pub fn mcp_tokens(&self) -> mcp_tokens::McpTokenRepo<'_> {
+        mcp_tokens::McpTokenRepo::new(&self.pool)
+    }
+
+    pub fn notifications(&self) -> notifications::NotificationRepo<'_> {
+        notifications::NotificationRepo::new(&self.pool)
+    }
+
+    pub fn s3_targets(&self) -> s3_targets::S3TargetRepo<'_> {
+        s3_targets::S3TargetRepo::new(&self.pool)
+    }
+
+    pub fn schedule_options(&self) -> s3_targets::ScheduleOptionsRepo<'_> {
+        s3_targets::ScheduleOptionsRepo::new(&self.pool)
+    }
+
+    pub fn provisioning(&self) -> ProvisioningRepo<'_> {
+        ProvisioningRepo::new(&self.pool)
+    }
+
     pub fn databases(&self) -> DatabaseRepo<'_> {
         DatabaseRepo::new(&self.pool)
     }
 
+    pub fn backup_schedules(&self) -> BackupScheduleRepo<'_> {
+        BackupScheduleRepo::new(&self.pool)
+    }
+
+    pub fn sftp_targets(&self) -> SftpTargetRepo<'_> {
+        SftpTargetRepo::new(&self.pool)
+    }
+
     pub fn websites(&self) -> WebsiteRepo<'_> {
         WebsiteRepo::new(&self.pool)
+    }
+
+    pub fn site_apps(&self) -> SiteAppRepo<'_> {
+        SiteAppRepo::new(&self.pool)
+    }
+
+    pub fn cloudflare(&self) -> CloudflareRepo<'_> {
+        CloudflareRepo::new(&self.pool)
     }
 
     /// Does the Python schema look present?

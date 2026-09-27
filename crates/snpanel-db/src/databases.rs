@@ -75,6 +75,27 @@ impl<'a> DatabaseRepo<'a> {
         Ok(query.fetch_all(self.pool).await?)
     }
 
+    /// Source: `change_database_password` - the column, after MariaDB has
+    /// taken the change. Stored encrypted; the panel hands it to phpMyAdmin
+    /// later, so it is reversible by design and the key is what protects it.
+    pub async fn set_password(&self, id: i64, encrypted: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE database_accounts SET db_password = ? WHERE id = ?")
+            .bind(encrypted)
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Source: `delete_database_record`.
+    pub async fn delete(&self, id: i64) -> Result<bool, DbError> {
+        let done = sqlx::query("DELETE FROM database_accounts WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn by_id(&self, id: i64) -> Result<Option<DatabaseAccount>, DbError> {
         Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
             "SELECT {COLUMNS} FROM database_accounts WHERE id = ?"
@@ -83,11 +104,215 @@ impl<'a> DatabaseRepo<'a> {
         .fetch_optional(self.pool)
         .await?)
     }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.website_id ==
+    /// website.id).first()` - the database a site is deleted along with.
+    pub async fn by_website(&self, website_id: i64) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE website_id = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(website_id)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Source: `db.add(DatabaseAccount(...))`.
+    ///
+    /// The password arrives **already encrypted** - C3. Taking it in plain
+    /// here would put one more function between the secret and the column
+    /// that has to hold it encrypted, and that is the column risk R1 is
+    /// about.
+    pub async fn create(
+        &self,
+        owner_id: i64,
+        website_id: Option<i64>,
+        db_name: &str,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<i64, DbError> {
+        Ok(sqlx::query(
+            "INSERT INTO database_accounts (owner_id, website_id, db_name, db_user, db_password) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(owner_id)
+        .bind(website_id)
+        .bind(db_name)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .execute(self.pool)
+        .await?
+        .last_insert_rowid())
+    }
+
+    /// Source: `db_account.owner_id = ...` in `install_wordpress_on_website` -
+    /// an existing row taken over by the site that just installed on it.
+    pub async fn attach_to_website(
+        &self,
+        id: i64,
+        owner_id: i64,
+        website_id: i64,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE database_accounts SET owner_id = ?, website_id = ?, db_user = ?, \
+             db_password = ? WHERE id = ?",
+        )
+        .bind(owner_id)
+        .bind(website_id)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.db_name ==
+    /// db_info["db_name"]).first()`.
+    /// Every database account attached to one website.
+    ///
+    /// Source: `db.query(DatabaseAccount).filter(website_id == ...).all()`.
+    /// A website usually has one, but an import that ran twice can leave
+    /// two, and deleting the site has to take both.
+    pub async fn for_website(&self, website_id: i64) -> Result<Vec<DatabaseAccount>, DbError> {
+        let sql =
+            format!("SELECT {COLUMNS} FROM database_accounts WHERE website_id = ? ORDER BY id ASC");
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&sql)
+            .bind(website_id)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
+    /// Not in the Python: a database handed to another panel user, and to
+    /// one of their sites or to none.
+    ///
+    /// Which user owns a database decides whose backup it is in, which is
+    /// what makes this worth a page: a database made by an administrator on
+    /// a customer's behalf belonged to the administrator, and to nobody's
+    /// backup at all.
+    pub async fn set_owner(
+        &self,
+        id: i64,
+        owner_id: i64,
+        website_id: Option<i64>,
+    ) -> Result<bool, DbError> {
+        let done =
+            sqlx::query("UPDATE database_accounts SET owner_id = ?, website_id = ? WHERE id = ?")
+                .bind(owner_id)
+                .bind(website_id)
+                .bind(id)
+                .execute(self.pool)
+                .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Not in the Python: a site's databases go with it to its new owner.
+    ///
+    /// Moving a site left them with the old one, who could still see - and
+    /// delete - the database of a site that was no longer theirs, while the
+    /// new owner could not.
+    pub async fn move_with_site(&self, website_id: i64, owner_id: i64) -> Result<u64, DbError> {
+        let done = sqlx::query("UPDATE database_accounts SET owner_id = ? WHERE website_id = ?")
+            .bind(owner_id)
+            .bind(website_id)
+            .execute(self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Every database account one panel user owns.
+    ///
+    /// Source: `db.query(DatabaseAccount).filter(owner_id == ...).all()`,
+    /// which is how an import clears the account it is replacing.
+    pub async fn for_owner(&self, owner_id: i64) -> Result<Vec<DatabaseAccount>, DbError> {
+        let sql =
+            format!("SELECT {COLUMNS} FROM database_accounts WHERE owner_id = ? ORDER BY id ASC");
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&sql)
+            .bind(owner_id)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
+    /// Point an existing row at what a restore just recreated.
+    ///
+    /// Source: the `else` arm in `restore_user_backup` — the same four
+    /// columns the create path writes, on a row that is already there.
+    pub async fn restore_write(
+        &self,
+        id: i64,
+        owner_id: i64,
+        db_name: &str,
+        db_user: &str,
+        encrypted_password: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE database_accounts SET owner_id = ?, db_name = ?, db_user = ?, \
+                db_password = ? WHERE id = ?",
+        )
+        .bind(owner_id)
+        .bind(db_name)
+        .bind(db_user)
+        .bind(encrypted_password)
+        .bind(id)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn by_name(&self, db_name: &str) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE db_name = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(db_name)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Source: `db.query(DatabaseAccount).filter(DatabaseAccount.db_user ==
+    /// db_user).first()`.
+    ///
+    /// Asked separately from `by_name` because the two 409s say different
+    /// things: the caller has to know which of the two names to change.
+    pub async fn by_user(&self, db_user: &str) -> Result<Option<DatabaseAccount>, DbError> {
+        Ok(sqlx::query_as::<_, DatabaseAccount>(&format!(
+            "SELECT {COLUMNS} FROM database_accounts WHERE db_user = ? ORDER BY id LIMIT 1"
+        ))
+        .bind(db_user)
+        .fetch_optional(self.pool)
+        .await?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_database_is_handed_to_another_owner_and_site() {
+        let pool = scratch().await;
+        let repo = DatabaseRepo::new(&pool);
+        assert!(repo.set_owner(1, 2, Some(5)).await.unwrap());
+        let moved = repo.by_id(1).await.unwrap().unwrap();
+        assert_eq!((moved.owner_id, moved.website_id), (2, Some(5)));
+        // And back to standing on its own.
+        assert!(repo.set_owner(1, 2, None).await.unwrap());
+        assert_eq!(repo.by_id(1).await.unwrap().unwrap().website_id, None);
+        // Nothing else moved; a database that is not there says so.
+        assert_eq!(repo.by_id(3).await.unwrap().unwrap().owner_id, 1);
+        assert!(!repo.set_owner(99, 2, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_sites_databases_follow_it_to_its_new_owner() {
+        let pool = scratch().await;
+        let repo = DatabaseRepo::new(&pool);
+        assert_eq!(repo.move_with_site(5, 7).await.unwrap(), 1);
+        assert_eq!(repo.by_id(2).await.unwrap().unwrap().owner_id, 7);
+        // Databases on no site, or on another, stay where they are.
+        assert_eq!(repo.by_id(1).await.unwrap().unwrap().owner_id, 1);
+        assert_eq!(repo.move_with_site(6, 7).await.unwrap(), 0);
+    }
 
     async fn scratch() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();

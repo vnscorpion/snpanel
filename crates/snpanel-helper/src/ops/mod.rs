@@ -14,15 +14,27 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod fail2ban;
 pub mod firewall;
+pub mod fwmigrate;
 pub mod fwrules;
+pub mod mariadb;
 pub mod misc;
 pub mod nginx;
+pub mod orphans;
+pub mod packages;
+pub mod panel;
 pub mod php;
+pub mod php_ext;
+pub mod quarantine;
+pub mod runtime;
 pub mod selinux;
+pub mod sftp_sub;
 pub mod site;
+pub mod siteapp;
 pub mod ssl;
 pub mod system;
+pub mod terminal;
 pub mod user;
 pub mod waf;
 
@@ -159,6 +171,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::FirewallStatus => {
             firewall::status(&firewall::load_ruleset(ctx.panel_port, &ctx.ssh_ports))
         }
+        HelperRequest::FirewallMigrateUfw => fwmigrate::migrate(ctx),
         HelperRequest::FirewallMigrateNft => {
             // Migration is an apply: the ruleset is rebuilt from rules.tsv,
             // never read back out of iptables, so there is nothing else to do.
@@ -207,12 +220,20 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             path,
             content,
             mode,
-        } => site::file_write(path, content, *mode),
+            user,
+        } => site::file_write(path, content, *mode, user.as_ref()),
         HelperRequest::SiteChmod {
             path,
             mode,
             recursive,
         } => site::chmod(path, *mode, *recursive),
+        HelperRequest::SiteFileSearch {
+            path,
+            query,
+            suffix,
+            case_sensitive,
+            include_secrets,
+        } => site::file_search(path, query, suffix, *case_sensitive, *include_secrets),
         HelperRequest::SiteFixPermissions { path, user: u } => site::fix_permissions(path, u),
         HelperRequest::SiteLogRead {
             domain,
@@ -220,6 +241,92 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             lines,
         } => site::log_read(domain, log_kind(*kind), *lines),
         HelperRequest::SiteLogClear { domain, kind } => site::log_clear(domain, log_kind(*kind)),
+        HelperRequest::SiteLogsDelete { domain } => site::logs_delete(domain),
+        HelperRequest::SiteAppWrite {
+            user: u,
+            app,
+            runtime,
+            port,
+            memory_mb,
+        } => siteapp::write(u, app, runtime, port.get(), *memory_mb),
+        HelperRequest::SiteAppRename { user: u, from, to } => siteapp::rename(u, from, to),
+        HelperRequest::SiteAppExport { user: u, app, dest } => siteapp::export(u, app, dest),
+        HelperRequest::SiteAppImport {
+            user: u,
+            app,
+            source,
+        } => siteapp::import(u, app, source),
+        HelperRequest::SiteAppDirEnsure { user: u, app } => siteapp::dir_ensure(u, app),
+        HelperRequest::SiteAppDelete { user: u, app } => siteapp::delete(u, app),
+        HelperRequest::SiteAppPull { image } => siteapp::pull(image),
+        HelperRequest::SiteAppInstallDeps {
+            user: u,
+            app,
+            node_major,
+        } => siteapp::install_deps(u, app, *node_major),
+        HelperRequest::SiteAppControl {
+            user: u,
+            app,
+            action,
+        } => siteapp::control(u, app, *action),
+        HelperRequest::SiteAppLogs {
+            user: u,
+            app,
+            lines,
+        } => siteapp::logs(u, app, *lines),
+        HelperRequest::SiteAppComposePs { user: u, app } => siteapp::compose_ps(u, app),
+        HelperRequest::SiteAppComposePull { user: u, app } => siteapp::compose_pull(u, app),
+        HelperRequest::SiteAppVolumeUsage { user: u } => siteapp::volume_usage(u),
+        HelperRequest::SiteArchiveExtract {
+            user: u,
+            root,
+            archive_relative,
+            destination_relative,
+            kind,
+            max_items,
+            max_bytes,
+        } => site::archive_extract(
+            u,
+            root,
+            archive_relative,
+            destination_relative,
+            *kind,
+            *max_items,
+            *max_bytes,
+        ),
+        HelperRequest::SiteRuntimeMove {
+            user: u,
+            from,
+            to,
+            php,
+        } => site::runtime_move(u, from, to, *php),
+        HelperRequest::SiteRuntimeEnsure { user: u, path, php } => {
+            site::runtime_ensure(u, path, *php)
+        }
+        HelperRequest::SiteRuntimeDelete { user: u, path } => site::runtime_delete(u, path),
+        HelperRequest::Wp { args } => site::wp(args),
+        HelperRequest::WpSite { user: u, php, args } => site::wp_site(u, *php, args),
+        HelperRequest::SitePopulate {
+            user: u,
+            root,
+            source,
+        } => site::populate(u, root, source),
+        HelperRequest::SiteFileInstall {
+            user: u,
+            root,
+            relative,
+            staged,
+        } => site::file_install(u, root, relative, staged),
+        HelperRequest::SiteDocumentRootEnsure {
+            user: u,
+            root,
+            relative,
+        } => site::document_root_ensure(u, root, relative),
+        HelperRequest::SiteLogsReadMany {
+            domains,
+            kind,
+            lines,
+        } => site::logs_read_many(domains, log_kind(*kind), *lines),
 
         // --- ssl ---
         HelperRequest::CertbotIssue {
@@ -228,6 +335,8 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
             email,
         } => ssl::certbot_issue(domain, aliases, email.as_ref()),
         HelperRequest::CertbotRenew { domain } => ssl::certbot_renew(domain.as_ref()),
+        HelperRequest::CertbotAutoRenewInstall => ssl::auto_renew_install(),
+        HelperRequest::CertbotRenewSoon { days } => ssl::renew_soon(*days),
         HelperRequest::CertbotDelete { domain } => ssl::certbot_delete(domain),
         HelperRequest::SslCertInfo { domain } => ssl::cert_info(domain),
         HelperRequest::PanelSslSelfsigned { host, port } => ssl::panel_selfsigned(host, *port),
@@ -251,7 +360,11 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::ServiceStatus { service } => misc::service_status(service),
         HelperRequest::UpdatesStatus => misc::updates_status(),
         HelperRequest::UpdatesOsRun => misc::updates_os_run(),
-        HelperRequest::UpdatesOsAuto { enable } => misc::updates_os_auto(*enable),
+        HelperRequest::UpdatesOsAuto {
+            enable,
+            mode,
+            auto_reboot,
+        } => misc::updates_os_auto(*enable, *mode, *auto_reboot),
 
         // --- waf / malware ---
         HelperRequest::WafStatus => waf::status(),
@@ -259,18 +372,159 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::WafCrsMode { mode } => waf::crs_mode_set(crs_mode(*mode)),
         HelperRequest::WafSiteSave { domain, content } => waf::site_rules_save(domain, content),
         HelperRequest::WafSiteDelete { domain } => waf::site_rules_delete(domain),
+        HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
+        HelperRequest::PhpPoolsRetune => php::pools_retune(),
+        HelperRequest::MariadbRetune => mariadb::retune(),
+        HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
+        HelperRequest::MaldetScan {
+            job,
+            mode,
+            days,
+            paths,
+        } => packages::maldet_scan(job, mode, days, paths),
+        HelperRequest::MalwareScanServer { job } => packages::malware_scan_server(job),
+        HelperRequest::MalwareQuarantine {
+            path,
+            signature,
+            job,
+        } => quarantine::quarantine(&quarantine::Store::system(), path, signature, job),
+        HelperRequest::MalwareQuarantineRestore { id } => {
+            quarantine::restore(&quarantine::Store::system(), id)
+        }
+        HelperRequest::MalwareQuarantineDelete { id } => {
+            quarantine::delete(&quarantine::Store::system(), id)
+        }
+        HelperRequest::MalwareQuarantineList => quarantine::list(&quarantine::Store::system()),
+        HelperRequest::SftpSubCreate {
+            owner,
+            account,
+            directory,
+            password,
+        } => sftp_sub::create(owner, account, directory, password),
+        HelperRequest::SftpSubPassword {
+            owner,
+            account,
+            password,
+        } => sftp_sub::set_password(owner, account, password),
+        HelperRequest::SftpSubDelete { owner, account } => sftp_sub::delete(owner, account),
+        HelperRequest::SftpSubMount {
+            owner,
+            account,
+            directory,
+        } => sftp_sub::mount(owner, account, directory),
+        HelperRequest::SftpSubUmount { owner, account } => sftp_sub::umount(owner, account),
+        HelperRequest::MalwareWhitelistAdd { path } => {
+            quarantine::whitelist_add(&quarantine::Store::system(), path)
+        }
+        HelperRequest::MalwareWhitelistRemove { path } => {
+            quarantine::whitelist_remove(&quarantine::Store::system(), path)
+        }
+        HelperRequest::MalwareWhitelistList => {
+            quarantine::whitelist_list(&quarantine::Store::system())
+        }
+        HelperRequest::NodeInstall { major } => packages::node_install(major),
+        HelperRequest::ClamavInstall => packages::clamav_install(),
+        HelperRequest::MaldetInstall => packages::maldet_install(),
+        HelperRequest::MaldetMonitor { action } => packages::maldet_monitor(action),
+        HelperRequest::MaldetUpdateSigs => packages::maldet_update_sigs("/usr/local/sbin/maldet"),
+        HelperRequest::NginxUpgradeMapEnsure => packages::upgrade_map_ensure(),
+        HelperRequest::UpdatesPanelRun => packages::panel_update_run(packages::UPDATE_SCRIPT),
+        HelperRequest::PhpTuneWrite { version, content } => php::tune_write(*version, content),
+        HelperRequest::PhpInstall { version } => packages::php_install(*version),
+        HelperRequest::PhpExtInstall { version, extension } => {
+            php_ext::install(*version, extension)
+        }
+        HelperRequest::PhpExtRemove { version, extension } => php_ext::remove(*version, extension),
+        HelperRequest::TerminalExec {
+            user,
+            cwd,
+            argv,
+            budget_secs,
+            php_version,
+        } => terminal::exec_as_user(
+            user,
+            cwd.as_str(),
+            argv,
+            // 0 means the caller asked for no budget; the bash treats an
+            // empty `--timeout=` the same way, by not wrapping in `timeout`.
+            (*budget_secs > 0).then_some(*budget_secs),
+            *php_version,
+        ),
+        HelperRequest::OrphanCleanup {
+            clean,
+            live_domains,
+        } => orphans::cleanup(*clean, live_domains),
+        HelperRequest::PanelUrlSet { https, host, port } => {
+            panel::url_set(ctx, *https, host, *port)
+        }
+        HelperRequest::PanelSslUseDomain { domain, port } => {
+            panel::ssl_use_domain(ctx, domain, *port)
+        }
+        HelperRequest::PanelSslInstall {
+            domain,
+            port,
+            email,
+        } => panel::ssl_install(ctx, domain, *port, email.as_ref()),
+        HelperRequest::CloudflareSslIssue { zone, email, token } => {
+            panel::cloudflare_ssl_issue(zone, email.as_ref(), token.expose())
+        }
+        HelperRequest::WafInstall => waf::install_engine(),
+        HelperRequest::FirewallBlocklistRun => {
+            firewall::blocklist_run(ctx.panel_port, &ctx.ssh_ports)
+        }
+        HelperRequest::FirewallBlocklistStatus => {
+            firewall::blocklist_status(&firewall::load_ruleset(ctx.panel_port, &ctx.ssh_ports))
+        }
+        HelperRequest::FirewallBlocklistTimerInstall => firewall::blocklist_timer_install(),
+        HelperRequest::FirewallBlocklistUrl { url, add } => {
+            if *add {
+                firewall::blocklist_add(url)
+            } else {
+                firewall::blocklist_delete(url)
+            }
+        }
+        HelperRequest::ManualSsl {
+            domain,
+            install,
+            payload,
+        } => {
+            let response = if *install {
+                ssl::manual_ssl_install(domain, payload)
+            } else {
+                ssl::manual_ssl_remove(domain)
+            };
+            // The bash runs `sync_panel_sni_certificates` after both, so the
+            // panel starts or stops serving this name on its own port in the
+            // same call that changed the certificate.
+            if response.ok {
+                let _ = ssl::sync_sni();
+            }
+            response
+        }
+        HelperRequest::DockerInstall => packages::docker_install(),
+        HelperRequest::DockerStatus => runtime::docker_status(),
+        HelperRequest::DockerPrune => runtime::docker_prune(),
+        HelperRequest::NodeList => runtime::node_list(),
+        HelperRequest::HttpFloodZonesSave { content } => nginx::flood_zones_save(content),
+        HelperRequest::WafDefaultRules => waf::default_rules(),
+        HelperRequest::WafCustomRules => waf::custom_rules(),
+        HelperRequest::WafCustomSave { content } => waf::custom_rules_save(content),
+        HelperRequest::WafUpdate => waf::update_rules(),
         HelperRequest::ClamavStatus => waf::clamav_status(),
         HelperRequest::ClamavControl { start } => waf::clamav_control(*start),
-        HelperRequest::MaldetStatus => waf::maldet_status(),
-
-        other => HelperResponse::failed(
-            HelperErrorKind::NotFound,
-            format!(
-                "'{}' is not implemented in the Rust helper yet; \
-                 it is still served by snpanel-helper.sh",
-                other.op_name()
-            ),
-        ),
+        HelperRequest::Fail2banInstall { config } => fail2ban::install(config, ctx),
+        HelperRequest::Fail2banConfigure { config } => fail2ban::configure(config, ctx),
+        HelperRequest::Fail2banStatus => fail2ban::status(),
+        HelperRequest::Fail2banBan { jail, address } => fail2ban::ban(*jail, *address),
+        HelperRequest::Fail2banUnban { address } => fail2ban::unban(*address),
+        HelperRequest::Fail2banStop => fail2ban::stop(),
+        // Afresh, not `ctx.ssh_ports`: that was read when the helper started,
+        // and a port changed since is the one somebody will connect to.
+        HelperRequest::SshPorts => HelperResponse::with_stdout(format!(
+            "{}\n",
+            serde_json::json!({ "ports": sshd_ports() })
+        )),
+        HelperRequest::MaldetStatus => packages::maldet_status(),
     }
 }
 
@@ -281,26 +535,6 @@ mod tests {
     #[test]
     fn ssh_ports_are_never_empty() {
         assert!(!sshd_ports().is_empty());
-    }
-
-    #[test]
-    fn an_unported_operation_names_itself() {
-        use snpanel_core::{Domain, PanelUsername, PhpVersion};
-
-        let ctx = Context::default();
-        let resp = dispatch(
-            &HelperRequest::SiteRuntimeEnsure {
-                user: PanelUsername::parse("bp_site").unwrap(),
-                domain: Domain::parse("example.com").unwrap(),
-                php: PhpVersion::parse("8.4").unwrap(),
-            },
-            &ctx,
-        );
-        assert!(!resp.ok);
-        let err = resp.error.unwrap();
-        assert_eq!(err.kind, HelperErrorKind::NotFound);
-        assert!(err.message.contains("site-runtime-ensure"));
-        assert!(err.message.contains("snpanel-helper.sh"));
     }
 
     #[test]
@@ -319,5 +553,62 @@ mod tests {
         let ctx = Context::from_system();
         assert!(ctx.panel_port > 0);
         assert!(!ctx.ssh_ports.is_empty());
+    }
+
+    /// Every verb a systemd unit this crate writes asks for must be one the
+    /// binary answers.
+    ///
+    /// This mattered less while the bash was there to catch a name the Rust
+    /// did not map. With the bash gone, a unit naming a verb that no longer
+    /// exists is a timer that fails silently every night - certificates that
+    /// stop renewing, blocklists that stop refreshing - and nothing reports
+    /// it but the journal.
+    #[test]
+    fn every_unit_execstart_names_a_verb_the_binary_answers() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ops");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("src/ops").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            for line in text.lines() {
+                // The unit bodies are Rust string literals, so the line ends
+                // in `\n";` or `\n\` - take what is between the binary and
+                // the first of those.
+                // Only a real unit line, not a test asserting about one.
+                let Some(rest) = line.trim_start().strip_prefix("ExecStart=") else {
+                    continue;
+                };
+                let Some(args) = rest.split("snpanel-helper ").nth(1) else {
+                    continue;
+                };
+                // Anything after the verb is its arguments; the escape at the
+                // end of the literal is not.
+                // The literal ends in `\n";` or `\n\`; the verb and its
+                // arguments are everything before the first backslash or
+                // quote.
+                let end = args.find(['\\', '"']).unwrap_or(args.len());
+                let argv: Vec<String> =
+                    args[..end].split_whitespace().map(str::to_string).collect();
+                if argv.is_empty() {
+                    continue;
+                }
+                let parsed = snpanel_ipc::HelperRequest::from_argv(&argv, Vec::new);
+                assert!(
+                    parsed.is_ok(),
+                    "{}: unit asks for `{}`, which the mapping refuses: {:?}",
+                    path.display(),
+                    argv.join(" "),
+                    parsed.err(),
+                );
+                checked += 1;
+            }
+        }
+        // Three units carry an ExecStart today - the firewall's boot unit is
+        // the third. A refactor that stopped this test finding them would
+        // leave it passing while checking nothing.
+        assert_eq!(checked, 3, "expected to check three ExecStart lines");
     }
 }

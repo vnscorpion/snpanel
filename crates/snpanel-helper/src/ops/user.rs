@@ -42,6 +42,19 @@ fn exists(user: &PanelUsername) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the account is one of the customers' SFTP accounts.
+fn in_sub_group(user: &PanelUsername) -> bool {
+    exec::run(&["id", "-nG", user.as_str()])
+        .map(|out| {
+            out.ok()
+                && out
+                    .stdout
+                    .split_whitespace()
+                    .any(|g| g == crate::ops::sftp_sub::SUB_GROUP)
+        })
+        .unwrap_or(false)
+}
+
 fn group_exists(group: &str) -> bool {
     exec::run(&["getent", "group", group])
         .map(|o| o.ok())
@@ -93,6 +106,15 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
     let _ = exec::run(&["chmod", "0711", HOME_ROOT]);
     let _ = exec::run(&["chmod", "a-s", HOME_ROOT]);
     let _ = exec::run(&["chmod", "-t", HOME_ROOT]);
+
+    // An SFTP account of another customer's has that customer's UID: made a
+    // panel user of, it would be handed their files.
+    if exists(user) && in_sub_group(user) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("{user} is an SFTP account, not a panel user"),
+        );
+    }
 
     if !exists(user) {
         let out = exec::run(&[
@@ -195,6 +217,15 @@ pub fn set_password(user: &PanelUsername, password: &SecretString) -> HelperResp
 /// user when the account is removed, and the processes are killed before
 /// `userdel`, which refuses while the user has any.
 pub fn delete(user: &PanelUsername) -> HelperResponse {
+    if in_sub_group(user) {
+        return HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            format!("{user} is an SFTP account, not a panel user"),
+        );
+    }
+    // Its SFTP accounts first: they share its UID and its group, and
+    // groupdel refuses a group that is still an account's own.
+    crate::ops::sftp_sub::delete_all(user);
     remove_php_pools(user);
 
     let _ = exec::run(&["crontab", "-r", "-u", user.as_str()]);
@@ -243,6 +274,43 @@ fn remove_php_pools(user: &PanelUsername) {
             }
         }
     }
+}
+
+/// `panel-user-lock` and `panel-user-unlock` - the Linux account of a
+/// suspended customer.
+///
+/// **This verb has never existed.** `site_users.lock_linux_user` has called it
+/// since suspension was written, the bash helper has no arm for it, and the
+/// `usermod -L` fallback beside the call only applies when the helper is *not
+/// installed* - which on a production box it always is. Checked on a live
+/// Debian 13:
+///
+/// ```text
+/// $ sudo -u snpanel sudo -n /usr/local/sbin/snpanel-helper panel-user-lock admin
+/// snpanel-helper: unknown command: panel-user-lock
+/// exit=1
+/// shadow field before: $y$    after: $y$
+/// ```
+///
+/// `suspend_user` says it will "block login, rewrite nginx, lock SFTP, kill
+/// sessions". The first, second and fourth happen. The third did not: a
+/// suspended customer kept their SFTP and SSH password. The call is made with
+/// `check=False`, so the refusal was swallowed and nothing was logged.
+///
+/// What this does is the fallback the Python declares - `usermod -L`, which
+/// puts a `!` in front of the password hash so no password matches. Two things
+/// it deliberately does **not** do, because they are not what the Python asked
+/// for and this is a port:
+///
+/// - it does not touch `authorized_keys`, so a customer with an SSH key keeps
+///   key-based access. That is a real gap in suspension and it is the Python's
+///   gap; widening the verb here would hide it rather than fix it.
+/// - it does not kill the customer's running sessions. `suspend_user` bumps
+///   `token_version` for the *panel*, which is a different thing.
+pub fn lock(user: &PanelUsername, locked: bool) -> HelperResponse {
+    let flag = if locked { "-L" } else { "-U" };
+    let out = exec::run(&["usermod", flag, user.as_str()]);
+    exec::respond(if locked { "usermod -L" } else { "usermod -U" }, out)
 }
 
 #[cfg(test)]

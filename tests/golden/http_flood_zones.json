@@ -1,0 +1,258 @@
+{
+ "cases": [
+  {
+   "sites": [],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "example.com",
+     "enabled": false,
+     "config": ""
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "example.com",
+     "enabled": true,
+     "config": ""
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_0caaf24ab1a0:10m rate=10r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "example.com",
+     "enabled": true,
+     "config": ""
+    },
+    {
+     "domain": "other.test",
+     "enabled": true,
+     "config": ""
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_0caaf24ab1a0:10m rate=10r/s;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_7ace4eb89a5e:10m rate=10r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "example.com",
+     "enabled": true,
+     "config": ""
+    },
+    {
+     "domain": "EXAMPLE.com",
+     "enabled": true,
+     "config": ""
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_0caaf24ab1a0:10m rate=10r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "example.com",
+     "enabled": true,
+     "config": ""
+    },
+    {
+     "domain": "off.test",
+     "enabled": false,
+     "config": ""
+    },
+    {
+     "domain": "other.test",
+     "enabled": true,
+     "config": ""
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_0caaf24ab1a0:10m rate=10r/s;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_7ace4eb89a5e:10m rate=10r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 100, \"access_limit_window\": 10}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=10r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 10, \"access_limit_window\": 10}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=1r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 9, \"access_limit_window\": 10}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=54r/m;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 1, \"access_limit_window\": 3600}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=1r/m;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 100000, \"access_limit_window\": 1}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=100000r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 7, \"access_limit_window\": 3}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=3r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "{\"access_limit_requests\": 0, \"access_limit_window\": 0}"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=1r/s;\n"
+  },
+  {
+   "sites": [
+    {
+     "domain": "a.test",
+     "enabled": true,
+     "config": "not json"
+    }
+   ],
+   "content": "# Managed by SNPanel. Shared zones for per-website HTTP flood protection.\nmap $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {\n    default $binary_remote_addr;\n    1 \"\";\n}\nlimit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;\nlimit_req_zone $snpanel_http_flood_key zone=snpanel_hf_bd8d428df078:10m rate=10r/s;\n"
+  }
+ ],
+ "rates": [
+  {
+   "requests": 1,
+   "window": 1,
+   "rate": "1r/s"
+  },
+  {
+   "requests": 100,
+   "window": 10,
+   "rate": "10r/s"
+  },
+  {
+   "requests": 10,
+   "window": 10,
+   "rate": "1r/s"
+  },
+  {
+   "requests": 9,
+   "window": 10,
+   "rate": "54r/m"
+  },
+  {
+   "requests": 1,
+   "window": 60,
+   "rate": "1r/m"
+  },
+  {
+   "requests": 1,
+   "window": 3600,
+   "rate": "1r/m"
+  },
+  {
+   "requests": 100000,
+   "window": 1,
+   "rate": "100000r/s"
+  },
+  {
+   "requests": 7,
+   "window": 3,
+   "rate": "3r/s"
+  },
+  {
+   "requests": 1,
+   "window": 1,
+   "rate": "1r/s"
+  },
+  {
+   "requests": 5,
+   "window": 60,
+   "rate": "5r/m"
+  },
+  {
+   "requests": 59,
+   "window": 60,
+   "rate": "59r/m"
+  },
+  {
+   "requests": 61,
+   "window": 60,
+   "rate": "2r/s"
+  }
+ ],
+ "columns": [
+  {
+   "config": {
+    "access_limit_requests": 100,
+    "access_limit_window": 10,
+    "access_limit_burst": 100,
+    "connection_limit": 60
+   },
+   "column": "{\"access_limit_requests\": 100, \"access_limit_window\": 10, \"access_limit_burst\": 100, \"connection_limit\": 60}"
+  },
+  {
+   "config": {
+    "access_limit_requests": 1,
+    "access_limit_window": 1,
+    "access_limit_burst": 0,
+    "connection_limit": 1
+   },
+   "column": "{\"access_limit_requests\": 1, \"access_limit_window\": 1, \"access_limit_burst\": 0, \"connection_limit\": 1}"
+  },
+  {
+   "config": {
+    "access_limit_requests": 100000,
+    "access_limit_window": 3600,
+    "access_limit_burst": 100000,
+    "connection_limit": 10000
+   },
+   "column": "{\"access_limit_requests\": 100000, \"access_limit_window\": 3600, \"access_limit_burst\": 100000, \"connection_limit\": 10000}"
+  },
+  {
+   "config": {
+    "access_limit_requests": 5,
+    "access_limit_window": 60,
+    "access_limit_burst": 0,
+    "connection_limit": 2
+   },
+   "column": "{\"access_limit_requests\": 5, \"access_limit_window\": 60, \"access_limit_burst\": 0, \"connection_limit\": 2}"
+  }
+ ]
+}

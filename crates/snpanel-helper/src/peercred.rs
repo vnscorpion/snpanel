@@ -64,6 +64,17 @@ pub fn peer_of(stream: &UnixStream) -> Result<PeerCred, PeerCredError> {
             std::io::Error::last_os_error().to_string(),
         ));
     }
+    // A short answer is not a "cannot happen" worth leaving unchecked here.
+    // `cred` is zero-initialised, so a getsockopt that wrote fewer bytes than
+    // it claims to would leave `uid` at 0 - and 0 is root, which `authorise`
+    // accepts. The one place in this program where an uninitialised value
+    // becomes an authorisation decision is the one place to check the length.
+    if len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(PeerCredError::Unavailable(format!(
+            "the kernel returned {len} bytes of peer credentials, not {}",
+            std::mem::size_of::<libc::ucred>()
+        )));
+    }
     Ok(PeerCred {
         pid: cred.pid,
         uid: cred.uid,
@@ -171,5 +182,42 @@ mod tests {
             uid_of("definitely-not-a-real-account-xyzzy"),
             Err(PeerCredError::NoSuchUser(_))
         ));
+    }
+
+    /// Why `peer_of` checks the length the kernel gave it.
+    ///
+    /// The struct it fills is zero-initialised, and a getsockopt that wrote
+    /// fewer bytes than a `ucred` would leave `uid` at 0. This shows what
+    /// that value means to the decision function: uid 0 is root, and root is
+    /// accepted. So a short answer would not fail closed - it would fail
+    /// straight through to the most privileged outcome there is.
+    ///
+    /// It cannot be forced from a test; the length check is what makes it
+    /// unreachable, and this is the record of what it is guarding.
+    #[test]
+    fn a_zeroed_credential_would_read_as_root() {
+        let zeroed = PeerCred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        assert!(
+            authorise(zeroed, 1001).is_ok(),
+            "uid 0 is root and root is accepted - which is exactly why an \
+             unfilled ucred must never reach here"
+        );
+    }
+
+    #[test]
+    fn a_real_socketpair_reports_this_process() {
+        // The happy path, against the kernel rather than a mock: both ends of
+        // a socketpair belong to this process, so the credentials it reports
+        // are this process's own.
+        let (a, _b) = UnixStream::pair().expect("socketpair");
+        let peer = peer_of(&a).expect("peer credentials");
+        // SAFETY: these cannot fail and touch no memory.
+        let (uid, pid) = unsafe { (libc::getuid(), libc::getpid()) };
+        assert_eq!(peer.uid, uid);
+        assert_eq!(peer.pid, pid);
     }
 }

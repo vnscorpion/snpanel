@@ -1,0 +1,57 @@
+/* Fail2ban: its state and the administrator's own address first, then the
+   addresses banned now with the form that bans one, then the jails and the
+   rules they share. The status card follows the Firewall page's. See
+   pages/Fail2ban.jsx. */
+
+.f2b-page{display:grid;gap:var(--space-4)}
+.f2b-page>.section{margin-bottom:0}
+
+/* ---- state ---- */
+.f2b-status-head{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.f2b-status-icon{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:var(--radius-lg);background:var(--f2b-tone-bg);color:var(--f2b-tone-fg)}
+.f2b-status-text{flex:1 1 280px;min-width:0}
+.f2b-status-text h2{margin:0;font-size:var(--text-lg)}
+.f2b-status-text .hint{margin-top:2px}
+.f2b-status[data-state="on"]{--f2b-tone-bg:var(--success-bg);--f2b-tone-fg:var(--success-text)}
+.f2b-status[data-state="off"]{--f2b-tone-bg:var(--danger-bg);--f2b-tone-fg:var(--danger-text);border-color:var(--danger-border)}
+.f2b-status[data-state="loading"]{--f2b-tone-bg:var(--surface-sunken);--f2b-tone-fg:var(--text-secondary)}
+.f2b-you{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-2);margin:var(--space-1) 0 0;padding-top:var(--space-3);border-top:1px solid var(--border);color:var(--text-secondary);font-size:var(--text-sm)}
+.f2b-you svg{flex:none;color:var(--success-text)}
+.f2b-you-warn{color:var(--warning-text)}
+.f2b-you-warn svg{color:var(--warning-text)}
+.f2b-you-warn span{flex:1 1 320px;min-width:0}
+
+/* ---- section heads ---- */
+.f2b-section-head h2{margin:0}
+.f2b-section-head .hint{margin-top:2px}
+.f2b-settings{display:grid;gap:var(--space-3)}
+
+/* ---- banning ---- */
+.f2b-ban-form{display:grid;grid-template-columns:minmax(180px,1fr) 240px auto;gap:var(--space-2);align-items:end}
+.f2b-field{display:grid;gap:6px;min-width:0}
+.f2b-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.f2b-ban-form select:disabled{opacity:.55;cursor:not-allowed}
+
+/* ---- jails ---- */
+.f2b-jails{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-md)}
+.f2b-jail{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2) var(--space-4);padding:10px 12px;border-bottom:1px solid var(--border)}
+.f2b-jail:last-child{border-bottom:0}
+.f2b-jail-toggle{display:flex;align-items:flex-start;gap:var(--space-2);flex:1 1 320px;min-width:0;cursor:pointer}
+.f2b-jail-toggle input{flex:none;width:16px;height:16px;min-height:0;margin:3px 0 0;padding:0;accent-color:var(--primary)}
+.f2b-jail-toggle input:disabled{cursor:not-allowed}
+.f2b-jail-text{display:grid;gap:2px;min-width:0}
+.f2b-jail-text .hint{margin:0}
+.f2b-jail-stats{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2px var(--space-3);color:var(--text-secondary);font-size:var(--text-sm);font-variant-numeric:tabular-nums}
+
+/* ---- rules ---- */
+.f2b-timing{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2)}
+.f2b-exempt textarea{min-height:96px;font-family:var(--font-mono);font-size:var(--text-sm)}
+.f2b-exempt .hint{margin:0}
+.f2b-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:var(--space-2)}
+
+@media (max-width:760px){
+  .f2b-ban-form,.f2b-timing{grid-template-columns:1fr}
+  .f2b-jail{flex-direction:column;align-items:stretch}
+  .f2b-jail-toggle{flex:none}
+  .f2b-jail-stats{justify-content:flex-start;padding-left:26px}
+}

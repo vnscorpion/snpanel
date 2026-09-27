@@ -373,6 +373,32 @@ def _nginx_cases() -> list[dict]:
     # A non-default upstream port on the proxy template.
     add("application_port8080", app_type="application", app_port=8080)
 
+    # Redirect vhosts and manual SSL, which `render_vhost` appends and rewrites
+    # after the template has run. Neither had a case, so neither had a witness
+    # - and the Rust port would have reproduced them from reading the code,
+    # which is what the other fourteen cases exist to avoid.
+    add("wordpress_redirects", app_type="wordpress", redirects=["old.example.com", "older.example.com"])
+    add(
+        "wordpress_manual_ssl",
+        app_type="wordpress",
+        ssl_cert_path="/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/cert.crt",
+        ssl_key_path="/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl.example.com/private.key",
+    )
+    add(
+        "wordpress_manual_ssl_ca",
+        app_type="wordpress",
+        ssl_cert_path="/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/cert.crt",
+        ssl_key_path="/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/private.key",
+        ssl_ca_path="/etc/nginx/snpanel/ssl/sites/wordpress-manual-ssl-ca.example.com/ca.crt",
+    )
+    add(
+        "php_redirects_ssl",
+        app_type="php",
+        redirects=["legacy.example.com"],
+        ssl_cert_path="/etc/nginx/snpanel/ssl/sites/php-redirects-ssl.example.com/cert.crt",
+        ssl_key_path="/etc/nginx/snpanel/ssl/sites/php-redirects-ssl.example.com/private.key",
+    )
+
     return cases
 
 

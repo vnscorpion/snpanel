@@ -1,0 +1,51 @@
+/* Two-step verification: the authenticator app, then passkeys beside it.
+   See pages/Security.jsx. */
+
+.security-page{display:grid;gap:var(--space-4)}
+.security-page>.section{margin-bottom:0}
+
+.security-head{display:flex;align-items:center;gap:var(--space-3)}
+.security-head-text{flex:1;min-width:0}
+.security-head-text h2{display:flex;align-items:center;gap:var(--space-2);margin:0;font-size:var(--text-lg)}
+.security-head-text .hint{margin-top:2px}
+.security-icon{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:var(--radius-lg)}
+.security-icon.on{background:var(--success-bg);color:var(--success-text)}
+.security-icon.off{background:var(--surface-sunken);color:var(--text-secondary)}
+.security-page .security-grid{margin-top:0}
+
+/* The login password: the current one, the new one twice, the code. */
+.security-password-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--space-3);align-items:end;margin-top:var(--space-3)}
+.security-field{display:grid;gap:6px;min-width:0}
+.security-field label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.security-field input[aria-invalid="true"]{border-color:var(--danger-border)}
+.security-password-go{grid-column:1 / -1;display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3);flex-wrap:wrap}
+.security-password-go small{flex:1 1 260px;margin:0}
+.security-bad{color:var(--danger-text);font-weight:600}
+
+.passkey-table td strong{display:block}
+.passkey-elsewhere{display:block;margin-top:2px;color:var(--text-muted);font-size:var(--text-xs);font-weight:600}
+/* A name, the current password, the code when there is one, and the
+   button - sized for what goes in them rather than stretched across the
+   page. */
+.passkey-form{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:var(--space-3);align-items:end;max-width:860px;margin-top:var(--space-3)}
+.passkey-form:has(#passkey-code){grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) 150px auto}
+.passkey-first{display:flex;align-items:center;gap:6px}
+.passkey-backup{margin-top:var(--space-3)}
+.passkey-backup code{white-space:nowrap}
+.passkey-blocked p{margin:0}
+.passkey-blocked p+p{margin-top:var(--space-2)}
+/* Removing one: what goes, the password, the two buttons. */
+.passkey-remove{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-3);align-items:end;max-width:860px;margin-top:var(--space-3);padding:var(--space-3);border:1px solid var(--danger-border);border-radius:var(--radius-lg);background:var(--surface)}
+.passkey-remove p{grid-column:1 / -1;margin:0}
+.passkey-remove-go{display:flex;gap:var(--space-2)}
+
+@media (max-width:900px){
+  .security-password-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .passkey-form,.passkey-form:has(#passkey-code),.passkey-remove{grid-template-columns:1fr}
+  .passkey-form button{width:100%}
+  .passkey-remove-go button{flex:1 1 auto}
+  .security-password-form{grid-template-columns:1fr}
+  .security-password-go button{flex:1 1 auto}
+}

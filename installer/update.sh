@@ -121,6 +121,61 @@ trap cleanup_stable_copy EXIT
 APP_DIR="${APP_DIR:-/opt/snpanel}"                 # Production deployment dir
 DEFAULT_SOURCE_DIR="/opt/snpanel-source"           # Dev/branch checkout dir only
 
+# The Rust API binary, and which unit serves the panel.
+#
+# Both facts, and they are different questions. Whether the *binary* exists
+# gates the one-shots below - the site refresh, the orphan sweep - which talk
+# to the database and the helper and work the same whichever process serves
+# HTTP. Which unit to *restart* has only one right answer: the one that is
+# serving.
+#
+# A box installed since the panel became the Rust binary has no
+# `snpanel-rust` unit and falls through to `snpanel-api`, which runs that
+# binary. One that cut over while both existed still has both.
+#
+# Restarting the wrong one is two failures at once. The change does not take
+# effect, because the process serving the panel never reloaded it; and
+# snpanel-api cannot bind the panel port while Rust holds it, so with
+# Restart=always it loops forever. Measured on a cut-over box: NRestarts
+# climbed to 4 in thirty seconds, running Alembic on every pass, and nothing
+# looked wrong from outside because Rust kept answering.
+RUST_API="${RUST_API:-/usr/local/bin/snpanel-api-rust}"
+
+# Which `snpanel-install` to run a phase with.
+#
+# The one this update fetched wins: it is the release being installed, and a
+# phase should write what that release says. The one already on the box is the
+# fallback, and it is why `install.sh` puts it in /usr/local/sbin rather than
+# leaving it in the release directory - an update that cannot reach the
+# release still refreshes what it can, which is the tolerance this script has
+# always had for the other binaries.
+#
+# Printing nothing when there is neither is deliberate: the caller runs
+# `"$(phase_runner)"`, which then fails, and every call site treats that as a
+# warning rather than a stop. A box with no phase runner at all is one that
+# has never been installed.
+phase_runner() {
+  if [[ -n "${RUST_BIN_DIR:-}" && -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
+    printf '%s' "${RUST_BIN_DIR}/snpanel-install"
+  else
+    printf '%s' /usr/local/sbin/snpanel-install
+  fi
+}
+
+panel_unit() {
+  if systemctl is-enabled snpanel-rust >/dev/null 2>&1; then
+    echo snpanel-rust
+  else
+    echo snpanel-api
+  fi
+}
+
+restart_panel() {
+  local unit
+  unit="$(panel_unit)"
+  systemctl restart "$unit"
+}
+
 # Resolve where THIS script lives. If it's inside a real git checkout we use
 # that. Otherwise we fall back to /opt/snpanel-source so users running the
 # script from the deploy dir still get a usable workflow.
@@ -307,7 +362,9 @@ current_panel_version() {
     tr -d '[:space:]' <"$APP_DIR/VERSION"
     return 0
   fi
-  sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' "$APP_DIR/backend/app/core/version.py" 2>/dev/null | head -n 1
+  # Older boxes kept it in backend/app/core/version.py; that file is gone
+  # with the rest of the Python, and $APP_DIR/VERSION above is authoritative.
+  return 1
 }
 
 write_update_state() {
@@ -488,99 +545,68 @@ ensure_panel_https() {
 }
 
 write_tools_nginx_config() {
-  local panel_port panel_domain panel_cert panel_key php_version server_ip host api_scheme tools_scheme pma_secure ssl_block
-  panel_port="$(env_get PANEL_PORT)"; panel_port="${panel_port:-2222}"
-  panel_domain="$(env_get PANEL_DOMAIN)"
+  local panel_cert panel_key panel_domain server_ip panel_port host
+  # These are `.env` keys, not shell variables - this script never sets them
+  # in its own environment, so they have to be read out of the file the way
+  # the bash that used to be here read them.
   panel_cert="$(env_get PANEL_SSL_CERT)"
   panel_key="$(env_get PANEL_SSL_KEY)"
-  php_version="${PHP_DEFAULT:-8.4}"
+  panel_domain="$(env_get PANEL_DOMAIN)"
+  panel_port="$(env_get PANEL_PORT)"; panel_port="${panel_port:-2222}"
   server_ip="$(detect_server_ip)"
   host="${panel_domain:-$server_ip}"
-  api_scheme="http"; tools_scheme="http"; pma_secure="false"; ssl_block=""
-  if [[ -n "$panel_cert" && -n "$panel_key" && -f "$panel_cert" && -f "$panel_key" ]]; then
-    api_scheme="https"; tools_scheme="https"; pma_secure="true"
-    printf -v ssl_block '\n    listen 443 ssl http2 default_server;\n    ssl_certificate %s;\n    ssl_certificate_key %s;' "$panel_cert" "$panel_key"
-  fi
-  cat >/etc/nginx/conf.d/00-snpanel-tools.conf <<NGINX
-server {
-    listen 80 default_server;${ssl_block}
-    server_name _;
-    client_max_body_size 1100M;
 
-    # Panel certificates are issued through this, so the panel no longer has to
-    # stop nginx to prove it owns its own hostname.
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/snpanel-acme;
-        default_type text/plain;
-        try_files \$uri =404;
-        access_log off;
-        auth_basic off;
-    }
+  # `snpanel-install tools-vhost`. The block is
+  # `snpanel_installer::tools_vhost`, with a fixture for each of its two
+  # shapes - with a panel certificate and without.
+  #
+  # The certificate has to be on disk and not only named in `.env`: an
+  # `ssl_certificate` pointing at a file that is not there stops nginx from
+  # starting at all, which takes every site on the box with it.
+  PANEL_SSL_CERT="$panel_cert" PANEL_SSL_KEY="$panel_key" \
+  PHPMYADMIN_ROOT="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}" \
+  PHP_DEFAULT="${PHP_DEFAULT:-8.4}" \
+    "$(phase_runner)" tools-vhost \
+    || fail "Could not write the tools vhost"
 
-    location = /phpmyadmin { return 301 /phpmyadmin/; }
-    location /phpmyadmin/ { alias /usr/share/phpmyadmin/; index index.php; try_files \$uri \$uri/ =404; }
-    location ~ ^/phpmyadmin/(.+\.php)$ {
-        alias /usr/share/phpmyadmin/\$1;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /usr/share/phpmyadmin/\$1;
-        fastcgi_param SCRIPT_NAME /phpmyadmin/\$1;
-        fastcgi_pass unix:/run/php/php${php_version}-fpm.sock;
-        fastcgi_read_timeout 300;
-    }
-}
-NGINX
-  sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${api_scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" /usr/share/phpmyadmin/snpanel-signon.php 2>/dev/null || true
-  sed -i -E "s#('secure' => )(true|false)#\1${pma_secure}#" /etc/phpmyadmin/conf.d/snpanel-signon.php /usr/share/phpmyadmin/snpanel-signon.php 2>/dev/null || true
-  [[ -n "$host" ]] && sed -i -E "/PmaAbsoluteUri/s#'https?://[^']+/phpmyadmin/'#'${tools_scheme}://${host}/phpmyadmin/'#" /etc/phpmyadmin/conf.d/snpanel-signon.php 2>/dev/null || true
+  # `snpanel-install phpmyadmin-signon`, which was the three `sed -i -E` calls
+  # that used to sit at the end of this function: the address the sign-on shim
+  # posts its token to, the `secure` flag on its cookie, and phpMyAdmin's
+  # `PmaAbsoluteUri`. The substitutions are `snpanel_core::phpmyadmin`, and
+  # they are checked row by row against what GNU `sed` produced.
+  #
+  # Never fatal, the same as the `|| true` on each of the three. phpMyAdmin is
+  # optional and an update has other work to finish.
+  PANEL_PORT="$panel_port" PANEL_DOMAIN="$panel_domain" SERVER_IP="$server_ip" \
+  PANEL_SSL_CERT="$panel_cert" PANEL_SSL_KEY="$panel_key" \
+  PHPMYADMIN_ROOT="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}" \
+  PHPMYADMIN_CONF_DIR="${PHPMYADMIN_CONF_DIR:-/etc/phpmyadmin}" \
+    "$(phase_runner)" phpmyadmin-signon \
+    || log "Could not update phpMyAdmin's single-sign-on shim"
+  : "$host"
 }
 
 configure_fastcgi_cache() {
-  install -d -o "$WEB_USER" -g "$WEB_GROUP" -m 0755 /var/cache/nginx/snpanel-fastcgi
-  find /var/cache/nginx/snpanel-fastcgi -mindepth 1 -delete
-  cat >/etc/nginx/conf.d/00-snpanel-fastcgi-cache.conf <<'NGINX'
-fastcgi_cache_path /var/cache/nginx/snpanel-fastcgi levels=1:2 keys_zone=SNPANEL_FASTCGI:32m inactive=30m max_size=256m use_temp_path=off;
-fastcgi_cache_key "$scheme$request_method$host$request_uri";
-NGINX
-}
-
-# WebSocket upgrade map, shared by every proxied vhost. Without it a
-# `proxy_set_header Connection $connection_upgrade` in a site config makes
-# nginx fail to start, so this has to exist before any proxy vhost is written.
-configure_proxy_upgrade_map() {
-  cat >/etc/nginx/conf.d/00-snpanel-upgrade-map.conf <<'NGINX'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-NGINX
+  # `snpanel-install nginx-conf` writes both this and the WebSocket upgrade
+  # map, which `configure_proxy_upgrade_map` used to write - that function is
+  # gone rather than left empty. Both files have golden fixtures.
+  #
+  # The map is not optional: without it a `proxy_set_header Connection
+  # $connection_upgrade` in any site config makes nginx refuse to start.
+  "$(phase_runner)" nginx-conf \
+    || fail "Could not write the shared nginx configuration"
 }
 
 migrate_nginx_wordpress_csp_worker_src() {
-  python3 - <<'PY'
-from pathlib import Path
-
-roots = [Path("/etc/nginx/conf.d"), Path("/etc/nginx/sites-enabled")]
-needle = "worker-src 'self' blob:;"
-anchor = "frame-src 'self' https: blob:;"
-
-for root in roots:
-    if not root.exists():
-        continue
-    for path in sorted(root.glob("*.conf")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            text = path.read_text(encoding="latin-1")
-        if "Content-Security-Policy" not in text or needle in text:
-            continue
-        if anchor in text:
-            new_text = text.replace(anchor, f"{anchor} {needle}")
-        else:
-            new_text = text.replace("object-src", f"{needle} object-src")
-        if new_text != text:
-            path.write_text(new_text, encoding="utf-8")
-            print(f"Updated CSP worker-src in {path}")
-PY
+  # `snpanel-install migrate-csp`, which was embedded `python3` here. What to
+  # write is `snpanel_installer::update::migrations::csp`, pinned to a corpus
+  # taken from real policies - this edits vhosts an operator did not ask it to
+  # touch, so being nearly right is not good enough.
+  #
+  # Not fatal: a box whose editor still blocks workers is a box with a
+  # cosmetic fault, and stopping the update over it would be worse.
+  "$(phase_runner)" migrate-csp || \
+    echo "WARNING: could not migrate the Content-Security-Policy in existing vhosts"
 }
 
 # Cron lines written before the PHP pinning fix call a bare `php`, which
@@ -725,7 +751,7 @@ harden_existing_panel_users() {
 install_panel_runtime() {
   local env_file="$APP_DIR/backend/.env"
   [[ -f "$env_file" ]] || return 0
-  local panel_port panel_url server_ip sshd_config sshd_backup
+  local panel_port panel_url server_ip
   panel_port="$(env_get PANEL_PORT)"
   panel_port="${panel_port:-2222}"
   server_ip="$(detect_server_ip)"
@@ -776,208 +802,54 @@ install_panel_runtime() {
   install -d -o snpanel -g snpanel -m 0750 /home/admin/snpanel_backups/da
   install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel/da-import
   install -d -o snpanel -g snpanel -m 0750 /var/lib/snpanel/import-stage
-  if command -v sshd >/dev/null 2>&1; then
-    sshd_config="/etc/ssh/sshd_config"
-    sshd_backup="${sshd_config}.snpanel.bak"
-    install -d -o root -g root -m 0755 /run/sshd
-    rm -f /etc/ssh/sshd_config.d/99-snpanel-sftp.conf 2>/dev/null || true
-    touch "$sshd_config"
-    cp "$sshd_config" "$sshd_backup"
-    sed -i '/^# BEGIN SNPANEL SFTP USERS$/,/^# END SNPANEL SFTP USERS$/d' "$sshd_config"
-    cat >>"$sshd_config" <<'SSHD'
-# BEGIN SNPANEL SFTP USERS
-# Allow SNPanel Linux users to log in with SFTP using their panel password.
-# SSH shells are intentionally disabled; /home/%u is a root-owned chroot.
-Match Group snpanel-sftp
-    PasswordAuthentication yes
-    ChrootDirectory /home/%u
-    ForceCommand internal-sftp -d /
-    PermitTTY no
-    X11Forwarding no
-    AllowTcpForwarding no
-    PermitTunnel no
-# END SNPANEL SFTP USERS
-SSHD
-    if sshd -t; then
-      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-    else
-      cp "$sshd_backup" "$sshd_config"
-      echo "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block"
-    fi
-  fi
+  # `snpanel-install sftp-access`, the third copy of this edit to go. The
+  # splice, the `sshd -t` and the rollback are `runtime::apply_sftp_block`,
+  # shared with `install.sh` and `snpanel fix-permissions`.
+  #
+  # A warning here and fatal in the installer, which is the difference that
+  # has always been between them: an update has other work to finish, and
+  # losing the SFTP block is a feature not working while stopping leaves the
+  # box half-updated.
+  "$(phase_runner)" sftp-access || \
+    echo "WARNING: invalid SSHD configuration; skipped SNPanel SFTP password block"
 
-  cat >/usr/local/sbin/snpanel-api-start <<STARTER
-#!/usr/bin/env bash
-# app.serve builds the uvicorn server in Python: the same options the command
-# line used to take, plus one certificate per hostname. The panel is therefore
-# reachable on every domain on this machine that has a certificate, instead of
-# only on the one PANEL_DOMAIN names.
-#
-# Trusted forwarders: only the local Nginx (127.0.0.1) is allowed to set
-# X-Forwarded-For / X-Forwarded-Proto. Anything else (direct hits on
-# the configured panel port) cannot spoof the audit log IP or the login rate-limit key.
-set -euo pipefail
-cd ${APP_DIR}/backend
-exec ${APP_DIR}/backend/.venv/bin/python -m app.serve
-STARTER
-  chmod 0755 /usr/local/sbin/snpanel-api-start
-  mkdir -p /etc/systemd/system/snpanel-api.service.d
-  cat >/etc/systemd/system/snpanel-api.service.d/20-panel-port.conf <<SERVICE
-[Service]
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-ExecStart=
-ExecStart=/usr/local/sbin/snpanel-api-start
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-ProtectHome=false
-ReadWritePaths=
-ReadWritePaths=${APP_DIR} /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-SERVICE
-  cat >/etc/systemd/system/snpanel-backup-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel scheduled backup runner
-After=network.target mariadb.service
-
-[Service]
-Type=oneshot
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.backup_scheduler
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=/home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel ${APP_DIR} /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  cat >/etc/systemd/system/snpanel-backup-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Run SNPanel scheduled backups every minute
-
-[Timer]
-OnBootSec=90s
-OnUnitActiveSec=60s
-AccuracySec=15s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-  cat >/etc/systemd/system/snpanel-malware-scheduler.service <<SERVICE
-[Unit]
-Description=SNPanel weekly malware scan runner
-After=network.target clamav-daemon.service
-
-[Service]
-Type=oneshot
-# The runner blocks until the scan it starts finishes (a whole-server scan
-# can take hours). Without this, systemd's 90s default start timeout kills it
-# and the scan lands in 'interrupted'.
-TimeoutStartSec=infinity
-User=snpanel
-Group=snpanel
-SupplementaryGroups=${WEB_GROUP} snpanel-sites
-WorkingDirectory=${APP_DIR}/backend
-EnvironmentFile=${APP_DIR}/backend/.env
-Environment=HOME=${APP_DIR}
-Environment=SNPANEL_USE_HELPER=true
-ExecStart=${APP_DIR}/backend/.venv/bin/python -m app.services.malware_schedule
-NoNewPrivileges=false
-ProtectSystem=false
-ProtectHome=false
-ReadWritePaths=${APP_DIR} /home ${BACKUP_ROOT:-/var/backups/snpanel} /tmp /var/lib/snpanel
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-  cat >/etc/systemd/system/snpanel-malware-scheduler.timer <<'SERVICE'
-[Unit]
-Description=Ask every quarter of an hour whether the weekly malware scan is due
-
-[Timer]
-# Often enough that a server asleep at the appointed hour still scans when it
-# comes back, while the runner itself refuses to start twice in one window.
-OnBootSec=5min
-OnUnitActiveSec=15min
-AccuracySec=1min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-
-  # snpanel-helper refuses to run unless SUDO_USER names the panel account, so
-  # this unit sets it. The sibling boot units (firewall, blocklist) do the same:
-  # the helper then runs as root here with no real sudo in front of it.
-  cat >/etc/systemd/system/snpanel-autotune.service <<'SERVICE'
-[Unit]
-Description=Auto tune SNPanel PHP-FPM pools and MariaDB for this VPS
-After=network-online.target mariadb.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper php-fpm-retune
-ExecStart=/usr/local/sbin/snpanel-helper mariadb-retune
-RemainAfterExit=no
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-  systemctl daemon-reload
-  systemctl enable snpanel-autotune.service >/dev/null 2>&1 || true
-  # Keep the clock honest for TOTP: the snpanel-timesync timer steps the clock
-  # from an HTTPS Date header when UDP 123 is blocked. An update never changes
-  # the server timezone - that stays the operator's call (PANEL_TIMEZONE at
-  # install time, or `timedatectl set-timezone` by hand).
-  cat >/etc/systemd/system/snpanel-timesync.service <<'SERVICE'
-[Unit]
-Description=Correct the SNPanel server clock when NTP cannot reach the network
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=SUDO_USER=snpanel
-ExecStart=/usr/local/sbin/snpanel-helper time-sync
-RemainAfterExit=no
-SERVICE
-  cat >/etc/systemd/system/snpanel-timesync.timer <<'SERVICE'
-[Unit]
-Description=Check the SNPanel server clock at boot and hourly
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=1h
-AccuracySec=30s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-SERVICE
-  systemctl daemon-reload
-  systemctl enable snpanel-timesync.timer >/dev/null 2>&1 || true
+  # `snpanel-install update-units`: seven unit files and one drop-in.
+  #
+  # Not `systemd-units`, which is the install's phase. That one also writes
+  # `snpanel-api.service` and `enable --now`s it - and on a box that has cut
+  # over to `snpanel-rust` that starts a second panel on the port the first
+  # is already listening on. An update writes the drop-in instead, which is
+  # what this script has always done.
+  #
+  # The seven come from the installer's own `unit_files`, so the two lists
+  # cannot drift; a test asserts that and that the bodies are the same bytes.
+  # Verified on the container against this block before it was removed: all
+  # eight files identical.
+  #
+  # Both enables are inside the phase and neither is fatal, the same as the
+  # `|| true` that was on them here.
+  # `$panel_port`, not `$PANEL_PORT`. The heredoc this replaces interpolated
+  # the upper-case name, which this script never sets: under `set -u` that
+  # aborted the update at this line, having written nothing. It was reachable
+  # on every path - the helper starts the update with `systemd-run` and nine
+  # `Environment=` properties, and `PANEL_PORT` is not one of them - but it
+  # has never shipped: the release on a box still has the older block, whose
+  # `ExecStart` named a wrapper script and needed no port at all.
+  BACKUP_ROOT="${BACKUP_ROOT:-}" APP_DIR="$APP_DIR" PANEL_PORT="$panel_port" \
+    "$(phase_runner)" update-units \
+    || fail "Could not write the panel's systemd units"
   rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf 2>/dev/null || true
   rm -f /etc/nginx/sites-enabled/snpanel.conf /etc/nginx/sites-available/snpanel.conf 2>/dev/null || true
   write_tools_nginx_config
-  if [[ -f /usr/share/phpmyadmin/snpanel-signon.php ]]; then
+  # The platform's phpMyAdmin: EL's is /usr/share/phpMyAdmin, where the fixed
+  # Debian path found nothing and the sign-on URL was never corrected.
+  local signon="${PHPMYADMIN_ROOT:-/usr/share/phpmyadmin}/snpanel-signon.php"
+  if [[ -f "$signon" ]]; then
     local scheme="http"
     if [[ -n "$(env_get PANEL_SSL_CERT)" && -n "$(env_get PANEL_SSL_KEY)" ]]; then
       scheme="https"
     fi
-    sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" /usr/share/phpmyadmin/snpanel-signon.php || true
+    sed -i -E "/api\/databases\/phpmyadmin-sso/s#'[^']+/api/databases/phpmyadmin-sso/'#'${scheme}://127.0.0.1:${panel_port}/api/databases/phpmyadmin-sso/'#" "$signon" || true
   fi
 }
 
@@ -1044,6 +916,13 @@ ensure_panel_runtime_ownership() {
   [[ -d /var/lib/snpanel ]] && chown snpanel:snpanel /var/lib/snpanel 2>/dev/null || true
   [[ -d /var/lib/snpanel/geoip ]] && chown -R snpanel:snpanel /var/lib/snpanel/geoip 2>/dev/null || true
   [[ -d /var/lib/snpanel/assets ]] && chown -R snpanel:snpanel /var/lib/snpanel/assets 2>/dev/null || true
+  # The two directory modes setup_panel_user gives. `rsync -a` hands both the
+  # source tree's own - a release archive's 0755, a checkout's 0775 - and the
+  # database inside backend/ is 0644: a backend/ others can enter is a
+  # database others can read. The app directory is passed through, never
+  # listed: the Node runtimes applications run on live under it.
+  if [[ -d "$APP_DIR/backend" ]]; then chmod 0750 "$APP_DIR/backend"; fi
+  if [[ -d "$APP_DIR" ]]; then chmod 0711 "$APP_DIR"; fi
   [[ -f "$APP_DIR/backend/.env" ]] && chmod 0640 "$APP_DIR/backend/.env"
 }
 
@@ -1182,6 +1061,28 @@ if [[ -z "${SNPANEL_UPDATE_STAGE2:-}" && -f "$SOURCE_DIR/installer/update.sh" ]]
     exec /bin/bash "$stage2_copy"
 fi
 
+# --- The Rust binaries ------------------------------------------------------
+#
+# Fetched here rather than where they are installed, which is several hundred
+# lines further down. Everything between the two that writes a managed file
+# does it through `snpanel-install`, and a phase cannot run a binary that has
+# not been fetched yet - the same ordering `install.sh` got wrong once and now
+# has a test for.
+#
+# Only the fetch moves. Installing them stays where it was: replacing the
+# panel's own binary is a restart, and doing it earlier would move that
+# restart into the middle of the migrations.
+#
+# Failure is tolerated, as it always has been. `phase_runner` falls back to
+# the copy already on the box, and an update that cannot reach the release
+# still refreshes everything that does not come from one.
+if [[ -f "$SOURCE_DIR/installer/lib/rust-binaries.sh" ]]; then
+  RUST_SOURCE_ROOT="$SOURCE_DIR"
+  # shellcheck source=lib/rust-binaries.sh
+  source "$SOURCE_DIR/installer/lib/rust-binaries.sh"
+  fetch_rust_binaries || log "No Rust binaries for this release; using the installed ones"
+fi
+
 # --- Sync code into APP_DIR -------------------------------------------------
 log "Syncing source to $APP_DIR"
 mkdir -p "$APP_DIR"
@@ -1189,12 +1090,10 @@ mkdir -p "$APP_DIR"
 if command -v rsync >/dev/null 2>&1; then
   # --filter='protect ...' keeps the destination file even when --delete
   # would otherwise remove it because the source side doesn't have it. We use
-  # this for runtime artefacts that the installer creates: .env, .venv,
+  # this for runtime artefacts that the installer creates: .env,
   # snpanel.db, .my.cnf.
   rsync -a --delete \
     --filter='protect /.env' \
-    --filter='protect /.venv' \
-    --filter='protect /.venv/**' \
     --filter='protect /snpanel.db' \
     --filter='protect /.my.cnf' \
     --exclude '__pycache__/' \
@@ -1230,40 +1129,97 @@ update_progress 25 "syncing" "Syncing source into ${APP_DIR}"
 install_panel_runtime
 log "Configuring Nginx FastCGI cache"
 configure_fastcgi_cache
-configure_proxy_upgrade_map
 ensure_terminal_tools
-venv_needs_recreate=false
-if [[ ! -x "$APP_DIR/backend/.venv/bin/uvicorn" ]]; then
-  venv_needs_recreate=true
-elif ! head -n1 "$APP_DIR/backend/.venv/bin/uvicorn" 2>/dev/null | grep -Fq "$APP_DIR/backend/.venv"; then
-  venv_needs_recreate=true
-fi
-if [[ "$venv_needs_recreate" == "true" ]]; then
-  log "Recreating Python virtualenv (missing or stale path)"
+# A box updated from a version that had one still carries it. Nothing runs
+# out of it any more, and leaving several hundred megabytes of dead Python on
+# every machine to avoid one `rm` would be the wrong trade.
+if [[ -d "$APP_DIR/backend/.venv" ]]; then
+  log "Removing the Python virtualenv; the panel is the Rust binary now"
   rm -rf "$APP_DIR/backend/.venv"
-  python3 -m venv "$APP_DIR/backend/.venv"
 fi
 
 # --- Refresh helper + sudoers (idempotent) ---------------------------------
-if [[ -f "$SOURCE_DIR/installer/files/snpanel-helper.sh" ]]; then
-  log "Refreshing /usr/local/sbin/snpanel-helper and /etc/sudoers.d/snpanel"
+# --- Rust binaries ---------------------------------------------------------
+#
+# Until now an update refreshed the Python and left every Rust binary alone.
+# On a cut-over box that means the panel itself - snpanel-rust runs the
+# installed binary, so an updated box went on serving the code it was
+# installed with, indefinitely, with nothing saying so.
+#
+# Only the API binary and the CLI are refreshed here. The Rust *helper* is
+# deliberately left alone: which path it occupies depends on
+# whether that cutover has been done, and the arrangement below already
+# threads that needle for the bash fallback. Replacing the privileged binary
+# on the same pass is a separate change with its own failure modes.
+# The binaries were fetched much earlier, so the phases between here and
+# there could run. This is where they are put on the box, which for the panel
+# is a restart.
+if [[ -n "${RUST_BIN_DIR:-}" ]]; then
+  if [[ -x "${RUST_BIN_DIR}/snpanel-api" ]]; then
+    log "Refreshing /usr/local/bin/snpanel-api-rust"
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-api" \
+      /usr/local/bin/snpanel-api-rust
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
+    install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
+      /usr/local/sbin/snpanel-install
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
+    # The binary takes the `snpanel` name; the two older names follow it.
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel" /usr/local/sbin/snpanel
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
+    ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanel-cli
+  fi
+  [[ -n "${RUST_BIN_TMP:-}" ]] && rm -rf -- "$RUST_BIN_TMP"
+  RUST_BIN_TMP=""
+fi
+
+# Gated on the sudoers file, not on the bash helper this used to refresh.
+# That script is deleted; gating on it would have skipped this whole block -
+# the sudoers refresh, the retune and the clock - silently, on every update.
+if [[ -f "$SOURCE_DIR/installer/files/snpanel-sudoers" ]]; then
+  log "Refreshing /etc/sudoers.d/snpanel and the machine tuning"
   update_progress 40 "runtime" "Refreshing panel helper and runtime"
   if id -u snpanel >/dev/null 2>&1; then
-    install -m 0750 -o root -g snpanel "$SOURCE_DIR/installer/files/snpanel-helper.sh" /usr/local/sbin/snpanel-helper
-    sed -i "s#^APP_DIR=\"/opt/snpanel\"#APP_DIR=\"${APP_DIR}\"#" /usr/local/sbin/snpanel-helper
+    # The helper itself was refreshed with the other binaries above; what is
+    # left here is the sudoers file that decides who may call it.
     install -m 0440 -o root -g root  "$SOURCE_DIR/installer/files/snpanel-sudoers"   /etc/sudoers.d/snpanel
     visudo -c -f /etc/sudoers.d/snpanel >/dev/null
+    # And the helper's own units, which only a fresh install used to write:
+    # a change to its sandbox - MemoryDenyWriteExecute, which stopped every
+    # Node application from deploying - never reached a box installed before
+    # it. Socket-activated, so stopping the service is enough; the next call
+    # starts it under the new unit.
+    for unit in snpanel-helper.service snpanel-helper.socket; do
+      if [[ -f "$SOURCE_DIR/installer/files/${unit}" ]]; then
+        install -m 0644 -o root -g root "$SOURCE_DIR/installer/files/${unit}" "/etc/systemd/system/${unit}"
+      fi
+    done
+    systemctl daemon-reload
+    systemctl stop snpanel-helper.service 2>/dev/null || true
     sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper wp --info >/dev/null
+    # The OWASP rule set's include is written only when its mode is set, and
+    # one written before the setup-file fix names no crs-setup.conf: CRS then
+    # answers every request on every site that loads it with a 500. Written
+    # again here, in the mode it is in.
+    crs_mode="$(tr -d '[:space:]' < /etc/nginx/modsec/snpanel-crs-mode 2>/dev/null || true)"
+    if [[ "$crs_mode" == "detect" || "$crs_mode" == "block" ]]; then
+      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper waf-crs-mode "$crs_mode" >/dev/null \
+        || echo "  (warning: could not rewrite the OWASP CRS include; switch the WAF off and on again from the panel)"
+    fi
     # The retune output is a function of the helper's logic and this machine's
     # RAM/CPU; neither moves between two updates of the same release. Skip the
     # pair (and the autotune unit, which just runs the same two) when the
     # helper is unchanged. `snpanel-autotune.service` stays enabled for boot.
-    if step_inputs_changed autotune "$SOURCE_DIR/installer/files/snpanel-helper.sh"; then
-      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper php-fpm-retune >/dev/null || \
+    #
+    # The input is the installed binary now rather than the bash script: it is
+    # the file whose logic decides the numbers.
+    if step_inputs_changed autotune /usr/local/sbin/snpanel-helper; then
+      sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper php-pools-retune >/dev/null || \
         echo "  (warning: could not retune existing PHP-FPM pools; site refresh will retry later)"
       sudo -u snpanel env HOME="$APP_DIR" sudo -n /usr/local/sbin/snpanel-helper mariadb-retune >/dev/null || \
         echo "  (warning: could not retune MariaDB; update will continue with existing settings)"
-      step_mark_done autotune "$SOURCE_DIR/installer/files/snpanel-helper.sh"
+      step_mark_done autotune /usr/local/sbin/snpanel-helper
     else
       echo "  (PHP-FPM and MariaDB tuning unchanged for this release; skipping the retune)"
     fi
@@ -1285,22 +1241,18 @@ if [[ -f "$SOURCE_DIR/installer/rescue-firewall.sh" ]]; then
   ln -sfn /usr/local/sbin/snpanel-rescue-firewall /usr/local/sbin/snpanel-rescue-ufw-blocklist
 fi
 
-if [[ -f "$SOURCE_DIR/change_IP.sh" ]]; then
-  log "Refreshing panel IP change command"
-  install -m 0755 -o root -g root "$SOURCE_DIR/change_IP.sh" /usr/local/sbin/snpanel-change-ip
-fi
+# The IP change command was a separate script refreshed here. It is
+# `snpanel change-ip`, and the binary carrying it is refreshed with the
+# others above.
 
 if [[ -f "$SOURCE_DIR/installer/update.sh" ]]; then
   log "Refreshing panel update command"
   install -m 0755 -o root -g root "$SOURCE_DIR/installer/update.sh" /usr/local/sbin/snpanel-update
 fi
 
-if [[ -f "$SOURCE_DIR/installer/files/snpanelctl" ]]; then
-  log "Refreshing SSH menu command: snpanel"
-  install -m 0755 -o root -g root "$SOURCE_DIR/installer/files/snpanelctl" /usr/local/sbin/snpanel
-  ln -sfn /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl
-  sed -i "s#APP_DIR=\"\${APP_DIR:-/opt/snpanel}\"#APP_DIR=\"\${APP_DIR:-${APP_DIR}}\"#" /usr/local/sbin/snpanel /usr/local/sbin/snpanelctl 2>/dev/null || true
-fi
+# The SSH menu was a bash script here; it is the `snpanel` binary now and is
+# refreshed with the other binaries above, along with its `snpanelctl` and
+# `snpanel-cli` symlinks.
 
 log "Ensuring Nginx ModSecurity WAF engine is installed"
 if id -u snpanel >/dev/null 2>&1; then
@@ -1385,103 +1337,42 @@ if id -u snpanel >/dev/null 2>&1; then
 fi
 
 # --- Backend ---------------------------------------------------------------
-log "Updating backend dependencies"
-update_progress 55 "backend" "Updating backend dependencies"
-cd "$APP_DIR/backend"
-if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
-fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
-# pip resolves the whole requirements file on every run even when nothing moved;
-# skip it unless requirements.txt changed or the venv was just rebuilt.
-if [[ "$venv_needs_recreate" == "true" ]] || step_inputs_changed backend-deps requirements.txt; then
-  pip install --upgrade pip
-  pip install -r requirements.txt
-  step_mark_done backend-deps requirements.txt
-else
-  log "Backend dependencies unchanged since last update; skipping pip install"
-fi
+# Nothing to install: the panel is a binary, refreshed above with the other
+# Rust binaries.
 
 log "Refreshing MariaDB grants"
 refresh_snpanel_mariadb_grants
 
 log "Running database migrations"
 update_progress 65 "backend" "Running database migrations"
-if id -u snpanel >/dev/null 2>&1; then
-  # Run migrations as the snpanel user so the SQLite file ownership stays correct.
-  sudo -u snpanel "$APP_DIR/backend/.venv/bin/python" -c \
-    "from app.core.database import run_migrations; run_migrations()"
-else
-  python -c "from app.core.database import run_migrations; run_migrations()"
+# Alembic's revisions 0001-0031 are frozen and gone with the Python; a
+# database that has them is stamped at the head this build expects, and
+# anything after is Rust's, recorded in its own table. Run as the snpanel
+# user so the SQLite file keeps its ownership.
+if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "$RUST_API" --env "$APP_DIR/backend/.env" --migrate \
+    || fail "The schema migration failed; the update stops here rather than \
+running new code against a half-migrated database"
 fi
 systemctl enable --now snpanel-backup-scheduler.timer >/dev/null 2>&1 || true
 systemctl enable --now snpanel-malware-scheduler.timer >/dev/null 2>&1 || true
 
 SITE_REFRESH_INPUTS=(
-  "$SOURCE_DIR/installer/files/snpanel-helper.sh"
-  "$SOURCE_DIR/backend/app/services"
-  "$SOURCE_DIR/backend/app/templates"
+  # Was the bash helper; the binary that renders a vhost is the input now.
+  "/usr/local/sbin/snpanel-helper"
+  "${RUST_API:-/usr/local/bin/snpanel-api-rust}"
 )
 if ! step_inputs_changed site-refresh "${SITE_REFRESH_INPUTS[@]}"; then
   log "Managed site config unchanged since last update; skipping the per-site refresh"
-elif id -u snpanel >/dev/null 2>&1; then
+elif [[ -x "${RUST_API:-/usr/local/bin/snpanel-api-rust}" ]] && id -u snpanel >/dev/null 2>&1; then
+  # Rust where it is installed. This sweep warns per site and carries on:
+  # an update that stopped at the first bad site would leave every site
+  # after it un-refreshed and the panel half-updated.
   log "Refreshing managed site permissions"
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY'
-from app.core.database import SessionLocal
-from app.models.entities import Website
-from app.services import nginx, site_users, waf
-
-with SessionLocal() as db:
-    websites = db.query(Website).all()
-    try:
-        result = nginx.sync_http_flood_zones(websites)
-        if result.returncode != 0:
-            print(f"WARNING: could not refresh HTTP flood zones: {result.stderr or result.stdout}")
-    except Exception as exc:
-        print(f"WARNING: could not refresh HTTP flood zones: {exc}")
-    for website in websites:
-        try:
-            if website.linux_user:
-                runtime_php_version = website.php_version if (website.app_type or "wordpress") in {"wordpress", "php"} else None
-                site_users.ensure_site_runtime(website.domain, website.root_path, runtime_php_version, website.linux_user)
-                site_users.ensure_document_root(
-                    website.root_path,
-                    getattr(website, "document_root", "public_html") or "public_html",
-                    website.linux_user,
-                )
-            site_users.fix_site_permissions(website.root_path, website.linux_user)
-            result = waf.sync_website_rules(website)
-            if result.returncode != 0:
-                print(f"WARNING: could not refresh WAF rules for {website.domain}: {result.stderr or result.stdout}")
-            if getattr(website, "nginx_config_mode", "managed") != "managed":
-                website.nginx_config_mode = "managed"
-                db.commit()
-            app_type = website.app_type or "wordpress"
-            runtime_php_version = website.php_version if app_type in {"wordpress", "php"} else None
-            nginx.rewrite_vhost(
-                website.domain,
-                website.root_path,
-                app_type=app_type,
-                php_version=website.php_version,
-                custom_directives=website.nginx_custom or "",
-                php_fpm_socket_override=site_users.site_php_fpm_socket(website.linux_user, website.root_path, runtime_php_version),
-                waf_enabled=website.waf_enabled,
-                http_flood_enabled=website.http_flood_enabled,
-                http_flood_config=website.http_flood_config or "",
-                document_root=getattr(website, "document_root", "public_html") or "public_html",
-                rewrite_mode=getattr(website, "nginx_rewrite_mode", "none") or "none",
-            )
-        except Exception as exc:
-            print(f"WARNING: could not refresh permissions for {website.domain}: {exc}")
-    try:
-        result = nginx.sync_http_flood_zones(websites)
-        if result.returncode != 0:
-            print(f"WARNING: could not refresh HTTP flood zones: {result.stderr or result.stdout}")
-    except Exception as exc:
-        print(f"WARNING: could not refresh HTTP flood zones: {exc}")
-PY
-  step_mark_done site-refresh "${SITE_REFRESH_INPUTS[@]}"
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "${RUST_API:-/usr/local/bin/snpanel-api-rust}" --env "$APP_DIR/backend/.env" --refresh-sites \
+    || log "WARNING: the site refresh did not complete"
 fi
 
 # Clear what deleted websites left on disk. A Let's Encrypt renewal config for a
@@ -1493,18 +1384,14 @@ fi
 # customer certificates, and "unreferenced" is a strong inference rather than a
 # certainty. The helper refuses outright if the panel cannot say which domains
 # are live, so a failed query cannot turn into a delete.
-if id -u snpanel >/dev/null 2>&1; then
+if [[ -x "$RUST_API" ]] && id -u snpanel >/dev/null 2>&1; then
+  # Rust where it is installed. A flag rather than a request to the panel:
+  # an update runs while the panel may be stopped, and the sweep still has to
+  # happen. The Python stays below for a box that has not cut over.
   log "Clearing orphaned certificates and configs"
-  sudo -u snpanel env HOME="$APP_DIR" SNPANEL_USE_HELPER=true "$APP_DIR/backend/.venv/bin/python" - <<'PY' || log "WARNING: orphan cleanup did not complete"
-from app.core.database import SessionLocal
-from app.services import orphans
-
-with SessionLocal() as db:
-    try:
-        print("  " + orphans.describe(orphans.clean(db)))
-    except Exception as exc:
-        print(f"  WARNING: orphan cleanup skipped: {exc}")
-PY
+  runuser -u snpanel -- env HOME="$APP_DIR" SNPANEL_USE_HELPER=true \
+    "$RUST_API" --env "$APP_DIR/backend/.env" --clean-orphans \
+    || log "WARNING: orphan cleanup did not complete"
 fi
 
 # journald ships with no size limit and falls back to 10% of the filesystem;
@@ -1591,40 +1478,6 @@ for php_ini_dir in /etc/php/*/; do
   fi
 done
 
-log "Compiling backend modules"
-python -m py_compile \
-  app/main.py \
-  app/api/auth.py \
-  app/api/users.py \
-  app/api/websites.py \
-  app/api/databases.py \
-  app/api/maintenance.py \
-  app/api/packages.py \
-  app/api/firewall.py \
-  app/api/services.py \
-  app/api/updates.py \
-  app/api/waf.py \
-  app/api/panel_settings.py \
-  app/api/terminal.py \
-  app/services/firewall.py \
-  app/services/nginx.py \
-  app/services/panel_urls.py \
-  app/services/panel_settings.py \
-  app/services/updates.py \
-  app/services/waf.py \
-  app/services/mariadb.py \
-  app/services/wordpress.py \
-  app/services/file_manager.py \
-  app/services/backup.py \
-  app/services/backup_scheduler.py \
-  app/services/storage_quota.py \
-  app/services/site_users.py \
-  app/services/cron.py \
-  app/services/php.py \
-  app/schemas/schemas.py \
-  app/seed.py
-deactivate
-
 log "Restarting snpanel-api"
 mkdir -p /etc/systemd/system/snpanel-api.service.d
 cat >/etc/systemd/system/snpanel-api.service.d/10-snpanel-helper.conf <<'SERVICE'
@@ -1637,7 +1490,7 @@ SystemCallFilter=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SERVICE
 systemctl daemon-reload
-systemctl restart snpanel-api
+restart_panel
 
 # --- Frontend --------------------------------------------------------------
 update_progress 80 "frontend" "Building frontend"
@@ -1676,15 +1529,17 @@ else
   step_mark_done frontend "${FRONTEND_INPUTS[@]}"
 fi
 
-# Make sure nginx (as ${WEB_USER}) can read the built bundle.
-chmod o+rX "$APP_DIR" "$APP_DIR/frontend" 2>/dev/null || true
+# Make sure nginx (as ${WEB_USER}) can read the built bundle. The app
+# directory above it only needs passing through, which its 0711 allows; o+r
+# on it let anyone list it.
+chmod o+rX "$APP_DIR/frontend" 2>/dev/null || true
 chmod -R o+rX "$APP_DIR/frontend/dist" 2>/dev/null || true
 
 # The API scans dist/assets at start, so a fresh bundle (new hashed filenames)
 # needs one more restart. An unchanged bundle does not.
 if [[ "$FRONTEND_REBUILT" == "1" ]]; then
-  log "Restarting snpanel-api after frontend build"
-  systemctl restart snpanel-api
+  log "Restarting $(panel_unit) after frontend build"
+  restart_panel
 fi
 
 # --- Reload Nginx ----------------------------------------------------------
@@ -1714,7 +1569,7 @@ if [[ -n "${PANEL_SWITCHED_TO_HTTPS:-}" ]]; then
     env_set PANEL_URL "http://$(detect_server_ip):${panel_port_now}"
     env_set ALLOWED_ORIGINS "http://$(detect_server_ip):${panel_port_now}"
     PANEL_SWITCHED_TO_HTTPS=""
-    systemctl restart snpanel-api
+    restart_panel
   fi
 fi
 

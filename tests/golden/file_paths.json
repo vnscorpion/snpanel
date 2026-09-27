@@ -1,0 +1,805 @@
+{
+ "clean": [
+  {
+   "input": "",
+   "ok": true,
+   "value": ""
+  },
+  {
+   "input": ".",
+   "ok": true,
+   "value": ""
+  },
+  {
+   "input": "./",
+   "ok": true,
+   "value": ""
+  },
+  {
+   "input": "/",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "//",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "\\",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a",
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a/b",
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/b/c",
+   "ok": true,
+   "value": "a/b/c"
+  },
+  {
+   "input": "a//b",
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/./b",
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "./a",
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a/",
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "/a",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "//a",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "\\a",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a\\b",
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "..",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../a",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/..",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../b",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../../b",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "....//",
+   "ok": true,
+   "value": "...."
+  },
+  {
+   "input": "C:/x",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "c:/x",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "x:y",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a:b/c",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": " a ",
+   "ok": true,
+   "value": " a "
+  },
+  {
+   "input": "a b",
+   "ok": true,
+   "value": "a b"
+  },
+  {
+   "input": "a\tb",
+   "ok": true,
+   "value": "a\tb"
+  },
+  {
+   "input": ".hidden",
+   "ok": true,
+   "value": ".hidden"
+  },
+  {
+   "input": "..hidden",
+   "ok": true,
+   "value": "..hidden"
+  },
+  {
+   "input": "...",
+   "ok": true,
+   "value": "..."
+  },
+  {
+   "input": "public_html",
+   "ok": true,
+   "value": "public_html"
+  },
+  {
+   "input": "public_html/index.php",
+   "ok": true,
+   "value": "public_html/index.php"
+  },
+  {
+   "input": "public_html/../etc",
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "link-inside",
+   "ok": true,
+   "value": "link-inside"
+  },
+  {
+   "input": "link-inside/x",
+   "ok": true,
+   "value": "link-inside/x"
+  },
+  {
+   "input": "link-outside",
+   "ok": true,
+   "value": "link-outside"
+  },
+  {
+   "input": "link-outside/x",
+   "ok": true,
+   "value": "link-outside/x"
+  },
+  {
+   "input": "deep/link-inside",
+   "ok": true,
+   "value": "deep/link-inside"
+  },
+  {
+   "input": "deep/nested/file.txt",
+   "ok": true,
+   "value": "deep/nested/file.txt"
+  },
+  {
+   "input": "deep/nested",
+   "ok": true,
+   "value": "deep/nested"
+  },
+  {
+   "input": "missing",
+   "ok": true,
+   "value": "missing"
+  },
+  {
+   "input": "missing/deeper",
+   "ok": true,
+   "value": "missing/deeper"
+  },
+  {
+   "input": "public_html/missing.txt",
+   "ok": true,
+   "value": "public_html/missing.txt"
+  }
+ ],
+ "safe": [
+  {
+   "input": "",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": ".",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": ".",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "./",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "./",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "/",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "/",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "//",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "//",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "\\",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "\\",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "."
+  },
+  {
+   "input": "a",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a/b",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/b",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/b/c",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a/b/c"
+  },
+  {
+   "input": "a/b/c",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a/b/c"
+  },
+  {
+   "input": "a//b",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a//b",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/./b",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "a/./b",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a/b"
+  },
+  {
+   "input": "./a",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "./a",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a/",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a/",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "/a",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "/a",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "//a",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "//a",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "\\a",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "\\a",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a"
+  },
+  {
+   "input": "a\\b",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a\\b"
+  },
+  {
+   "input": "a\\b",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a\\b"
+  },
+  {
+   "input": "..",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "..",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../a",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "../a",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/..",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/..",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../b",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../b",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../../b",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "a/../../b",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "....//",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "...."
+  },
+  {
+   "input": "....//",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "...."
+  },
+  {
+   "input": "C:/x",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "C:/x"
+  },
+  {
+   "input": "C:/x",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "C:/x"
+  },
+  {
+   "input": "c:/x",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "c:/x"
+  },
+  {
+   "input": "c:/x",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "c:/x"
+  },
+  {
+   "input": "x:y",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "x:y"
+  },
+  {
+   "input": "x:y",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "x:y"
+  },
+  {
+   "input": "a:b/c",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a:b/c"
+  },
+  {
+   "input": "a:b/c",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a:b/c"
+  },
+  {
+   "input": " a ",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": " a "
+  },
+  {
+   "input": " a ",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": " a "
+  },
+  {
+   "input": "a b",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a b"
+  },
+  {
+   "input": "a b",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a b"
+  },
+  {
+   "input": "a\tb",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "a\tb"
+  },
+  {
+   "input": "a\tb",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "a\tb"
+  },
+  {
+   "input": ".hidden",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": ".hidden"
+  },
+  {
+   "input": ".hidden",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": ".hidden"
+  },
+  {
+   "input": "..hidden",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "..hidden"
+  },
+  {
+   "input": "..hidden",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "..hidden"
+  },
+  {
+   "input": "...",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "..."
+  },
+  {
+   "input": "...",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "..."
+  },
+  {
+   "input": "public_html",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "public_html"
+  },
+  {
+   "input": "public_html",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "public_html"
+  },
+  {
+   "input": "public_html/index.php",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "public_html/index.php"
+  },
+  {
+   "input": "public_html/index.php",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "public_html/index.php"
+  },
+  {
+   "input": "public_html/../etc",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "public_html/../etc",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Path escapes website root"
+  },
+  {
+   "input": "link-inside",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "link-inside",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "link-inside"
+  },
+  {
+   "input": "link-inside/x",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "link-inside/x",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "link-outside",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "link-outside",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "link-outside"
+  },
+  {
+   "input": "link-outside/x",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "link-outside/x",
+   "allow_leaf_symlink": true,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "deep/link-inside",
+   "allow_leaf_symlink": false,
+   "ok": false,
+   "error": "Symlinks are not allowed"
+  },
+  {
+   "input": "deep/link-inside",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "deep/link-inside"
+  },
+  {
+   "input": "deep/nested/file.txt",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "deep/nested/file.txt"
+  },
+  {
+   "input": "deep/nested/file.txt",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "deep/nested/file.txt"
+  },
+  {
+   "input": "deep/nested",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "deep/nested"
+  },
+  {
+   "input": "deep/nested",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "deep/nested"
+  },
+  {
+   "input": "missing",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "missing"
+  },
+  {
+   "input": "missing",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "missing"
+  },
+  {
+   "input": "missing/deeper",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "missing/deeper"
+  },
+  {
+   "input": "missing/deeper",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "missing/deeper"
+  },
+  {
+   "input": "public_html/missing.txt",
+   "allow_leaf_symlink": false,
+   "ok": true,
+   "value": "public_html/missing.txt"
+  },
+  {
+   "input": "public_html/missing.txt",
+   "allow_leaf_symlink": true,
+   "ok": true,
+   "value": "public_html/missing.txt"
+  }
+ ]
+}

@@ -36,6 +36,7 @@ pub const CSRF_COOKIE: &str = "snpanel_csrf";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// An authenticated request.
+#[derive(Clone)]
 pub struct CurrentUser {
     pub user: User,
     pub claims: token::Claims,
@@ -48,7 +49,35 @@ impl CurrentUser {
     pub fn is_admin(&self) -> bool {
         self.user.is_admin()
     }
+
+    /// Not in the Python: the owner of an MCP token, for the calls the MCP
+    /// endpoint makes into the API as them. There is no session behind it -
+    /// the token was checked instead - so the claims are only what a handler
+    /// may read.
+    pub fn acting_for(user: User) -> CurrentUser {
+        let now = chrono::Utc::now().timestamp();
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("tv".to_string(), serde_json::json!(user.token_version));
+        extra.insert("role".to_string(), serde_json::json!(user.role));
+        CurrentUser {
+            claims: token::Claims {
+                sub: user.username.clone(),
+                exp: now + 300,
+                iat: now,
+                jti: String::new(),
+                extra,
+            },
+            user,
+            via_cookie: false,
+        }
+    }
 }
+
+/// A caller already known: set by the MCP endpoint on the requests it makes
+/// into the API as a token's owner. Only code in this process can put an
+/// extension on a request, so nothing from the network can claim to be one.
+#[derive(Clone)]
+pub struct McpCaller(pub CurrentUser);
 
 /// The 401 body FastAPI produces, so the frontend's error handling is
 /// unchanged. `App.jsx` reads `detail`.
@@ -88,6 +117,9 @@ impl CurrentUser {
     /// `authenticated: false` rather than 401, so it has to *see* the failure
     /// instead of having the extractor turn it into a response.
     pub async fn from_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        if let Some(McpCaller(current)) = parts.extensions.get::<McpCaller>() {
+            return Ok(current.clone());
+        }
         let bearer = bearer_token(parts);
         let cookie = cookie_value(parts, SESSION_COOKIE);
 

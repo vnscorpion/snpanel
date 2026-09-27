@@ -15,9 +15,15 @@
 //! Phase 2 fills in all ~130 variants (plan Appendix B). The ones here are the
 //! set Phase 0/1 needs, plus enough of each domain to pin the shape.
 
+mod argv;
+pub use argv::InvocationError;
+mod fail2ban;
+pub use fail2ban::{Fail2banConfig, Fail2banJail};
+
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
-    Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString, SitePath,
+    AppName, DockerImage, Domain, Email, IpOrCidr, PanelUsername, PhpVersion, Port, SecretString,
+    SitePath,
 };
 
 /// The socket the helper listens on, created by systemd socket activation.
@@ -26,6 +32,13 @@ pub const SOCKET_PATH: &str = "/run/snpanel/helper.sock";
 /// Maximum size of a single request. A file write can be large, but not
 /// unbounded - an unbounded read from a socket is a memory-exhaustion bug.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+
+/// Where the API stages a File Manager upload for `site-file-install`.
+///
+/// Here rather than in either side so the two cannot drift. It is the panel's
+/// own directory, not `/tmp`: both services run with `PrivateTmp=true`, and a
+/// file the API staged in its `/tmp` does not exist in the helper's.
+pub const UPLOAD_STAGE_DIR: &str = "/var/lib/snpanel/upload-stage";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -44,6 +57,103 @@ pub enum ServiceAction {
     Restart,
     Reload,
     Status,
+}
+
+/// The two archive formats the panel unpacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveKind {
+    Zip,
+    #[serde(rename = "tar.gz")]
+    TarGz,
+}
+
+impl ArchiveKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Zip => "zip",
+            Self::TarGz => "tar.gz",
+        }
+    }
+}
+
+/// How a site application is started.
+///
+/// Source: the `--exec`, `--image` and related flags of `site-app-write`. A
+/// node application names a start command and an argument; a container names
+/// an image, the port inside it and a CPU share. They are different shapes,
+/// so they are different variants rather than a struct of optionals where
+/// half the fields are meaningless.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AppRuntime {
+    Node {
+        node_major: u8,
+        /// Source: the `case` on `$app_exec`.
+        exec: NodeExec,
+        /// Source: `^[A-Za-z0-9._@/-]{1,120}$`.
+        arg: String,
+    },
+    Docker {
+        image: DockerImage,
+        container_port: Port,
+        /// Whole CPUs, in hundredths, so "1.5" is 150. An integer because a
+        /// float in a unit file is a rounding argument waiting to happen.
+        cpus_centi: u32,
+    },
+}
+
+/// The four start commands a node application may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeExec {
+    Node,
+    Npm,
+    Npx,
+    Yarn,
+}
+
+impl NodeExec {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Npm => "npm",
+            Self::Npx => "npx",
+            Self::Yarn => "yarn",
+        }
+    }
+}
+
+/// What may be done to a site application's unit.
+///
+/// Source: the `is_in` allowlist in `site-app-control`. Eight actions, and no
+/// way to express a ninth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppAction {
+    Start,
+    Stop,
+    Restart,
+    Status,
+    IsActive,
+    IsEnabled,
+    Enable,
+    Disable,
+}
+
+impl AppAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Status => "status",
+            Self::IsActive => "is-active",
+            Self::IsEnabled => "is-enabled",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
 }
 
 /// Which of a site's two nginx logs.
@@ -75,6 +185,16 @@ pub enum CrsMode {
     Block,
 }
 
+/// What automatic OS updates apply: security fixes only, or every update the
+/// configured repositories offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AutoUpdateMode {
+    #[default]
+    Security,
+    All,
+}
+
 /// File mode as an octal value, e.g. 0o644.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -99,6 +219,8 @@ pub const ALLOWED_SERVICES: &[&str] = &[
     "nginx",
     "mariadb",
     "redis-server",
+    // The Redis-compatible server on AlmaLinux 10, which ships no Redis.
+    "valkey",
     "php8.3-fpm",
     "php8.4-fpm",
     "snpanel-api",
@@ -108,7 +230,7 @@ pub const ALLOWED_SERVICES: &[&str] = &[
 /// removes the means to bring it back.
 ///
 /// Source: the explicit refusal in the bash `systemctl` arm.
-pub const UNSTOPPABLE_SERVICES: &[&str] = &["snpanel-api", "redis-server"];
+pub const UNSTOPPABLE_SERVICES: &[&str] = &["snpanel-api", "redis-server", "valkey"];
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ServiceError {
@@ -190,11 +312,49 @@ pub struct AllowlistedArgv {
     args: Vec<String>,
 }
 
-/// Source: the terminal allowlist in the current helper.
+/// Commands run through the PHP binary with `open_basedir` set.
+///
+/// Source: the `php`, `composer`, `wp`, `phpunit` and `artisan` arms. Each
+/// appends its own tool directory to the basedir so the interpreter can read
+/// the phar it is being asked to run.
+pub const TERMINAL_PHP_HOSTED: &[&str] = &["artisan", "composer", "php", "phpunit", "wp"];
+
+/// Commands whose every argument is resolved and required to land inside the
+/// user's home before they start.
+///
+/// Source: the arms that call `require_terminal_path_args`. These can be
+/// pointed at a path, so they are.
+pub const TERMINAL_PATH_CHECKED: &[&str] = &[
+    "awk", "cat", "chmod", "chown", "cp", "df", "diff", "du", "file", "find", "grep", "head",
+    "less", "ls", "mkdir", "mv", "rm", "rmdir", "sed", "sort", "stat", "tail", "tar", "touch",
+    "uniq", "unzip", "wc", "zip",
+];
+
+/// Commands that fetch, and whose output path is checked wherever `-o`/`-O`
+/// names one.
+///
+/// Source: the arms that call `require_terminal_download_args`.
+pub const TERMINAL_DOWNLOAD_CHECKED: &[&str] = &["curl", "wget"];
+
+/// Everything else: commands that cannot be pointed at a path, so their
+/// arguments are not inspected.
+pub const TERMINAL_PLAIN: &[&str] = &[
+    "basename", "clear", "date", "dirname", "echo", "git", "id", "node", "npm", "npx", "printenv",
+    "pwd", "realpath", "uname", "which", "whoami", "yarn",
+];
+
+/// Source: the `case "$cmd"` in `snpanel-helper.sh terminal-exec`.
+///
+/// All 52, in one list for membership tests. The groups above are what
+/// decides how each is run, and a command that appears here but in none of
+/// them would be accepted and then have no arm - which
+/// `every_allowed_command_belongs_to_exactly_one_group` refuses.
 pub const TERMINAL_ALLOWLIST: &[&str] = &[
-    "php", "composer", "wp", "node", "npm", "npx", "yarn", "git", "ls", "cat", "pwd", "whoami",
-    "du", "df", "find", "grep", "tail", "head", "mkdir", "cp", "mv", "rm", "touch", "unzip", "tar",
-    "artisan", "phpunit",
+    "artisan", "awk", "basename", "cat", "chmod", "chown", "clear", "composer", "cp", "curl",
+    "date", "df", "diff", "dirname", "du", "echo", "file", "find", "git", "grep", "head", "id",
+    "less", "ls", "mkdir", "mv", "node", "npm", "npx", "php", "phpunit", "printenv", "pwd",
+    "realpath", "rm", "rmdir", "sed", "sort", "stat", "tail", "tar", "touch", "uname", "uniq",
+    "unzip", "wc", "wget", "which", "whoami", "wp", "yarn", "zip",
 ];
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -344,6 +504,38 @@ pub enum HelperRequest {
         username: PanelUsername,
         password: SecretString,
     },
+    /// `sftp-sub-create <owner> <account> <directory>`, the password on
+    /// stdin - an SFTP login of the owner's, shut into one folder. The
+    /// folder stays a `String`: the helper walks it itself, refusing links.
+    SftpSubCreate {
+        owner: PanelUsername,
+        account: PanelUsername,
+        directory: String,
+        password: SecretString,
+    },
+    /// `sftp-sub-password <owner> <account>`, the password on stdin.
+    SftpSubPassword {
+        owner: PanelUsername,
+        account: PanelUsername,
+        password: SecretString,
+    },
+    /// `sftp-sub-delete <owner> <account>`.
+    SftpSubDelete {
+        owner: PanelUsername,
+        account: PanelUsername,
+    },
+    /// `sftp-sub-mount <owner> <account> <directory>` - what the account's
+    /// systemd unit runs, at once and at every boot.
+    SftpSubMount {
+        owner: PanelUsername,
+        account: PanelUsername,
+        directory: String,
+    },
+    /// `sftp-sub-umount <owner> <account>` - the unit's stop.
+    SftpSubUmount {
+        owner: PanelUsername,
+        account: PanelUsername,
+    },
 
     // --- nginx ---
     NginxWriteSite {
@@ -373,29 +565,192 @@ pub enum HelperRequest {
     CertbotRenew {
         domain: Option<Domain>,
     },
+
+    /// `certbot-auto-renew-install` - the nightly renewal units.
+    ///
+    /// Installer-time. `CertbotRenewSoon` writes the same units on every run,
+    /// so this exists for the box that has not had a nightly run yet.
+    CertbotAutoRenewInstall,
+
+    /// `certbot-renew-soon [days]` - renew every lineage that expires inside
+    /// the window, then refresh the panel's own copy.
+    ///
+    /// What `snpanel-ssl-auto-renew.timer` runs. Distinct from `CertbotRenew`:
+    /// certbot's own schedule renews at 30 days and knows nothing about the
+    /// copy of the panel certificate under `/etc/snpanel`.
+    CertbotRenewSoon {
+        /// 1-30; the bash refuses anything else. `u32` rather than a parsed
+        /// type because the range is the whole of the validation.
+        days: u32,
+    },
     CertbotDelete {
         domain: Domain,
     },
 
     // --- site ---
+    /// Unpack an archive inside a site.
+    ///
+    /// The helper does not parse the archive: it runs `snpanel-extract` as
+    /// the site's own user. An archive is attacker-controlled input and this
+    /// process is root.
+    SiteArchiveExtract {
+        user: PanelUsername,
+        root: SitePath,
+        archive_relative: String,
+        destination_relative: String,
+        kind: ArchiveKind,
+        max_items: u32,
+        max_bytes: u64,
+    },
+    /// Write an application's systemd unit.
+    ///
+    /// Only the node and docker runtimes. `compose` writes a second file and
+    /// resolves bind mounts; it stays in the bash until it can be done
+    /// properly, and the helper falls through for it.
+    SiteAppWrite {
+        user: PanelUsername,
+        app: AppName,
+        runtime: AppRuntime,
+        port: Port,
+        memory_mb: u32,
+    },
+    /// Rename an application, moving its directory with it.
+    SiteAppRename {
+        user: PanelUsername,
+        from: AppName,
+        to: AppName,
+    },
+    /// Everything an application owns, in one tar.
+    ///
+    /// `dest` must be under the backup root; the helper writes it as root, so
+    /// a path that could leave that tree would be a way to write anywhere.
+    SiteAppExport {
+        user: PanelUsername,
+        app: AppName,
+        dest: String,
+    },
+    /// Restore an application from an export.
+    SiteAppImport {
+        user: PanelUsername,
+        app: AppName,
+        source: String,
+    },
+    /// Create an application's directory under its owner's home.
+    SiteAppDirEnsure {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Remove an application's runtime, leaving its files.
+    ///
+    /// The unit, the compose project, the container and the env file go. The
+    /// directory does not: removing a runtime never implies removing
+    /// somebody's code.
+    SiteAppDelete {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Pull a container image.
+    SiteAppPull {
+        image: DockerImage,
+    },
+    /// `npm install` for a node application, as its owner.
+    SiteAppInstallDeps {
+        user: PanelUsername,
+        app: AppName,
+        node_major: u8,
+    },
+    /// Start, stop or query a site application's systemd unit.
+    ///
+    /// `action` is an enum rather than a string: the bash allowlists eight
+    /// verbs, and the point of a type here is that the ninth cannot be
+    /// expressed.
+    SiteAppControl {
+        user: PanelUsername,
+        app: AppName,
+        action: AppAction,
+    },
+    /// The last lines of a site application's journal.
+    SiteAppLogs {
+        user: PanelUsername,
+        app: AppName,
+        lines: u32,
+    },
+    /// The state of a compose application's containers.
+    SiteAppComposePs {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Pull the images a compose application uses.
+    SiteAppComposePull {
+        user: PanelUsername,
+        app: AppName,
+    },
+    /// Total bytes in a user's Docker named volumes.
+    ///
+    /// They live under /var/lib/docker, which the panel user cannot read, so
+    /// without this a customer's container data is invisible to the quota.
+    SiteAppVolumeUsage {
+        user: PanelUsername,
+    },
+    /// Move a site's tree, taking its PHP pool with it.
+    ///
+    /// `from` carries its own user: a site can move between accounts, and the
+    /// pool to remove is named after where it was, not where it is going.
+    SiteRuntimeMove {
+        user: PanelUsername,
+        from: SitePath,
+        to: SitePath,
+        php: Option<PhpVersion>,
+    },
+    /// The site root as a path, and the PHP version it runs - if any.
+    ///
+    /// `php` is optional because the caller sends the string "none" for a
+    /// site with no PHP. A static site gets no pool, rather than a pool for a
+    /// version that is not installed.
     SiteRuntimeEnsure {
         user: PanelUsername,
-        domain: Domain,
-        php: PhpVersion,
+        path: SitePath,
+        php: Option<PhpVersion>,
     },
+    /// The site root as a path, not derived from a domain.
+    ///
+    /// The caller passes `root_path` from the database, and this feeds a
+    /// recursive delete: deriving the location instead of being told it would
+    /// remove the wrong directory for any site that has been moved. A
+    /// `SitePath` is `require_managed_path` expressed as a type - absolute,
+    /// traversal-free, under `/home/<user>/`.
     SiteRuntimeDelete {
         user: PanelUsername,
-        domain: Domain,
+        path: SitePath,
     },
     SiteFileWrite {
         path: SitePath,
         content: Vec<u8>,
         mode: FileMode,
+        /// The site's own account, which the written file belongs to - with
+        /// the sites group, as the bash's `chown "$user:$SNPANEL_SITES_GROUP"`
+        /// made it. Optional only so a request from before it was carried
+        /// still reads.
+        #[serde(default)]
+        user: Option<PanelUsername>,
     },
     SiteChmod {
         path: SitePath,
         mode: FileMode,
         recursive: bool,
+    },
+    /// Not in the bash: the MCP addon's `search_files`. Plain text, never a
+    /// pattern; the limits are the helper's own, so no caller can widen them.
+    SiteFileSearch {
+        /// The folder searched, inside a site root.
+        path: SitePath,
+        query: String,
+        /// Only files whose names end with this; empty for every file.
+        suffix: String,
+        case_sensitive: bool,
+        /// Whether `wp-config.php`, `.env` and `.my.cnf` are read - for an
+        /// administrator, as only they may open those in the file manager.
+        include_secrets: bool,
     },
 
     // --- firewall ---
@@ -404,6 +759,12 @@ pub enum HelperRequest {
     FirewallStatus,
     /// One-way migration from the iptables/ipset backend (plan §6.3).
     FirewallMigrateNft,
+
+    /// `firewall-migrate` - the one-way move off UFW and the nginx geo-map.
+    ///
+    /// Installer-time and not the same operation as `FirewallMigrateNft`:
+    /// this one reads rules *out of UFW* before disabling it.
+    FirewallMigrateUfw,
 
     // --- selinux (no-op off the RHEL family) ---
     SelinuxRestoreSite {
@@ -458,6 +819,72 @@ pub enum HelperRequest {
         domain: Domain,
         kind: LogKind,
     },
+    /// A deleted site's access and error logs, with logrotate's copies.
+    ///
+    /// Sent once the vhost is gone and nginx has reloaded. The name is free
+    /// again, and a later site taking it - perhaps another customer's - must
+    /// not open its log viewer on the previous owner's traffic.
+    SiteLogsDelete {
+        domain: Domain,
+    },
+    /// Run WP-CLI as the web user.
+    ///
+    /// `args` is a vector, not a string: there is no shell here to quote for.
+    Wp {
+        args: Vec<String>,
+    },
+    /// Run WP-CLI as a site's own user, under that site's PHP.
+    ///
+    /// `php` is the version the *site* runs, which is not always what `php`
+    /// points at. A site on 8.4 driven by the 8.3 CLI has no mysqli, and
+    /// every `wp core update` fails on it.
+    WpSite {
+        user: PanelUsername,
+        php: Option<PhpVersion>,
+        args: Vec<String>,
+    },
+    /// Replace a site's tree from a panel-staged directory.
+    ///
+    /// Used by the importer and by a full-user restore. The source has to sit
+    /// in the panel's staging area: this deletes the site's contents before
+    /// copying, so a source that turned out to be somewhere else would be
+    /// discovered far too late.
+    SitePopulate {
+        user: PanelUsername,
+        root: SitePath,
+        source: String,
+    },
+    /// Move a panel-staged upload into a site, as the site's user.
+    ///
+    /// `staged` is a path under [`UPLOAD_STAGE_DIR`] rather than anywhere on
+    /// disk: the helper re-checks it after resolution, because a symlink
+    /// placed there would otherwise name any file on the machine.
+    SiteFileInstall {
+        user: PanelUsername,
+        root: SitePath,
+        relative: String,
+        staged: String,
+    },
+    /// Create a site's document root and harden every directory down to it.
+    ///
+    /// `relative` is a path *fragment* under the site root, not a path: the
+    /// helper builds the target itself so a caller cannot name somewhere else.
+    SiteDocumentRootEnsure {
+        user: PanelUsername,
+        root: SitePath,
+        relative: String,
+    },
+    /// Every named site's log in one round trip.
+    ///
+    /// The reply is not JSON: each site contributes a `\x1f<domain>\n` header
+    /// followed by its log, because the caller wants the bytes of a log file
+    /// and wrapping megabytes of them in JSON strings would cost more than the
+    /// round trips this saves.
+    SiteLogsReadMany {
+        domains: Vec<Domain>,
+        kind: LogKind,
+        lines: u32,
+    },
 
     // --- ssl ---
     SslCertInfo {
@@ -506,6 +933,13 @@ pub enum HelperRequest {
     UpdatesOsRun,
     UpdatesOsAuto {
         enable: bool,
+        /// Defaulted, so a request from before the page sent it still reads:
+        /// that page always meant security updates without a reboot.
+        #[serde(default)]
+        mode: AutoUpdateMode,
+        /// Reboot on its own when an update needs one.
+        #[serde(default)]
+        auto_reboot: bool,
     },
 
     // --- waf / malware ---
@@ -521,11 +955,288 @@ pub enum HelperRequest {
     WafSiteDelete {
         domain: Domain,
     },
+    /// `maldet-scan <job-id> <all|recent> <days> <path>...`
+    ///
+    /// The paths stay `String`s: the helper resolves them and then insists on
+    /// `/` or something under `/home`, which is a rule about where a resolved
+    /// path *lands* and not a shape a type can carry.
+    MaldetScan {
+        job: String,
+        mode: String,
+        days: String,
+        paths: Vec<String>,
+    },
+    /// `malware-scan-server <job-id>` - the whole machine, through clamd.
+    MalwareScanServer {
+        job: String,
+    },
+    /// `malware-quarantine <path> [signature] [job]` - a file a scan found,
+    /// set aside. The path stays a `String`: the helper walks it itself from
+    /// `/`, refusing links, and insists on a customer folder.
+    MalwareQuarantine {
+        path: String,
+        signature: String,
+        job: String,
+    },
+    /// `malware-quarantine-restore <id>` - put back where it was.
+    MalwareQuarantineRestore {
+        id: String,
+    },
+    /// `malware-quarantine-delete <id>` - gone for good.
+    MalwareQuarantineDelete {
+        id: String,
+    },
+    /// `malware-quarantine-list`.
+    MalwareQuarantineList,
+    /// `malware-whitelist-add <path>` - this content at this path is fine.
+    MalwareWhitelistAdd {
+        path: String,
+    },
+    /// `malware-whitelist-remove <path>`.
+    MalwareWhitelistRemove {
+        path: String,
+    },
+    /// `malware-whitelist-list`.
+    MalwareWhitelistList,
+    /// `node-install` - one Node major under /opt/snpanel/node.
+    NodeInstall {
+        major: String,
+    },
+    /// `certbot-dns-cloudflare-install` - the DNS-01 plugin wildcards need.
+    CertbotDnsCloudflareInstall,
+    /// `clamav-install` - the on-demand malware engine.
+    ClamavInstall,
+    /// `maldet-update-sigs` - refresh LMD's and ClamAV's signatures.
+    /// `maldet-install` - download and install Linux Malware Detect.
+    ///
+    /// Minutes, not seconds: it fetches a tarball from rfxn.com and runs a
+    /// third-party installer, so the caller gives it a 600s budget.
+    MaldetInstall,
+
+    /// `maldet-monitor <start|stop|status>` - LMD's real-time (Level 2)
+    /// inotify monitor.
+    MaldetMonitor {
+        action: String,
+    },
+
+    MaldetUpdateSigs,
+    /// `nginx-upgrade-map-ensure` - the http-level `map` a proxied vhost needs
+    /// before nginx will load at all.
+    NginxUpgradeMapEnsure,
+    /// `updates-panel-run` - start the panel's own update, detached.
+    UpdatesPanelRun,
+    /// `php-pools-retune` - rewrite every site pool against the machine as
+    /// it is now.
+    PhpPoolsRetune,
+
+    /// `mariadb-retune` - size MariaDB to the machine and restart it.
+    ///
+    /// What `snpanel-autotune.service` runs beside `PhpPoolsRetune`. It
+    /// restarts the database, so it is installer-time only: the panel has no
+    /// button for it and must not grow one by accident.
+    MariadbRetune,
+    /// `php-tune-write` - the auto-tuner's `95-snpanel-tune.ini`.
+    ///
+    /// The file is on stdin because it is generated from the machine's RAM and
+    /// CPU count and runs to a dozen directives; the version names which
+    /// PHP it is for.
+    PhpTuneWrite {
+        version: PhpVersion,
+        content: String,
+    },
+    /// `php-install <version>` - a PHP version and SNPanel's extension set.
+    ///
+    /// Minutes: it may add the ondrej PPA, refresh the package lists and
+    /// download the ionCube loader before installing fourteen packages.
+    PhpInstall {
+        version: PhpVersion,
+    },
+    /// `php-ext-install <version> <extension>` - one extension of the
+    /// panel's catalogue (`snpanel_core::php_ext`) for one PHP version, its
+    /// FPM restarted.
+    ///
+    /// A catalogue key, never a package name: what gets installed as root
+    /// is the catalogue's package for this machine's family.
+    PhpExtInstall {
+        version: PhpVersion,
+        extension: String,
+    },
+    /// `php-ext-remove <version> <extension>` - the same, taken away:
+    /// refused for the base set, and for anything whose removal would take
+    /// another package with it.
+    PhpExtRemove {
+        version: PhpVersion,
+        extension: String,
+    },
+
+    /// `orphans-scan` / `orphans-clean` - what a deleted website left
+    /// behind.
+    ///
+    /// The live domains arrive on stdin, never in argv: the panel owns that
+    /// truth, and a helper that inferred it from the filesystem it is about
+    /// to delete from would be reasoning in a circle.
+    OrphanCleanup {
+        clean: bool,
+        live_domains: String,
+    },
+
+    /// `panel-url-set <http|https> <host> <port>`.
+    ///
+    /// Changes how the panel itself is reached, so it opens the port before
+    /// it moves to it and schedules its own restart rather than doing it
+    /// inline.
+    PanelUrlSet {
+        https: bool,
+        host: String,
+        port: Port,
+    },
+
+    /// `panel-ssl-use-domain <domain> <port>` - borrow a website's
+    /// certificate for the panel.
+    PanelSslUseDomain {
+        domain: Domain,
+        port: Port,
+    },
+
+    /// `panel-ssl-install <domain> <port> [email]` - issue one for the panel
+    /// over webroot, so nginx never has to stop.
+    PanelSslInstall {
+        domain: Domain,
+        port: Port,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<Email>,
+    },
+
+    /// `cloudflare-ssl-issue <zone> [email]`, token on stdin.
+    ///
+    /// C37: the API token never reaches argv, where every account on the
+    /// machine could read it out of `/proc/<pid>/cmdline`.
+    CloudflareSslIssue {
+        zone: Domain,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<Email>,
+        token: SecretString,
+    },
+
+    /// `waf-install` - the nginx ModSecurity module and SNPanel's rules.
+    ///
+    /// Debian only; refused with the reason on EL, where the connector is not
+    /// packaged at all.
+    WafInstall,
+
+    /// `firewall-blocklist-run` - download every configured list, normalise
+    /// it and reload the firewall with the result.
+    ///
+    /// Runs from `snpanel-blocklist.timer` as well as from the panel button,
+    /// and takes minutes on a slow link: the lists run to millions of rows.
+    FirewallBlocklistRun,
+
+    /// `firewall-blocklist-status` - the URLs, the loaded sets and the timer.
+    FirewallBlocklistStatus,
+
+    /// `firewall-blocklist-timer-install` - write `snpanel-blocklist.service`
+    /// and its timer, and enable them.
+    ///
+    /// Installer-time only. `firewall-blocklist-add` writes the same units as
+    /// a side effect, so a box with a URL configured has them already; this is
+    /// for the box that has none yet and for replacing the nginx-era pair.
+    FirewallBlocklistTimerInstall,
+
+    /// `firewall-blocklist-add` / `firewall-blocklist-delete` - the list of
+    /// URLs the nightly refresh downloads from.
+    ///
+    /// The URL is a `String` rather than a parsed type because the bash's
+    /// check is a shape (`^https?://\S+$`) and not a URL grammar; parsing it
+    /// more strictly here would refuse lists the panel already has.
+    FirewallBlocklistUrl {
+        url: String,
+        add: bool,
+    },
+    /// `manual-ssl-install` / `manual-ssl-remove` - a certificate an
+    /// administrator uploaded.
+    ///
+    /// The certificate arrives as JSON on stdin, never in argv: a private key
+    /// in a command line is readable in `/proc/<pid>/cmdline` by every account
+    /// on the machine for as long as the process lives (C37).
+    ManualSsl {
+        domain: Domain,
+        install: bool,
+        payload: String,
+    },
+    /// `docker-install` - the container runtime the Application addon needs.
+    DockerInstall,
+    /// `docker-status` - installed, running, and what the images cost.
+    DockerStatus,
+    /// `docker-prune` - dangling layers and build cache only.
+    DockerPrune,
+    /// `node-list` - the Node majors installed under /opt/snpanel/node.
+    NodeList,
+    /// `panel-user-lock` / `panel-user-unlock` - a suspended customer's
+    /// Linux account.
+    ///
+    /// One variant with a flag rather than two verbs, because they are one
+    /// operation with a direction and nothing else differs.
+    PanelUserLock {
+        user: PanelUsername,
+        locked: bool,
+    },
+    /// `http-flood-zones-save` - the server-wide `limit_req_zone` file.
+    ///
+    /// On stdin, like the WAF rules and for the same reason: it is rendered
+    /// from every website on the box and can run to hundreds of lines.
+    HttpFloodZonesSave {
+        content: String,
+    },
+    /// `waf-default-rules` - the shipped rules, rewritten and read back.
+    WafDefaultRules,
+    /// `waf-custom-rules` - whatever an administrator added.
+    WafCustomRules,
+    /// `waf-custom-save` - arbitrary ModSecurity directives.
+    ///
+    /// The content is a `String` and not a path: the bash reads it from stdin
+    /// for the reason C37 gives, and a directive set is exactly the kind of
+    /// thing that must not appear in `ps`.
+    WafCustomSave {
+        content: String,
+    },
+    /// `waf-update` - rewrite every file the engine loads and reload nginx.
+    WafUpdate,
     ClamavStatus,
     ClamavControl {
         start: bool,
     },
     MaldetStatus,
+
+    // --- fail2ban (the addon) ---
+    /// `fail2ban-install` - the package, the panel's filters and jail file,
+    /// and the service enabled. The settings arrive on stdin, as JSON.
+    Fail2banInstall {
+        config: Fail2banConfig,
+    },
+    /// `fail2ban-configure` - the panel's jail file rewritten from `config`,
+    /// checked by fail2ban, and the service reloaded.
+    Fail2banConfigure {
+        config: Fail2banConfig,
+    },
+    /// `fail2ban-status` - the service and every jail it runs, as JSON on
+    /// stdout.
+    Fail2banStatus,
+    /// `fail2ban-ban <jail> <address>`.
+    Fail2banBan {
+        jail: Fail2banJail,
+        address: std::net::IpAddr,
+    },
+    /// `fail2ban-unban <address>` - out of every jail that holds it.
+    Fail2banUnban {
+        address: std::net::IpAddr,
+    },
+    /// `fail2ban-stop` - the service stopped and disabled at boot. Its bans
+    /// go with it; the package and the settings stay.
+    Fail2banStop,
+
+    /// `ssh-ports` - the ports sshd listens on, as JSON on stdout: what a
+    /// user connects to for SFTP. Read afresh each time, from `sshd -T`.
+    SshPorts,
 
     // --- terminal ---
     TerminalExec {
@@ -534,6 +1245,10 @@ pub enum HelperRequest {
         argv: AllowlistedArgv,
         /// Wall-clock budget in seconds. C30: 60s interactive, 900s for a job.
         budget_secs: u64,
+        /// `--php-version=`, so Composer's platform checks see the version the
+        /// site actually runs rather than the system default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        php_version: Option<PhpVersion>,
     },
 }
 
@@ -547,6 +1262,11 @@ impl HelperRequest {
             Self::PanelUserEnsure { .. } => "panel-user-ensure",
             Self::PanelUserDelete { .. } => "panel-user-delete",
             Self::PanelUserPassword { .. } => "panel-user-password",
+            Self::SftpSubCreate { .. } => "sftp-sub-create",
+            Self::SftpSubPassword { .. } => "sftp-sub-password",
+            Self::SftpSubDelete { .. } => "sftp-sub-delete",
+            Self::SftpSubMount { .. } => "sftp-sub-mount",
+            Self::SftpSubUmount { .. } => "sftp-sub-umount",
             Self::NginxWriteSite { .. } => "nginx-write-site",
             Self::NginxTest => "nginx-test",
             Self::NginxReload => "nginx-reload",
@@ -554,15 +1274,34 @@ impl HelperRequest {
             Self::NginxCustomDelete { .. } => "nginx-custom-delete",
             Self::CertbotIssue { .. } => "certbot-issue",
             Self::CertbotRenew { .. } => "certbot-renew",
+            Self::CertbotAutoRenewInstall => "certbot-auto-renew-install",
+            Self::CertbotRenewSoon { .. } => "certbot-renew-soon",
             Self::CertbotDelete { .. } => "certbot-delete",
             Self::SiteRuntimeEnsure { .. } => "site-runtime-ensure",
+            Self::SiteRuntimeMove { .. } => "site-runtime-move",
+            Self::SiteAppVolumeUsage { .. } => "site-app-volume-usage",
+            Self::SiteAppComposePull { .. } => "site-app-compose-pull",
+            Self::SiteAppComposePs { .. } => "site-app-compose-ps",
+            Self::SiteAppLogs { .. } => "site-app-logs",
+            Self::SiteAppControl { .. } => "site-app-control",
+            Self::SiteAppInstallDeps { .. } => "site-app-install-deps",
+            Self::SiteAppPull { .. } => "site-app-pull",
+            Self::SiteAppDelete { .. } => "site-app-delete",
+            Self::SiteAppDirEnsure { .. } => "site-app-dir-ensure",
+            Self::SiteAppImport { .. } => "site-app-import",
+            Self::SiteAppExport { .. } => "site-app-export",
+            Self::SiteAppRename { .. } => "site-app-rename",
+            Self::SiteAppWrite { .. } => "site-app-write",
+            Self::SiteArchiveExtract { .. } => "site-archive-extract",
             Self::SiteRuntimeDelete { .. } => "site-runtime-delete",
             Self::SiteFileWrite { .. } => "site-file-write",
             Self::SiteChmod { .. } => "site-chmod",
+            Self::SiteFileSearch { .. } => "site-file-search",
             Self::FirewallApply => "firewall-apply",
             Self::FirewallFlush => "firewall-flush",
             Self::FirewallStatus => "firewall-status",
             Self::FirewallMigrateNft => "firewall-migrate-nft",
+            Self::FirewallMigrateUfw => "firewall-migrate",
             Self::SelinuxRestoreSite { .. } => "selinux-restore-site",
             Self::SelinuxPortAdd { .. } => "selinux-port-add",
             Self::FirewallAllowIp { .. } => "firewall-allow-ip",
@@ -578,6 +1317,13 @@ impl HelperRequest {
             Self::SiteFixPermissions { .. } => "fix-permissions",
             Self::SiteLogRead { .. } => "site-log-read",
             Self::SiteLogClear { .. } => "site-log-clear",
+            Self::SiteLogsDelete { .. } => "site-logs-delete",
+            Self::SiteLogsReadMany { .. } => "site-logs-read-many",
+            Self::SiteDocumentRootEnsure { .. } => "site-document-root-ensure",
+            Self::SiteFileInstall { .. } => "site-file-install",
+            Self::SitePopulate { .. } => "site-populate",
+            Self::Wp { .. } => "wp",
+            Self::WpSite { .. } => "wp-site",
             Self::SslCertInfo { .. } => "ssl-cert-info",
             Self::PanelSslSelfsigned { .. } => "panel-ssl-selfsigned",
             Self::PanelSslDomains => "panel-ssl-domains",
@@ -602,9 +1348,84 @@ impl HelperRequest {
             Self::WafCrsMode { .. } => "waf-crs-mode",
             Self::WafSiteSave { .. } => "waf-site-save",
             Self::WafSiteDelete { .. } => "waf-site-delete",
+            Self::MaldetScan { .. } => "maldet-scan",
+            Self::MalwareScanServer { .. } => "malware-scan-server",
+            Self::MalwareQuarantine { .. } => "malware-quarantine",
+            Self::MalwareQuarantineRestore { .. } => "malware-quarantine-restore",
+            Self::MalwareQuarantineDelete { .. } => "malware-quarantine-delete",
+            Self::MalwareQuarantineList => "malware-quarantine-list",
+            Self::MalwareWhitelistAdd { .. } => "malware-whitelist-add",
+            Self::MalwareWhitelistRemove { .. } => "malware-whitelist-remove",
+            Self::MalwareWhitelistList => "malware-whitelist-list",
+            Self::NodeInstall { .. } => "node-install",
+            Self::CertbotDnsCloudflareInstall => "certbot-dns-cloudflare-install",
+            Self::ClamavInstall => "clamav-install",
+            Self::MaldetInstall => "maldet-install",
+            Self::MaldetMonitor { .. } => "maldet-monitor",
+            Self::MaldetUpdateSigs => "maldet-update-sigs",
+            Self::NginxUpgradeMapEnsure => "nginx-upgrade-map-ensure",
+            Self::UpdatesPanelRun => "updates-panel-run",
+            Self::PhpPoolsRetune => "php-pools-retune",
+            Self::MariadbRetune => "mariadb-retune",
+            Self::PhpTuneWrite { .. } => "php-tune-write",
+            Self::PhpInstall { .. } => "php-install",
+            Self::PhpExtInstall { .. } => "php-ext-install",
+            Self::PhpExtRemove { .. } => "php-ext-remove",
+            Self::OrphanCleanup { clean, .. } => {
+                if *clean {
+                    "orphans-clean"
+                } else {
+                    "orphans-scan"
+                }
+            }
+            Self::PanelUrlSet { .. } => "panel-url-set",
+            Self::PanelSslUseDomain { .. } => "panel-ssl-use-domain",
+            Self::PanelSslInstall { .. } => "panel-ssl-install",
+            Self::CloudflareSslIssue { .. } => "cloudflare-ssl-issue",
+            Self::WafInstall => "waf-install",
+            Self::FirewallBlocklistRun => "firewall-blocklist-run",
+            Self::FirewallBlocklistStatus => "firewall-blocklist-status",
+            Self::FirewallBlocklistTimerInstall => "firewall-blocklist-timer-install",
+            Self::FirewallBlocklistUrl { add, .. } => {
+                if *add {
+                    "firewall-blocklist-add"
+                } else {
+                    "firewall-blocklist-delete"
+                }
+            }
+            Self::ManualSsl { install, .. } => {
+                if *install {
+                    "manual-ssl-install"
+                } else {
+                    "manual-ssl-remove"
+                }
+            }
+            Self::DockerInstall => "docker-install",
+            Self::DockerStatus => "docker-status",
+            Self::DockerPrune => "docker-prune",
+            Self::NodeList => "node-list",
+            Self::PanelUserLock { locked, .. } => {
+                if *locked {
+                    "panel-user-lock"
+                } else {
+                    "panel-user-unlock"
+                }
+            }
+            Self::HttpFloodZonesSave { .. } => "http-flood-zones-save",
+            Self::WafDefaultRules => "waf-default-rules",
+            Self::WafCustomRules => "waf-custom-rules",
+            Self::WafCustomSave { .. } => "waf-custom-save",
+            Self::WafUpdate => "waf-update",
             Self::ClamavStatus => "clamav-status",
             Self::ClamavControl { .. } => "clamav-control",
             Self::MaldetStatus => "maldet-status",
+            Self::Fail2banInstall { .. } => "fail2ban-install",
+            Self::Fail2banConfigure { .. } => "fail2ban-configure",
+            Self::Fail2banStatus => "fail2ban-status",
+            Self::Fail2banBan { .. } => "fail2ban-ban",
+            Self::Fail2banUnban { .. } => "fail2ban-unban",
+            Self::Fail2banStop => "fail2ban-stop",
+            Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
         }
     }
@@ -628,6 +1449,15 @@ pub enum HelperErrorKind {
     /// The command exceeded its budget.
     Timeout,
     NotFound,
+    /// The helper has no implementation for this request.
+    ///
+    /// Not a refusal, and the distinction is load-bearing. Every other kind
+    /// is the helper deciding about a request; this one is the helper saying
+    /// which implementation serves it - the bash still does. The panel is
+    /// meant to fall through on it, which is safe precisely because it
+    /// carries no decision: it is only ever produced by a request whose enum
+    /// variant has no arm, long after the arguments were parsed and accepted.
+    NotImplemented,
     Internal,
 }
 
@@ -642,6 +1472,19 @@ pub struct HelperResponse {
     pub data: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<HelperError>,
+    /// The exit status of a command run on the caller's behalf.
+    ///
+    /// Only `terminal-exec` sets it. Everywhere else a verb either worked or
+    /// refused, and the 0/2 convention says that; here the command's own
+    /// status *is* the answer, and `grep` finding nothing (1) must not reach
+    /// the customer as "refused" (2).
+    ///
+    /// Optional and skipped when absent, so an older API ignores it and a
+    /// newer API falls back to the 0/2 mapping against an older helper.
+    /// Nothing that already exists changes meaning, so the protocol version
+    /// does not move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 impl HelperResponse {
@@ -652,6 +1495,7 @@ impl HelperResponse {
             stderr: String::new(),
             data: None,
             error: None,
+            exit_code: None,
         }
     }
 
@@ -669,12 +1513,45 @@ impl HelperResponse {
         }
     }
 
+    /// The exit status a command-line caller sees, and the `returncode` the
+    /// panel reads off the socket.
+    ///
+    /// The bash helper has two refusal codes and they are not
+    /// interchangeable:
+    ///
+    ///   * `deny() { echo ...; exit 1; }` - "no, and here is why".
+    ///   * the `SUDO_USER` guard, `exit 2` - "you may not call me at all".
+    ///
+    /// `NotAuthorised` is the socket's version of the second: the
+    /// peer-credential check failing. Everything else is the first.
+    ///
+    /// A verb that ran a command for the caller reports the command's own
+    /// status instead - `terminal-exec` is the only one, and `grep` finding
+    /// nothing exits 1 without having been refused.
+    ///
+    /// This lives here because the helper and the API both need it and
+    /// both depend on this crate. It used to exist twice, with a comment
+    /// claiming the copies were compared; they were not, and they drifted.
+    pub fn exit_status(&self) -> i32 {
+        if let Some(code) = self.exit_code {
+            return code;
+        }
+        if self.ok {
+            return 0;
+        }
+        if matches!(&self.error, Some(e) if e.kind == HelperErrorKind::NotAuthorised) {
+            return 2;
+        }
+        1
+    }
+
     pub fn failed(kind: HelperErrorKind, message: impl Into<String>) -> Self {
         Self {
             ok: false,
             stdout: String::new(),
             stderr: String::new(),
             data: None,
+            exit_code: None,
             error: Some(HelperError {
                 kind,
                 message: message.into(),

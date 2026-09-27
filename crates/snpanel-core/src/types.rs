@@ -10,7 +10,7 @@
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Reserved Linux usernames a panel user may never take over.
 ///
@@ -50,10 +50,22 @@ pub const PUBLIC_DIR: &str = "public_html";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ParseError {
+    #[error("invalid container image reference: {0}")]
+    DockerImage(String),
+    #[error("invalid application name: {0}")]
+    AppName(String),
     #[error("invalid domain: {0}")]
     Domain(String),
     #[error("invalid panel username: {0}")]
     Username(String),
+    /// Source: `deny "reserved panel Linux user: $1"`.
+    ///
+    /// A separate variant from `Username` because the bash has a separate
+    /// message, and the difference is the whole of what it tells the
+    /// administrator: `snpanel` is a perfectly well-shaped name, and being
+    /// told it is "invalid" sends them looking at the wrong thing.
+    #[error("reserved panel Linux user: {0}")]
+    ReservedUsername(String),
     #[error("invalid site path: {0}")]
     SitePath(String),
     #[error("unsupported PHP version: {0}")]
@@ -82,6 +94,254 @@ pub enum ParseError {
 /// reaches the filesystem and nginx.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct Domain(String);
+
+/// A container image reference.
+///
+/// Source: `require_docker_image`. The character set is
+/// `registry/name[:tag][@sha256:...]`, and on top of it a leading dash and a
+/// `..` component are refused - not for tidiness, but because `docker pull`
+/// would read `-rm` as a flag and `a/../b` as somewhere else.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct DockerImage(String);
+
+impl DockerImage {
+    pub fn parse(raw: &str) -> Result<Self, ParseError> {
+        let err = || ParseError::DockerImage(raw.to_string());
+        if raw.starts_with('-') || raw.contains("..") {
+            return Err(err());
+        }
+        let (rest, digest) = match raw.split_once("@sha256:") {
+            Some((r, d)) => (r, Some(d)),
+            None => (raw, None),
+        };
+        if let Some(d) = digest {
+            if d.len() != 64
+                || !d
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err(err());
+            }
+        }
+        let (name, tag) = match rest.rsplit_once(':') {
+            // A colon in the registry part is a port, not a tag: only treat
+            // it as a tag when what follows has no slash.
+            Some((n, t)) if !t.contains('/') => (n, Some(t)),
+            _ => (rest, None),
+        };
+        if let Some(t) = tag {
+            if t.is_empty()
+                || t.len() > 127
+                || !t
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            {
+                return Err(err());
+            }
+        }
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.len() > 160 {
+            return Err(err());
+        }
+        if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
+            return Err(err());
+        }
+        if !bytes.iter().all(|&b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'.' | b'_' | b'/' | b'-' | b':')
+        }) {
+            return Err(err());
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DockerImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for DockerImage {
+    type Error = ParseError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+/// A site application's name.
+///
+/// Source: `require_app_name`, `^[a-z0-9]([a-z0-9_-]{0,30}[a-z0-9])?$`. It is
+/// a type rather than a string because the same value becomes a systemd unit
+/// name, a Docker project name and a directory under the owner's home: three
+/// places where a stray slash, space or leading dash means something.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct AppName(String);
+
+impl AppName {
+    pub fn parse(raw: &str) -> Result<Self, ParseError> {
+        let err = || ParseError::AppName(raw.to_string());
+        let bytes = raw.as_bytes();
+        if bytes.is_empty() || bytes.len() > 32 {
+            return Err(err());
+        }
+        let ok_edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        let ok_middle = |b: u8| ok_edge(b) || b == b'_' || b == b'-';
+        if !ok_edge(bytes[0]) {
+            return Err(err());
+        }
+        if bytes.len() > 1 && !ok_edge(bytes[bytes.len() - 1]) {
+            return Err(err());
+        }
+        if !bytes.iter().all(|&b| ok_middle(b)) {
+            return Err(err());
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AppName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for AppName {
+    type Error = ParseError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+/// Source: `_parse_access_log_line`'s `digest` — the first sixteen hex
+/// characters of `sha256(f"{domain}\0{sequence}\0{line}")`.
+///
+/// The sequence is in the digest because two identical lines in one file are
+/// two different entries, and the page keys its rows on this.
+/// Hex SHA-256 of a string.
+///
+/// Source: `provisioning.hash_token` — `sha256(raw.encode()).hexdigest()`.
+/// The provisioning tokens are stored as this and never as themselves, so
+/// the digest has to be byte-identical or every existing token stops
+/// authenticating the moment the Rust front door answers.
+/// `hashlib.sha1(text.encode("utf-8")).hexdigest()`.
+///
+/// **Not a security primitive, and not used as one.** The DA importer
+/// needs a short stable tag so two archives whose account or database
+/// names rewrite to the same string do not collide; nothing compares it
+/// against anything an attacker supplies. Use [`sha256_hex`] for anything
+/// that matters.
+pub fn sha1_hex(text: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// SHA-256 of arbitrary bytes, lowercase hex.
+///
+/// [`sha256_hex`] takes a `&str` and so cannot hash a file that is not
+/// valid UTF-8 — which every compiled binary is not. The update script's
+/// step fingerprints hash program files, so they need this one.
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// SHA-256 of everything `reader` yields, lowercase hex - a file hashed as
+/// it is read rather than loaded whole first.
+pub fn sha256_reader(mut reader: impl std::io::Read) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+pub fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+pub fn access_entry_id(domain: &str, sequence: u64, line: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(sequence.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(line.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..16]
+        .to_string()
+}
+
+/// The twelve hex characters that identify a site in its PHP-FPM pool name.
+///
+/// Source: `site_php_pool_glob` and `ensure_php_pool`, which both compute
+///
+/// ```text
+/// printf '%s' "$target" | sha256sum | awk '{print substr($1, 1, 12)}'
+/// ```
+///
+/// Must stay byte-identical. The pool files it names already exist on every
+/// installed server: a different hash does not produce a wrong name, it
+/// produces a name that matches nothing, so deleting a site would leave its
+/// pool running with the old document root still open.
+///
+/// `resolved_path` is the site root after symlink resolution, because that is
+/// what the shell hashes - `readlink -m` runs before `sha256sum`.
+pub fn site_hash(resolved_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(resolved_path.as_bytes());
+    let hex = digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    hex[..12].to_string()
+}
 
 impl Domain {
     pub fn parse(raw: &str) -> Result<Self, ParseError> {
@@ -195,19 +455,34 @@ impl<'de> Deserialize<'de> for Domain {
 /// Matches `site_users.LINUX_USER_RE` (`^[a-z_][a-z0-9_-]{2,31}$`) and rejects
 /// every name in [`RESERVED_LINUX_USERS`], exactly as
 /// `site_users.validate_linux_user` does.
+///
+/// The Python has two functions here and they are not interchangeable.
+/// `validate_linux_user` matches the pattern against what it was given.
+/// `linux_user_for_panel_username` lowercases and strips *first*, and is the
+/// conversion from a panel account name to a system one. This is the former,
+/// because it validates a value at the privilege boundary that the caller has
+/// already converted - the two API call sites lowercase before calling it,
+/// the way the Python does.
+///
+/// It used to lowercase, and the harm was not that it accepted a name the
+/// bash helper refuses. It is that `SitePath` keeps the bytes it was given:
+/// `site-runtime-ensure UPPER /home/UPPER/x` parsed to the user `upper`,
+/// agreed with itself that the path belonged to that user, and then created
+/// `/home/UPPER/x` as root while the account's home was `/home/upper`. A type
+/// that says "this path belongs to user X" has to mean the bytes, not a
+/// normalisation of them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct PanelUsername(String);
 
 impl PanelUsername {
     pub fn parse(raw: &str) -> Result<Self, ParseError> {
-        let normalized = raw.trim().to_ascii_lowercase();
-        if !Self::is_valid(&normalized) {
+        if !Self::is_valid(raw) {
             return Err(ParseError::Username(raw.to_string()));
         }
-        if RESERVED_LINUX_USERS.contains(&normalized.as_str()) {
-            return Err(ParseError::Username(raw.to_string()));
+        if RESERVED_LINUX_USERS.contains(&raw) {
+            return Err(ParseError::ReservedUsername(raw.to_string()));
         }
-        Ok(Self(normalized))
+        Ok(Self(raw.to_string()))
     }
 
     fn is_valid(s: &str) -> bool {
@@ -256,7 +531,7 @@ impl<'de> Deserialize<'de> for PanelUsername {
 ///
 /// Source: `site_users.PHP_VERSION_RE` = `^(?:5\.6|7\.4|8\.[0-5])$`, which is
 /// the same set as `schemas.SUPPORTED_PHP_VERSIONS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PhpVersion {
     major: u8,
     minor: u8,
@@ -291,11 +566,29 @@ impl PhpVersion {
     pub fn underscored(&self) -> String {
         format!("{}_{}", self.major, self.minor)
     }
+
+    /// Whether this is `major.minor` or later.
+    pub fn at_least(&self, major: u8, minor: u8) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
 }
 
 impl fmt::Display for PhpVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for PhpVersion {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
@@ -319,7 +612,7 @@ impl<'de> Deserialize<'de> for PhpVersion {
 /// filesystem-touching step ([`SitePath::verify_no_symlinks`]) because the
 /// helper must be able to build a `SitePath` for a file that does not exist
 /// yet.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SitePath {
     user: PanelUsername,
     path: PathBuf,
@@ -435,6 +728,19 @@ impl SitePath {
 impl fmt::Display for SitePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for SitePath {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
@@ -568,7 +874,7 @@ impl<'de> Deserialize<'de> for Port {
 ///
 /// The firewall stores these in `rules.tsv` (C13), so `Display` must round-trip
 /// what was parsed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IpOrCidr {
     addr: std::net::IpAddr,
     prefix: u8,
@@ -587,15 +893,12 @@ impl IpOrCidr {
         let addr: std::net::IpAddr = addr_part.parse().map_err(|_| err())?;
         let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
         let prefix = match prefix_part {
-            Some(p) => {
-                let value: u8 = p.parse().map_err(|_| err())?;
-                if value > max_prefix {
-                    return Err(err());
-                }
-                value
-            }
+            Some(p) => prefix_len(p, addr.is_ipv4()).ok_or_else(err)?,
             None => max_prefix,
         };
+        if prefix > max_prefix {
+            return Err(err());
+        }
         Ok(Self {
             addr,
             prefix,
@@ -654,6 +957,98 @@ impl IpOrCidr {
     }
 }
 
+/// How many leading one-bits `text` asks for, in any of the three spellings
+/// `ipaddress.ip_network` accepts.
+///
+/// CPython's `_prefix_from_ip_string` tries them in this order:
+///
+/// 1. an integer prefix - `24`, and `032` too, since it parses as one;
+/// 2. a **netmask**, `255.255.255.0`, which must be contiguous ones then zeros;
+/// 3. a **hostmask**, `0.0.0.255`, which is that inverted.
+///
+/// Only IPv4 has the mask spellings - `2001:db8::/ffff::` is an error there,
+/// and is one here. "Contiguous" is the whole of the validation:
+/// `255.0.0.255` names no prefix length and is refused rather than rounded to
+/// something plausible, because a firewall rule that silently covers more
+/// addresses than it was written to cover is worse than one that is rejected.
+fn prefix_len(text: &str, is_ipv4: bool) -> Option<u8> {
+    // CPython gates the integer spelling on `prefixlen_str.isdigit()`, not on
+    // `int()` succeeding - so `+8` is not a prefix there, even though it is a
+    // number. Rust's `parse::<u8>()` accepts a leading `+`, which made `/+8`
+    // an address range here and a `ValueError` in the bash. Digits only.
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        // `/300` is digits and still out of range: rejected, never fallen
+        // through to the mask spellings to be read as something else.
+        return text.parse::<u8>().ok();
+    }
+    if !is_ipv4 {
+        return None;
+    }
+    let mask: std::net::Ipv4Addr = text.parse().ok()?;
+    let bits = u32::from(mask);
+    contiguous_prefix(bits).or_else(|| contiguous_prefix(!bits))
+}
+
+/// The prefix length of a contiguous run of ones, or `None` if the bits are
+/// not `1*0*`.
+fn contiguous_prefix(bits: u32) -> Option<u8> {
+    let ones = bits.leading_ones();
+    // Everything after the leading ones must be zero. `leading_ones() == 32`
+    // means the shift below would be undefined, so it is answered first.
+    if ones == 32 {
+        return Some(32);
+    }
+    if bits << ones == 0 {
+        Some(ones as u8)
+    } else {
+        None
+    }
+}
+
+/// `str(ipaddress.ip_network(raw, strict=False))`, or `None` where CPython
+/// raises `ValueError`.
+///
+/// Used by `firewall-blocklist-run`, which normalises third-party lists
+/// downloaded from the internet, and so must agree with the CPython the bash
+/// helper shells out to on **every** line - including the ones it throws
+/// away. A line Rust keeps and CPython drops puts an address into the
+/// firewall that the administrator's list did not ask for; a line Rust drops
+/// and CPython keeps quietly shrinks the blocklist.
+///
+/// Unlike [`IpOrCidr::parse`] this does not trim: CPython refuses
+/// `" 1.2.3.4"`, and the blocklist splitter has already removed whitespace by
+/// the time a token reaches here, so trimming would only paper over a
+/// splitter that had stopped working.
+///
+/// One difference is deliberate and is checked by test: CPython accepts a
+/// scoped address such as `fe80::1%eth0` and returns `fe80::1%eth0/128`. That
+/// string is not something `nft` will load, so the bash writes a blocklist
+/// entry that fails at the point of use. This returns `None` for it instead.
+/// Only link-local addresses carry a zone, and those are never routed.
+pub fn normalized_network(raw: &str) -> Option<String> {
+    let (addr_part, prefix_part) = match raw.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (raw, None),
+    };
+    let addr: std::net::IpAddr = addr_part.parse().ok()?;
+    let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
+    let prefix = match prefix_part {
+        Some(p) => prefix_len(p, addr.is_ipv4())?,
+        None => max_prefix,
+    };
+    if prefix > max_prefix {
+        return None;
+    }
+    Some(
+        IpOrCidr {
+            addr,
+            prefix,
+            explicit_prefix: prefix_part.is_some(),
+        }
+        .normalized(),
+    )
+}
+
 impl fmt::Display for IpOrCidr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.explicit_prefix {
@@ -661,6 +1056,19 @@ impl fmt::Display for IpOrCidr {
         } else {
             write!(f, "{}", self.addr)
         }
+    }
+}
+
+/// `Serialize` as the string `Deserialize` parses.
+///
+/// Deriving it instead gives a map of the private fields, which nothing can
+/// read back: the `Deserialize` below takes a string. That asymmetry is
+/// invisible until the value crosses a process boundary, because the
+/// helper's argv path builds and consumes the request in one process. Over
+/// the socket it is a request the helper cannot decode.
+impl Serialize for IpOrCidr {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
     }
 }
 
@@ -790,6 +1198,103 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What a container image reference may be, and what it may not.
+    ///
+    /// The refusals are the point. `-rm` and `a/../b` both pass a naive
+    /// character check and are both terrible things to hand `docker pull`.
+    #[test]
+    fn a_docker_image_reference_cannot_be_read_as_a_flag() {
+        for good in [
+            "nginx",
+            "nginx:1.27",
+            "library/nginx:alpine",
+            "ghcr.io/owner/name:v1.2.3",
+            "registry.example.com:5000/team/app:latest",
+            "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(
+                DockerImage::parse(good).is_ok(),
+                "{good:?} is an ordinary reference"
+            );
+        }
+
+        for (bad, why) in [
+            ("-rm", "docker would read this as a flag"),
+            ("--privileged", "so would this"),
+            ("a/../b", "a traversal component"),
+            ("..", "just a traversal"),
+            ("", "empty"),
+            ("Nginx", "uppercase is not valid in a repository name"),
+            ("nginx latest", "a space"),
+            ("nginx:", "an empty tag"),
+            ("nginx@sha256:short", "a truncated digest"),
+            ("nginx;rm -rf /", "a semicolon"),
+        ] {
+            assert!(
+                DockerImage::parse(bad).is_err(),
+                "{bad:?} must be refused ({why})"
+            );
+        }
+    }
+
+    /// An application name and an image reference are different shapes and
+    /// must not be interchangeable.
+    #[test]
+    fn an_app_name_is_not_an_image_reference() {
+        assert!(AppName::parse("ghcr.io/owner/name").is_err());
+        assert!(DockerImage::parse("my-app").is_ok());
+    }
+
+    /// The pool hash must equal what the shell computes, not merely look like
+    /// a hash.
+    ///
+    /// Compared against the real pipeline rather than a constant, because a
+    /// constant is only as good as the person who pasted it, and the cost of
+    /// being wrong is a pool file that no longer matches its site.
+    #[test]
+    fn the_pool_hash_matches_the_shell_pipeline() {
+        use std::process::Command;
+
+        for path in [
+            "/home/bp_site/example.com",
+            "/home/u1/a-very-long.domain.example.co.uk",
+            "/home/x/site with spaces",
+        ] {
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg("printf '%s' \"$1\" | sha256sum | awk '{print substr($1, 1, 12)}'")
+                .arg("sh")
+                .arg(path)
+                .output();
+
+            let Ok(out) = out else {
+                eprintln!("skipped: no shell to compare against");
+                return;
+            };
+            let expected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert!(
+                expected.len() == 12,
+                "sha256sum is not available here, so this proves nothing: {expected:?}"
+            );
+            assert_eq!(
+                site_hash(path),
+                expected,
+                "the pool name for {path} would not match what is on disk"
+            );
+        }
+    }
+
+    /// Twelve hex characters, and the same answer every time.
+    #[test]
+    fn the_pool_hash_is_stable_and_the_right_width() {
+        let a = site_hash("/home/bp_site/example.com");
+        let b = site_hash("/home/bp_site/example.com");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 12);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, site_hash("/home/bp_site/example.net"));
+    }
+
     use super::*;
 
     #[test]
@@ -949,5 +1454,221 @@ mod tests {
         assert!(SecretString::new("ok-password").valid_as_linux_password());
         assert!(!SecretString::new("has:colon").valid_as_linux_password());
         assert!(!SecretString::new("has\nnewline").valid_as_linux_password());
+    }
+
+    /// A mixed-case name is refused, not quietly lowercased.
+    ///
+    /// This is the test that was missing. `parse` lowercased first, so
+    /// `UPPER` became a valid `PanelUsername` of `upper` - and `SitePath`
+    /// keeps the bytes it was given, so `site-runtime-ensure UPPER
+    /// /home/UPPER/x` agreed with itself that the path belonged to that user
+    /// and created `/home/UPPER/x` as root, while the account's home was
+    /// `/home/upper`. Two directories, one account, and a type that said the
+    /// path belonged to a user whose home it was not under.
+    ///
+    /// Found by running it on a live box, not by reading the code.
+    ///
+    /// Lowercasing is a real operation the Python does - it is
+    /// `linux_user_for_panel_username`, and both API call sites do it
+    /// themselves before parsing, which is where it belongs. `parse` is
+    /// `validate_linux_user`: it matches the pattern against what it is
+    /// given.
+    #[test]
+    fn a_mixed_case_name_is_refused_rather_than_lowercased() {
+        for raw in ["UPPER", "Alice", "bOb", "aB_c"] {
+            assert!(
+                PanelUsername::parse(raw).is_err(),
+                "{raw} must be refused, not normalised"
+            );
+        }
+        assert_eq!(PanelUsername::parse("alice").unwrap().as_str(), "alice");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_refused_too() {
+        // The bash's `require_linux_user` anchors its pattern, so a name with
+        // a stray newline from a file or a form is not a name.
+        for raw in [" alice", "alice ", "alice\n", "\talice"] {
+            assert!(PanelUsername::parse(raw).is_err(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_name_is_refused_in_the_case_it_is_written() {
+        // The reserved list is compared against what was given, so it has to
+        // be reached by names that are already lowercase - which, now that
+        // parse does not normalise, is the only form that gets that far.
+        for raw in ["root", "www-data", "mysql", "nginx", "snpanel", "nobody"] {
+            assert!(PanelUsername::parse(raw).is_err(), "{raw} is reserved");
+        }
+    }
+
+    /// `normalized_network` against CPython's `ipaddress`, over 1,560 inputs.
+    ///
+    /// Recorded from the interpreter the bash helper actually shells out to,
+    /// and re-checked on Debian 13's CPython 3.13.5 before being committed -
+    /// 0 of the 1,560 differ between that and the 3.14 the corpus was written
+    /// on.
+    ///
+    /// The rejected cases matter as much as the accepted ones. This
+    /// normalises third-party lists downloaded from the internet: a line Rust
+    /// keeps and CPython drops puts an address into the firewall that nobody
+    /// asked to block, and a line Rust drops and CPython keeps quietly
+    /// shrinks the blocklist.
+    #[test]
+    fn ip_networks_normalize_exactly_as_cpython_does() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            raw: String,
+            normalized: Option<String>,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/ip_network.json");
+        let raw = std::fs::read_to_string(&path).expect("the ip_network corpus");
+        let cases: Vec<Case> = serde_json::from_str(&raw).expect("the corpus parses");
+        assert!(cases.len() > 1_500, "the corpus is {} cases", cases.len());
+
+        // The one deliberate difference, spelled out so it cannot grow
+        // quietly: CPython accepts a scoped address and returns the zone with
+        // it, which is not a string `nft` will load.
+        let scoped: &[&str] = &["fe80::1%eth0", "fe80::1%1"];
+
+        let mut accepted = 0;
+        let mut rejected = 0;
+        for case in &cases {
+            let got = normalized_network(&case.raw);
+            if scoped.contains(&case.raw.as_str()) {
+                assert!(
+                    case.normalized.is_some(),
+                    "{:?} is listed as a scoped exception but CPython rejects it too, \
+                     so the exception is stale",
+                    case.raw
+                );
+                assert_eq!(got, None, "{:?} must be dropped here", case.raw);
+                continue;
+            }
+            assert_eq!(
+                got.as_deref(),
+                case.normalized.as_deref(),
+                "on input {:?}",
+                case.raw
+            );
+            if case.normalized.is_some() {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+        // A corpus that had drifted to all-rejects would pass every assertion
+        // above while proving nothing.
+        assert!(accepted > 1_400, "only {accepted} accepted");
+        assert!(rejected > 50, "only {rejected} rejected");
+    }
+
+    /// The three prefix spellings `ipaddress` accepts, and the masks that are
+    /// not prefix lengths at all.
+    ///
+    /// `255.0.0.255` names no prefix. Rounding it to something plausible
+    /// would produce a firewall rule covering more addresses than it was
+    /// written to cover, so it is refused.
+    #[test]
+    fn a_prefix_may_be_a_number_a_netmask_or_a_hostmask() {
+        let n = |s: &str| normalized_network(s);
+
+        assert_eq!(n("192.0.2.130/24").as_deref(), Some("192.0.2.0/24"));
+        assert_eq!(
+            n("192.0.2.130/255.255.255.0").as_deref(),
+            Some("192.0.2.0/24")
+        );
+        assert_eq!(n("192.0.2.130/0.0.0.255").as_deref(), Some("192.0.2.0/24"));
+        // `032` parses as a number, so it never reaches the mask spellings.
+        assert_eq!(n("192.0.2.130/032").as_deref(), Some("192.0.2.130/32"));
+
+        // The extremes, where a shift by the full width would be undefined.
+        assert_eq!(n("192.0.2.130/0.0.0.0").as_deref(), Some("0.0.0.0/0"));
+        assert_eq!(
+            n("192.0.2.130/255.255.255.255").as_deref(),
+            Some("192.0.2.130/32")
+        );
+        assert_eq!(n("192.0.2.130/0").as_deref(), Some("0.0.0.0/0"));
+        assert_eq!(n("192.0.2.130/32").as_deref(), Some("192.0.2.130/32"));
+
+        // Not contiguous: neither a netmask nor a hostmask.
+        assert_eq!(n("192.0.2.130/255.0.0.255"), None);
+        assert_eq!(n("192.0.2.130/0.255.0.255"), None);
+
+        // Out of range for the family, in both spellings.
+        assert_eq!(n("192.0.2.130/33"), None);
+        assert_eq!(n("2001:db8::1/129"), None);
+        assert_eq!(n("192.0.2.130/-1"), None);
+        assert_eq!(n("192.0.2.130/300"), None);
+
+        // The mask spellings are IPv4 only.
+        assert_eq!(n("2001:db8::/ffff::"), None);
+        assert_eq!(
+            n("2001:db8::dead:beef/64").as_deref(),
+            Some("2001:db8::/64")
+        );
+
+        // A bare address gains its full-length prefix.
+        assert_eq!(n("203.0.113.44").as_deref(), Some("203.0.113.44/32"));
+        assert_eq!(n("::").as_deref(), Some("::/128"));
+
+        // No trimming: CPython refuses these and so does this.
+        assert_eq!(n(" 1.2.3.4"), None);
+        assert_eq!(n("1.2.3.4 "), None);
+        assert_eq!(n(""), None);
+    }
+
+    /// A dotted-quad mask reaches `IpOrCidr::parse` too.
+    ///
+    /// `require_ip_or_cidr` guards firewall rule input with
+    /// `^[0-9a-fA-F.:/]+$`, which lets `255.255.255.0` through, and the bash
+    /// then resolves it through the same CPython call. Parsing the prefix
+    /// only as an integer - which is what this did - refused a rule an
+    /// administrator could add through the bash helper.
+    #[test]
+    fn a_firewall_rule_may_be_written_with_a_netmask() {
+        let parsed = IpOrCidr::parse("10.0.0.5/255.0.0.0").expect("a netmask is a prefix");
+        assert_eq!(parsed.prefix(), 8);
+        assert_eq!(parsed.normalized(), "10.0.0.0/8");
+
+        let parsed = IpOrCidr::parse("10.0.0.5/0.255.255.255").expect("a hostmask too");
+        assert_eq!(parsed.prefix(), 8);
+        assert_eq!(parsed.normalized(), "10.0.0.0/8");
+
+        assert!(IpOrCidr::parse("10.0.0.5/255.0.0.255").is_err());
+        assert!(IpOrCidr::parse("10.0.0.5/33").is_err());
+        assert!(IpOrCidr::parse("2001:db8::/ffff::").is_err());
+    }
+
+    /// The two refusals `require_linux_user` has, kept apart.
+    ///
+    /// Found by A/B against the installed bash helper, not by reading it: the
+    /// bash answered "reserved panel Linux user: snpanel" where this said
+    /// "invalid panel username: snpanel". `snpanel` is a perfectly
+    /// well-shaped name, so being told it is invalid sends an administrator
+    /// looking at the shape of a name that has nothing wrong with its shape.
+    #[test]
+    fn a_reserved_username_says_so_rather_than_invalid() {
+        for reserved in ["root", "snpanel", "www-data", "mysql", "nobody"] {
+            let err = PanelUsername::parse(reserved).expect_err(reserved);
+            assert_eq!(
+                err.to_string(),
+                format!("reserved panel Linux user: {reserved}")
+            );
+        }
+
+        let too_long = "a".repeat(33);
+        for malformed in ["ab", "1abc", "Abc", "a b", "", too_long.as_str()] {
+            let err = PanelUsername::parse(malformed).expect_err(malformed);
+            assert_eq!(
+                err.to_string(),
+                format!("invalid panel username: {malformed}")
+            );
+        }
+
+        // A name that is neither is accepted.
+        assert!(PanelUsername::parse("bp_example").is_ok());
     }
 }

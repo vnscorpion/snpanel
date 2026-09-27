@@ -1,0 +1,2 @@
+# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
+include /etc/nginx/snpanel/http-flood-zones.conf;

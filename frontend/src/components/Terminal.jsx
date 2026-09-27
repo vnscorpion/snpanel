@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { serverText, useT } from '../i18n/index.jsx';
 
 // A pasted script is queued line by line; these caps keep a stray paste of a
 // whole file from flooding the helper boundary.
@@ -70,6 +71,12 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
   const queueRef = useRef([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState(null);
+  // The callbacks read t from a ref when they run: they outlive a language
+  // switch, and depending on t would tear the terminal and its connection
+  // down. Each names it t, which is what scripts/i18n-check.mjs looks for.
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const redrawLine = useCallback(() => {
     const term = termRef.current;
@@ -116,12 +123,13 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
 
   const enqueueCommands = useCallback((commands) => {
     const term = termRef.current;
+    const t = tRef.current;
     if (commands.length === 0) {
       writePrompt();
       return;
     }
     if (queueRef.current.length + commands.length > MAX_QUEUED_COMMANDS) {
-      term?.write(`\r\n\x1b[31mToo many pasted commands (max ${MAX_QUEUED_COMMANDS}).\x1b[0m\r\n`);
+      term?.write(`\r\n\x1b[31m${t('Too many pasted commands (max {max}).', { max: MAX_QUEUED_COMMANDS })}\x1b[0m\r\n`);
       writePrompt();
       return;
     }
@@ -132,8 +140,9 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
 
   const handlePaste = useCallback((text) => {
     const term = termRef.current;
+    const t = tRef.current;
     if (text.length > MAX_PASTE_CHARS) {
-      term?.write(`\r\n\x1b[31mPaste is too large (max ${MAX_PASTE_CHARS} characters).\x1b[0m\r\n`);
+      term?.write(`\r\n\x1b[31m${t('Paste is too large (max {max} characters).', { max: MAX_PASTE_CHARS })}\x1b[0m\r\n`);
       writePrompt();
       return;
     }
@@ -174,6 +183,7 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      const t = tRef.current;
       setConnected(true);
       setError(null);
       lineRef.current = '';
@@ -181,10 +191,11 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
       runningRef.current = false;
       promptVisibleRef.current = false;
       queueRef.current = [];
-      termRef.current?.write('\x1b[1;32mConnected\x1b[0m\r\n');
+      termRef.current?.write(`\x1b[1;32m${t('Connected')}\x1b[0m\r\n`);
     };
 
     ws.onmessage = (event) => {
+      const t = tRef.current;
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -198,13 +209,13 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
       } else if (msg.type === 'exit') {
         runningRef.current = false;
         if (Number(msg.code) !== 0) {
-          termRef.current?.write(`\r\n\x1b[33m[exit code: ${msg.code}]\x1b[0m\r\n`);
+          termRef.current?.write(`\r\n\x1b[33m[${t('exit code: {code}', { code: msg.code })}]\x1b[0m\r\n`);
           // Stop a pasted batch on the first failure: the following lines
           // usually assume the failed one worked (a failed `cd`, for example).
           if (queueRef.current.length) {
             const skipped = queueRef.current.length;
             queueRef.current = [];
-            termRef.current?.write(`\x1b[33m[stopped: ${skipped} pasted line(s) skipped]\x1b[0m\r\n`);
+            termRef.current?.write(`\x1b[33m[${t('stopped: {count} pasted line(s) skipped', { count: skipped })}]\x1b[0m\r\n`);
           }
           writePrompt();
         } else {
@@ -216,23 +227,26 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
       } else if (msg.type === 'clear') {
         termRef.current?.clear();
       } else if (msg.type === 'error') {
-        termRef.current?.write(`\x1b[31m${normalizeOutput(msg.data)}\x1b[0m\r\n`);
+        termRef.current?.write(`\x1b[31m${normalizeOutput(serverText(msg.data))}\x1b[0m\r\n`);
         writePrompt();
       }
     };
 
     ws.onclose = (event) => {
+      const t = tRef.current;
       setConnected(false);
       wsRef.current = null;
       if (event.code !== 1000) {
-        const detail = event.reason ? `${event.code}: ${event.reason}` : `code ${event.code}`;
-        setError(`Disconnected (${detail})`);
-        termRef.current?.write(`\r\n\x1b[31mDisconnected (${detail})\x1b[0m\r\n`);
+        const detail = event.reason ? `${event.code}: ${serverText(event.reason)}` : t('code {code}', { code: event.code });
+        const text = t('Disconnected ({detail})', { detail });
+        setError(text);
+        termRef.current?.write(`\r\n\x1b[31m${text}\x1b[0m\r\n`);
       }
     };
 
     ws.onerror = () => {
-      setError('Connection failed');
+      const t = tRef.current;
+      setError(t('Connection failed'));
       setConnected(false);
     };
   }, [apiBase, websiteId, runNextQueued, writePrompt]);
@@ -298,9 +312,10 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
     window.addEventListener('resize', onResize);
 
     term.onData((data) => {
+      const t = tRef.current;
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        if (data === '\r' || data === '\n') term.write('\r\n\x1b[31mNot connected.\x1b[0m\r\n');
+        if (data === '\r' || data === '\n') term.write(`\r\n\x1b[31m${t('Not connected.')}\x1b[0m\r\n`);
         return;
       }
 
@@ -381,7 +396,7 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
         lineRef.current = '';
         cursorRef.current = 0;
         if (queueRef.current.length) {
-          term.write(`\x1b[33m[cancelled: ${queueRef.current.length} queued line(s)]\x1b[0m\r\n`);
+          term.write(`\x1b[33m[${t('cancelled: {count} queued line(s)', { count: queueRef.current.length })}]\x1b[0m\r\n`);
           queueRef.current = [];
         }
         writePrompt();
@@ -412,12 +427,12 @@ export function Terminal({ websiteId, apiBase = '/api' }) {
     <div className="terminal-wrapper">
       <div className="terminal-toolbar">
         <span className="terminal-status">
-          {connected ? <span className="status-connected">Connected</span> : error ? <span className="status-error">{error}</span> : <span className="status-disconnected">Disconnected</span>}
+          {connected ? <span className="status-connected">{t('Connected')}</span> : error ? <span className="status-error">{error}</span> : <span className="status-disconnected">{t('Disconnected')}</span>}
         </span>
         {connected ? (
-          <button onClick={disconnect} className="terminal-btn disconnect">Disconnect</button>
+          <button onClick={disconnect} className="terminal-btn disconnect">{t('Disconnect')}</button>
         ) : (
-          <button onClick={connect} className="terminal-btn connect">Connect</button>
+          <button onClick={connect} className="terminal-btn connect">{t('Connect')}</button>
         )}
       </div>
       <div className="terminal-container">

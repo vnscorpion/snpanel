@@ -14,17 +14,32 @@ path = "src/main.rs"
 snpanel-core = { path = "../snpanel-core" }
 snpanel-db = { path = "../snpanel-db" }
 snpanel-ipc = { path = "../snpanel-ipc" }
+snpanel-nginx = { path = "../snpanel-nginx" }
+# Reading a backup's manifest out of its archive.
+tar.workspace = true
+flate2.workspace = true
+russh.workspace = true
+subtle.workspace = true
+russh-sftp.workspace = true
+# Reading a DirectAdmin backup, which may arrive in any of four
+# compressions. Decompress-only and pure Rust; see the workspace file.
+bzip2-rs.workspace = true
+lzma-rs.workspace = true
+ruzstd.workspace = true
+# Already in the lock file for the helper, which unpacks the archives this
+# crate only inspects.
+zip.workspace = true
 snpanel-osabi = { path = "../snpanel-osabi" }
 
 anyhow.workspace = true
 libc = "0.2"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "process", "io-util", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
@@ -35,6 +50,8 @@ qrcode.workspace = true
 image.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
+# The Cloudflare API, which is the only host this panel calls out to.
+tokio-rustls.workspace = true
 x509-parser.workspace = true
 axum-server.workspace = true
 thiserror.workspace = true

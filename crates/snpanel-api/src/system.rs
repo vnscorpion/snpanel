@@ -22,6 +22,16 @@ pub const PHP_VERSION_ORDER: [&str; 8] = ["5.6", "7.4", "8.0", "8.1", "8.2", "8.
 /// Source: `SUPPORTED_ACTIONS`.
 pub const SUPPORTED_ACTIONS: [&str; 5] = ["start", "stop", "restart", "reload", "status"];
 
+/// The Redis-compatible unit on this machine: `redis-server` on the Debian
+/// family, `valkey` on AlmaLinux. The Services page listed `redis-server`
+/// everywhere, so on EL its row read "could not be found" for a server that
+/// was running.
+pub fn redis_service() -> &'static str {
+    snpanel_osabi::detect()
+        .map(|p| p.redis_service())
+        .unwrap_or("redis-server")
+}
+
 /// Source: `PROTECTED_SERVICE_ACTIONS`, messages included - the panel shows
 /// them to the operator verbatim.
 pub fn protected_reason(name: &str, action: &str) -> Option<&'static str> {
@@ -32,6 +42,7 @@ pub fn protected_reason(name: &str, action: &str) -> Option<&'static str> {
         ("redis-server", "stop") => {
             Some("Stopping redis-server would disable production login rate limiting")
         }
+        ("valkey", "stop") => Some("Stopping valkey would disable production login rate limiting"),
         _ => None,
     }
 }
@@ -81,7 +92,9 @@ fn php_sort_key(service: &str) -> (usize, Vec<u32>) {
 pub fn list_services() -> Vec<String> {
     let mut out: Vec<String> = BASE_SERVICES[..2].iter().map(|s| s.to_string()).collect();
     out.extend(installed_php_services());
-    out.extend(BASE_SERVICES[2..].iter().map(|s| s.to_string()));
+    out.push(BASE_SERVICES[2].to_string());
+    // The machine's own Redis-compatible unit in the Python's last place.
+    out.push(redis_service().to_string());
     out
 }
 
@@ -295,6 +308,19 @@ fn disk_usage() -> serde_json::Value {
     })
 }
 
+/// The root filesystem for the notifications' watcher: its size, what is
+/// available to write, and the percentage used as the Dashboard shows it.
+pub(crate) fn root_disk() -> (u64, u64, f64) {
+    let (total, free, avail) = statvfs_root();
+    let used = total.saturating_sub(free);
+    let percent = if total > 0 {
+        used as f64 * 100.0 / total as f64
+    } else {
+        0.0
+    };
+    (total, avail, percent)
+}
+
 /// `(total, free, available)` in bytes, matching `shutil.disk_usage`:
 /// total = f_blocks*f_frsize, free = f_bfree*f_frsize, available =
 /// f_bavail*f_frsize.
@@ -361,6 +387,90 @@ pub fn panel_installed() -> bool {
     Path::new("/opt/snpanel/backend/.env").exists()
 }
 
+/// Source: `panel_ipv6.is_enabled` - whether the vhosts on this machine carry
+/// IPv6 listen directives. A marker file, not a probe of the network: the
+/// question is what the configuration says, not what the kernel has.
+pub fn ipv6_enabled() -> bool {
+    let marker = std::env::var("SNPANEL_IPV6_MARKER")
+        .unwrap_or_else(|_| "/etc/snpanel/ipv6-enabled".to_string());
+    std::path::Path::new(&marker).exists()
+}
+
+/// Source: `nginx.waf_engine_available`.
+///
+/// `modsecurity on;` is not a harmless no-op when the module is missing:
+/// nginx rejects its **entire** configuration with `unknown directive`, and
+/// that is not confined to the site being written - the next reload anywhere
+/// takes down every site on the machine.
+///
+/// The cheap half is the Debian package's load file. The rest reads the
+/// configuration directly, because `nginx -V` reports what nginx was compiled
+/// with rather than what it loads, and `nginx -T` exits before printing
+/// anything when it cannot open the error log - which the panel's account
+/// cannot.
+pub fn waf_engine_available() -> bool {
+    const MODULE_CONF: &str = "/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf";
+    if std::path::Path::new(MODULE_CONF).exists() {
+        return true;
+    }
+    // Source: `MODULE_CONFIG_PATTERNS` - every file that may legally carry a
+    // `load_module`, which is only valid in the main context. All are
+    // world-readable, which is what lets an unprivileged process answer this.
+    let mut candidates: Vec<std::path::PathBuf> =
+        vec![std::path::PathBuf::from("/etc/nginx/nginx.conf")];
+    for dir in ["/etc/nginx/modules-enabled", "/usr/share/nginx/modules"] {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "conf")),
+            );
+        }
+    }
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("load_module") && trimmed.to_lowercase().contains("modsecurity")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Source: `core.platform.install_command`.
+///
+/// The fallback the on-demand installs use when the privileged helper is
+/// absent, which is a panel somebody is setting up by hand. Getting the
+/// package name or the manager wrong there produces "no match for
+/// argument", which reads like a broken mirror rather than a typo.
+pub fn install_command(package: &str) -> String {
+    // `os_family() == "rhel"`. An undetectable platform takes the Debian
+    // branch, as the Python's `else` does.
+    let rhel = snpanel_osabi::detect()
+        .map(|p| p.family() == snpanel_osabi::Family::Rhel)
+        .unwrap_or(false);
+    install_command_for(rhel, package)
+}
+
+/// [`install_command`] with the platform already decided, so both answers
+/// can be read on one machine.
+pub fn install_command_for(rhel: bool, package: &str) -> String {
+    if rhel {
+        format!("dnf -y install {package}")
+    } else {
+        format!(
+            "export DEBIAN_FRONTEND=noninteractive; apt-get update \
+             && apt-get install -y {package}"
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,7 +480,7 @@ mod tests {
         let list = list_services();
         assert_eq!(list.first().unwrap(), "snpanel-api");
         assert_eq!(list.get(1).unwrap(), "nginx");
-        assert_eq!(list.last().unwrap(), "redis-server");
+        assert_eq!(list.last().unwrap(), redis_service());
 
         let nginx = list.iter().position(|s| s == "nginx").unwrap();
         let mariadb = list.iter().position(|s| s == "mariadb").unwrap();
@@ -413,6 +523,7 @@ mod tests {
             protected_reason("redis-server", "stop"),
             Some("Stopping redis-server would disable production login rate limiting")
         );
+        assert!(protected_reason("valkey", "stop").is_some());
         // Restarting is allowed; only stop is protected.
         assert!(protected_reason("snpanel-api", "restart").is_none());
         assert!(protected_reason("nginx", "stop").is_none());

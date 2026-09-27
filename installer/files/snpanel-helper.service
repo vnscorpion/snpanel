@@ -41,7 +41,12 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 RestrictSUIDSGID=false
-MemoryDenyWriteExecute=true
+# Not MemoryDenyWriteExecute: it is a seccomp filter every child inherits,
+# and the helper starts customers' own toolchains - `npm install` for an
+# application, node and npm in the web terminal, PHP with its JIT. V8 cannot
+# run without writable-then-executable pages, so every Node application
+# failed to deploy with "Check failed: 12 == errno".
+MemoryDenyWriteExecute=false
 LockPersonality=true
 # nft, systemctl, useradd and restorecon all need the real /proc.
 ProcSubset=all

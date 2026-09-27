@@ -142,16 +142,18 @@ async fn configure_os_auto_update(State(state): State<AppState>, req: Request) -
     // 422 where the panel answers 200 - an administrator's "enable automatic
     // security updates" button doing nothing. The schema is the contract, not
     // the guard behind it.
-    let enabled = match payload.get("enabled") {
-        Some(Value::Bool(b)) => *b,
-        None | Some(Value::Null) => true,
-        Some(other) => return crate::errors::bool_parsing("enabled", other),
+    // `enabled: bool = True` and `auto_reboot: bool = False`, neither
+    // optional: a body that leaves the field out takes the default, and a
+    // body that sets it to `null` is refused.
+    let enabled = match crate::errors::read_bool("enabled", payload.get("enabled"), true) {
+        Ok(value) => value,
+        Err(response) => return response,
     };
-    let auto_reboot = match payload.get("auto_reboot") {
-        Some(Value::Bool(b)) => *b,
-        None | Some(Value::Null) => false,
-        Some(other) => return crate::errors::bool_parsing("auto_reboot", other),
-    };
+    let auto_reboot =
+        match crate::errors::read_bool("auto_reboot", payload.get("auto_reboot"), false) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
     let mode = match payload.get("mode") {
         Some(Value::String(s)) => s.clone(),
         None | Some(Value::Null) => "security".to_string(),

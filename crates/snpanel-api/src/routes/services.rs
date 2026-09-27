@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/resource-usage", get(resource_usage))
         .route("/list", get(list))
         .route("/action", post(action))
+        .route("/install-wordpress-stack", post(install_wordpress_stack))
 }
 
 /// Source: `system_info()`.
@@ -111,6 +112,27 @@ fn forbidden(detail: &str) -> Response {
         Json(serde_json::json!({ "detail": detail })),
     )
         .into_response()
+}
+
+/// Source: `install_stack`, which calls `system.install_wordpress_stack()`.
+///
+/// That function does one thing: it raises `PermissionError`. FastAPI has no
+/// handler for it, so the endpoint answers **500** with the framework's
+/// generic body and the reason only reaches the log. Reproduced, including
+/// the 500 - the message is not in the response today and putting it there
+/// would be an improvement, which is not what this port is for.
+async fn install_wordpress_stack(current: CurrentUser) -> Response {
+    if !snpanel_core::permissions::has_role(
+        &current.user.role,
+        snpanel_core::permissions::Role::Admin,
+    ) {
+        return crate::errors::not_enough_permissions();
+    }
+    tracing::error!(
+        "Installing the system stack from the panel is disabled. \
+         Run installer/install.sh on the server instead."
+    );
+    crate::errors::internal_error()
 }
 
 #[cfg(test)]

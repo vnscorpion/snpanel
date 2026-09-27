@@ -97,6 +97,14 @@ platform_debian() {
     python3 python3-pip python3-venv
     certbot python3-certbot-nginx
     tar zip unzip openssl iptables ipset phpmyadmin acl
+    # The EL list has carried these for the same reason, with a comment saying
+    # Ubuntu's cloud image ships them. That is true of Ubuntu's cloud image and
+    # not of a minimal Debian - a debootstrap, an LXC template, several VPS
+    # images. Without sudo the panel has no privileged path at all: every
+    # action goes through `sudo -n snpanel-helper`. The install died at the
+    # MariaDB credential check, which runs its probe through sudo and reports
+    # the failure as bad credentials.
+    sudo rsync
   )
   EXTRA_PACKAGES=()
 

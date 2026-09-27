@@ -11,3 +11,6 @@ snpanel-core = { path = "../snpanel-core" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

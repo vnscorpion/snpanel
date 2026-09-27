@@ -1,0 +1,14 @@
+{
+  "name": "snpanel-ui-audit",
+  "private": true,
+  "description": "Playwright checks run against a live panel in a test box. Not part of the build.",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "compare": "node compare.mjs",
+    "settings-race": "node settings-race.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

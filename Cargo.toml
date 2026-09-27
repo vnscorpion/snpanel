@@ -4,10 +4,12 @@ members = [
     "crates/snpanel-core",
     "crates/snpanel-osabi",
     "crates/snpanel-ipc",
+    "crates/snpanel-nginx",
     "crates/snpanel-cli",
     "crates/snpanel-db",
     "crates/snpanel-helper",
     "crates/snpanel-api",
+    "crates/snpanel-installer",
     "xtask",
 ]
 
@@ -30,12 +32,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 sha2 = "0.10"
+# A short stable tag for a name rewritten out of a DirectAdmin
+# backup, so two archives cannot collide. Never a security
+# primitive - that is what `sha2` above is for.
+sha1 = "0.10"
 hmac = "0.12"
 aes = "0.8"
 cbc = "0.1"
 bcrypt = "0.16"
 jsonwebtoken = "9"
-minijinja = "2"
 # `otpauth` gives the issuer/account constructor and the provisioning URI;
 # `gen_secret` gives Secret::generate_secret for new enrolments.
 totp-rs = { version = "5", features = ["otpauth", "gen_secret"] }
@@ -46,6 +51,35 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # stderr - the panel captures the helper's stderr, so stderr-only logging
 # lives and dies inside one HTTP response.
 tracing-journald = "0.3"
+# Archive extraction for `site-archive-extract`. Both are used only by the
+# unprivileged `snpanel-extract` binary, never by the helper itself: an
+# archive is attacker-controlled input and a bug in a parser reading it must
+# not be a bug running as root.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+# The other three compressions a DirectAdmin backup arrives in. All three
+# are **pure Rust and decompress-only**: nothing here links a C library,
+# and nothing here can write an archive, which is the whole of what the
+# importer needs. `tarfile.open(path, "r:*")` is what they stand in for.
+bzip2-rs = "0.1"
+lzma-rs = "0.3"
+ruzstd = "0.9"
+# The one remaining operation that leaves this machine: a backup pushed to a
+# customer's own SFTP host. Go was on the table for it — `x/crypto/ssh` and
+# `pkg/sftp` are the more travelled road — and was measured rather than
+# assumed. It would have cost a second toolchain in CI, in the release
+# cross-compile and in the installer, plus a second binary to ship and to
+# version. `russh` costs 76 crates, all pure Rust, and keeps these tests in
+# the same `cargo test` as everything else.
+#
+# The `ring` backend rather than the default `aws-lc-rs`: `ring` is already
+# in the lock file for the panel's own TLS, and `aws-lc-rs` would pull a C
+# toolchain into a build that has none. `dsa` is on because paramiko accepts
+# a DSS key, and a customer who pinned one is not someone to break on an
+# upgrade.
+russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "dsa"] }
+russh-sftp = "3"
 rand = "0.8"
 subtle = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -59,6 +93,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # in front of it has to as well.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
+# Already in the lock file, pulled in by `axum-server` for the panel's own
+# TLS. Declaring it here is what lets the one outbound HTTPS call - the
+# Cloudflare API - reuse that stack instead of adding a second one.
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
 x509-parser = "0.16"
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 

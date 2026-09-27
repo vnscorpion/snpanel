@@ -14,14 +14,25 @@
 //! Every operation is dispatched through the same `ops::dispatch`, so the two
 //! paths cannot drift apart.
 
+// An operation that fails returns the `HelperResponse` it wants sent, so
+// `Result<T, HelperResponse>` is the shape of every internal early return.
+// That type grew past the lint's 128-byte threshold when `exit_code` was
+// added for `terminal-exec`; boxing twelve signatures would add an
+// allocation to the failure path of every operation and say nothing about
+// what the code does. `snpanel-api` carries the same allow for the same
+// reason, one type up.
+#![allow(clippy::result_large_err)]
+
 mod audit;
 mod exec;
+mod locks;
 mod ops;
 mod peercred;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::ExitCode;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use snpanel_ipc::{Envelope, HelperErrorKind, HelperResponse, SOCKET_PATH};
 
@@ -51,34 +62,65 @@ fn main() -> ExitCode {
     }
 }
 
+/// How many operations this binary answers.
+///
+/// Printed by `--help`. Checked against the mapping by
+/// `the_help_text_count_is_the_measured_one`, because the previous figure was
+/// hardcoded and went twenty-four verbs stale without anything noticing.
+const ANSWERED_VERBS: usize = 164;
+
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
     println!("  snpanel-helper --serve            listen on {SOCKET_PATH}");
     println!("  snpanel-helper <op> [args...]     run one operation directly\n");
-    println!("Operations implemented in Rust (61 of the bash helper's 111):");
+    println!("Operations ({ANSWERED_VERBS} of them):");
     for line in [
         "  firewall-*      apply, flush, status, list, migrate-nft, allow-ip,",
         "                  deny-ip, allow-port, panel-allow-port, delete,",
-        "                  enable, disable",
-        "  nginx-*         test, reload, custom-write, custom-delete",
-        "  panel-user-*    ensure, delete, password (password on stdin)",
-        "  site-*          mkdir, rm, file-write, chmod, log-read, log-clear",
+        "                  enable, disable, reload;",
+        "                  blocklist-add, blocklist-delete",
+        "  nginx-*         test, reload, custom-write, custom-delete;",
+        "                  http-flood-zones-save",
+        "  panel-user-*    ensure, delete, password (password on stdin),",
+        "                  lock, unlock",
+        "  sftp-sub-*      create, password (password on stdin), delete,",
+        "                  mount, umount (run by the account's unit)",
+        "  site-*          mkdir, rm, path-fix, file-write, file-install, chmod,",
+        "                  file-search,",
+        "                  log-read, log-clear, logs-read-many, logs-delete,",
+        "                  document-root-ensure, populate, archive-extract,",
+        "                  runtime-ensure, runtime-move, runtime-delete",
+        "  docker-*        status, prune, install;  node-list, node-install",
+        "  maldet-scan, malware-scan-server",
+        "  malware-quarantine[-restore|-delete|-list] <path|id>,",
+        "  malware-whitelist-add|remove|list",
+        "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
+        "  fail2ban-*      install, configure (settings on stdin), status, ban,",
+        "                  unban, stop",
+        "  ssh-ports       the ports sshd listens on, as JSON",
+        "  updates-panel-run, nginx-upgrade-map-ensure",
+        "  site-app-*      write (node, docker), control, logs, delete, dir-ensure,",
+        "                  rename, pull, install-deps, export, import, volume-usage,",
+        "                  compose-ps, compose-pull",
+        "  wp, wp-site",
         "  fix-permissions",
         "  certbot-*       issue, renew, delete;  ssl-cert-info",
         "  panel-ssl-*     selfsigned, domains;   panel-sni-sync",
-        "  php-*           opcache-set, config-write",
+        "  php-*           opcache-set, config-write, tune-write, pools-retune,",
+        "                  install, ext-install, ext-remove",
         "  ipv6-*          status, enable, disable, apply",
         "  time-*          status, sync;          cron-list, cron-write",
         "  updates-*       status, os-run, os-auto",
-        "  waf-*           status, crs-status, crs-mode, site-save, site-delete",
+        "  waf-*           status, crs-status, crs-mode, site-save, site-delete,",
+        "                  default-rules, custom-rules, custom-save, update",
         "  clamav-*        status, start, stop;   maldet-status",
         "  systemctl, daemon-reload, service-status, fastcgi-cache-clear",
         "  selinux-*       restore-site, port-add (no-op off the RHEL family)",
     ] {
         println!("{line}");
     }
-    println!("\nAny other operation is passed through to snpanel-helper.sh,");
-    println!("so the panel can call this binary for everything.");
+    println!("\nAnything else is an unknown command: this binary is the whole");
+    println!("helper, and there is no script behind it any more.");
     println!(
         "\nAudit trail: {}",
         match sink {
@@ -127,16 +169,78 @@ fn serve() -> ExitCode {
         },
     };
 
-    let ctx = Context::from_system();
+    let ctx = Arc::new(Context::from_system());
     tracing::info!(panel_uid, panel_port = ctx.panel_port, "helper ready");
 
+    // Each connection on a thread of its own, so a long operation - an
+    // install, a pull, a scan - no longer holds up every other request;
+    // `locks` keeps two changes to one shared resource from overlapping.
+    let slots = Arc::new(Slots::new(MAX_IN_FLIGHT));
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => handle(s, panel_uid, &ctx),
+            Ok(s) => {
+                slots.take();
+                let (ctx, done) = (Arc::clone(&ctx), Arc::clone(&slots));
+                let started = std::thread::Builder::new()
+                    .name("helper-request".into())
+                    .spawn(move || {
+                        // Given back even if the operation panics.
+                        let _slot = SlotGuard(&done);
+                        handle(s, panel_uid, &ctx);
+                    });
+                if let Err(e) = started {
+                    slots.give_back();
+                    tracing::warn!("cannot start a thread for a request: {e}");
+                }
+            }
             Err(e) => tracing::warn!("accept failed: {e}"),
         }
     }
     ExitCode::SUCCESS
+}
+
+/// How many requests are worked on at once. The API is the only caller this
+/// answers; the bound is on what a burst of its requests can start, and a
+/// request past it waits to be accepted rather than being refused.
+const MAX_IN_FLIGHT: usize = 32;
+
+/// A counting semaphore: the requests that may still start.
+struct Slots {
+    free: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl Slots {
+    fn new(n: usize) -> Self {
+        Self {
+            free: Mutex::new(n),
+            freed: Condvar::new(),
+        }
+    }
+
+    fn take(&self) {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        while *free == 0 {
+            free = self
+                .freed
+                .wait(free)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *free -= 1;
+    }
+
+    fn give_back(&self) {
+        *self.free.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        self.freed.notify_one();
+    }
+}
+
+struct SlotGuard<'a>(&'a Slots);
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        self.0.give_back();
+    }
 }
 
 /// Take the listening socket from systemd, if we were socket-activated.
@@ -200,6 +304,7 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
                 &stream,
                 &HelperResponse::failed(HelperErrorKind::NotAuthorised, e.to_string()),
             );
+            drain_after_refusal(&stream);
             return;
         }
     };
@@ -216,6 +321,7 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
             &stream,
             &HelperResponse::failed(HelperErrorKind::NotAuthorised, e.to_string()),
         );
+        drain_after_refusal(&stream);
         return;
     }
 
@@ -240,7 +346,10 @@ fn handle(stream: UnixStream, panel_uid: u32, ctx: &Context) {
     let response = match Envelope::decode(line.as_bytes()) {
         Ok(env) => {
             audit::log_request(&env.request, peer.uid, peer.pid);
-            let resp = ops::dispatch(&env.request, ctx);
+            let resp = {
+                let _held = locks::hold(env.request.op_name());
+                ops::dispatch(&env.request, ctx)
+            };
             audit::log_result(env.request.op_name(), &resp);
             resp
         }
@@ -260,6 +369,32 @@ fn respond_to(stream: &UnixStream, response: &HelperResponse) -> std::io::Result
     Ok(())
 }
 
+/// Give a refused caller time to finish its request and read the answer.
+///
+/// A refusal is decided from the peer's credentials, before the request is
+/// read - so the client is usually still writing when the decision is made.
+/// Dropping the stream there closes both directions, the client's `write`
+/// gets EPIPE, and it never sees the refusal already waiting in its receive
+/// buffer. It would report a broken pipe for what was an authorisation
+/// decision, which is exactly the distinction this protocol exists to make.
+///
+/// Bounded in time and in bytes on purpose: the peer here is one that has
+/// just been told no.
+fn drain_after_refusal(stream: &UnixStream) {
+    use std::io::Read;
+
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+    let mut sink = [0u8; 4096];
+    let mut total = 0usize;
+    while total < 64 * 1024 {
+        match (&mut &*stream).read(&mut sink) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(_) => break,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI transport
 // ---------------------------------------------------------------------------
@@ -270,374 +405,24 @@ fn respond_to(stream: &UnixStream, response: &HelperResponse) -> std::io::Result
 /// site that shells out to `snpanel-helper nginx-reload` keeps working when the
 /// binary underneath is swapped.
 fn cli(args: &[String]) -> ExitCode {
-    use snpanel_core::{IpOrCidr, PanelUsername, Port, SitePath};
-    use snpanel_ipc::{HelperRequest, ServiceAction, ServiceName};
+    use snpanel_ipc::HelperRequest;
 
     if !is_root() {
         eprintln!("snpanel-helper must run as root");
         return ExitCode::from(1);
     }
 
-    let op = args[0].as_str();
-    let rest = &args[1..];
-
-    let request = match (op, rest.len()) {
-        ("nginx-test", 0) => HelperRequest::NginxTest,
-        ("nginx-reload", 0) => HelperRequest::NginxReload,
-        ("daemon-reload", 0) => HelperRequest::DaemonReload,
-        ("firewall-apply", 0) => HelperRequest::FirewallApply,
-        ("firewall-flush", 0) => HelperRequest::FirewallFlush,
-        ("firewall-status", 0) => HelperRequest::FirewallStatus,
-        ("firewall-migrate-nft", 0) => HelperRequest::FirewallMigrateNft,
-
-        ("systemctl", 2) => {
-            let service = match ServiceName::parse(&rest[0]) {
-                Ok(s) => s,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let action = match rest[1].as_str() {
-                "start" => ServiceAction::Start,
-                "stop" => ServiceAction::Stop,
-                "restart" => ServiceAction::Restart,
-                "reload" => ServiceAction::Reload,
-                "status" | "is-active" => ServiceAction::Status,
-                other => return fail(&format!("action not allowed: {other}")),
-            };
-            HelperRequest::ServiceControl { service, action }
-        }
-
-        ("firewall-enable", 0) => HelperRequest::FirewallEnable,
-        ("firewall-disable", 0) => HelperRequest::FirewallDisable,
-        ("firewall-list", 0) => HelperRequest::FirewallList,
-        ("ipv6-status", 0) => HelperRequest::Ipv6Status,
-        ("ipv6-enable", 0) => HelperRequest::Ipv6Enable,
-        ("ipv6-disable", 0) => HelperRequest::Ipv6Disable,
-        ("ipv6-apply", 0) => HelperRequest::Ipv6Apply,
-        ("time-status", 0) => HelperRequest::TimeStatus,
-        ("time-sync", 0) => HelperRequest::TimeSync,
-        ("fastcgi-cache-clear", 0) => HelperRequest::FastcgiCacheClear,
-        ("updates-status", 0) => HelperRequest::UpdatesStatus,
-        ("updates-os-run", 0) => HelperRequest::UpdatesOsRun,
-        ("waf-status", 0) => HelperRequest::WafStatus,
-        ("waf-crs-status", 0) => HelperRequest::WafCrsStatus,
-        ("clamav-status", 0) => HelperRequest::ClamavStatus,
-        ("maldet-status", 0) => HelperRequest::MaldetStatus,
-        ("panel-ssl-domains", 0) => HelperRequest::PanelSslDomains,
-        ("panel-sni-sync", 0) => HelperRequest::PanelSniSync,
-        ("certbot-renew", 0) => HelperRequest::CertbotRenew { domain: None },
-
-        ("firewall-allow-ip", 1) | ("ufw-allow-ip", 1) => match IpOrCidr::parse(&rest[0]) {
-            Ok(ip) => HelperRequest::FirewallAllowIp {
-                ip,
-                port: None,
-                protocol: snpanel_ipc::Protocol::Tcp,
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("firewall-deny-ip", 1) | ("ufw-deny-ip", 1) => match IpOrCidr::parse(&rest[0]) {
-            Ok(ip) => HelperRequest::FirewallDenyIp {
-                ip,
-                port: None,
-                protocol: snpanel_ipc::Protocol::Tcp,
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("firewall-allow-port", 1) | ("firewall-allow-port", 2) => {
-            let port = match Port::parse(&rest[0]) {
-                Ok(p) => p,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let protocol = match rest.get(1).map(String::as_str) {
-                None | Some("tcp") => snpanel_ipc::Protocol::Tcp,
-                Some("udp") => snpanel_ipc::Protocol::Udp,
-                Some(other) => return fail(&format!("invalid protocol: {other}")),
-            };
-            HelperRequest::FirewallAllowPort { port, protocol }
-        }
-        ("firewall-panel-allow-port", 1) => match Port::parse(&rest[0]) {
-            Ok(port) => HelperRequest::FirewallPanelAllowPort { port },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("firewall-delete", 1) | ("ufw-delete", 1) => match rest[0].parse::<u32>() {
-            Ok(id) => HelperRequest::FirewallDelete { id },
-            Err(_) => return fail(&format!("invalid rule id: {}", rest[0])),
-        },
-
-        ("panel-user-ensure", 1) => match PanelUsername::parse(&rest[0]) {
-            Ok(username) => HelperRequest::PanelUserEnsure {
-                username,
-                password: None,
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("panel-user-delete", 1) => match PanelUsername::parse(&rest[0]) {
-            Ok(username) => HelperRequest::PanelUserDelete { username },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("panel-user-password", 1) => {
-            // C37: the password arrives on stdin, never as an argument, so it
-            // is not visible in `ps` for the life of the process.
-            let username = match PanelUsername::parse(&rest[0]) {
-                Ok(u) => u,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let mut password = String::new();
-            if std::io::Read::read_to_string(&mut std::io::stdin(), &mut password).is_err() {
-                return fail("could not read the password from stdin");
-            }
-            HelperRequest::PanelUserPassword {
-                username,
-                password: snpanel_core::SecretString::new(password.trim_end_matches('\n')),
-            }
-        }
-
-        ("mkdir-site", 1) => match SitePath::parse(&rest[0]) {
-            Ok(path) => HelperRequest::SiteMkdir { path },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("site-log-read", 3) => {
-            let domain = match snpanel_core::Domain::parse(&rest[0]) {
-                Ok(d) => d,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let kind = match ops::site::LogKind::parse(&rest[1]) {
-                Some(ops::site::LogKind::Access) => snpanel_ipc::LogKind::Access,
-                Some(ops::site::LogKind::Error) => snpanel_ipc::LogKind::Error,
-                None => return fail(&format!("invalid log kind: {}", rest[1])),
-            };
-            let lines = rest[2].parse::<u32>().unwrap_or(200);
-            HelperRequest::SiteLogRead {
-                domain,
-                kind,
-                lines,
-            }
-        }
-        ("site-log-clear", 2) => {
-            let domain = match snpanel_core::Domain::parse(&rest[0]) {
-                Ok(d) => d,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let kind = match ops::site::LogKind::parse(&rest[1]) {
-                Some(ops::site::LogKind::Access) => snpanel_ipc::LogKind::Access,
-                Some(ops::site::LogKind::Error) => snpanel_ipc::LogKind::Error,
-                None => return fail(&format!("invalid log kind: {}", rest[1])),
-            };
-            HelperRequest::SiteLogClear { domain, kind }
-        }
-        ("fix-permissions", 2) => {
-            let path = match SitePath::parse(&rest[0]) {
-                Ok(p) => p,
-                Err(e) => return fail(&e.to_string()),
-            };
-            match PanelUsername::parse(&rest[1]) {
-                Ok(user) => HelperRequest::SiteFixPermissions { path, user },
-                Err(e) => return fail(&e.to_string()),
-            }
-        }
-
-        ("ssl-cert-info", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::SslCertInfo { domain },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("certbot-delete", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::CertbotDelete { domain },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("panel-ssl-selfsigned", 1) | ("panel-ssl-selfsigned", 2) => {
-            let port = match rest.get(1) {
-                Some(p) => match Port::parse(p) {
-                    Ok(p) => p,
-                    Err(e) => return fail(&e.to_string()),
-                },
-                None => Port::new(2222).expect("2222 is valid"),
-            };
-            HelperRequest::PanelSslSelfsigned {
-                host: rest[0].clone(),
-                port,
-            }
-        }
-
-        ("php-opcache-set", 2) => {
-            let version = match snpanel_core::PhpVersion::parse(&rest[0]) {
-                Ok(v) => v,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let enabled = match rest[1].as_str() {
-                "1" => true,
-                "0" => false,
-                other => return fail(&format!("opcache switch must be 0 or 1, got {other}")),
-            };
-            HelperRequest::PhpOpcacheSet { version, enabled }
-        }
-
-        ("service-status", 1) => match ServiceName::parse(&rest[0]) {
-            Ok(service) => HelperRequest::ServiceStatus { service },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("updates-os-auto", 1) => HelperRequest::UpdatesOsAuto {
-            enable: rest[0] == "on" || rest[0] == "1" || rest[0] == "true",
-        },
-        ("waf-crs-mode", 1) => {
-            let mode = match rest[0].as_str() {
-                "off" => snpanel_ipc::CrsMode::Off,
-                "detect" => snpanel_ipc::CrsMode::Detect,
-                "block" => snpanel_ipc::CrsMode::Block,
-                other => return fail(&format!("invalid CRS mode: {other}")),
-            };
-            HelperRequest::WafCrsMode { mode }
-        }
-        ("waf-site-delete", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::WafSiteDelete { domain },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("clamav-start", 0) => HelperRequest::ClamavControl { start: true },
-        ("clamav-stop", 0) => HelperRequest::ClamavControl { start: false },
-
-        ("cron-list", 0) => HelperRequest::CronList { user: None },
-        ("cron-list", 1) => match PanelUsername::parse(&rest[0]) {
-            Ok(u) => HelperRequest::CronList { user: Some(u) },
-            Err(e) => return fail(&e.to_string()),
-        },
-
-        // --- operations that read their payload from stdin ---
-        // The bash takes these the same way: the content is multi-line and can
-        // be large, so argv is the wrong channel for it.
-        ("nginx-custom-write", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::NginxCustomWrite {
-                domain,
-                content: read_stdin(),
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("nginx-custom-delete", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::NginxCustomDelete { domain },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("waf-site-save", 1) => match snpanel_core::Domain::parse(&rest[0]) {
-            Ok(domain) => HelperRequest::WafSiteSave {
-                domain,
-                content: read_stdin(),
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("php-config-write", 1) => match snpanel_core::PhpVersion::parse(&rest[0]) {
-            Ok(version) => HelperRequest::PhpConfigWrite {
-                version,
-                content: read_stdin(),
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-        ("cron-write", 0) => HelperRequest::CronWrite {
-            user: None,
-            content: read_stdin(),
-        },
-        ("cron-write", 1) => match PanelUsername::parse(&rest[0]) {
-            Ok(u) => HelperRequest::CronWrite {
-                user: Some(u),
-                content: read_stdin(),
-            },
-            Err(e) => return fail(&e.to_string()),
-        },
-
-        // --- the site operations, which the bash addresses as three separate
-        // arguments that together name one path ---
-        ("site-file-write", 3) | ("site-file-write", 4) => {
-            // <site-user> <site-root> <relative-path> [0644|0640]
-            let path = match site_path_from(&rest[0], &rest[1], Some(&rest[2])) {
-                Ok(p) => p,
-                Err(e) => return fail(&e),
-            };
-            let mode = match rest.get(3).map(String::as_str) {
-                None | Some("0644") => snpanel_ipc::FileMode::FILE,
-                Some("0640") => snpanel_ipc::FileMode::SENSITIVE,
-                Some(other) => return fail(&format!("invalid file mode: {other}")),
-            };
-            HelperRequest::SiteFileWrite {
-                path,
-                content: read_stdin_bytes(),
-                mode,
-            }
-        }
-        ("site-chmod", 4) => {
-            // <site-user> <site-root> <absolute-path> <mode>
-            let path = match site_path_from(&rest[0], &rest[1], None) {
-                Ok(_) => match SitePath::parse(&rest[2]) {
-                    Ok(p) => p,
-                    Err(e) => return fail(&e.to_string()),
-                },
-                Err(e) => return fail(&e),
-            };
-            // Three to five octal digits, as the bash accepts.
-            let raw = rest[3].as_str();
-            if raw.len() < 3 || raw.len() > 5 || !raw.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
-                return fail(&format!("invalid mode: {raw}"));
-            }
-            let mode = match u32::from_str_radix(raw, 8) {
-                Ok(m) => snpanel_ipc::FileMode(m),
-                Err(_) => return fail(&format!("invalid mode: {raw}")),
-            };
-            HelperRequest::SiteChmod {
-                path,
-                mode,
-                recursive: false,
-            }
-        }
-        ("rm-site", 3) => {
-            // <site-user> <site-root> <path>
-            match site_path_from(&rest[0], &rest[1], None) {
-                Ok(_) => match SitePath::parse(&rest[2]) {
-                    Ok(path) => HelperRequest::SiteRemove { path },
-                    Err(e) => return fail(&e.to_string()),
-                },
-                Err(e) => return fail(&e),
-            }
-        }
-
-        ("certbot-issue", n) if n >= 1 => {
-            // <domain> [alias-domain ...] [email]   -- email is last if present
-            let domain = match snpanel_core::Domain::parse(&rest[0]) {
-                Ok(d) => d,
-                Err(e) => return fail(&e.to_string()),
-            };
-            let mut aliases = Vec::new();
-            let mut email = None;
-            for (i, arg) in rest[1..].iter().enumerate() {
-                if arg.contains('@') {
-                    if i + 2 != rest.len() {
-                        return fail("email must be the final certbot-issue argument");
-                    }
-                    match snpanel_core::Email::parse(arg) {
-                        Ok(e) => email = Some(e),
-                        Err(e) => return fail(&e.to_string()),
-                    }
-                    break;
-                }
-                match snpanel_core::Domain::parse(arg) {
-                    Ok(d) => aliases.push(d),
-                    Err(e) => return fail(&e.to_string()),
-                }
-            }
-            HelperRequest::CertbotIssue {
-                domain,
-                aliases,
-                email,
-            }
-        }
-
-        ("selinux-restore-site", 1) => match SitePath::parse(&rest[0]) {
-            Ok(path) => HelperRequest::SelinuxRestoreSite { path },
-            Err(e) => return fail(&e.to_string()),
-        },
-
-        ("selinux-port-add", 1) => match Port::parse(&rest[0]) {
-            Ok(port) => HelperRequest::SelinuxPortAdd { port },
-            Err(e) => return fail(&e.to_string()),
-        },
-
-        // Everything the Rust helper does not implement yet is handed to the
-        // bash one. This is what makes the cutover safe: the panel calls one
-        // path, and each operation moves to Rust independently.
-        _ => return delegate_to_bash(args),
+    // The mapping itself lives in the protocol crate, because the API needs
+    // the identical one to build a request for the socket. Plan §4.3.
+    //
+    // An unmapped verb used to be handed to the bash helper - that
+    // fallthrough was the cutover mechanism, and it is gone with the script.
+    // The message is the bash's own, because a caller that matched on it
+    // keeps working: `deny "unknown command: $cmd"`, exit 1.
+    let request = match HelperRequest::from_argv(args, read_stdin_bytes) {
+        Ok(request) => request,
+        Err(e) if e.is_unmapped() => return fail(&format!("unknown command: {}", args[0])),
+        Err(e) => return fail(&e.to_string()),
     };
 
     let ctx = Context::from_system();
@@ -655,68 +440,24 @@ fn cli(args: &[String]) -> ExitCode {
         println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
     }
 
+    // A command run on the caller's behalf reports its own status. Only
+    // `terminal-exec` sets this; see `HelperResponse::exit_code`.
+    if let Some(code) = response.exit_code {
+        // `ExitCode` is a u8, and a process that died on a signal is reported
+        // by the shell convention 128+N, which is what the bash's `exec`
+        // would have produced here too.
+        return ExitCode::from((code & 0xff) as u8);
+    }
     if response.ok {
         ExitCode::SUCCESS
     } else {
         if let Some(err) = &response.error {
             eprintln!("snpanel-helper: {}", err.message);
         }
-        ExitCode::from(1)
+        // The same code the bash's `deny` exits with, so what a caller
+        // sees does not depend on whether the socket or sudo answered.
+        ExitCode::from(REFUSED_EXIT_CODE)
     }
-}
-
-/// The bash helper, kept alongside for operations not yet ported.
-const BASH_HELPER: &str = "/usr/local/sbin/snpanel-helper.sh";
-
-/// Hand an unported operation to the bash helper.
-///
-/// This is the mechanism that lets the panel be switched to the Rust helper
-/// today rather than after the last of 111 subcommands is done: the panel
-/// calls one path, Rust answers what it has ported, and everything else
-/// reaches exactly the code that was serving it yesterday.
-///
-/// `exec` rather than spawn-and-wait, for three reasons that all matter here:
-///
-/// - the environment carries through, including `SUDO_USER`, which the bash
-///   helper checks as its own authorisation;
-/// - stdin, stdout and stderr are the same file descriptors, so an operation
-///   that reads a password or a crontab from stdin still works, and output is
-///   not buffered or mangled;
-/// - the exit status is the bash helper's own, with no wrapper to translate
-///   it wrongly.
-fn delegate_to_bash(args: &[String]) -> ExitCode {
-    use std::os::unix::process::CommandExt;
-
-    if !std::path::Path::new(BASH_HELPER).exists() {
-        eprintln!(
-            "snpanel-helper: '{}' is not implemented in the Rust helper, and \
-             {BASH_HELPER} is not installed to fall back to",
-            args[0]
-        );
-        return ExitCode::from(2);
-    }
-
-    tracing::info!(
-        op = args[0].as_str(),
-        "not ported yet; delegating to the bash helper"
-    );
-
-    // On success this never returns: the process becomes the bash helper.
-    let err = std::process::Command::new(BASH_HELPER).args(args).exec();
-    eprintln!("snpanel-helper: cannot exec {BASH_HELPER}: {err}");
-    ExitCode::from(2)
-}
-
-/// Read the whole of stdin as text.
-///
-/// C37's companion: content that is multi-line, large, or secret comes in this
-/// way, never through argv, where it would be visible in `ps` for the life of
-/// the process.
-fn read_stdin() -> String {
-    use std::io::Read;
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
-    buf
 }
 
 /// The same, for content that is not necessarily UTF-8 - a site file can be
@@ -728,35 +469,31 @@ fn read_stdin_bytes() -> Vec<u8> {
     buf
 }
 
-/// Build a [`SitePath`] from the bash's three-argument form.
+/// What a refusal exits with, on every path.
 ///
-/// The bash addresses a site file as `<site-user> <site-root> <path>` and
-/// re-derives the safety check in each arm. The typed protocol carries one
-/// `SitePath` that already guarantees it, so the job here is to check the
-/// three agree with each other before collapsing them - a mismatched user and
-/// root is a caller bug worth reporting rather than silently trusting one of
-/// them.
-fn site_path_from(
-    user: &str,
-    root: &str,
-    relative: Option<&str>,
-) -> Result<snpanel_core::SitePath, String> {
-    use snpanel_core::{PanelUsername, SitePath};
-
-    let user = PanelUsername::parse(user).map_err(|e| e.to_string())?;
-    let root_path = SitePath::parse(root).map_err(|e| e.to_string())?;
-    if root_path.user() != &user {
-        return Err(format!("site root {root} does not belong to {user}"));
-    }
-    match relative {
-        Some(rel) => root_path.join(rel).map_err(|e| e.to_string()),
-        None => Ok(root_path),
-    }
-}
+/// **1, and the bash agrees.** `deny() { echo ...; exit 1; }`. An earlier
+/// version of this constant was 2, justified by "the bash's `deny` exits 2" -
+/// a misreading of the `exit 2` fifteen lines above `deny`, which belongs to
+/// the `SUDO_USER` guard and means something else entirely: not "refused" but
+/// "you may not call me at all".
+///
+/// Measured against the installed helper rather than read again:
+/// `ssl-cert-info 'not a domain'` exits 1, `ipv6-status extra-arg` exits 1,
+/// and an unknown verb exits 1.
+///
+/// 2 is no longer produced by anything. It belonged to the bash's own
+/// `SUDO_USER` guard and to the "no script to fall back to" path, and both
+/// went with the script - the `snpanel` user's right to run this at all is
+/// `/etc/sudoers.d/snpanel`, which refuses before the binary starts.
+///
+/// It matters from here rather than before because `terminal-exec` passes a
+/// command's own status through: a helper that reported refusals as 2 would
+/// make every command that legitimately exits 2 indistinguishable from one.
+pub(crate) const REFUSED_EXIT_CODE: u8 = 1;
 
 fn fail(message: &str) -> ExitCode {
     eprintln!("snpanel-helper: {message}");
-    ExitCode::from(2)
+    ExitCode::from(REFUSED_EXIT_CODE)
 }
 
 fn is_root() -> bool {
@@ -766,4 +503,101 @@ fn is_root() -> bool {
 fn current_uid() -> u32 {
     // SAFETY: getuid cannot fail.
     unsafe { libc::getuid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refusal is exit **1** whichever transport answered it - the code
+    /// the bash's `deny` uses.
+    ///
+    /// The panel reaches a mapped verb over the socket and an unmapped one
+    /// through sudo. If the two disagreed, the code a caller sees would
+    /// depend on how far the cutover had got, which is the one thing the
+    /// cutover must not be visible for.
+    ///
+    /// This asserted 2 for most of the migration, on a comment that misread
+    /// the `SUDO_USER` guard's `exit 2` as `deny`'s. Its own doc comment
+    /// carried the counter-evidence - "Found live: `php-tune-write` with a
+    /// directive outside the allowlist refused with the right message and
+    /// exit 1" - and the number was set against it anyway.
+    #[test]
+    fn a_refusal_is_exit_one_on_both_transports() {
+        use snpanel_ipc::{HelperErrorKind, HelperResponse};
+
+        let refused = HelperResponse::failed(
+            HelperErrorKind::BadRequest,
+            "unsupported PHP tuning directive: display_errors".to_string(),
+        );
+        // What the socket reports - the same mapping the panel reads.
+        assert_eq!(socket_returncode(&refused), 1);
+        // And what the CLI reports, which is the constant below.
+        assert_eq!(REFUSED_EXIT_CODE, 1);
+
+        let fine = HelperResponse::ok();
+        assert_eq!(socket_returncode(&fine), 0);
+    }
+
+    /// What the socket reports, which is now the same function the API
+    /// calls rather than a copy of it.
+    fn socket_returncode(response: &snpanel_ipc::HelperResponse) -> i32 {
+        response.exit_status()
+    }
+
+    /// The number in `--help` is the measured one.
+    ///
+    /// It was hardcoded once, and by the time Stage B started it was wrong by
+    /// twenty-four verbs - at exactly the moment an operator reads it to
+    /// decide what this answers. It used to be recounted from two files, the
+    /// bash helper's `case` labels and the mapping's match arms; the bash is
+    /// gone, so the mapping is the only file that decides it.
+    ///
+    /// The pattern is `("verb", <arity>)` and the arity is what makes it
+    /// precise. An arm holds argument literals too - "0640", "tcp", "start" -
+    /// and counting every quoted string gave 92, which is not a number of
+    /// verbs at all.
+    #[test]
+    fn the_help_text_count_is_the_measured_one() {
+        const MAPPING: &str = include_str!("../../../crates/snpanel-ipc/src/argv.rs");
+
+        let body = match MAPPING.find("pub fn from_argv") {
+            Some(at) => &MAPPING[at..],
+            None => panic!("from_argv is not in the mapping any more"),
+        };
+        let body = match body.find("#[cfg(test)]") {
+            Some(at) => &body[..at],
+            None => body,
+        };
+
+        let mut verbs = std::collections::BTreeSet::new();
+        let mut rest = body;
+        while let Some(at) = rest.find('"') {
+            rest = &rest[at + 1..];
+            let Some(close) = rest.find('"') else { break };
+            let name = &rest[..close];
+            let after = rest[close + 1..].trim_start();
+            // A tuple pattern: the name, a comma, then the argument count.
+            let is_arm = after.starts_with(',')
+                && after[1..]
+                    .trim_start()
+                    .starts_with(|c: char| c.is_ascii_digit());
+            let is_verb = !name.is_empty()
+                && name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if is_arm && is_verb {
+                verbs.insert(name);
+            }
+            rest = &rest[close + 1..];
+        }
+
+        assert_eq!(
+            verbs.len(),
+            ANSWERED_VERBS,
+            "the mapping answers {} verbs, --help says {ANSWERED_VERBS}",
+            verbs.len()
+        );
+    }
 }

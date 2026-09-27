@@ -1,0 +1,95 @@
+/* The Backups page's restore: a source, the accounts found there, one
+   button, and the restore followed as it runs. See components/BackupRestore.jsx. */
+
+.bk-restore{display:grid;gap:var(--space-4)}
+.bk-restore-step{display:grid;gap:var(--space-3);margin:0;padding:12px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-alt);min-width:0}
+.bk-restore-step legend{display:flex;align-items:center;gap:var(--space-2);padding:0 6px;font-weight:700;color:var(--text)}
+.bk-restore-num{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--primary);color:var(--primary-fg);font-size:var(--text-xs);font-weight:700}
+.bk-restore-sources{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-2)}
+/* A card, not a button's one line: the global button is 40px high and does
+   not wrap. */
+.bk-restore-source{display:flex;align-items:flex-start;justify-content:flex-start;gap:var(--space-2);height:auto;min-height:0;padding:10px 12px;text-align:left;white-space:normal;line-height:1.35;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);color:var(--text);box-shadow:none}
+.bk-restore-source:hover:not(:disabled){background:var(--surface);color:var(--text);border-color:var(--primary-border)}
+.bk-restore-source.active,.bk-restore-source.active:hover:not(:disabled){border-color:var(--primary);background:var(--primary-light);color:var(--primary-text);box-shadow:0 0 0 1px var(--primary)}
+.bk-restore-source svg{flex:none;margin-top:2px}
+.bk-restore-source span{display:grid;gap:2px;min-width:0}
+.bk-restore-source strong{font-size:var(--text-base)}
+.bk-restore-source small{font-weight:500;font-size:var(--text-sm);color:var(--text-secondary);white-space:normal}
+.bk-restore-note{margin:0}
+/* Step two: the source's own part, then Upload and Refresh. */
+.bk-restore-destination{max-width:420px}
+.bk-connection{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
+.bk-connection-note{grid-column:1 / -1;margin:0}
+.bk-connection-note code{font-family:var(--font-mono);font-size:var(--text-xs);word-break:break-all}
+.bk-trust{grid-column:1 / -1;display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;padding:10px 12px;border:1px solid var(--warning-border);border-radius:var(--radius-md);background:var(--warning-bg);color:var(--warning-text)}
+.bk-trust>svg{flex:none}
+.bk-trust>span{display:grid;gap:2px;flex:1 1 320px;min-width:0;font-weight:600}
+.bk-trust small{font-weight:500;overflow-wrap:anywhere}
+.bk-trust code{font-family:var(--font-mono);font-size:var(--text-xs)}
+.bk-restore-actions{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.bk-restore-tools{display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);flex-wrap:wrap}
+.bk-check-inline{display:inline-flex;align-items:center;gap:8px;font-weight:600;color:var(--text)}
+.bk-restore input[type="checkbox"]{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--primary)}
+.bk-restore-find{flex:0 1 260px;min-width:180px}
+
+/* The accounts: a card each - who, the date to restore, the size. */
+.bk-accounts{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-2)}
+.bk-account{display:grid;grid-template-columns:minmax(0,1fr) 250px 88px;align-items:center;gap:var(--space-3);padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);transition:var(--transition)}
+.bk-account:hover{border-color:var(--primary-border)}
+.bk-account.on{border-color:var(--primary);background:var(--primary-light);box-shadow:0 0 0 1px var(--primary)}
+.bk-account-who{display:flex;align-items:center;gap:12px;min-width:0;cursor:pointer}
+.bk-account-avatar{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:50%;background:var(--primary-light);color:var(--primary);font-weight:700}
+.bk-account.on .bk-account-avatar{background:var(--primary);color:var(--primary-fg)}
+.bk-account-name{display:grid;gap:2px;min-width:0}
+.bk-account-name strong{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bk-account-name small{display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:var(--text-muted);font-size:var(--text-xs)}
+.bk-account-folder{padding:1px 6px;border-radius:999px;background:var(--surface-alt);color:var(--text-secondary)}
+/* The dates: one width on every card, a calendar inside. */
+.bk-account-date{position:relative;display:block;min-width:0}
+.bk-account-date svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--primary);pointer-events:none}
+.bk-account-date select{width:100%;min-height:38px;padding:6px 30px 6px 34px;font-size:var(--text-sm);background-color:var(--surface)}
+.bk-account-size{justify-self:end;color:var(--text-secondary);font-size:var(--text-sm);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.bk-restore-invalid summary{cursor:pointer;color:var(--text-muted);font-size:var(--text-sm)}
+.bk-restore-invalid ul{list-style:none;margin:var(--space-2) 0 0;padding:0;display:grid;gap:4px}
+.bk-restore-invalid li{display:flex;align-items:baseline;gap:var(--space-2);flex-wrap:wrap;color:var(--text-muted)}
+.bk-restore-invalid code{font-family:var(--font-mono);font-size:var(--text-xs);word-break:break-all}
+.bk-restore-invalid small{font-size:var(--text-xs)}
+
+/* The choice and the button, kept in sight at the bottom of the screen. */
+.bk-restore-go{position:sticky;bottom:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);box-shadow:0 -6px 18px rgba(15,23,42,.06)}
+.bk-restore-go.ready{border-color:var(--primary-border)}
+.bk-restore-go .bk-restore-num{flex:none}
+.bk-restore-chosen{flex:1 1 280px;min-width:0;color:var(--text-secondary);font-size:var(--text-sm);overflow-wrap:anywhere}
+.bk-restore-chosen strong{color:var(--text);margin-right:6px}
+
+.bk-restore-job{display:grid;gap:var(--space-2);padding:12px;border:1px solid var(--primary-border);border-radius:var(--radius-lg);background:var(--primary-light)}
+.bk-restore-job.done{border-color:var(--border);background:var(--surface-alt)}
+.bk-restore-job.bad{border-color:var(--danger-border);background:var(--danger-bg)}
+.bk-restore-job-close{flex:none;display:inline-grid;place-items:center;width:30px;height:30px;min-height:0;margin-left:auto;padding:0;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--text-muted);box-shadow:none}
+.bk-restore-job-close:hover:not(:disabled){background:var(--surface);color:var(--text);border-color:var(--border)}
+.bk-restore-job-head{display:flex;align-items:center;gap:var(--space-2)}
+.bk-restore-job-head strong{color:var(--text);min-width:0}
+.bk-restore-job-head small{color:var(--text-secondary);flex:1 1 160px;min-width:0}
+.bk-restore-steps{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.bk-restore-steps li{display:grid;grid-template-columns:110px minmax(0,1fr);gap:var(--space-2);align-items:start}
+.bk-restore-steps .badge{justify-self:start}
+.bk-restore-step-text{display:grid;gap:2px;min-width:0}
+.bk-restore-step-text small{color:var(--text-secondary);overflow-wrap:anywhere}
+.bk-restore .spin{animation:bk-spin 1s linear infinite}
+@keyframes bk-spin{to{transform:rotate(360deg)}}
+
+@media (max-width:760px){
+  .bk-connection{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .bk-connection-host{grid-column:1 / -1}
+  .bk-account{grid-template-columns:minmax(0,1fr) auto;row-gap:var(--space-2)}
+  .bk-account-date{grid-column:1 / -1;grid-row:2}
+}
+@media (max-width:520px){
+  .bk-restore-sources{grid-template-columns:1fr}
+  .bk-connection{grid-template-columns:1fr}
+  .bk-restore-actions button{flex:1 1 auto}
+  .bk-restore-steps li{grid-template-columns:1fr}
+  .bk-restore-go button{flex:1 1 auto}
+  .bk-restore-find{flex:1 1 100%}
+}

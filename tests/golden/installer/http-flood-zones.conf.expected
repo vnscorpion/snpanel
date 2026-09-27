@@ -1,0 +1,6 @@
+# Managed by SNPanel. Shared zones for per-website HTTP flood protection.
+map $cookie_snpanel_http_flood_ok $snpanel_http_flood_key {
+    default $binary_remote_addr;
+    1 "";
+}
+limit_conn_zone $snpanel_http_flood_key zone=snpanel_conn_flood:10m;

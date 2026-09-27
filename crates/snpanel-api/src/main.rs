@@ -24,23 +24,72 @@
 // code does.
 #![allow(clippy::result_large_err)]
 
+mod access_log;
+mod archive;
 mod auth;
+mod auth_log;
+mod backup_jobs;
+#[allow(
+    dead_code,
+    reason = "the decision half of a scheduler runner that is not wired yet; see the module docs"
+)]
+mod backup_scheduler;
+mod backups;
+mod clamav;
 mod client;
+mod cloudflare;
+mod compose;
+mod cron;
+mod cron_due;
+mod ctl;
+mod da_import;
+mod da_jobs;
 mod errors;
+mod fail2ban;
+mod file_jobs;
+mod files;
+mod ftp;
+mod helper_socket;
+mod initdb;
+mod listen;
 mod malware;
+mod malware_jobs;
+mod malware_quarantine;
+mod malware_scan;
+mod malware_schedule;
+mod manual_ssl;
+mod mariadb;
+mod mcp;
 mod middleware;
+mod notify;
 mod panel_urls;
+mod php;
+mod php_tune;
 mod qr;
 mod ratelimit;
+mod restore;
 mod routes;
+mod s3;
+mod sftp;
+mod sftp_access;
 mod shell;
+mod shlex;
+mod site_apps;
+mod spa;
 mod sso;
 mod state;
 mod storage;
+mod storage_quota;
 mod strangler;
 mod system;
+mod tarfilter;
+#[cfg(test)]
+mod testenv;
 mod tls;
 mod updates;
+mod waf;
+mod wordpress;
+mod yaml;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -50,6 +99,7 @@ use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use chrono::{Datelike, Timelike};
 use snpanel_core::config::Settings;
 use snpanel_db::Database;
 
@@ -64,6 +114,10 @@ async fn main() -> std::process::ExitCode {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        // Colour for a person at a terminal only: under systemd stdout is the
+        // journal, and escape codes there make `journalctl` harder to read
+        // and a grep miss.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     match run().await {
@@ -84,6 +138,16 @@ async fn run() -> anyhow::Result<()> {
     let settings = Settings::load(Some(std::path::Path::new(&env_path)))?;
     tracing::info!(env = %env_path, "configuration loaded");
 
+    // Build the database, for an install that has no Python to do it.
+    //
+    // Ahead of `Database::connect` because that refuses a file that is not
+    // there, and ahead of the `looks_like_panel_schema` check below because
+    // that refuses one with no tables in it — both of which a fresh install
+    // is, right up until this runs.
+    if args.iter().any(|a| a == initdb::INIT_DB) {
+        return initdb::run(&settings.database_url, settings.command_dry_run).await;
+    }
+
     let db = Database::connect(&settings.database_url).await?;
     if !db.looks_like_panel_schema().await? {
         anyhow::bail!(
@@ -91,6 +155,56 @@ async fn run() -> anyhow::Result<()> {
             settings.database_url
         );
     }
+
+    // What revision the database is at, said once at startup rather than
+    // discovered as a missing column in the middle of a request — which is
+    // how a customer finds it, on the one page they needed.
+    //
+    // A **warning and not a refusal**, deliberately, and the ordering is
+    // why: Python still owns the schema and migrates when *it* starts, so
+    // after an update that added a revision there is a window where this
+    // process is up and the migration has not run. Refusing there would
+    // turn a normal update into an outage. Once the schema moves to this
+    // side the refusal becomes the right answer.
+    match db.schema_state().await {
+        Ok(state) => match state.message() {
+            Some(message) => tracing::warn!("{message}"),
+            None => tracing::info!(
+                revision = snpanel_db::schema::PYTHON_HEAD,
+                "the database is at the revision this build expects"
+            ),
+        },
+        Err(e) => tracing::warn!("cannot read the database's schema revision: {e}"),
+    }
+    // Rust-owned migrations, applied before anything serves a request.
+    //
+    // **A failure stops the process**, which is a change from when Alembic
+    // owned the schema: back then a migration here could only be a no-op, so
+    // logging and carrying on cost nothing. Now that new schema changes come
+    // to this side, carrying on means serving from a schema that is half
+    // what the code expects — and the half that is missing shows up as a
+    // failed request to one customer rather than as a refusal somebody is
+    // watching for.
+    let migrated = db.apply_rust_migrations().await;
+    match &migrated {
+        Ok(applied) if applied.is_empty() => {}
+        Ok(applied) => tracing::info!(?applied, "applied Rust-owned migrations"),
+        Err(e) => tracing::error!("a Rust-owned migration failed: {e}"),
+    }
+
+    // Bringing the schema forward without starting a panel, for `update.sh`:
+    // an update runs while the panel may be stopped, and the schema has to
+    // move before the new code does.
+    if args.iter().any(|a| a == MIGRATE) {
+        let applied = migrated?;
+        match applied.len() {
+            0 => println!("The schema is up to date."),
+            1 => println!("Applied 1 migration: {}", applied[0]),
+            n => println!("Applied {n} migrations: {}", applied.join(", ")),
+        }
+        return Ok(());
+    }
+    migrated?;
 
     let upstream = if settings.strangler_enabled() {
         let u = Upstream::new(&settings.strangler_upstream);
@@ -124,6 +238,109 @@ async fn run() -> anyhow::Result<()> {
         upstream,
         serves_tls: tls.is_some(),
     };
+    // The Notifications addon's hooks that have no state of their own -
+    // a malware scan's end - reach it here, in the server and in the
+    // one-shot schedulers alike.
+    notify::attach(&state);
+
+    // One-shot mode, for the systemd timer. Everything above is the same
+    // setup the server does — the same settings, the same database, the
+    // same schema check — because a scheduler that read its configuration
+    // differently from the panel is a scheduler that backs up something
+    // else.
+    if args.iter().any(|a| a == RUN_BACKUP_SCHEDULES) {
+        let ran = run_backup_schedules(&state).await;
+        println!("SNPanel backup scheduler ran {ran} job(s).");
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == RUN_MALWARE_SCHEDULES) {
+        println!("{}", run_malware_schedules(&state).await);
+        return Ok(());
+    }
+
+    // The Notifications addon's looks - services, the disk, and the daily
+    // ones - now rather than when the server's own loop gets to them: for
+    // an administrator who wants to know, and for the end-to-end check.
+    if args.iter().any(|a| a == RUN_NOTIFICATION_CHECKS) {
+        notify::watcher::look(&state, true).await;
+        println!("SNPanel notification checks ran.");
+        return Ok(());
+    }
+
+    // The two writes `snpanelctl` used to open a Python session for. The
+    // secret comes from the environment under the name the bash already
+    // exports — never a flag, because /proc/<pid>/cmdline is mode 444 and a
+    // hosting box runs other people's PHP.
+    if args.iter().any(|a| a == ctl::SET_ADMIN_PASSWORD) {
+        let password = ctl::secret_from_env(ctl::NEW_PASSWORD_ENV)?;
+        ctl::set_admin_password(&state.db, &password, state.settings.command_dry_run).await?;
+        return Ok(());
+    }
+
+    // The whole-fleet site refresh, for `update.sh` (lenient) and
+    // `snpanelctl fix-permissions` (strict).
+    for (flag, on_failure) in [
+        (REFRESH_SITES, routes::refresh::OnFailure::Warn),
+        (REFRESH_SITES_STRICT, routes::refresh::OnFailure::Stop),
+    ] {
+        if args.iter().any(|a| a == flag) {
+            let swept = routes::refresh::all_sites(&state, on_failure).await;
+            match swept {
+                Ok(swept) => {
+                    println!("{}", swept.report());
+                    return Ok(());
+                }
+                // The strict caller's failure. `run` turns this into the
+                // message and the non-zero exit the shell tests for.
+                Err(why) => anyhow::bail!("{why}"),
+            }
+        }
+    }
+
+    // `update.sh`'s orphan sweep. A flag rather than a request, because an
+    // update runs while the panel may be stopped and a request to it would
+    // have nowhere to go.
+    if args.iter().any(|a| a == CLEAN_ORPHANS) {
+        println!("{}", routes::waf::clean_orphans_once(&state).await);
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == ctl::SET_ADMIN_PASSWORD_HASH) {
+        let hash = ctl::secret_from_env(ctl::ROOT_HASH_ENV)?;
+        ctl::set_admin_password_hash(&state.db, &hash).await?;
+        return Ok(());
+    }
+
+    // `snpanel reset-admin-2fa`: the admin's app code and passkeys, for a
+    // lost device. Root on the server is the proof.
+    if args.iter().any(|a| a == ctl::RESET_ADMIN_2FA) {
+        let (had_code, passkeys) = ctl::reset_admin_two_factor(&state.db).await?;
+        println!(
+            "Two-step sign-in is off for {}: the authenticator app {}, {passkeys} passkey(s) \
+             removed, and every session ended.",
+            ctl::ADMIN_USERNAME,
+            if had_code {
+                "turned off"
+            } else {
+                "was already off"
+            },
+        );
+        return Ok(());
+    }
+
+    // The malware scanner became an addon: where it was on, it is recorded
+    // as installed rather than taken away by the upgrade. By the server
+    // only - a one-shot process above has returned already.
+    routes::addons::adopt_malware_scanner(malware::persisted_enabled(
+        state.settings.malware_scan_enabled,
+    ));
+
+    // What nobody asks about until it is too late - services, the disk,
+    // certificates, storage, releases - looked at every few minutes while
+    // the Notifications addon is installed. Only the server runs it: a
+    // one-shot process above has returned already.
+    notify::watcher::start(state.clone());
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;
@@ -134,18 +351,55 @@ async fn run() -> anyhow::Result<()> {
     // records no IP at all.
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
+    // Source: `dual_stack_socket` in `serve.py`. One socket for both
+    // families when IPv6 is on, and an ordinary IPv4 bind when it is not or
+    // when the machine cannot give us one — see `listen` for why every
+    // failure lands there rather than propagating.
+    let dual = listen::dual_stack(addr.port(), system::ipv6_enabled());
+    let dual = match dual {
+        Ok(listener) => {
+            tracing::info!(port = addr.port(), "listening on IPv4 and IPv6");
+            Some(listener)
+        }
+        Err(reason) => {
+            if let Some(message) = reason.message() {
+                tracing::warn!("{message}");
+            }
+            None
+        }
+    };
+
     match tls {
         Some(config) => {
             tracing::info!(%addr, "listening with TLS");
             // axum-server rather than axum::serve: the handshake needs a
             // certificate chosen per connection, which `axum::serve` has no
             // place to put.
-            axum_server::bind_rustls(addr, config)
-                .serve(service)
-                .await?;
+            match dual {
+                Some(listener) => {
+                    axum_server::from_tcp_rustls(listener, config)
+                        .serve(service)
+                        .await?;
+                }
+                None => {
+                    axum_server::bind_rustls(addr, config)
+                        .serve(service)
+                        .await?;
+                }
+            }
         }
         None => {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let listener = match dual {
+                // `axum::serve` wants a tokio listener, and a tokio listener
+                // wants a non-blocking descriptor. `from_std` does not set
+                // that for us, and a blocking accept inside the runtime
+                // stalls every other task on the thread.
+                Some(std_listener) => {
+                    std_listener.set_nonblocking(true)?;
+                    tokio::net::TcpListener::from_std(std_listener)?
+                }
+                None => tokio::net::TcpListener::bind(addr).await?,
+            };
             tracing::info!(%addr, "listening without TLS");
             axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
@@ -248,13 +502,406 @@ fn build_router(state: AppState) -> Router {
 /// delete instead of letting Python handle it.
 pub(crate) async fn fallback(State(state): State<AppState>, req: Request<Body>) -> Response {
     match state.upstream.clone() {
+        // While Python is still there, nothing about this path changes.
+        // Serving the frontend from here *as well* would be harmless in
+        // principle and is not worth the risk in practice: FastAPI also
+        // answers `/docs` and `/openapi.json`, and a catch-all on this side
+        // would start returning `index.html` for them.
         Some(upstream) => strangler::proxy(State(upstream), req).await,
-        None => (
-            StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({ "detail": "Not Found" })),
+        // Nothing left to proxy to. This is the Stage G state, and the
+        // panel has to serve its own frontend or answer 404 at `/`.
+        None => serve_frontend(&state, req).await,
+    }
+}
+
+/// Source: `main.py`'s `favicon`, `brand_asset` and `serve_spa`, which are
+/// the whole of what Python answers outside `/api`.
+async fn serve_frontend(state: &AppState, req: Request<Body>) -> Response {
+    let path = req.uri().path().trim_start_matches('/').to_string();
+    let data_dir = spa::brand_assets_dir(&std::path::PathBuf::from(
+        std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()),
+    ));
+
+    // `/favicon.png` - the operator's upload if there is one, then the
+    // build's own.
+    if path == "favicon.png" {
+        let custom = crate::routes::panel_settings::favicon_filename();
+        if let Some(name) = custom.as_deref().and_then(spa::safe_asset_name) {
+            if let Some(response) = send_asset(&data_dir.join(name), spa::media_type(name)) {
+                return response;
+            }
+        }
+    }
+
+    if let Some(name) = path.strip_prefix("brand-assets/") {
+        let Some(name) = spa::safe_asset_name(name) else {
+            return not_found();
+        };
+        return send_asset(&data_dir.join(name), spa::media_type(name)).unwrap_or_else(not_found);
+    }
+
+    let dist = std::path::PathBuf::from(&state.settings.frontend_dist);
+    match spa::route(&dist, &path) {
+        spa::Spa::File(file) => send_file(&file),
+        spa::Spa::Index => send_file(&dist.join("index.html")),
+        spa::Spa::NotFound => not_found(),
+    }
+}
+
+fn not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({ "detail": "Not Found" })),
+    )
+        .into_response()
+}
+
+/// A brand asset, with the revalidation header Python sends.
+fn send_asset(path: &std::path::Path, media_type: Option<&'static str>) -> Option<Response> {
+    let media_type = media_type?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(
+        (
+            [
+                (axum::http::header::CONTENT_TYPE, media_type),
+                (axum::http::header::CACHE_CONTROL, spa::REVALIDATE),
+            ],
+            bytes,
         )
             .into_response(),
+    )
+}
+
+fn send_file(path: &std::path::Path) -> Response {
+    let Ok(bytes) = std::fs::read(path) else {
+        return not_found();
+    };
+    let media_type = spa::frontend_media_type(path);
+    ([(axum::http::header::CONTENT_TYPE, media_type)], bytes).into_response()
+}
+
+/// The flags the systemd timers pass.
+pub(crate) const RUN_BACKUP_SCHEDULES: &str = "--run-backup-schedules";
+pub(crate) const RUN_MALWARE_SCHEDULES: &str = "--run-malware-schedules";
+
+/// The Notifications addon's looks, once and now.
+pub(crate) const RUN_NOTIFICATION_CHECKS: &str = "--run-notification-checks";
+
+/// The flag `update.sh` passes for the orphan sweep.
+pub(crate) const CLEAN_ORPHANS: &str = "--clean-orphans";
+
+/// Bring the schema forward and stop.
+///
+/// It does exactly what a server start does — the same check, the same
+/// runner — and then returns, rather than carrying its own copy of that
+/// logic. A migration path that differs from the one every start takes is a
+/// migration path that gets tested half as often.
+pub(crate) const MIGRATE: &str = "--migrate";
+
+/// The whole-fleet site refresh, in its two tempers.
+///
+/// Two flags rather than one with an option, because the difference is not a
+/// preference: `snpanelctl fix-permissions` is somebody watching the output
+/// and wanting to know about a broken site, and `update.sh` must not stop an
+/// update over one. A single flag would make the wrong one the default for
+/// whichever caller forgot to pass it.
+pub(crate) const REFRESH_SITES: &str = "--refresh-sites";
+pub(crate) const REFRESH_SITES_STRICT: &str = "--refresh-sites-strict";
+
+/// Source: `run_due` in `malware_schedule.py`.
+///
+/// Returns the line the unit prints, which is the Python's return value:
+/// `not due`, `no scan engine`, or `name: status` for each schedule that
+/// was started.
+///
+/// **The result is recorded before the scan is waited on**, which is the
+/// detail that makes a short timer interval safe: a tick landing while a
+/// scan is still running must see `last_run_at` for today and decide "not
+/// due", rather than starting a second scan of the same machine.
+async fn run_malware_schedules(state: &AppState) -> String {
+    // Not in the Python: the scanner is an addon. Not installed, nothing is
+    // scanned - and nothing recorded, so its page has no error to show for
+    // a feature that is not there.
+    if !routes::addons::malware_installed() {
+        return "the Malware Scanner addon is not installed".to_string();
     }
+    let now = chrono::Utc::now();
+    let raw = routes::panel_settings::raw_settings();
+    let schedules = malware_schedule::read(&raw);
+
+    let due: Vec<&str> = malware_schedule::NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            let last = schedules
+                .meta
+                .get(&format!("{name}_last_run_at"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(malware_schedule::parse_meta_time);
+            malware_schedule::is_due(schedules.get(name), last, now)
+        })
+        .collect();
+
+    if due.is_empty() {
+        return "not due".to_string();
+    }
+
+    // Source: `if not malware_scan.engine_available()`. Recorded against
+    // every due schedule rather than logged and forgotten: the panel's page
+    // is where somebody looks to find out why a scan did not happen.
+    if !crate::clamav::engine_available(&state.settings.clamav_socket_path)
+        && !crate::malware::maldet_installed()
+    {
+        for name in &due {
+            record_malware_run(
+                name,
+                "",
+                "error",
+                "The malware scanner is not installed",
+                now,
+            );
+        }
+        return "no scan engine".to_string();
+    }
+
+    let mut outcomes = Vec::new();
+    let mut started: Vec<String> = Vec::new();
+    for name in due {
+        match routes::malware::start_scan(state, name == "server").await {
+            Ok(job) => {
+                let job_id = job["job_id"].as_str().unwrap_or("").to_string();
+                started.push(job_id.clone());
+                record_malware_run(
+                    name,
+                    &job_id,
+                    "started",
+                    &format!("Started ({name})"),
+                    chrono::Utc::now(),
+                );
+                outcomes.push(format!("{name}: started"));
+            }
+            Err(message) => {
+                record_malware_run(name, "", "error", &message, chrono::Utc::now());
+                tracing::warn!("scheduled malware scan {name} could not start: {message}");
+                outcomes.push(format!("{name}: failed"));
+            }
+        }
+    }
+    // What the unit's TimeoutStartSec=infinity is for: the runner waits for
+    // the scans it started - and for what they found to be set aside -
+    // before it exits. Returning at once ended the runtime, and every
+    // scheduled scan with it, part-way through.
+    for job_id in &started {
+        while malware_jobs::task_running(job_id) {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+    outcomes.join("; ")
+}
+
+/// Merge one run's metadata back into the settings file, where the next
+/// tick reads it - see `malware_schedule::record_run`.
+///
+/// Read-modify-write, as the Python does. The panel and this share the
+/// file, and `write_raw` renames a temporary over it so a reader never sees
+/// half of one.
+fn record_malware_run(
+    name: &str,
+    job_id: &str,
+    status: &str,
+    message: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let mut raw = routes::panel_settings::raw_settings();
+    let recorded = malware_schedule::record_run(&raw, name, job_id, status, message, now);
+    let Some(root) = raw.as_object_mut() else {
+        return;
+    };
+    root.insert(malware_schedule::SETTINGS_KEY.to_string(), recorded);
+    if let Err(e) = routes::panel_settings::write_raw(&raw) {
+        tracing::error!("cannot record the malware schedule run for {name}: {e}");
+    }
+}
+
+/// Source: `run_due_schedules`.
+///
+/// Returns the number of schedules that ran cleanly, which is what the unit
+/// prints. A schedule where one user of several failed is reported as an
+/// error and is **not** counted — see [`backup_scheduler::outcome`].
+///
+/// Nothing here propagates an error. One customer's backup failing must not
+/// stop everybody else's, and a scheduler that exits non-zero on a single
+/// bad schedule would have systemd report the whole run as failed every
+/// minute.
+async fn run_backup_schedules(state: &AppState) -> usize {
+    let now = chrono::Local::now();
+    let stamp = now.format("%Y-%m-%dT%H:%M").to_string();
+
+    let schedules = match state.db.backup_schedules().list().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("cannot read the backup schedules: {e}");
+            return 0;
+        }
+    };
+
+    let minute = backup_scheduler::Minute {
+        stamp: &stamp,
+        minute: now.minute(),
+        hour: now.hour(),
+        day: now.day(),
+        month: now.month(),
+        // `chrono`'s Monday is 0 through `num_days_from_monday`, which is
+        // what `datetime.weekday()` returns.
+        weekday: now.weekday().num_days_from_monday(),
+    };
+
+    let mut ran = 0;
+    for schedule in schedules {
+        // `last_run_at` is stored as the panel writes it; only the leading
+        // `YYYY-MM-DDTHH:MM` is compared, which is the Python's truncation
+        // to the minute on both sides.
+        let last = schedule
+            .last_run_at
+            .as_deref()
+            .map(|v| v.chars().take(stamp.chars().count()).collect::<String>());
+        if backup_scheduler::should_run(
+            schedule.is_active,
+            &schedule.schedule,
+            last.as_deref(),
+            minute,
+        )
+        .is_err()
+        {
+            continue;
+        }
+
+        if run_schedule(state, &schedule, &stamp).await {
+            ran += 1;
+        }
+    }
+    ran
+}
+
+/// One schedule's run: every user's backup, uploaded and pruned, and the
+/// outcome recorded on the schedule. Whether it ran cleanly.
+///
+/// The timer's loop calls this for each due schedule, and
+/// `POST /maintenance/backup-schedules/{id}/run` - the MCP addon's
+/// `run_backup_schedule` - for one it names.
+pub(crate) async fn run_schedule(
+    state: &AppState,
+    schedule: &snpanel_db::BackupSchedule,
+    stamp: &str,
+) -> bool {
+    // Not in the Python: what the Notifications addon tells - the schedule
+    // by its number and when it runs, since a schedule has no name.
+    let name = format!("#{} ({})", schedule.id, schedule.schedule);
+    let users = schedule_users(state, schedule).await;
+    if users.is_empty() {
+        let outcome = backup_scheduler::no_users();
+        record(state, schedule.id, stamp, &outcome).await;
+        notify::deliver(
+            state,
+            notify::Event::ScheduleRun {
+                schedule: name,
+                users: Vec::new(),
+                problem: Some(outcome.message.clone()),
+            },
+        )
+        .await;
+        return false;
+    }
+
+    let mut successes = Vec::new();
+    let mut errors = Vec::new();
+    let mut told = Vec::new();
+    let mut problem = None;
+    // Not in the Python: where else the archives go, and their names. A
+    // schedule whose options cannot be read is not run as if it had
+    // none - that would keep an offsite backup on this server alone.
+    match state.db.schedule_options().get(schedule.id).await {
+        Ok(options) => {
+            for user in users {
+                let outcome =
+                    routes::maintenance::run_scheduled_user_backup(state, schedule, options, &user)
+                        .await;
+                match &outcome {
+                    Ok(went) => successes.push(format!("{}: {went}", user.username)),
+                    Err(e) => errors.push(format!("{}: {e}", user.username)),
+                }
+                told.push(notify::UserBackup {
+                    username: user.username.clone(),
+                    outcome,
+                });
+            }
+        }
+        Err(e) => {
+            let message = format!("Cannot read the schedule's settings: {e}");
+            problem = Some(message.clone());
+            errors.push(message);
+        }
+    }
+
+    let outcome = backup_scheduler::outcome(&successes, &errors);
+    record(state, schedule.id, stamp, &outcome).await;
+    notify::deliver(
+        state,
+        notify::Event::ScheduleRun {
+            schedule: name,
+            users: told,
+            problem,
+        },
+    )
+    .await;
+    outcome.counts_as_run
+}
+
+async fn record(state: &AppState, id: i64, stamp: &str, outcome: &backup_scheduler::Outcome) {
+    if let Err(e) = state
+        .db
+        .backup_schedules()
+        .record_run(id, stamp, outcome.status, &outcome.message)
+        .await
+    {
+        tracing::error!("cannot record the result of schedule {id}: {e}");
+    }
+}
+
+/// Source: `_schedule_users`.
+///
+/// `all_users` takes every active account. Otherwise the stored id list is
+/// decoded, falling back to the single `user_id` column that predates it,
+/// and the users come back **in the order the ids were given** with the ones
+/// that no longer exist dropped.
+async fn schedule_users(
+    state: &AppState,
+    schedule: &snpanel_db::BackupSchedule,
+) -> Vec<snpanel_db::User> {
+    if schedule.all_users {
+        return state
+            .db
+            .users()
+            .active_ordered_by_id()
+            .await
+            .unwrap_or_default();
+    }
+
+    let mut ids = routes::users::decode_schedule_user_ids(Some(schedule.user_ids.as_str()))
+        .unwrap_or_default();
+    if ids.is_empty() {
+        if let Some(one) = schedule.user_id {
+            ids.push(one);
+        }
+    }
+
+    let mut users = Vec::new();
+    for id in ids {
+        if let Ok(Some(user)) = state.db.users().by_id(id).await {
+            users.push(user);
+        }
+    }
+    users
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {

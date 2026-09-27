@@ -201,7 +201,18 @@ pub fn panel_allow_port(ctx: &Context, port: Port) -> HelperResponse {
     add_rule(ctx, Action::Allow, None, Some(port), Protocol::Tcp)
 }
 
-/// `firewall-list`: the rules as structured data.
+/// `firewall-list`: the rules as structured data, **on stdout**.
+///
+/// The panel reads this verb's stdout - `rules()` in the API's firewall
+/// routes, and `snpanel-cli`'s panel-port move. Over the helper socket the
+/// API is handed `stdout` and never `data`, so while this answered in `data`
+/// the listing reached the panel as an empty string: the Firewall page showed
+/// no rules however many there were, and every delete was refused as "not
+/// found", because the delete looks the rule up in this list first. The
+/// sudo path hid it - the CLI prints `data` - and the socket is the default.
+///
+/// Pretty JSON and a newline: byte for byte what the CLI printed from `data`,
+/// so a script that read the old output reads this.
 pub fn list(ctx: &Context) -> HelperResponse {
     let rules = read_rules();
     let state = std::fs::read_to_string(STATE_FILE)
@@ -230,16 +241,23 @@ pub fn list(ctx: &Context) -> HelperResponse {
         })
         .collect();
 
-    HelperResponse::with_data(serde_json::json!({
+    let listing = serde_json::json!({
         "state": match state {
             FirewallState::Enabled => "enabled",
             FirewallState::Disabled => "disabled",
         },
         "engine": "nftables",
+        // Whether the stored state is actually in force: "enabled" with no
+        // hook loaded is a firewall that protects nothing.
+        "chain_active": firewall::chain_active(),
         "rules": items,
         "protected_ports": protected,
         "base_protected_ports": BASE_PROTECTED_PORTS,
-    }))
+    });
+    HelperResponse::with_stdout(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&listing).unwrap_or_default()
+    ))
 }
 
 #[cfg(test)]
@@ -262,6 +280,37 @@ mod tests {
         ];
         assert_eq!(next_id(&rules), 6);
         assert_eq!(next_id(&[]), 1);
+    }
+
+    #[test]
+    fn the_listing_is_on_stdout_where_the_panel_reads_it() {
+        // Over the socket the API gets `stdout` and never `data`. A listing in
+        // `data` reached the Firewall page as nothing: no rules shown, and
+        // every delete refused as "not found".
+        let r = list(&Context::default());
+        assert!(r.ok);
+        assert!(r.data.is_none(), "`data` is what the bug put it in");
+        let v: serde_json::Value =
+            serde_json::from_str(&r.stdout).expect("stdout is the JSON listing");
+        for key in [
+            "state",
+            "engine",
+            "chain_active",
+            "rules",
+            "protected_ports",
+            "base_protected_ports",
+        ] {
+            assert!(v.get(key).is_some(), "{key} is missing from the listing");
+        }
+        assert_eq!(v["engine"], "nftables");
+        assert!(v["rules"].is_array());
+        assert!(v["protected_ports"].is_array());
+        assert!(v["chain_active"].is_boolean());
+        // What the CLI printed from `data`: pretty, then one newline.
+        assert_eq!(
+            r.stdout,
+            format!("{}\n", serde_json::to_string_pretty(&v).unwrap())
+        );
     }
 
     #[test]
@@ -340,16 +389,5 @@ mod tests {
         let a = IpOrCidr::parse("10.0.0.5/8").unwrap();
         let b = IpOrCidr::parse("10.0.0.0/8").unwrap();
         assert_eq!(a.normalized(), b.normalized());
-    }
-
-    #[test]
-    fn list_reports_the_shape_the_panel_reads() {
-        let ctx = Context::default();
-        let resp = list(&ctx);
-        assert!(resp.ok);
-        let data = resp.data.expect("data");
-        assert_eq!(data["engine"], "nftables");
-        assert!(data["rules"].is_array());
-        assert!(data["protected_ports"].is_array());
     }
 }

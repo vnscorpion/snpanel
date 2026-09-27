@@ -36,7 +36,53 @@ pub fn run(argv: &[&str]) -> std::io::Result<Output> {
 ///
 /// C37: secrets reach a program this way, never through argv, because argv is
 /// world-readable in `/proc/<pid>/cmdline` for as long as the process lives.
+/// Run `argv` with a few extra environment variables on top of the cleared
+/// one.
+///
+/// The environment is cleared on purpose - the helper runs as root and must
+/// not inherit anything the caller chose - so a program that genuinely needs a
+/// variable has to be given it here, by name, at the call site.
+/// `DEBIAN_FRONTEND=noninteractive` is the one that matters: without it
+/// `apt-get` can stop on a prompt nobody will ever answer.
+pub fn run_with_env(argv: &[&str], extra: &[(&str, &str)]) -> std::io::Result<Output> {
+    run_inner(argv, None, extra, None, None)
+}
+
+/// Run `argv` with `dir` as its working directory.
+///
+/// Source: `( cd "$srcdir" && ./install.sh )`. A third-party installer that
+/// expects to be run from inside its own unpacked directory gets that, without
+/// a shell and without this process ever chdir-ing - a `chdir` here would be
+/// process-wide and would change what every later relative path in this run
+/// means.
+pub fn run_in_dir(argv: &[&str], dir: &std::path::Path) -> std::io::Result<Output> {
+    run_inner(argv, None, &[], Some(dir), None)
+}
+
+/// Run `argv` in `dir` with `mask` as the child's umask.
+///
+/// Set in the child, between fork and exec: the helper's own umask is
+/// process-wide, and with requests answered side by side, changing it here
+/// would change the mode of whatever another request was creating.
+pub fn run_in_dir_with_umask(
+    argv: &[&str],
+    dir: &std::path::Path,
+    mask: libc::mode_t,
+) -> std::io::Result<Output> {
+    run_inner(argv, None, &[], Some(dir), Some(mask))
+}
+
 pub fn run_with_stdin(argv: &[&str], stdin_data: Option<&[u8]>) -> std::io::Result<Output> {
+    run_inner(argv, stdin_data, &[], None, None)
+}
+
+fn run_inner(
+    argv: &[&str],
+    stdin_data: Option<&[u8]>,
+    extra: &[(&str, &str)],
+    dir: Option<&std::path::Path>,
+    umask: Option<libc::mode_t>,
+) -> std::io::Result<Output> {
     let (program, args) = argv.split_first().expect("argv must not be empty");
 
     let mut cmd = Command::new(program);
@@ -56,6 +102,23 @@ pub fn run_with_stdin(argv: &[&str], stdin_data: Option<&[u8]>) -> std::io::Resu
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
         .env("LC_ALL", "C");
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    for (key, value) in extra {
+        cmd.env(key, value);
+    }
+    if let Some(mask) = umask {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: umask(2) is async-signal-safe and touches nothing but the
+        // child's own mask, which is all that may run between fork and exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::umask(mask);
+                Ok(())
+            });
+        }
+    }
 
     let mut child = cmd.spawn()?;
 
@@ -133,6 +196,7 @@ pub fn respond(operation: &str, result: std::io::Result<Output>) -> HelperRespon
             stderr: out.stderr,
             data: None,
             error: None,
+            exit_code: None,
         },
         Ok(out) if out.status.is_none() => HelperResponse::failed(
             HelperErrorKind::Timeout,

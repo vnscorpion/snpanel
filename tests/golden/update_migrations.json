@@ -1,0 +1,169 @@
+{
+ "cron": [
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "example.com",
+   "input": "*/5 * * * * cd /home/a/public_html && php wp-cron.php '>/dev/null' 2>&1 # snpanel:example.com",
+   "output": "*/5 * * * * cd /home/a/public_html && /usr/bin/php8.4 wp-cron.php >/dev/null 2>&1 # snpanel:example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.3",
+   "changed": true,
+   "domain": "example.com",
+   "input": "0 * * * * cd /x && /usr/bin/php cron.php # snpanel:example.com",
+   "output": "0 * * * * cd /x && /usr/bin/php8.3 cron.php # snpanel:example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "example.com",
+   "input": "0 * * * * cd /x && php8.2 cron.php # snpanel:example.com",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 cron.php # snpanel:example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "example.com",
+   "input": "0 * * * * cd /x && php a.php && php b.php # snpanel:example.com",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 a.php && php b.php # snpanel:example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": false,
+   "domain": null,
+   "input": "0 * * * * cd /x && php a.php '>/dev/null'",
+   "output": "0 * * * * cd /x && php a.php '>/dev/null'"
+  },
+  {
+   "binary": null,
+   "changed": true,
+   "domain": "example.com",
+   "input": "0 * * * * cd /x && php a.php '>>/var/log/x' # snpanel:example.com",
+   "output": "0 * * * * cd /x && php a.php >>/var/log/x # snpanel:example.com"
+  },
+  {
+   "binary": null,
+   "changed": true,
+   "domain": "a.com",
+   "input": "0 * * * * x '>/dev/null' '>>/tmp/a' '2>&1' '1>/dev/null' # snpanel:a.com",
+   "output": "0 * * * * x >/dev/null >>/tmp/a 2>&1 1>/dev/null # snpanel:a.com"
+  },
+  {
+   "binary": null,
+   "changed": true,
+   "domain": "a.com",
+   "input": "0 * * * * x 'hello world' '>/dev/null' # snpanel:a.com",
+   "output": "0 * * * * x 'hello world' >/dev/null # snpanel:a.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "example.com",
+   "input": "0 * * * * cd /x && php a.php #  snpanel:example.com  ",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 a.php #  snpanel:example.com  "
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": false,
+   "domain": null,
+   "input": "0 * * * * # snpanel:example.com && php a.php",
+   "output": "0 * * * * # snpanel:example.com && php a.php"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "a-b.co.uk",
+   "input": "0 * * * * cd /x && php a.php # snpanel:a-b.co.uk",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 a.php # snpanel:a-b.co.uk"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "x1.example.com",
+   "input": "0 * * * * cd /x && php a.php # snpanel:x1.example.com",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 a.php # snpanel:x1.example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": false,
+   "domain": null,
+   "input": "0 * * * * cd /x && php a.php # snpanel:ab",
+   "output": "0 * * * * cd /x && php a.php # snpanel:ab"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": false,
+   "domain": null,
+   "input": "0 * * * * cd /x && php a.php # snpanel:Example.com",
+   "output": "0 * * * * cd /x && php a.php # snpanel:Example.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": false,
+   "domain": "a.com",
+   "input": "0 * * * * cd /x && phpunit a.php # snpanel:a.com",
+   "output": "0 * * * * cd /x && phpunit a.php # snpanel:a.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "a.com",
+   "input": "0 * * * * cd /x &&\tphp a.php # snpanel:a.com",
+   "output": "0 * * * * cd /x &&\t/usr/bin/php8.4 a.php # snpanel:a.com"
+  },
+  {
+   "binary": "/usr/bin/php8.4",
+   "changed": true,
+   "domain": "a.com",
+   "input": "0 * * * * cd /x && php # snpanel:a.com",
+   "output": "0 * * * * cd /x && /usr/bin/php8.4 # snpanel:a.com"
+  }
+ ],
+ "csp": [
+  {
+   "input": "add_header Content-Security-Policy \"default-src 'self'; frame-src 'self' https: blob:; object-src 'none';\";\n",
+   "output": "add_header Content-Security-Policy \"default-src 'self'; frame-src 'self' https: blob:; worker-src 'self' blob:; object-src 'none';\";\n"
+  },
+  {
+   "input": "add_header Content-Security-Policy \"default-src 'self'; object-src 'none';\";\n",
+   "output": "add_header Content-Security-Policy \"default-src 'self'; worker-src 'self' blob:; object-src 'none';\";\n"
+  },
+  {
+   "input": "add_header Content-Security-Policy \"worker-src 'self' blob:; object-src 'none';\";\n",
+   "output": "add_header Content-Security-Policy \"worker-src 'self' blob:; object-src 'none';\";\n"
+  },
+  {
+   "input": "server { listen 80; }\n",
+   "output": "server { listen 80; }\n"
+  },
+  {
+   "input": "add_header Content-Security-Policy \"default-src 'self';\";\n",
+   "output": "add_header Content-Security-Policy \"default-src 'self';\";\n"
+  },
+  {
+   "input": "add_header Content-Security-Policy \"frame-src 'self' https: blob:;\";\nadd_header Content-Security-Policy \"frame-src 'self' https: blob:;\";\n",
+   "output": "add_header Content-Security-Policy \"frame-src 'self' https: blob:; worker-src 'self' blob:;\";\nadd_header Content-Security-Policy \"frame-src 'self' https: blob:; worker-src 'self' blob:;\";\n"
+  },
+  {
+   "input": "# Content-Security-Policy\nobject-src 'none'; object-src 'none';\n",
+   "output": "# Content-Security-Policy\nworker-src 'self' blob:; object-src 'none'; worker-src 'self' blob:; object-src 'none';\n"
+  },
+  {
+   "input": "# Content-Security-Policy is set upstream\nobject-src 'none';\n",
+   "output": "# Content-Security-Policy is set upstream\nworker-src 'self' blob:; object-src 'none';\n"
+  }
+ ],
+ "php_version": {
+  "": false,
+  " 8.4": false,
+  "10.4": false,
+  "8": false,
+  "8.10": false,
+  "8.4": true,
+  "8.4 ": false,
+  "8.4.1": false,
+  "8.x": false,
+  "a.b": false
+ }
+}

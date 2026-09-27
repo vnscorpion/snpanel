@@ -1,0 +1,14 @@
+<?php
+/* A stock EPEL config.inc.php, cut to the shape that matters here. */
+$cfg['blowfish_secret'] = '';
+$i = 0;
+$i++;
+$cfg['Servers'][$i]['auth_type'] = 'cookie';
+
+// SNPanel conf.d include. Debian's phpMyAdmin reads ${PHPMYADMIN_CONF_DIR}/conf.d and
+// the panel delivers its single-sign-on configuration as a file there; EPEL's
+// package has no such directory, so this reproduces it. Last in the file, so
+// the panel's settings override the defaults above.
+foreach (glob(__DIR__ . '/conf.d/*.php') ?: [] as $snpanel_conf) {
+    include $snpanel_conf;
+}

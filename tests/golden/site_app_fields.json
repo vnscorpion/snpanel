@@ -1,0 +1,1556 @@
+{
+ "compose_validate": [
+  {
+   "body": {},
+   "errors": [
+    {
+     "ctx": {},
+     "input": {},
+     "loc": [
+      "compose_source"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "services: {}"
+   },
+   "ok": true,
+   "value": {
+    "compose_source": "services: {}",
+    "env": "",
+    "web_port": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "compose_source": null
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": null,
+     "loc": [
+      "compose_source"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": 1
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 1,
+     "loc": [
+      "compose_source"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_port": 80
+   },
+   "ok": true,
+   "value": {
+    "compose_source": "x",
+    "env": "",
+    "web_port": 80,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_port": 0
+   },
+   "errors": [
+    {
+     "ctx": {
+      "ge": "1"
+     },
+     "input": 0,
+     "loc": [
+      "web_port"
+     ],
+     "msg": "Input should be greater than or equal to 1",
+     "type": "greater_than_equal"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_port": 65536
+   },
+   "errors": [
+    {
+     "ctx": {
+      "le": "65535"
+     },
+     "input": 65536,
+     "loc": [
+      "web_port"
+     ],
+     "msg": "Input should be less than or equal to 65535",
+     "type": "less_than_equal"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_port": "80"
+   },
+   "ok": true,
+   "value": {
+    "compose_source": "x",
+    "env": "",
+    "web_port": 80,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_port": "x"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": "x",
+     "loc": [
+      "web_port"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "env": null
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": null,
+     "loc": [
+      "env"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "env": 1
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 1,
+     "loc": [
+      "env"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "x",
+    "web_service": null
+   },
+   "ok": true,
+   "value": {
+    "compose_source": "x",
+    "env": "",
+    "web_port": null,
+    "web_service": null
+   }
+  }
+ ],
+ "control": [
+  {
+   "body": {},
+   "errors": [
+    {
+     "ctx": {},
+     "input": {},
+     "loc": [
+      "action"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "action": "start"
+   },
+   "ok": true,
+   "value": {
+    "action": "start"
+   }
+  },
+  {
+   "body": {
+    "action": "enable"
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'start', 'stop' or 'restart'"
+     },
+     "input": "enable",
+     "loc": [
+      "action"
+     ],
+     "msg": "Input should be 'start', 'stop' or 'restart'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "action": null
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'start', 'stop' or 'restart'"
+     },
+     "input": null,
+     "loc": [
+      "action"
+     ],
+     "msg": "Input should be 'start', 'stop' or 'restart'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "action": 1
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'start', 'stop' or 'restart'"
+     },
+     "input": 1,
+     "loc": [
+      "action"
+     ],
+     "msg": "Input should be 'start', 'stop' or 'restart'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  }
+ ],
+ "create": [
+  {
+   "body": {},
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "name": "app"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "name": null
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": null,
+     "loc": [
+      "name"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "name": 5
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 5,
+     "loc": [
+      "name"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "kind": "docker"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "docker",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "kind": "Node"
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'docker' or 'compose'"
+     },
+     "input": "Node",
+     "loc": [
+      "kind"
+     ],
+     "msg": "Input should be 'node', 'docker' or 'compose'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "kind": null
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'docker' or 'compose'"
+     },
+     "input": null,
+     "loc": [
+      "kind"
+     ],
+     "msg": "Input should be 'node', 'docker' or 'compose'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "kind": 1
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'docker' or 'compose'"
+     },
+     "input": 1,
+     "loc": [
+      "kind"
+     ],
+     "msg": "Input should be 'node', 'docker' or 'compose'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "port": 21500
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": 21500,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": "21500"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": 21500,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": " 21500 "
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": 21500,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": "abc"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": "abc",
+     "loc": [
+      "port"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "port": 3.0
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": 3,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": 3.7
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 3.7,
+     "loc": [
+      "port"
+     ],
+     "msg": "Input should be a valid integer, got a number with a fractional part",
+     "type": "int_from_float"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "port": true
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": 1,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": []
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": [],
+     "loc": [
+      "port"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "port": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "start_arg": "start",
+    "start_kind": "npm"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": "start",
+    "start_kind": "npm",
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "start_kind": "pnpm"
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'npm', 'npx' or 'yarn'"
+     },
+     "input": "pnpm",
+     "loc": [
+      "start_kind"
+     ],
+     "msg": "Input should be 'node', 'npm', 'npx' or 'yarn'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "start_kind": 3
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'npm', 'npx' or 'yarn'"
+     },
+     "input": 3,
+     "loc": [
+      "start_kind"
+     ],
+     "msg": "Input should be 'node', 'npm', 'npx' or 'yarn'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "node_major": "20"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": "20",
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "node_major": 20
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 20,
+     "loc": [
+      "node_major"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "container_port": "3000"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": 3000,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "container_port": "x"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": "x",
+     "loc": [
+      "container_port"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "cpu_limit": "0.5"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": "0.5",
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "cpu_limit": 0.5
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 0.5,
+     "loc": [
+      "cpu_limit"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "env": "A=1"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": "A=1",
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "env": 7
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 7,
+     "loc": [
+      "env"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "memory_limit_mb": "512"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": 512,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "memory_limit_mb": {}
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": {},
+     "loc": [
+      "memory_limit_mb"
+     ],
+     "msg": "Input should be a valid integer",
+     "type": "int_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "autostart": false
+   },
+   "ok": true,
+   "value": {
+    "autostart": false,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "autostart": "yes"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "autostart": "maybe"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": "maybe",
+     "loc": [
+      "autostart"
+     ],
+     "msg": "Input should be a valid boolean, unable to interpret input",
+     "type": "bool_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "autostart": null
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": null,
+     "loc": [
+      "autostart"
+     ],
+     "msg": "Input should be a valid boolean",
+     "type": "bool_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "autostart": 2
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 2,
+     "loc": [
+      "autostart"
+     ],
+     "msg": "Input should be a valid boolean, unable to interpret input",
+     "type": "bool_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "owner_id": "4"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": 4,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "owner_id": "four"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": "four",
+     "loc": [
+      "owner_id"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "compose_source": "services: {}"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": "services: {}",
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "compose_source": 1
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 1,
+     "loc": [
+      "compose_source"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "web_service": "web"
+   },
+   "ok": true,
+   "value": {
+    "autostart": true,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "kind": "node",
+    "memory_limit_mb": null,
+    "name": "app",
+    "node_major": null,
+    "owner_id": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": "web"
+   }
+  },
+  {
+   "body": {
+    "autostart": "maybe",
+    "kind": "x",
+    "name": 1,
+    "port": "abc"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 1,
+     "loc": [
+      "name"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    },
+    {
+     "ctx": {
+      "expected": "'node', 'docker' or 'compose'"
+     },
+     "input": "x",
+     "loc": [
+      "kind"
+     ],
+     "msg": "Input should be 'node', 'docker' or 'compose'",
+     "type": "literal_error"
+    },
+    {
+     "ctx": {},
+     "input": "abc",
+     "loc": [
+      "port"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    },
+    {
+     "ctx": {},
+     "input": "maybe",
+     "loc": [
+      "autostart"
+     ],
+     "msg": "Input should be a valid boolean, unable to interpret input",
+     "type": "bool_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "autostart": "maybe",
+    "kind": "x",
+    "name": 1,
+    "port": "abc"
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 1,
+     "loc": [
+      "name"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    },
+    {
+     "ctx": {
+      "expected": "'node', 'docker' or 'compose'"
+     },
+     "input": "x",
+     "loc": [
+      "kind"
+     ],
+     "msg": "Input should be 'node', 'docker' or 'compose'",
+     "type": "literal_error"
+    },
+    {
+     "ctx": {},
+     "input": "abc",
+     "loc": [
+      "port"
+     ],
+     "msg": "Input should be a valid integer, unable to parse string as an integer",
+     "type": "int_parsing"
+    },
+    {
+     "ctx": {},
+     "input": "maybe",
+     "loc": [
+      "autostart"
+     ],
+     "msg": "Input should be a valid boolean, unable to interpret input",
+     "type": "bool_parsing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "cpu_limit": 0.5,
+    "node_major": 20,
+    "start_kind": "bad"
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'npm', 'npx' or 'yarn'"
+     },
+     "input": "bad",
+     "loc": [
+      "start_kind"
+     ],
+     "msg": "Input should be 'node', 'npm', 'npx' or 'yarn'",
+     "type": "literal_error"
+    },
+    {
+     "ctx": {},
+     "input": 20,
+     "loc": [
+      "node_major"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    },
+    {
+     "ctx": {},
+     "input": 0.5,
+     "loc": [
+      "cpu_limit"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  }
+ ],
+ "node_install": [
+  {
+   "body": {},
+   "errors": [
+    {
+     "ctx": {},
+     "input": {},
+     "loc": [
+      "major"
+     ],
+     "msg": "Field required",
+     "type": "missing"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "major": "20"
+   },
+   "ok": true,
+   "value": {
+    "major": "20"
+   }
+  },
+  {
+   "body": {
+    "major": 20
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 20,
+     "loc": [
+      "major"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "major": null
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": null,
+     "loc": [
+      "major"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  }
+ ],
+ "update": [
+  {
+   "body": {},
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "name": "renamed"
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": "renamed",
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "name": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "autostart": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "autostart": "off"
+   },
+   "ok": true,
+   "value": {
+    "autostart": false,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "port": "21500"
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": 21500,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "start_kind": "yarn"
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": "yarn",
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "start_kind": "bad"
+   },
+   "errors": [
+    {
+     "ctx": {
+      "expected": "'node', 'npm', 'npx' or 'yarn'"
+     },
+     "input": "bad",
+     "loc": [
+      "start_kind"
+     ],
+     "msg": "Input should be 'node', 'npm', 'npx' or 'yarn'",
+     "type": "literal_error"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "body": {
+    "memory_limit_mb": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "memory_limit_mb": "1024"
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": 1024,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "image": null
+   },
+   "ok": true,
+   "value": {
+    "autostart": null,
+    "compose_source": null,
+    "container_port": null,
+    "cpu_limit": null,
+    "env": null,
+    "image": null,
+    "memory_limit_mb": null,
+    "name": null,
+    "node_major": null,
+    "port": null,
+    "start_arg": null,
+    "start_kind": null,
+    "web_service": null
+   }
+  },
+  {
+   "body": {
+    "image": 3
+   },
+   "errors": [
+    {
+     "ctx": {},
+     "input": 3,
+     "loc": [
+      "image"
+     ],
+     "msg": "Input should be a valid string",
+     "type": "string_type"
+    }
+   ],
+   "ok": false
+  }
+ ]
+}
