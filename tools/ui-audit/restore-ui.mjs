@@ -113,8 +113,10 @@ try {
   await dates.selectOption(options[0]);
   await restore.click();
   check(dialogs.some((m) => m.startsWith('Restore 1 backup(s)?')), `it asks first (${dialogs.at(-1)?.slice(0, 60)})`);
+  // The line may still say the restore before this one: this one is
+  // followed from running to done.
   const banner = page.locator('.bk-restore-job');
-  await banner.waitFor({ timeout: 15000 });
+  await page.locator('.bk-restore-job.running').waitFor({ timeout: 30000 });
   await page.locator('.bk-restore-job.done').waitFor({ timeout: 300000 });
   const said = (await banner.textContent()).replace(/\s+/g, ' ').trim();
   check(new RegExp(`^Restored ${ACCOUNT}: \\d+ website\\(s\\), \\d+ database\\(s\\)\\.$`).test(said), `the page follows the restore to its end, and says what came back in a line (${said})`);
