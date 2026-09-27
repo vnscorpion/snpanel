@@ -3909,8 +3909,11 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
-    // The addons with a page of their own, while they are installed: AI
-    // assistants for every account, Notifications for administrators.
+    // The addons with a page of their own, while they are installed, in the
+    // Addons page's order: AI assistants for every account, the others for
+    // administrators.
+    ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
+    ...(isAdmin && malwareAddonInstalled ? [['malware', t('Malware Scanner'), ScanSearch]] : []),
     ...(mcpAddonInstalled ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
     ...(isAdmin && notificationsAddonInstalled ? [['notifications', t('Notifications'), Bell]] : []),
     // One page of tiles, one for each of settingsNavItems.
@@ -3924,9 +3927,7 @@ function App() {
     ['security', t('Account security'), KeyRound, t('Password, two-step verification, passkeys')],
     ...(isAdmin ? [['php', t('PHP config'), Code2, t('Versions, limits and extensions')]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), BrickWall, t('Open ports and blocked addresses')]] : []),
-    ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan, t('Bans addresses that guess passwords')]] : []),
     ['waf', t('WAF'), ShieldCheck, t('Rules against attacks on websites')],
-    ...(isAdmin && malwareAddonInstalled ? [['malware', t('Malware Scanner'), ScanSearch, t('Scans, schedules and quarantine')]] : []),
     ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
     ...(isAdmin ? [['updates', t('Updates'), RefreshCw, t('The panel and system packages')]] : []),
     ...(isAdmin ? [['addons', t('Addons'), Boxes, t('Install or remove addons')]] : []),

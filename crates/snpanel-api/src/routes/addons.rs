@@ -129,7 +129,7 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "version": "1.0.0",
                 "summary": "Lets AI assistants - Claude Code, Cursor, VS Code - read and work the panel through the Model Context Protocol, each with a token of the account it acts for.",
                 "details": [
-                    "Every account makes its own tokens under Settings, AI assistants (MCP): an administrator's reach the whole server, anyone else's only their own websites, databases, files and backups.",
+                    "Every account makes its own tokens on its AI assistants (MCP) page: an administrator's reach the whole server, anyone else's only their own websites, databases, files and backups.",
                     "A token only reads unless it is made to allow actions, and what it may not do is never offered to the assistant.",
                     "Every action an assistant takes is written to the audit log.",
                 ],
@@ -459,9 +459,9 @@ async fn install(
         "next_step": installing.unwrap_or(match slug.as_str() {
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
-            MALWARE => "Open Settings, Malware Scanner to scan the websites, set the weekly scans and see the quarantine.",
-            MCP => "Open Settings, AI assistants (MCP) to make a token for your assistant.",
-            NOTIFICATIONS => "Open Settings, Notifications to set up e-mail, or a Telegram bot and its chat.",
+            MALWARE => "Open Malware Scanner to scan the websites, set the weekly scans and see the quarantine.",
+            MCP => "Open AI assistants (MCP) to make a token for your assistant.",
+            NOTIFICATIONS => "Open Notifications to set up e-mail, or a Telegram bot and its chat.",
             _ => "",
         }),
     }))

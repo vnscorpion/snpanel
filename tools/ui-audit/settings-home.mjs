@@ -3,14 +3,15 @@
 //     node settings-home.mjs [out-dir]        (LOGIN_FILE: the administrator's)
 //
 // As the administrator: the sidebar has Settings as one entry and no
-// submenu, with AI assistants and Notifications above it while their addons
-// are installed, and without them while they are not; Settings opens
+// submenu, with the addons that have a page - Fail2ban, the Malware Scanner,
+// AI assistants and Notifications - just above it while they are installed,
+// and without them while they are not; Settings opens
 // /settings, a tile for each settings page - six a row on a wide screen,
 // five, four, three and two as it narrows; a tile opens its page,
 // Settings stays the highlighted entry there, and the line over the title
 // leads back; Panel settings is at /panel-settings and /api-tokens. As a
 // throwaway customer: only the tiles of what a customer may open, and AI
-// assistants but never Notifications in its sidebar. In Vietnamese on a
+// assistants but never the administrators' addons in its sidebar. In Vietnamese on a
 // phone, nothing runs off the screen. The customer is deleted and the addons
 // left as they were found.
 import { chromium } from 'playwright';
@@ -62,36 +63,39 @@ try {
   // ------------------------------------------------ the sidebar
   const page = await admin.newPage();
   page.on('pageerror', (e) => errors.push(String(e)));
-  await setAddon('mcp', true);
-  await setAddon('notifications', true);
+  const ADDONS = ['fail2ban', 'malware', 'mcp', 'notifications'];
+  const PAGES = ['Fail2ban', 'Malware Scanner', 'AI assistants (MCP)', 'Notifications'];
+  for (const slug of ADDONS) await setAddon(slug, true);
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
   let sidebar = await sidebarOf(page);
   check(sidebar.at(-1) === 'Settings' && !sidebar.includes('PHP config') && await page.locator('.sidebar-subnav, #settings-submenu').count() === 0,
     `the sidebar has Settings as one entry, no submenu (${sidebar.join(', ')})`);
-  check(sidebar.slice(-3).join() === 'AI assistants (MCP),Notifications,Settings',
-    'with their addons installed, AI assistants and Notifications are just above Settings');
+  check(sidebar.slice(-5).join() === [...PAGES, 'Settings'].join(),
+    `with their addons installed, ${PAGES.join(', ')} are just above Settings`);
   await page.locator('.sidebar').screenshot({ path: `${OUT}/sidebar-light-en.png` });
-  await setAddon('mcp', false);
-  await setAddon('notifications', false);
+  for (const slug of ADDONS) await setAddon(slug, false);
   await page.reload({ waitUntil: 'networkidle' });
   sidebar = await sidebarOf(page);
-  check(!sidebar.includes('AI assistants (MCP)') && !sidebar.includes('Notifications') && sidebar.at(-1) === 'Settings',
-    `with the addons uninstalled, neither is in the sidebar (${sidebar.slice(-3).join(', ')})`);
-  await setAddon('mcp', true);
-  await setAddon('notifications', true);
+  check(!PAGES.some((p) => sidebar.includes(p)) && sidebar.at(-1) === 'Settings',
+    `with the addons uninstalled, none is in the sidebar (${sidebar.slice(-3).join(', ')})`);
+  for (const slug of ADDONS) await setAddon(slug, true);
   await page.reload({ waitUntil: 'networkidle' });
   await page.locator('.sidebar-nav').getByRole('button', { name: 'Notifications', exact: true }).click();
   await page.waitForURL(/\/notifications$/);
   check(await current(page) === 'Notifications' && await page.locator('.page-title-back').count() === 0,
     'Notifications opens from the sidebar, as a page of its own, not of Settings');
+  await page.locator('.sidebar-nav').getByRole('button', { name: 'Fail2ban', exact: true }).click();
+  await page.waitForURL(/\/fail2ban$/);
+  check(await current(page) === 'Fail2ban' && await page.locator('.page-title-back').count() === 0,
+    'and so does Fail2ban, which was a Settings tile');
   await page.locator('.sidebar-nav').getByRole('button', { name: 'Settings', exact: true }).click();
   await page.waitForURL(/\/settings$/);
   await page.locator('.settings-grid').waitFor();
   const adminTiles = await tiles(page);
-  const wanted = ['Panel settings', 'Account security', 'PHP config', 'Firewall', 'WAF', 'Malware Scanner', 'Access Logs', 'Updates', 'Addons', 'Services Status'];
-  check(wanted.every((w) => adminTiles.includes(w)) && !adminTiles.includes('Notifications') && !adminTiles.includes('AI assistants (MCP)')
+  const wanted = ['Panel settings', 'Account security', 'PHP config', 'Firewall', 'WAF', 'Access Logs', 'Updates', 'Addons', 'Services Status'];
+  check(wanted.every((w) => adminTiles.includes(w)) && !PAGES.some((p) => adminTiles.includes(p))
     && await title(page) === 'Settings' && await current(page) === 'Settings',
-    `it opens Settings: a tile for each settings page, the two addons not among them (${adminTiles.length}: ${adminTiles.join(', ')})`);
+    `it opens Settings: a tile for each settings page, the addons not among them (${adminTiles.length}: ${adminTiles.join(', ')})`);
   const layout = await page.$$eval('.settings-tile', (all) => all.map((tile) => {
     const icon = tile.querySelector('.settings-tile-icon').getBoundingClientRect();
     const label = tile.querySelector('.settings-tile-label').getBoundingClientRect();
@@ -144,8 +148,8 @@ try {
   const customerTiles = await tiles(cpage);
   check(customerTiles.join() === 'Account security,WAF,Services Status', `a customer gets only its own tiles (${customerTiles.join(', ')})`);
   const customerSidebar = await sidebarOf(cpage);
-  check(customerSidebar.slice(-2).join() === 'AI assistants (MCP),Settings' && !customerSidebar.includes('Notifications'),
-    `and AI assistants above Settings, never Notifications (${customerSidebar.slice(-3).join(', ')})`);
+  check(customerSidebar.slice(-2).join() === 'AI assistants (MCP),Settings' && !['Fail2ban', 'Malware Scanner', 'Notifications'].some((p) => customerSidebar.includes(p)),
+    `and AI assistants above Settings, never the administrators' addons (${customerSidebar.slice(-3).join(', ')})`);
   await cpage.locator('.content-body').screenshot({ path: `${OUT}/settings-customer-light-en.png` });
 
   // ------------------------------------------------ in Vietnamese: dark, and on a phone
@@ -175,7 +179,7 @@ try {
   ok = false;
   console.log(`FAIL  ${err.message.split('\n')[0]}`);
 } finally {
-  for (const [slug, on] of Object.entries(found).filter(([slug]) => ['mcp', 'notifications'].includes(slug))) await setAddon(slug, on);
+  for (const [slug, on] of Object.entries(found).filter(([slug]) => ['fail2ban', 'malware', 'mcp', 'notifications'].includes(slug))) await setAddon(slug, on);
   await removeCustomer();
   await browser.close();
 }

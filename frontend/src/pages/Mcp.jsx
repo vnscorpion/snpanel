@@ -47,7 +47,7 @@ function useToolWords() {
   return (text) => (words && words[text]) || text;
 }
 
-// Settings, AI assistants (MCP): the endpoint, this account's tokens, how
+// AI assistants (MCP): the endpoint, this account's tokens, how
 // to connect an assistant, and everything an assistant can do with a token
 // of this account - every tool its role may call, with its arguments. A new
 // token is shown once; the connection snippets carry it until "Done", and a

@@ -8,7 +8,7 @@ import './Notifications.css';
 const SECURITY_PORTS = { starttls: 587, tls: 465, none: 25 };
 const EMPTY_SMTP = { host: '', port: 587, security: 'starttls', username: '', password: '', from_address: '', from_name: '', to: '' };
 
-// Settings, Notifications - the administrators' alone: how messages go out
+// Notifications - the administrators' alone: how messages go out
 // (an SMTP server and the addresses it sends to, a Telegram bot and the chat
 // it writes in), what is sent, and what was. Customers are sent nothing.
 // See crate::notify.
