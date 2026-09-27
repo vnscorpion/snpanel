@@ -686,7 +686,8 @@ async fn run_malware_schedules(state: &AppState) -> String {
     outcomes.join("; ")
 }
 
-/// Merge one run's metadata back into the settings file.
+/// Merge one run's metadata back into the settings file, where the next
+/// tick reads it - see `malware_schedule::record_run`.
 ///
 /// Read-modify-write, as the Python does. The panel and this share the
 /// file, and `write_raw` renames a temporary over it so a reader never sees
@@ -699,24 +700,11 @@ fn record_malware_run(
     now: chrono::DateTime<chrono::Utc>,
 ) {
     let mut raw = routes::panel_settings::raw_settings();
+    let recorded = malware_schedule::record_run(&raw, name, job_id, status, message, now);
     let Some(root) = raw.as_object_mut() else {
         return;
     };
-    let entry = root
-        .entry(malware_schedule::SETTINGS_KEY.to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    let Some(schedule) = entry.as_object_mut() else {
-        return;
-    };
-    let meta = schedule
-        .entry("_meta".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    let Some(meta) = meta.as_object_mut() else {
-        return;
-    };
-    for (key, value) in malware_schedule::run_meta(name, job_id, status, message, now) {
-        meta.insert(key, serde_json::Value::String(value));
-    }
+    root.insert(malware_schedule::SETTINGS_KEY.to_string(), recorded);
     if let Err(e) = routes::panel_settings::write_raw(&raw) {
         tracing::error!("cannot record the malware schedule run for {name}: {e}");
     }
