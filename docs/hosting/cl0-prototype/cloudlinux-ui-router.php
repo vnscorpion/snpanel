@@ -51,6 +51,8 @@ if (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') {
 // CLI as the account the panel vouched for through ui_user_info. The name comes
 // from the validated token only, and sudoers allows just this binary and only
 // as members of snpanel-sftp (panel accounts), never root.
+// -H: HOME is the customer's; with snpanel-lvem's, fontconfig (the charts)
+// has no writable cache and its warning lands in the JSON CloudLinux parses.
 $userHandlers = [
     'send-request-php-selector.php' => 'php-selector',
     'send-request-resource-usage.php' => 'resource_usage',
@@ -77,7 +79,7 @@ if (dirname($real) === $base && isset($userHandlers[basename($real)])) {
             parent::__construct();
             $login = isset($this->userData->userName) ? (string) $this->userData->userName : '';
             if ($login !== 'root' && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $login)) {
-                $this->CLOUDLINUX_CLI = '/usr/bin/sudo -n -u ' . escapeshellarg($login) . ' ' . self::USER_CLI;
+                $this->CLOUDLINUX_CLI = '/usr/bin/sudo -n -H -u ' . escapeshellarg($login) . ' ' . self::USER_CLI;
             }
         }
     }

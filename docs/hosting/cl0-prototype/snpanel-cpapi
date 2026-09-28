@@ -1,5 +1,10 @@
-#!/usr/bin/python3
+#!/opt/cloudlinux/venv/bin/python3 -s
 """snpanel-cpapi - CloudLinux "vendors" integration scripts (CL-0 prototype).
+
+CloudLinux's own interpreter, not /usr/bin/python3: CloudLinux runs these
+scripts as the customer, inside CageFS, where only the paths CageFS is told
+about exist (/etc/cagefs/conf.d/snpanel.cfg) - and the system python is not
+one of them. A missing interpreter fails as ENOENT naming this script.
 
 The real one will be a static Rust binary. This one proves the contract:
 
