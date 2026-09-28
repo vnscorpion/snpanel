@@ -157,11 +157,15 @@ const HOP_BY_HOP: &[&str] = &[
 const FORWARDED_COOKIES: &[&str] = &["CLSIDTOKEN", "csrftoken"];
 
 /// The embedded pages' policy. CloudLinux's pages carry inline scripts and
-/// styles, so they cannot live under the panel's `script-src 'self'`; this
-/// relaxed policy applies to `/cloudlinux/` only, and still lets nothing but
-/// the panel frame them.
-pub const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
-style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; \
+/// styles, and its SPA is an Angular build that compiles its templates in the
+/// browser (JIT, via `eval`) - under `script-src 'self'` it dies at start-up
+/// and the page spins forever. So this relaxed policy applies to
+/// `/cloudlinux/` only; the rest of the panel keeps its own, and nothing but
+/// the panel may frame these pages. Its icons and fonts come from Google Fonts,
+/// so those two hosts are allowed for styles and fonts - here only.
+pub const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; \
+style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; \
+font-src 'self' data: https://fonts.gstatic.com; \
 connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
 
 /// `Cookie` with only the pairs CloudLinux needs, or `None` when none remain.
@@ -348,6 +352,7 @@ mod tests {
     #[test]
     fn the_embedded_policy_still_frames_only_from_the_panel() {
         assert!(CSP.contains("frame-ancestors 'self'"));
-        assert!(!CSP.contains("unsafe-eval"));
+        // CloudLinux's Angular SPA compiles at runtime; without eval it spins.
+        assert!(CSP.contains("'unsafe-eval'"));
     }
 }
