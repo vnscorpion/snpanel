@@ -852,6 +852,10 @@ pub enum HelperRequest {
         user: PanelUsername,
         php: Option<PhpVersion>,
         args: Vec<String>,
+        /// What WP-CLI's `--prompt=` reads (the admin password of
+        /// `core install`): on stdin, so it is never in argv or `ps`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<SecretString>,
     },
     /// Replace a site's tree from a panel-staged directory.
     ///

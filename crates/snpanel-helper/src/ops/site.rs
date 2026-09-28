@@ -855,6 +855,7 @@ pub fn wp_site(
     user: &PanelUsername,
     php: Option<snpanel_core::PhpVersion>,
     args: &[String],
+    stdin: Option<&snpanel_core::SecretString>,
 ) -> HelperResponse {
     if args.is_empty() {
         return HelperResponse::failed(
@@ -878,13 +879,31 @@ pub fn wp_site(
         );
     }
     let home = format!("/home/{}", user.as_str());
-    run_wp(user.as_str(), &home, &binary, args)
+    run_wp_with_stdin(user.as_str(), &home, &binary, args, stdin)
 }
 
 fn run_wp(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> HelperResponse {
+    run_wp_with_stdin(as_user, home, php_binary, args, None)
+}
+
+/// WP-CLI with what its `--prompt=` reads on stdin. Without it the prompt
+/// read nothing and `core install` made up the admin password itself: the
+/// one the customer typed never reached WordPress, and the one it had was
+/// printed nowhere.
+fn run_wp_with_stdin(
+    as_user: &str,
+    home: &str,
+    php_binary: &str,
+    args: &[String],
+    stdin: Option<&snpanel_core::SecretString>,
+) -> HelperResponse {
     let argv = wp_argv(as_user, home, php_binary, args);
     let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-    exec::respond(&format!("wp (as {as_user})"), exec::run(&borrowed))
+    let input = stdin.map(|s| s.expose().as_bytes());
+    exec::respond(
+        &format!("wp (as {as_user})"),
+        exec::run_with_stdin(&borrowed, input),
+    )
 }
 
 /// The argument vector, built separately so it can be read without being run.

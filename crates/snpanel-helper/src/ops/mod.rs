@@ -311,7 +311,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         }
         HelperRequest::SiteRuntimeDelete { user: u, path } => site::runtime_delete(u, path),
         HelperRequest::Wp { args } => site::wp(args),
-        HelperRequest::WpSite { user: u, php, args } => site::wp_site(u, *php, args),
+        HelperRequest::WpSite {
+            user: u,
+            php,
+            args,
+            stdin,
+        } => site::wp_site(u, *php, args, stdin.as_ref()),
         HelperRequest::SitePopulate {
             user: u,
             root,

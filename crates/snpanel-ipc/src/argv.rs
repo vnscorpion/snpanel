@@ -1327,10 +1327,18 @@ impl HelperRequest {
                         "usage: wp-site <site-user> [--php-version=<version>] <args...>",
                     ));
                 }
+                // Read only when WP-CLI will prompt for it: every other call
+                // carries nothing on stdin.
+                let prompts = args.iter().any(|a| a.starts_with("--prompt="));
                 HelperRequest::WpSite {
                     user,
                     php,
                     args: args.to_vec(),
+                    stdin: prompts.then(|| {
+                        snpanel_core::SecretString::new(
+                            String::from_utf8_lossy(&stdin()).into_owned(),
+                        )
+                    }),
                 }
             }
 
@@ -1606,6 +1614,26 @@ mod tests {
         ));
         assert!(map(&["web-switch", "nginx"]).is_err());
         assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
+        // WP-CLI's prompt gets stdin; nothing else does.
+        match HelperRequest::from_argv(
+            &argv(&[
+                "wp-site",
+                "alice",
+                "core",
+                "install",
+                "--prompt=admin_password",
+            ]),
+            || b"s3cret/*\n".to_vec(),
+        ) {
+            Ok(HelperRequest::WpSite { stdin: Some(s), .. }) => {
+                assert_eq!(s.expose(), "s3cret/*\n")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            map(&["wp-site", "alice", "plugin", "list"]),
+            Ok(HelperRequest::WpSite { stdin: None, .. })
+        ));
         assert!(matches!(
             map(&[
                 "site-php-set",
