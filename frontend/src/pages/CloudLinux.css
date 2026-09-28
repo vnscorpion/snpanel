@@ -1,0 +1,16 @@
+.cloudlinux-page .cloudlinux-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cloudlinux-page .cloudlinux-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 190px);
+  min-height: 560px;
+  margin-top: 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 10px;
+  background: #fff;
+}
