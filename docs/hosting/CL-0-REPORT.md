@@ -241,3 +241,43 @@ nftables   table inet snpanel_webfailover:  80 → 9080, 443 → 9443   (LSWS li
    - Không dùng handler theo phiên bản vì nó mất suEXEC.
 3. Khách thật sự cần một site chạy phiên bản khác: tách site đó sang một user riêng. SNPanel đã có sẵn chức năng chuyển chủ sở hữu site.
 4. Mở ticket với LiteSpeed và CloudLinux, dẫn chiếu CLOS-4167, hỏi lộ trình hỗ trợ Isolates dưới LiteSpeed cho panel tự viết. Khi có hỗ trợ, SNPanel không phải sửa gì, vì cơ chế đang dùng đúng là Isolates.
+
+---
+
+## 6. Buổi 3: dùng thật trên panel — lỗi giao diện và dọn sạch stack cũ
+
+**F31 — Dashboard báo "Stopped: snpanel-api, nginx, mariadb, valkey" dù mọi thứ đang chạy.**
+- Nguyên nhân: file `cagefs-dbus-hardening.conf` của gói `cagefs` (CLOS-2704/4516) **chặn mọi account không phải root truy vấn systemd qua D-Bus**. Lệnh `systemctl is-active` chạy dưới quyền `snpanel` vì thế không trả lời được gì.
+- → Lệnh nâng cấp cài `/etc/dbus-1/system.d/snpanel-systemd-read.conf`. File này chỉ cho `snpanel` các lệnh **đọc** (`Properties.Get/GetAll`, `Manager.GetUnit/LoadUnit/ListUnitsByNames/GetUnitProcesses`), sau đó chạy `busctl … ReloadConfig`.
+  - Đã kiểm tra: `stop` vẫn bị từ chối. User khách vẫn bị CageFS chặn như cũ.
+  - Không sửa file của CloudLinux, vì bản cập nhật `cagefs` sẽ ghi đè nó.
+  - Thêm `snpanel` vào nhóm `clsupergid` **không** giải quyết được việc này.
+- → Danh sách service trên máy Hosting không còn nginx/PHP-FPM. Nó gồm `lshttpd`, `httpd`, `db_governor`, `snpanel-webwatch` (PR #24).
+
+**F32 — CloudLinux chặn account không phải root đọc `/proc/modules`** ("Operation not permitted").
+- → Nhận diện LVE bằng `/sys/module/kmodlve` (PR #25).
+
+**F33 — Panel không khởi động khi thiếu `/etc/nginx`** (226/NAMESPACE).
+- Nguyên nhân: `ReadWritePaths=` của unit liệt kê các thư mục nginx.
+- → Các đường dẫn không bắt buộc thêm tiền tố `-` (PR #24).
+
+**F34 — Gỡ hẳn Nginx, PHP-FPM và Remi** (đã làm trên VPS; phải thành bước S10 của lệnh nâng cấp):
+- RPM phpMyAdmin (EPEL) kéo theo `nginx-filesystem` và `php8.4-fpm`, còn RPM composer kéo theo `php-cli`.
+  - phpMyAdmin được giữ nguyên bản đang chạy, **không còn thuộc RPM**. Cấu hình vẫn ở `/etc/phpMyAdmin`, dữ liệu ở `/var/lib/phpMyAdmin`, nhóm sở hữu là `snpanel-pma`.
+  - Composer cài bằng phar chính thức, có kiểm tra chữ ký SHA-384.
+- `/usr/bin/php` được ghi là **thuộc** `php8.4-cli`, nên gỡ gói đó là mất luôn file.
+  - → Sau khi gỡ, đặt lại file thật của alt-php mặc định. `php8.3`/`php8.4`/`php83`/`php84` trỏ sang alt-php.
+- alt-php native (chạy ngoài cage: phpMyAdmin, WP-CLI và composer do root chạy) **chỉ nạp `default.ini`**, không có `mysqli` hay `phar`.
+  - → Symlink các file ini cần thiết từ `php.d.all` sang `php.d`, cộng một `snpanel-mysql.ini` duy nhất để `mysqlnd` chỉ nạp một lần. Đặt `date.timezone`.
+  - Hệ quả thấy được: phpMyAdmin đi đúng luồng SSO (302 → `snpanel-signon.php`).
+- Xoá `/etc/nginx`, log và cache của nginx, `/etc/opt/remi`, `/opt/remi`, các thư mục shim `/etc/php`, rồi chạy `cagefsctl --force-update`.
+- Kết quả: Apache 0 khác biệt, LiteSpeed chỉ còn 4 khác biệt (F30), `/` dùng 6,1 GB.
+
+**F35 — Helper chạy thường trực** (`snpanel-helper.service --serve`).
+- Thay binary mà chỉ restart socket thì tiến trình cũ vẫn chạy.
+- → `update.sh` và lệnh nâng cấp phải restart cả `snpanel-helper.service`.
+
+**F36 — Các việc giao diện vẫn còn (theo plan):**
+- *"The WAF engine is not installed"*: phần WAF hiện chỉ hiểu ModSecurity của nginx; `mod_security2` cho Apache/LiteSpeed thuộc phase C.
+- *"No backup schedule"*: không phải lỗi. Máy thử chưa có lịch backup.
+- Tạo và sửa site qua panel vẫn cần phase B (tách lớp web/PHP).
