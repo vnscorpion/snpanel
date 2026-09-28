@@ -1,0 +1,20 @@
+[Unit]
+Description=SNPanel: CloudLinux Manager UI (loopback, behind the panel at /cloudlinux/)
+After=network.target
+
+[Service]
+Type=simple
+User=snpanel-lvem
+Group=snpanel-lvem
+# Several workers: the SPA fires requests in parallel.
+Environment=PHP_CLI_SERVER_WORKERS=4
+ExecStart=/opt/alt/php84/usr/bin/php -S 127.0.0.1:2224 -t /var/lib/snpanel-lvemanager /usr/local/lib/snpanel/cloudlinux-ui-router.php
+Restart=always
+RestartSec=2
+# sudo (cloudlinux-cli.py) must work and inherits this unit's namespace: no
+# NoNewPrivileges, ProtectHome or ProtectSystem. The account has
+# one sudo rule and a locked password.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

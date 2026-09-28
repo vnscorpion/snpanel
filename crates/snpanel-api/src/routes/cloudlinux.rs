@@ -100,7 +100,9 @@ pub fn user_info(username: &str, uid: Option<u32>, admin: bool, domain: &str) ->
         "userId": uid.unwrap_or(0),
         "userType": if admin { "admin" } else { "user" },
         "baseUri": "/cloudlinux/",
-        "assetsUri": "/cloudlinux/assets",
+        // LveManager.php appends "/assets/..." itself; base_path/assets is
+        // where CloudLinux copies the SPA, so the prefix is the base.
+        "assetsUri": "/cloudlinux",
         "lang": "en",
         "userDomain": domain,
     })
@@ -178,6 +180,8 @@ mod tests {
         assert_eq!(v["userType"], "user");
         assert_eq!(v["userId"], 1001);
         assert_eq!(user_info("admin", None, true, "")["userType"], "admin");
+        // "/cloudlinux" + LveManager's own "/assets/static/..." = the files.
+        assert_eq!(v["assetsUri"], "/cloudlinux");
     }
 
     #[test]
