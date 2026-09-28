@@ -83,6 +83,10 @@ fn web_user() -> String {
 }
 
 /// `panel-user-ensure`. Idempotent: safe to run against an existing account.
+/// Directories CloudLinux's tools create in a customer's home as the
+/// customer, which a root-owned home would refuse them.
+const CLOUDLINUX_HOME_DIRS: &[&str] = &[".lve", ".lvestats"];
+
 pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperResponse {
     ensure_system_group(SITES_GROUP);
     ensure_system_group(SFTP_GROUP);
@@ -160,6 +164,26 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
     let _ = exec::run(&["chmod", "-t", &home_str]);
     // Any inherited ACL would silently widen access past the mode bits.
     let _ = exec::run(&["setfacl", "-b", &home_str]);
+
+    // CloudLinux writes a few things into the customer's home as the
+    // customer - isolatectl's log (~/.lve), lve-stats' notification marker
+    // (~/.lvestats) - and the home is root's (the SFTP chroot needs that).
+    // Made here, the customer's own, private. The home being root's is also
+    // what keeps these from being a symlink the customer planted.
+    if snpanel_osabi::hosting::cloudlinux().is_some() {
+        let owner = format!("{0}:{0}", user.as_str());
+        for dir in CLOUDLINUX_HOME_DIRS {
+            let path = home.join(dir);
+            if path.is_symlink() {
+                let _ = std::fs::remove_file(&path);
+            }
+            if std::fs::create_dir_all(&path).is_ok() {
+                let p = path.to_string_lossy();
+                let _ = exec::run(&["chown", &owner, &p]);
+                let _ = exec::run(&["chmod", "0700", &p]);
+            }
+        }
+    }
 
     if let Some(pw) = password {
         let resp = set_password(user, pw);
