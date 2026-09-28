@@ -61,7 +61,12 @@ def main():
     except OSError as e:
         fail(f"snapshot unreadable: {e}")
 
-    caller = os.getuid()
+    # The effective uid: CloudLinux's setuid-root helpers (lve-stats'
+    # lve_stats_configs_reader, run by the customer's Resource Usage page) call
+    # these scripts with the customer's real uid and root's effective one, and
+    # expect root's answers. Only root or a setuid binary root installed can
+    # have euid 0, so a customer's own process still sees only its own data.
+    caller = os.geteuid()
     caller_name = pwd.getpwuid(caller).pw_name if caller else None
 
     if cmd == "panel_info":
