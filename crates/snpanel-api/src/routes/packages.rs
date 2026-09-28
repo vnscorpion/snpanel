@@ -148,6 +148,7 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         &package.name,
     )
     .await;
+    crate::cpapi_sync::poke();
     axum::Json(to_json(&package)).into_response()
 }
 
@@ -227,6 +228,8 @@ async fn update(
             return internal_error();
         }
     };
+    // CloudLinux keys a package's LVE limits by its name.
+    super::lve::package_renamed(&state, &existing.name, &package.name).await;
 
     audit_action(
         &state,
@@ -282,6 +285,7 @@ async fn remove(
         return internal_error();
     }
 
+    super::lve::package_deleted(&state, &name).await;
     audit_action(&state, &parts, current.user.id, "delete_package", &name).await;
     axum::Json(json!({ "ok": true })).into_response()
 }

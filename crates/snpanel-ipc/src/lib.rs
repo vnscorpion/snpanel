@@ -17,10 +17,12 @@
 
 mod argv;
 pub use argv::InvocationError;
+mod cpapi;
 mod fail2ban;
 mod lve;
+pub use cpapi::{CpapiDomain, CpapiSnapshot, CpapiUser};
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
-pub use lve::LveLimits;
+pub use lve::{LveLimits, LvePackageName};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -1272,6 +1274,27 @@ pub enum HelperRequest {
     LveReset {
         user: PanelUsername,
     },
+    /// `lve-package-set` - a hosting package's LVE limits. CloudLinux applies
+    /// them to every account the CPAPI snapshot puts on that package.
+    LvePackageSet {
+        package: LvePackageName,
+        limits: LveLimits,
+    },
+    /// `lve-package-reset` - drop a package's own limits; its accounts fall
+    /// back to the default LVE.
+    LvePackageReset {
+        package: LvePackageName,
+    },
+    /// `lve-package-rename` - carry a package's limits over to its new name.
+    LvePackageRename {
+        from: LvePackageName,
+        to: LvePackageName,
+    },
+    /// `cpapi-sync` - write the snapshot CloudLinux's integration scripts
+    /// read, then re-apply LVE limits so package changes take effect.
+    CpapiSync {
+        snapshot: CpapiSnapshot,
+    },
 }
 
 impl HelperRequest {
@@ -1452,6 +1475,10 @@ impl HelperRequest {
             Self::LveStatus => "lve-status",
             Self::LveSet { .. } => "lve-set",
             Self::LveReset { .. } => "lve-reset",
+            Self::LvePackageSet { .. } => "lve-package-set",
+            Self::LvePackageReset { .. } => "lve-package-reset",
+            Self::LvePackageRename { .. } => "lve-package-rename",
+            Self::CpapiSync { .. } => "cpapi-sync",
         }
     }
 }

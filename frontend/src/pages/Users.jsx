@@ -2,6 +2,7 @@ import { Ban, Globe, HardDrive, LogIn, Pencil, Play, Plus, RefreshCw, Save, Tras
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 import SftpAccess from '../components/SftpAccess.jsx';
+import PackageLve from '../components/PackageLve.jsx';
 
 export default function UsersPage() {
   const {
@@ -11,6 +12,7 @@ export default function UsersPage() {
     assignDomainToUser,
     assignUserId,
     assignWebsiteId,
+    cloudlinuxAvailable,
     cancelEditingPackage,
     cancelEditingUser,
     createPackage,
@@ -211,6 +213,7 @@ export default function UsersPage() {
             </>}
           </div>)}
         </div>
+        {cloudlinuxAvailable && <PackageLve packages={packages} />}
       </div>}
 
       {activeUserTab === 'add' && <div className="user-tab-panel" id="users-tab-add" role="tabpanel" aria-labelledby="users-tab-button-add">

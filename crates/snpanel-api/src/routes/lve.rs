@@ -15,7 +15,8 @@ use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::permissions::{self, Role};
 use snpanel_core::PanelUsername;
-use snpanel_ipc::LveLimits;
+use snpanel_db::PackageRepo;
+use snpanel_ipc::{LveLimits, LvePackageName};
 
 use crate::auth::CurrentUser;
 use crate::errors::{bad_request, error, not_enough_permissions, not_found};
@@ -31,6 +32,12 @@ pub fn router() -> Router<AppState> {
         .route(
             "/hosting/lve/users/{username}",
             put(set_user).delete(reset_user).fallback(crate::fallback),
+        )
+        .route(
+            "/hosting/lve/packages/{package_id}",
+            put(set_package)
+                .delete(reset_package)
+                .fallback(crate::fallback),
         )
 }
 
@@ -247,6 +254,165 @@ async fn reset_user(
         Ok(v) => axum::Json(v).into_response(),
         Err(r) => r,
     }
+}
+
+/// A panel package's name as CloudLinux keys its limits.
+async fn package_name(state: &AppState, package_id: i64) -> Result<LvePackageName, Response> {
+    let package = PackageRepo::new(state.db.pool())
+        .by_id(package_id)
+        .await
+        .map_err(|_| {
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not read the package",
+            )
+        })?
+        .ok_or_else(|| not_found("Package not found"))?;
+    LvePackageName::parse(&package.name).map_err(|m| error(StatusCode::UNPROCESSABLE_ENTITY, &m))
+}
+
+async fn set_package(
+    State(state): State<AppState>,
+    Path(package_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match admit(&state, &mut parts).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let name = match package_name(&state, package_id).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let limits = match body_limits(body).await {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    // CloudLinux has to know the package, and who is on it, before its
+    // limits mean anything.
+    if let Err(e) = crate::cpapi_sync::sync_now(&state).await {
+        tracing::warn!("CloudLinux CPAPI snapshot not written: {e}");
+    }
+    let n = numbers(&limits);
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "lve-package-set",
+        &[name.as_str(), &n[0], &n[1], &n[2], &n[3], &n[4], &n[5]],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return helper_error(&result.failure_detail("Could not set the package's LVE limits"));
+    }
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "lve_package_set",
+        name.as_str(),
+        &json!(limits).to_string(),
+    )
+    .await;
+    match status(&state).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn reset_package(
+    State(state): State<AppState>,
+    Path(package_id): Path<i64>,
+    req: axum::extract::Request,
+) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match admit(&state, &mut parts).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let name = match package_name(&state, package_id).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "lve-package-reset",
+        &[name.as_str()],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return helper_error(&result.failure_detail("Could not reset the package's LVE limits"));
+    }
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "lve_package_reset",
+        name.as_str(),
+        "default",
+    )
+    .await;
+    match status(&state).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(r) => r,
+    }
+}
+
+/// A package was renamed in the panel: its CloudLinux limits follow it.
+/// Best effort - the rename itself has already happened.
+pub(crate) async fn package_renamed(state: &AppState, from: &str, to: &str) {
+    if from == to || !crate::cpapi_sync::applies() {
+        return;
+    }
+    let (Ok(from), Ok(to)) = (LvePackageName::parse(from), LvePackageName::parse(to)) else {
+        return;
+    };
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "lve-package-rename",
+        &[from.as_str(), to.as_str()],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        tracing::warn!(
+            "LVE limits of package {:?} not carried over to {:?}: {}",
+            from.as_str(),
+            to.as_str(),
+            result.failure_detail("lve-package-rename failed")
+        );
+    }
+    crate::cpapi_sync::poke();
+}
+
+/// A package was deleted in the panel: so are its CloudLinux limits, so a
+/// package created later under the same name does not inherit them.
+pub(crate) async fn package_deleted(state: &AppState, name: &str) {
+    if !crate::cpapi_sync::applies() {
+        return;
+    }
+    if let Ok(name) = LvePackageName::parse(name) {
+        let result = crate::shell::privileged(
+            state.settings.command_dry_run,
+            "lve-package-reset",
+            &[name.as_str()],
+            None,
+            None,
+        )
+        .await;
+        if !result.ok() {
+            tracing::warn!(
+                "LVE limits of deleted package {:?} left in place: {}",
+                name.as_str(),
+                result.failure_detail("lve-package-reset failed")
+            );
+        }
+    }
+    crate::cpapi_sync::poke();
 }
 
 #[cfg(test)]

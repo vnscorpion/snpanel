@@ -4,13 +4,16 @@
   flex-wrap: wrap;
 }
 
+/* CloudLinux's pages sit in the panel as if they were its own: no frame,
+   no card, the full width and the rest of the window's height. */
 .cloudlinux-page .cloudlinux-frame {
   display: block;
   width: 100%;
-  height: calc(100vh - 190px);
+  height: calc(100vh - 170px);
   min-height: 560px;
-  margin-top: 12px;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 10px;
-  background: #fff;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color-scheme: normal;
 }

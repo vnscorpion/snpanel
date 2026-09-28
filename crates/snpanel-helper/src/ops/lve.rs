@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 use snpanel_core::PanelUsername;
-use snpanel_ipc::{HelperErrorKind, HelperResponse, LveLimits};
+use snpanel_ipc::{HelperErrorKind, HelperResponse, LveLimits, LvePackageName};
 
 use crate::exec;
 
@@ -163,6 +163,117 @@ fn limits_result(label: &str, out: std::io::Result<exec::Output>) -> HelperRespo
     HelperResponse::failed(kind, format!("{label}: {detail}"))
 }
 
+/// Where lvectl keeps the default's, packages' and LVEs' limits.
+const VE_CFG: &str = "/etc/container/ve.cfg";
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// The value of `attr="..."` inside one XML tag.
+fn attr<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
+    let key = format!("{attr}=\"");
+    let start = tag.find(&key)? + key.len();
+    let len = tag[start..].find('"')?;
+    Some(&tag[start..start + len])
+}
+
+/// Every `<package id="...">` block in ve.cfg: its (unescaped) name, and the
+/// `lvectl package-set` flags that reproduce exactly the limits it sets. A
+/// limit the package leaves to the default is left out, so a copy inherits
+/// the same way the original did. Memory is stored in 4 KiB pages.
+pub fn parse_ve_packages(ve_cfg: &str) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut rest = ve_cfg;
+    while let Some(at) = rest.find("<package ") {
+        rest = &rest[at..];
+        let Some(open_end) = rest.find('>') else {
+            break;
+        };
+        let open = &rest[..open_end];
+        let Some(id) = attr(open, "id") else {
+            rest = &rest[open_end..];
+            continue;
+        };
+        let name = xml_unescape(id);
+        let body_end = rest.find("</package>").unwrap_or(rest.len());
+        let body = &rest[open_end + 1..body_end];
+        let mut flags = Vec::new();
+        let pages = |v: &str| v.trim().parse::<u64>().ok().map(|p| p * 4);
+        for tag in body
+            .split('<')
+            .filter(|t| !t.trim().is_empty() && !t.starts_with('/'))
+        {
+            let element = tag.split_whitespace().next().unwrap_or("");
+            match element {
+                "cpu" => attr(tag, "limit").map(|v| flags.push(format!("--speed={v}"))),
+                "ncpu" => attr(tag, "limit").map(|v| flags.push(format!("--ncpu={v}"))),
+                "io" => attr(tag, "limit").map(|v| flags.push(format!("--io={v}"))),
+                "iops" => attr(tag, "limit").map(|v| flags.push(format!("--iops={v}"))),
+                "nproc" => attr(tag, "limit").map(|v| flags.push(format!("--nproc={v}"))),
+                "pmem" => attr(tag, "limit")
+                    .and_then(pages)
+                    .map(|k| flags.push(format!("--pmem={k}K"))),
+                "mem" => attr(tag, "limit")
+                    .and_then(pages)
+                    .map(|k| flags.push(format!("--vmem={k}K"))),
+                "other" => {
+                    attr(tag, "maxentryprocs").map(|v| flags.push(format!("--maxEntryProcs={v}")))
+                }
+                _ => None,
+            };
+        }
+        out.push((name, flags));
+        rest = &rest[body_end..];
+    }
+    out
+}
+
+fn ve_packages() -> Vec<(String, Vec<String>)> {
+    std::fs::read_to_string(VE_CFG)
+        .map(|s| parse_ve_packages(&s))
+        .unwrap_or_default()
+}
+
+/// The packages out of `lvectl package-list --json` (the ones the CPAPI
+/// snapshot reports), each marked with whether it has limits of its own.
+pub fn parse_packages(package_list: &str, own: &[String]) -> Option<Vec<Value>> {
+    let v: Value = serde_json::from_str(package_list).ok()?;
+    let mut out = Vec::new();
+    for row in v["data"].as_array()? {
+        let Some(name) = row["ID"].as_str() else {
+            continue;
+        };
+        if name == "VE_DEFAULT" {
+            continue;
+        }
+        let n = |k: &str| {
+            row[k]
+                .as_str()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        out.push(json!({
+            "name": name,
+            "custom": own.iter().any(|o| o == name),
+            "limits": {
+                "speed_percent": n("SPEED"),
+                "pmem_mb": size_mb(row["PMEM"].as_str().unwrap_or("0")),
+                "ep": n("EP"),
+                "nproc": n("NPROC"),
+                "io_kbps": n("IO"),
+                "iops": n("IOPS"),
+            },
+        }));
+    }
+    Some(out)
+}
+
 /// `lve-status`.
 pub fn status() -> HelperResponse {
     if let Err(r) = require_lve() {
@@ -188,10 +299,71 @@ pub fn status() -> HelperResponse {
             "cloudlinux-limits get did not succeed".to_string(),
         );
     };
+    let own: Vec<String> = ve_packages().into_iter().map(|(n, _)| n).collect();
+    let packages = match exec::run(&["lvectl", "package-list", "--json"]) {
+        Ok(o) if o.ok() => parse_packages(&o.stdout, &own).unwrap_or_default(),
+        _ => Vec::new(),
+    };
     HelperResponse::with_stdout(format!(
         "{}\n",
-        json!({ "default": default, "users": users })
+        json!({ "default": default, "users": users, "packages": packages })
     ))
+}
+
+/// Package limits reach running LVEs only when they are re-applied.
+fn apply_all(label: &str, out: std::io::Result<exec::Output>) -> HelperResponse {
+    if !matches!(&out, Ok(o) if o.ok()) {
+        return exec::respond(label, out);
+    }
+    exec::respond("lvectl apply all", exec::run(&["lvectl", "apply", "all"]))
+}
+
+/// `lve-package-set`.
+pub fn package_set(package: &LvePackageName, limits: &LveLimits) -> HelperResponse {
+    if let Err(r) = require_lve() {
+        return r;
+    }
+    if let Err(m) = limits.validate() {
+        return HelperResponse::failed(HelperErrorKind::BadRequest, m);
+    }
+    let flags = limits.flags();
+    let mut argv = vec!["lvectl", "package-set", package.as_str()];
+    argv.extend(flags.iter().map(String::as_str));
+    apply_all("lvectl package-set", exec::run(&argv))
+}
+
+/// `lve-package-reset`. Deleting limits a package does not have succeeds.
+pub fn package_reset(package: &LvePackageName) -> HelperResponse {
+    if let Err(r) = require_lve() {
+        return r;
+    }
+    apply_all(
+        "lvectl package-delete",
+        exec::run(&["lvectl", "package-delete", package.as_str()]),
+    )
+}
+
+/// `lve-package-rename`. A package without limits of its own has nothing to
+/// carry over; the new name inherits the default just as the old one did.
+pub fn package_rename(from: &LvePackageName, to: &LvePackageName) -> HelperResponse {
+    if let Err(r) = require_lve() {
+        return r;
+    }
+    let Some((_, flags)) = ve_packages().into_iter().find(|(n, _)| n == from.as_str()) else {
+        return HelperResponse::with_stdout("ok\n".to_string());
+    };
+    if !flags.is_empty() {
+        let mut argv = vec!["lvectl", "package-set", to.as_str()];
+        argv.extend(flags.iter().map(String::as_str));
+        let out = exec::run(&argv);
+        if !matches!(&out, Ok(o) if o.ok()) {
+            return exec::respond("lvectl package-set", out);
+        }
+    }
+    apply_all(
+        "lvectl package-delete",
+        exec::run(&["lvectl", "package-delete", from.as_str()]),
+    )
 }
 
 /// `lve-set`.
@@ -308,6 +480,62 @@ mod tests {
             parse_users(r#"{"result": "No such user (%(user)s)", "users": []}"#),
             None
         );
+    }
+
+    // ve.cfg as lvectl wrote it on the CL-0 machine.
+    const VE_CFG_SAMPLE: &str = r#"<?xml version="1.0" ?>
+<lveconfig>
+	<defaults>
+		<cpu limit="100%"/>
+		<pmem limit="262144"/>
+	</defaults>
+	<package id="Starter">
+		<cpu limit="50%"/>
+		<io limit="512"/>
+		<pmem limit="131072"/>
+		<nproc limit="50"/>
+		<iops limit="512"/>
+		<other maxentryprocs="10"/>
+	</package>
+	<package id="Gói Pro &amp; &lt;x&gt;">
+		<cpu limit="20%"/>
+	</package>
+	<lve id="48">
+		<cpu limit="400%"/>
+	</lve>
+</lveconfig>"#;
+
+    #[test]
+    fn package_limits_are_read_back_as_the_flags_that_set_them() {
+        let pkgs = parse_ve_packages(VE_CFG_SAMPLE);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].0, "Starter");
+        assert_eq!(
+            pkgs[0].1,
+            [
+                "--speed=50%",
+                "--io=512",
+                "--pmem=524288K",
+                "--nproc=50",
+                "--iops=512",
+                "--maxEntryProcs=10"
+            ]
+        );
+        // Escaped names come back as the panel spells them, and a package
+        // that sets one limit carries only that one.
+        assert_eq!(pkgs[1].0, "Gói Pro & <x>");
+        assert_eq!(pkgs[1].1, ["--speed=20%"]);
+    }
+
+    #[test]
+    fn packages_are_marked_with_whether_they_have_their_own_limits() {
+        let list = r#"{"data":[{"ID":"VE_DEFAULT","SPEED":"100","PMEM":"1024M","EP":"20","NPROC":"100","IO":"1024","IOPS":"1024"},{"ID":"Starter","SPEED":"50","PMEM":"512M","EP":"10","NPROC":"50","IO":"512","IOPS":"512"},{"ID":"Pro","SPEED":"100","PMEM":"1024M","EP":"20","NPROC":"100","IO":"1024","IOPS":"1024"}]}"#;
+        let pkgs = parse_packages(list, &["Starter".to_string()]).unwrap();
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0]["name"], "Starter");
+        assert_eq!(pkgs[0]["custom"], true);
+        assert_eq!(pkgs[0]["limits"]["pmem_mb"], 512);
+        assert_eq!(pkgs[1]["custom"], false);
     }
 
     #[test]

@@ -434,6 +434,8 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
             return internal_error();
         }
     };
+    // Which package an account is on decides its CloudLinux limits.
+    crate::cpapi_sync::poke();
 
     super::packages::audit_action(
         &state,
@@ -956,6 +958,7 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
         tracing::error!("updating user {user_id} failed: {e}");
         return internal_error();
     }
+    crate::cpapi_sync::poke();
 
     for website in &websites {
         let status = if suspending { "suspended" } else { "active" };
@@ -1302,6 +1305,7 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
             return internal_error();
         }
     };
+    crate::cpapi_sync::poke();
 
     super::packages::audit_action(
         &state,
@@ -1411,6 +1415,7 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         tracing::error!("deleting {} failed: {e}", user.username);
         return internal_error();
     }
+    crate::cpapi_sync::poke();
 
     super::packages::audit_action_detail(
         &state,

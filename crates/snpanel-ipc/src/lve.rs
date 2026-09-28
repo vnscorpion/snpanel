@@ -68,9 +68,72 @@ impl LveLimits {
     }
 }
 
+/// A hosting package's name as CloudLinux knows it: the panel package's own
+/// name, which is what the CPAPI `packages` and `users` scripts report and
+/// what `lvectl package-set` keys its limits by.
+///
+/// The panel allows any printable name up to 100 characters. What is refused
+/// here is what would change the meaning of an `lvectl` command line: an
+/// empty name, a leading dash, control characters, surrounding whitespace.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct LvePackageName(String);
+
+impl LvePackageName {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let ok = !raw.is_empty()
+            && raw.chars().count() <= 100
+            && raw.trim() == raw
+            && !raw.starts_with('-')
+            && !raw.chars().any(char::is_control);
+        if ok {
+            Ok(Self(raw.to_string()))
+        } else {
+            Err(format!("invalid package name: {raw:?}"))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for LvePackageName {
+    type Error = String;
+    fn try_from(raw: String) -> Result<Self, String> {
+        Self::parse(&raw)
+    }
+}
+
+impl From<LvePackageName> for String {
+    fn from(name: LvePackageName) -> String {
+        name.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_names_are_the_panels_but_never_flags() {
+        for ok in ["Starter", "Gói Pro & <x>", "Business Plus", "a"] {
+            assert_eq!(LvePackageName::parse(ok).unwrap().as_str(), ok);
+        }
+        let long = "x".repeat(101);
+        for bad in [
+            "",
+            "-rf",
+            " Starter",
+            "Starter ",
+            "a\nb",
+            "a\tb",
+            long.as_str(),
+        ] {
+            assert!(LvePackageName::parse(bad).is_err(), "{bad:?}");
+        }
+        assert!(serde_json::from_str::<LvePackageName>(r#""--speed=1%""#).is_err());
+    }
 
     fn defaults() -> LveLimits {
         // CloudLinux's own out-of-the-box default LVE.

@@ -40,6 +40,7 @@ mod client;
 mod cloudflare;
 mod cloudlinux_ui;
 mod compose;
+mod cpapi_sync;
 mod cron;
 mod cron_due;
 mod ctl;
@@ -342,6 +343,10 @@ async fn run() -> anyhow::Result<()> {
     // the Notifications addon is installed. Only the server runs it: a
     // one-shot process above has returned already.
     notify::watcher::start(state.clone());
+
+    // CloudLinux's view of accounts and packages, on a Hosting Edition
+    // server with CloudLinux only. Server only, like the watcher.
+    cpapi_sync::start(&state);
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;

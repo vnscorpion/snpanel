@@ -4206,6 +4206,7 @@ function App() {
       aliasModes,
       apiTokens,
       appVersion,
+      cloudlinuxAvailable,
       applicationAddonInstalled,
       malwareAddonInstalled,
       applyChmod,

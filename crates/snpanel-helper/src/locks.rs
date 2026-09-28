@@ -95,7 +95,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "clamav-status"
         | "maldet-status"
         | "fail2ban-status"
-            | "lve-status"
+        | "lve-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -132,6 +132,11 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         "panel-user-ensure" | "panel-user-delete" | "panel-user-password" => &[Accounts],
         // LVE limits are per account; the default LVE is every account's.
         "lve-set" | "lve-reset" => &[Accounts],
+        // A package's limits reach every account on it; the snapshot says
+        // which accounts those are.
+        "lve-package-set" | "lve-package-reset" | "lve-package-rename" | "cpapi-sync" => {
+            &[Accounts]
+        }
         "sftp-sub-create" | "sftp-sub-password" | "sftp-sub-delete" => &[Accounts],
         "site-runtime-ensure" | "site-runtime-move" | "site-runtime-delete" | "rm-site" => {
             &[Accounts, Systemd, Php]

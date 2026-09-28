@@ -149,6 +149,10 @@ fn user_of(raw: &str) -> Result<PanelUsername, InvocationError> {
     PanelUsername::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
 
+fn package_of(raw: &str) -> Result<crate::LvePackageName, InvocationError> {
+    crate::LvePackageName::parse(raw).map_err(InvocationError::invalid)
+}
+
 fn app_of(raw: &str) -> Result<AppName, InvocationError> {
     AppName::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
@@ -661,6 +665,39 @@ impl HelperRequest {
             ("lve-reset", 1) => HelperRequest::LveReset {
                 user: user_of(&rest[0])?,
             },
+            // lve-package-set <package> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
+            ("lve-package-set", 7) => {
+                let package = package_of(&rest[0])?;
+                let n = |i: usize, what: &str| {
+                    rest[i].parse::<u32>().map_err(|_| {
+                        InvocationError::invalid(format!("invalid {what}: {}", rest[i]))
+                    })
+                };
+                let limits = crate::LveLimits {
+                    speed_percent: n(1, "speed")?,
+                    pmem_mb: n(2, "pmem")?,
+                    ep: n(3, "entry processes")?,
+                    nproc: n(4, "nproc")?,
+                    io_kbps: n(5, "io")?,
+                    iops: n(6, "iops")?,
+                };
+                limits.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::LvePackageSet { package, limits }
+            }
+            ("lve-package-reset", 1) => HelperRequest::LvePackageReset {
+                package: package_of(&rest[0])?,
+            },
+            ("lve-package-rename", 2) => HelperRequest::LvePackageRename {
+                from: package_of(&rest[0])?,
+                to: package_of(&rest[1])?,
+            },
+            // The snapshot is JSON on stdin.
+            ("cpapi-sync", 0) => {
+                let snapshot: crate::CpapiSnapshot = serde_json::from_slice(&stdin())
+                    .map_err(|e| InvocationError::invalid(format!("invalid snapshot: {e}")))?;
+                snapshot.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::CpapiSync { snapshot }
+            }
             ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
                 version: php_or_none(&rest[0])?
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
@@ -1450,6 +1487,46 @@ mod tests {
         ));
         assert!(map(&["lve-reset", "root"]).is_err());
         assert!(map(&["lve-reset"]).is_err());
+        assert!(matches!(
+            map(&[
+                "lve-package-set",
+                "Gói Pro",
+                "50",
+                "512",
+                "10",
+                "50",
+                "512",
+                "512"
+            ]),
+            Ok(HelperRequest::LvePackageSet { .. })
+        ));
+        assert!(map(&[
+            "lve-package-set",
+            "-x",
+            "50",
+            "512",
+            "10",
+            "50",
+            "512",
+            "512"
+        ])
+        .is_err());
+        assert!(map(&[
+            "lve-package-set",
+            "Pro",
+            "0",
+            "512",
+            "10",
+            "50",
+            "512",
+            "512"
+        ])
+        .is_err());
+        assert!(matches!(
+            map(&["lve-package-rename", "Starter", "Basic"]),
+            Ok(HelperRequest::LvePackageRename { .. })
+        ));
+        assert!(map(&["lve-package-reset", ""]).is_err());
     }
 
     #[test]

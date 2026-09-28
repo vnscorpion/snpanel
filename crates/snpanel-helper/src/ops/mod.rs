@@ -14,6 +14,7 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod cpapi;
 pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
@@ -380,6 +381,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LveStatus => lve::status(),
         HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
         HelperRequest::LveReset { user } => lve::reset(user),
+        HelperRequest::LvePackageSet { package, limits } => lve::package_set(package, limits),
+        HelperRequest::LvePackageReset { package } => lve::package_reset(package),
+        HelperRequest::LvePackageRename { from, to } => lve::package_rename(from, to),
+        HelperRequest::CpapiSync { snapshot } => cpapi::sync(snapshot),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,
