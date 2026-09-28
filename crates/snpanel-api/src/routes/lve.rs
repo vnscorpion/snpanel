@@ -34,6 +34,10 @@ pub fn router() -> Router<AppState> {
             put(set_user).delete(reset_user).fallback(crate::fallback),
         )
         .route(
+            "/hosting/lve/packages",
+            get(read_packages).fallback(crate::fallback),
+        )
+        .route(
             "/hosting/lve/packages/{package_id}",
             put(set_package)
                 .delete(reset_package)
@@ -76,6 +80,37 @@ fn parse_limits(body: &Value) -> Result<LveLimits, String> {
     };
     limits.validate()?;
     Ok(limits)
+}
+
+/// The helper's `lve-packages` as JSON: the default and every package,
+/// without the per-account listing that makes `lve-status` slow.
+async fn packages_status(state: &AppState) -> Result<Value, Response> {
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "lve-packages",
+        &[],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return Err(helper_error(
+            &result.failure_detail("Could not read LVE limits"),
+        ));
+    }
+    Ok(serde_json::from_str::<Value>(result.stdout.trim())
+        .unwrap_or_else(|_| json!({ "default": null, "packages": [] })))
+}
+
+async fn read_packages(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, _) = req.into_parts();
+    if let Err(r) = admit(&state, &mut parts).await {
+        return r;
+    }
+    match packages_status(&state).await {
+        Ok(v) => axum::Json(v).into_response(),
+        Err(r) => r,
+    }
 }
 
 /// The helper's `lve-status` as JSON.
@@ -315,7 +350,7 @@ async fn set_package(
         &json!(limits).to_string(),
     )
     .await;
-    match status(&state).await {
+    match packages_status(&state).await {
         Ok(v) => axum::Json(v).into_response(),
         Err(r) => r,
     }
@@ -355,7 +390,7 @@ async fn reset_package(
         "default",
     )
     .await;
-    match status(&state).await {
+    match packages_status(&state).await {
         Ok(v) => axum::Json(v).into_response(),
         Err(r) => r,
     }

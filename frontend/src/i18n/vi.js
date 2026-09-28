@@ -1359,6 +1359,8 @@ export default {
   "Default limits": "Giới hạn mặc định",
   "Use the default limits": "Dùng giới hạn mặc định",
   "Use default": "Dùng mặc định",
+  "Reading CloudLinux limits...": "Đang đọc giới hạn CloudLinux...",
+  "CloudLinux limits could not be read.": "Không đọc được giới hạn CloudLinux.",
   "Saving {name}...": "Đang lưu {name}...",
   "LiteSpeed, Apache, MariaDB and Redis": "LiteSpeed, Apache, MariaDB và Redis",
   "Stopping {name}...": "Đang dừng {name}...",

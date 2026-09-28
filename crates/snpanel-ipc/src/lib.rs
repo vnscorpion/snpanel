@@ -1264,6 +1264,9 @@ pub enum HelperRequest {
     /// user's, with which of a user's limits are their own rather than the
     /// default. Read-only.
     LveStatus,
+    /// `lve-packages` - the default LVE and every package's limits, without
+    /// the per-account listing (which is the slow part of `lve-status`).
+    LvePackages,
     /// `lve-set` - set LVE limits for the default LVE (`user: None`) or for
     /// one user. The limits are range-checked when the request is built.
     LveSet {
@@ -1473,6 +1476,7 @@ impl HelperRequest {
             Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
             Self::LveStatus => "lve-status",
+            Self::LvePackages => "lve-packages",
             Self::LveSet { .. } => "lve-set",
             Self::LveReset { .. } => "lve-reset",
             Self::LvePackageSet { .. } => "lve-package-set",

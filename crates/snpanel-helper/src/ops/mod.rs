@@ -379,6 +379,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
         HelperRequest::MariadbRetune => mariadb::retune(),
         HelperRequest::LveStatus => lve::status(),
+        HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
         HelperRequest::LveReset { user } => lve::reset(user),
         HelperRequest::LvePackageSet { package, limits } => lve::package_set(package, limits),

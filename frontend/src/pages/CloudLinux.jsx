@@ -28,7 +28,7 @@ export default function CloudLinuxPage({ plugin, title, about }) {
       <div><h2>{title}</h2>{about && <p className="hint">{about}</p>}</div>
       <div className="cloudlinux-actions">
         <button className="secondary-light" onClick={open}><RefreshCw size={15}/> {t('Reload')}</button>
-        {url && <a className="button secondary-light" href={url} target="_blank" rel="noopener noreferrer" onClick={() => setTimeout(open, 500)}><ExternalLink size={15}/> {t('Open in a new tab')}</a>}
+        {url && <a className="button-link secondary-light" href={url} target="_blank" rel="noopener noreferrer" onClick={() => setTimeout(open, 500)}><ExternalLink size={15}/> {t('Open in a new tab')}</a>}
       </div>
     </div>
     {failed && <p className="hint">{t('CloudLinux Manager could not be opened.')}</p>}

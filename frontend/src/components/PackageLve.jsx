@@ -23,11 +23,13 @@ export default function PackageLve({ packages }) {
   const [form, setForm] = useState({});
 
   async function load() {
-    const d = await request('/hosting/lve', { silent: true });
-    if (d) setLve(d);
+    setLve(null);
+    const d = await request('/hosting/lve/packages', { silent: true });
+    setLve(d || { failed: true });
   }
   useEffect(() => { load(); }, [packages.length]);
 
+  const ready = lve && !lve.failed;
   const byName = Object.fromEntries((lve?.packages || []).map(p => [p.name, p]));
   const limitsOf = pkg => byName[pkg.name]?.limits || lve?.default;
   const unlimited = n => (Number(n) === 0 ? t('unlimited') : n);
@@ -54,7 +56,7 @@ export default function PackageLve({ packages }) {
   if (!packages.length) return null;
   return <div className="package-lve">
     <div className="section-title user-panel-title">
-      <div><h2>{t('CloudLinux limits')}</h2><p className="hint">{t('Every account gets the LVE limits of its package. A package without its own limits uses the default: {limits}.', { limits: summary(lve?.default) })}</p></div>
+      <div><h2>{t('CloudLinux limits')}</h2><p className="hint">{!lve ? t('Reading CloudLinux limits...') : lve.failed ? t('CloudLinux limits could not be read.') : t('Every account gets the LVE limits of its package. A package without its own limits uses the default: {limits}.', { limits: summary(lve.default) })}</p></div>
       <button className="secondary-light" disabled={!!loading} onClick={load}><RefreshCw size={14}/> {t('Refresh')}</button>
     </div>
     <div className="package-list">
@@ -73,10 +75,10 @@ export default function PackageLve({ packages }) {
               <button className="mini" disabled={!!loading} onClick={() => save(pkg)}><Save size={14}/> {t('Save')}</button>
             </div>
           </> : <>
-            <div className="user-main"><strong>{pkg.name}</strong><small>{summary(limitsOf(pkg))}</small></div>
-            <span className="user-metric"><Gauge size={13}/>{own ? t('Own limits') : t('Default limits')}</span>
+            <div className="user-main"><strong>{pkg.name}</strong><small>{ready ? summary(limitsOf(pkg)) : '…'}</small></div>
+            {ready && <span className="user-metric"><Gauge size={13}/>{own ? t('Own limits') : t('Default limits')}</span>}
             <div className="row-actions">
-              <button className="mini secondary-light" disabled={!!loading || !lve} onClick={() => edit(pkg)}><Pencil size={14}/> {t('Edit')}</button>
+              <button className="mini secondary-light" disabled={!!loading || !ready} onClick={() => edit(pkg)}><Pencil size={14}/> {t('Edit')}</button>
               {own && <button className="mini secondary-light" disabled={!!loading} onClick={() => reset(pkg)} title={t('Use the default limits')}><RotateCcw size={14}/> {t('Use default')}</button>}
             </div>
           </>}

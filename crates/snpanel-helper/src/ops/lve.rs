@@ -274,35 +274,58 @@ pub fn parse_packages(package_list: &str, own: &[String]) -> Option<Vec<Value>> 
     Some(out)
 }
 
+/// The default LVE and the packages, as `lve-status` reports them.
+fn default_and_packages() -> Result<(Value, Vec<Value>), HelperResponse> {
+    let list = match exec::run(&["lvectl", "list", "--json"]) {
+        Ok(o) if o.ok() => o.stdout.clone(),
+        other => return Err(exec::respond("lvectl list", other)),
+    };
+    let Some(default) = parse_default(&list) else {
+        return Err(HelperResponse::failed(
+            HelperErrorKind::Internal,
+            "lvectl list printed no default LVE".to_string(),
+        ));
+    };
+    let own: Vec<String> = ve_packages().into_iter().map(|(n, _)| n).collect();
+    let packages = match exec::run(&["lvectl", "package-list", "--json"]) {
+        Ok(o) if o.ok() => parse_packages(&o.stdout, &own).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    Ok((default, packages))
+}
+
+/// `lve-packages`.
+pub fn packages() -> HelperResponse {
+    if let Err(r) = require_lve() {
+        return r;
+    }
+    match default_and_packages() {
+        Ok((default, packages)) => HelperResponse::with_stdout(format!(
+            "{}\n",
+            json!({ "default": default, "packages": packages })
+        )),
+        Err(r) => r,
+    }
+}
+
 /// `lve-status`.
 pub fn status() -> HelperResponse {
     if let Err(r) = require_lve() {
         return r;
     }
-    let list = match exec::run(&["lvectl", "list", "--json"]) {
-        Ok(o) if o.ok() => o.stdout.clone(),
-        other => return exec::respond("lvectl list", other),
+    let (default, packages) = match default_and_packages() {
+        Ok(v) => v,
+        Err(r) => return r,
     };
     let users = match exec::run(&["cloudlinux-limits", "get", "--json"]) {
         Ok(o) if o.ok() => o.stdout.clone(),
         other => return exec::respond("cloudlinux-limits get", other),
-    };
-    let Some(default) = parse_default(&list) else {
-        return HelperResponse::failed(
-            HelperErrorKind::Internal,
-            "lvectl list printed no default LVE".to_string(),
-        );
     };
     let Some(users) = parse_users(&users) else {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
             "cloudlinux-limits get did not succeed".to_string(),
         );
-    };
-    let own: Vec<String> = ve_packages().into_iter().map(|(n, _)| n).collect();
-    let packages = match exec::run(&["lvectl", "package-list", "--json"]) {
-        Ok(o) if o.ok() => parse_packages(&o.stdout, &own).unwrap_or_default(),
-        _ => Vec::new(),
     };
     HelperResponse::with_stdout(format!(
         "{}\n",

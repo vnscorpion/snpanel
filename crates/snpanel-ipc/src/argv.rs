@@ -640,6 +640,7 @@ impl HelperRequest {
             ("php-pools-retune", 0) | ("php-fpm-retune", 0) => HelperRequest::PhpPoolsRetune,
             ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
             ("lve-status", 0) => HelperRequest::LveStatus,
+            ("lve-packages", 0) => HelperRequest::LvePackages,
             // lve-set <default|user> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
             ("lve-set", 7) => {
                 let user = match rest[0].as_str() {

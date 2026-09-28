@@ -17,3 +17,9 @@
   background: transparent;
   color-scheme: normal;
 }
+
+.cloudlinux-page .cloudlinux-actions .button-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
