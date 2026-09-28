@@ -350,6 +350,18 @@ pub fn render_site_rules<S: AsRef<str>>(
 /// site on the Hosting Edition, where CRS is loaded server-wide.
 pub const HOSTING_CRS_REMOVE: &str = "SecRuleRemoveById 900000-999999 1009001-1009002";
 
+/// A password is random characters, and libinjection reads `/*` or `<` in
+/// one as SQL or HTML: CRS refused WordPress sign-ins (942100, "SQL
+/// Injection Attack Detected via libinjection") for passwords that are
+/// perfectly good. On WordPress's password pages only, those two rules are
+/// taken out; the rest of CRS still reads every field. (Removing just the
+/// password fields from them - `ctl:ruleRemoveTargetById` - is what Apache
+/// would allow, but LiteSpeed's engine ignores it; a whole-rule removal is
+/// what both honour.)
+pub const HOSTING_WP_PASSWORD_EXCEPTION: &str = "# WordPress passwords are not SQL or HTML\n\
+SecRule REQUEST_FILENAME \"@rx /wp-(?:login\\.php|admin/(?:profile|user-edit|user-new)\\.php)$\" \
+\"id:1002001,phase:1,pass,nolog,t:none,ctl:ruleRemoveById=941100,ctl:ruleRemoveById=942100\"";
+
 /// `render_site_rules` for the Hosting Edition: the same rules, for Apache's
 /// mod_security2 and LiteSpeed, which read `/etc/httpd/snpanel/waf/<domain>/`
 /// from inside the site's vhost.
@@ -391,6 +403,7 @@ pub fn render_site_rules_hosting<S: AsRef<str>>(
         chunks.push(HOSTING_CRS_REMOVE.to_string());
     } else {
         chunks.push(format!("# OWASP CRS ({mode}): loaded server-wide"));
+        chunks.push(HOSTING_WP_PASSWORD_EXCEPTION.to_string());
     }
     chunks.push(String::new());
     chunks.push("# SNPanel custom rules".to_string());
@@ -904,6 +917,12 @@ mod tests {
         assert!(!text.contains("Include"));
         let on = render_site_rules_hosting("a.example.com", &all, "", "block").unwrap();
         assert!(!on.contains("SecRuleRemoveById"));
+        // CRS on: WordPress's password pages keep passwords out of libinjection.
+        assert!(on.contains("ctl:ruleRemoveById=942100"));
+        assert!(
+            on.contains(r#""@rx /wp-(?:login\.php|admin/(?:profile|user-edit|user-new)\.php)$""#)
+        );
+        assert!(!text.contains("id:1002001"), "no exception when CRS is off");
         // Custom rules last, so an exception can remove what came before.
         let custom =
             render_site_rules_hosting("a.example.com", &all, "SecRuleRemoveById 942100", "block")
