@@ -732,6 +732,9 @@ pub fn runtime_ensure(
 
     match php {
         None => HelperResponse::ok(),
+        // Hosting Edition: PHP runs through mod_lsapi as the site's owner,
+        // at the owner's PHP Selector version; there is no pool to make.
+        Some(_) if super::apache::active() => HelperResponse::ok(),
         Some(version) => {
             // The pool name hashes the resolved path, as the shell does.
             let resolved = std::fs::canonicalize(root)
@@ -1439,7 +1442,7 @@ fn harden_dir_path(root: &Path, target: &Path, user: &PanelUsername) -> HelperRe
 /// site disappears from the page rather than showing as empty.
 pub fn logs_read_many(domains: &[Domain], kind: LogKind, lines: u32) -> HelperResponse {
     HelperResponse::with_stdout(logs_read_many_in(
-        std::path::Path::new(LOG_DIR),
+        std::path::Path::new(log_dir()),
         domains,
         kind,
         lines,
@@ -1523,7 +1526,7 @@ pub fn log_clear(domain: &Domain, kind: LogKind) -> HelperResponse {
 /// alone, they would not age out either: logrotate stops rotating a log once
 /// it is empty, and the copies behind it stay where they are.
 pub fn logs_delete(domain: &Domain) -> HelperResponse {
-    logs_delete_in(Path::new(LOG_DIR), domain)
+    logs_delete_in(Path::new(log_dir()), domain)
 }
 
 fn logs_delete_in(dir: &Path, domain: &Domain) -> HelperResponse {
@@ -1602,12 +1605,19 @@ impl LogKind {
     }
 }
 
-/// Where nginx writes a site's logs. Named once so the batch read and the
-/// single read cannot drift apart.
-const LOG_DIR: &str = "/var/log/nginx";
+/// Where the web server writes a site's logs: nginx's directory, or on the
+/// Hosting Edition Apache's, which LiteSpeed writes the same files in. Named
+/// once so the batch read and the single read cannot drift apart.
+fn log_dir() -> &'static str {
+    if super::apache::active() {
+        "/var/log/httpd"
+    } else {
+        "/var/log/nginx"
+    }
+}
 
 fn log_path(domain: &Domain, kind: LogKind) -> std::path::PathBuf {
-    std::path::Path::new(LOG_DIR).join(format!("{domain}.{}.log", kind.suffix()))
+    std::path::Path::new(log_dir()).join(format!("{domain}.{}.log", kind.suffix()))
 }
 
 #[cfg(test)]

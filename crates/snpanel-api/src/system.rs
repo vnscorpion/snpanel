@@ -91,6 +91,16 @@ fn php_sort_key(service: &str) -> (usize, Vec<u32>) {
 /// A machine taken to CloudLinux by `snpanel upgrade cloudlinux` - Apache
 /// and/or LiteSpeed installed and nginx gone. The upgrade is one-way and
 /// removes nginx and PHP-FPM, so on such a machine they are not listed at all.
+/// Where a website's access and error logs are: nginx's directory, or on the
+/// Hosting Edition Apache's (LiteSpeed writes the same files).
+pub(crate) fn site_log_dir() -> &'static str {
+    if is_hosting_edition() {
+        "/var/log/httpd"
+    } else {
+        "/var/log/nginx"
+    }
+}
+
 pub(crate) fn is_hosting_edition() -> bool {
     let unit = |name: &str| {
         ["/usr/lib/systemd/system", "/etc/systemd/system"]

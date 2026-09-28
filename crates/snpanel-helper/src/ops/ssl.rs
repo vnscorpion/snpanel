@@ -87,6 +87,25 @@ pub fn certbot_issue(domain: &Domain, aliases: &[Domain], email: Option<&Email>)
         return exec::respond("certbot certonly", out);
     }
 
+    // Hosting Edition: the panel writes the site's vhost with the
+    // certificate and the port-80 redirect itself (apache_vhost.rs); there
+    // is no nginx vhost for certbot to edit.
+    if super::apache::active() {
+        let _ = sync_sni();
+        let mut resp = if issued || matches!(&out, Ok(o) if o.ok()) {
+            HelperResponse::with_stdout(format!("certificate issued for {domain}\n"))
+        } else {
+            exec::respond("certbot certonly", out)
+        };
+        resp.data = Some(serde_json::json!({
+            "domain": domain.as_str(),
+            "aliases": aliases.iter().map(|d| d.as_str()).collect::<Vec<_>>(),
+            "issued": issued,
+            "live": live_dir(domain).to_string_lossy(),
+        }));
+        return resp;
+    }
+
     let install = exec::run(&[
         "certbot",
         "install",
@@ -667,7 +686,7 @@ const NOT_A_LINEAGE: &[&str] = &["README"];
 /// panel is what makes it serve its own. Both end in `|| true` because a
 /// renewal that succeeded must not be reported as failed by the thing that
 /// picks it up.
-const DEPLOY_HOOK: &str = "systemctl reload nginx || true; systemctl restart snpanel-api || true";
+const DEPLOY_HOOK: &str = "systemctl reload nginx 2>/dev/null || true; systemctl reload httpd 2>/dev/null || true; systemctl try-reload-or-restart lshttpd 2>/dev/null || true; systemctl restart snpanel-api || true";
 
 /// `certbot-renew-soon [days]`.
 ///
@@ -1214,11 +1233,12 @@ mod tests {
 
     #[test]
     fn the_deploy_hook_cannot_fail_the_renewal() {
-        // Both halves end in `|| true`. certbot treats a failing deploy hook
-        // as a failed renewal, so a box whose nginx is stopped would report
-        // a renewal that in fact succeeded as an error, every night.
+        // Every command ends in `|| true`. certbot treats a failing deploy
+        // hook as a failed renewal, so a box whose nginx is stopped - or
+        // which has no nginx at all, the Hosting Edition - would report a
+        // renewal that in fact succeeded as an error, every night.
         let parts: Vec<&str> = DEPLOY_HOOK.split(';').collect();
-        assert_eq!(parts.len(), 2, "{DEPLOY_HOOK:?}");
+        assert_eq!(parts.len(), 4, "{DEPLOY_HOOK:?}");
         for part in parts {
             assert!(part.trim_end().ends_with("|| true"), "{part:?}");
         }

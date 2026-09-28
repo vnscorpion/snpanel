@@ -242,7 +242,7 @@ fn ensure_crs() -> Result<String, HelperResponse> {
 }
 
 /// `httpd -t`, then Apache reloaded and LiteSpeed restarted (graceful).
-fn apply() -> Result<(), HelperResponse> {
+pub(crate) fn apply() -> Result<(), HelperResponse> {
     let tested = exec::run(&["httpd", "-t"]);
     if !matches!(&tested, Ok(o) if o.ok()) {
         return Err(exec::respond("httpd -t", tested));

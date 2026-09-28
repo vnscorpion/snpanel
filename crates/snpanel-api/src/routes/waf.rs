@@ -1618,7 +1618,7 @@ async fn clear_access_logs(
         let Ok(domain) = crate::waf::validate_domain(&site.domain) else {
             return bad_request("Invalid domain");
         };
-        let path = format!("/var/log/nginx/{domain}.access.log");
+        let path = format!("{}/{domain}.access.log", crate::system::site_log_dir());
         let result = shell::privileged(
             state.settings.command_dry_run,
             "site-log-clear",
@@ -1779,7 +1779,7 @@ async fn read_site_logs(
 
     let Some(result) = batch else {
         for domain in domains {
-            let path = format!("/var/log/nginx/{domain}.access.log");
+            let path = format!("{}/{domain}.access.log", crate::system::site_log_dir());
             let result = shell::privileged(
                 state.settings.command_dry_run,
                 "site-log-read",

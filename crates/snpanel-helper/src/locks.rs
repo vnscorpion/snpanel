@@ -182,6 +182,8 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "panel-url-set"
         | "waf-site-save"
         | "waf-site-enable"
+        | "apache-site-write"
+        | "apache-site-delete"
         | "waf-site-part-save"
         | "waf-site-delete"
         | "waf-crs-mode"

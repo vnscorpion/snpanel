@@ -1276,6 +1276,16 @@ pub enum HelperRequest {
     /// running and answering, the last failover, LiteSpeed's version,
     /// licence and WebAdmin port. Read-only.
     WebStatus,
+    /// `apache-site-write` - a website's vhost on the Hosting Edition,
+    /// rendered by the API, on stdin.
+    ApacheSiteWrite {
+        domain: Domain,
+        content: String,
+    },
+    /// `apache-site-delete` - remove a website's vhost (Hosting Edition).
+    ApacheSiteDelete {
+        domain: Domain,
+    },
     /// `waf-site-enable` - a site's WAF on or off, on the Hosting Edition
     /// (nginx does this with a block in the vhost, written by the API).
     WafSiteEnable {
@@ -1512,6 +1522,8 @@ impl HelperRequest {
             Self::LvePackages => "lve-packages",
             Self::LveUsage { .. } => "lve-usage",
             Self::WebStatus => "web-status",
+            Self::ApacheSiteWrite { .. } => "apache-site-write",
+            Self::ApacheSiteDelete { .. } => "apache-site-delete",
             Self::WafSiteEnable { .. } => "waf-site-enable",
             Self::WafSitePartSave { .. } => "waf-site-part-save",
             Self::WebSwitch { .. } => "web-switch",

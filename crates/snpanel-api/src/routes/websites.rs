@@ -204,7 +204,18 @@ async fn update_custom_block(
     domain: &str,
     validated: &snpanel_nginx::CustomDirectives,
 ) -> Result<(), Response> {
+    // Before the dry-run shortcut: saying "saved" for directives no web
+    // server here will ever read is worse than refusing them.
+    if crate::system::is_hosting_edition() && !validated.as_str().trim().is_empty() {
+        return Err(crate::errors::conflict(
+            "This server runs LiteSpeed and Apache, which do not read nginx directives. \
+             Use the site's .htaccess for per-site rules.",
+        ));
+    }
     if state.settings.command_dry_run {
+        return Ok(());
+    }
+    if crate::system::is_hosting_edition() {
         return Ok(());
     }
     let Some(existing) = read_vhost(state, domain).await else {
@@ -697,7 +708,11 @@ async fn logs(
         return not_enough_permissions();
     }
 
-    let path = format!("/var/log/nginx/{}.{kind}.log", website.domain);
+    let path = format!(
+        "{}/{}.{kind}.log",
+        crate::system::site_log_dir(),
+        website.domain
+    );
     let lines_arg = lines.to_string();
     let result = shell::privileged(
         state.settings.command_dry_run,
@@ -1012,11 +1027,140 @@ pub(super) async fn rewrite_owned_vhost(
 /// The overrides matter because the caller often knows something the database
 /// does not yet: an alias that has been added inside this transaction and is
 /// not committed, for instance.
+/// The certificate a Hosting Edition vhost serves, by the site's SSL mode.
+///
+/// Let's Encrypt's lineage is named without being checked: the live
+/// directory is root-only, and the flag on the row was set by the helper
+/// after it issued the certificate. The other modes keep the nginx paths
+/// (`rewrite_ssl_paths`), which Apache and LiteSpeed read just as well.
+fn apache_ssl_files(
+    website: &snpanel_db::Website,
+    overrides: &RewriteOverrides,
+) -> Option<crate::apache_vhost::SslFiles> {
+    if overrides.include_ssl == Some(false) || !website.ssl_enabled {
+        return None;
+    }
+    if website.ssl_mode == "letsencrypt" {
+        let live = format!("/etc/letsencrypt/live/{}", website.domain);
+        return Some(crate::apache_vhost::SslFiles {
+            cert: format!("{live}/fullchain.pem"),
+            key: format!("{live}/privkey.pem"),
+            chain: None,
+        });
+    }
+    let (cert, key, ca) = rewrite_ssl_paths(website);
+    Some(crate::apache_vhost::SslFiles {
+        cert: cert?,
+        key: key?,
+        chain: ca,
+    })
+}
+
+/// Write one site's vhost on the Hosting Edition, through the helper.
+pub(super) async fn write_apache_site(
+    state: &AppState,
+    site: &crate::apache_vhost::ApacheSite,
+) -> Result<String, String> {
+    let content = crate::apache_vhost::render(site).map_err(|e| e.0)?;
+    let path = format!("{}/{}.conf", APACHE_SITES_DIR, site.domain);
+    if state.settings.command_dry_run {
+        return Ok(path);
+    }
+    let result = shell::privileged(
+        false,
+        "apache-site-write",
+        &[&site.domain],
+        Some(&content),
+        None,
+    )
+    .await;
+    if result.ok() {
+        Ok(path)
+    } else {
+        Err(result
+            .failure_detail("Cannot write the vhost")
+            .trim()
+            .to_string())
+    }
+}
+
+const APACHE_SITES_DIR: &str = "/etc/httpd/snpanel/sites";
+
+/// `rewrite_website_vhost` on the Hosting Edition: the same inputs and
+/// overrides, rendered for Apache and LiteSpeed. A customer's nginx
+/// directives have no meaning here and are not carried over; suspension is
+/// the `# SUSPENDED` marker the suspend paths put in their overrides.
+async fn rewrite_apache_vhost(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    overrides: RewriteOverrides,
+) -> Result<String, Response> {
+    let ssl = apache_ssl_files(website, &overrides);
+    let aliases_rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let suspended = overrides.custom_directives.as_deref().map(str::trim) == Some("# SUSPENDED");
+    let app_type = match overrides.app_type {
+        Some(forced) => forced.to_string(),
+        None if website.app_type.is_empty() => "wordpress".to_string(),
+        None => website.app_type.clone(),
+    };
+    let rewrite_mode = match overrides.rewrite_mode {
+        Some(forced) => forced.to_string(),
+        None if website.nginx_rewrite_mode.is_empty() => "none".to_string(),
+        None => website.nginx_rewrite_mode.clone(),
+    };
+    let app_port = match overrides.app_port {
+        Some(port) => Some(port),
+        None => match website.app_id {
+            Some(app_id) => state
+                .db
+                .site_apps()
+                .by_id(app_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|app| app.port),
+            None => None,
+        },
+    };
+    let site = crate::apache_vhost::ApacheSite {
+        domain: website.domain.clone(),
+        aliases: overrides
+            .aliases
+            .unwrap_or_else(|| domains_by_mode(&aliases_rows, "alias")),
+        redirects: overrides
+            .redirects
+            .unwrap_or_else(|| domains_by_mode(&aliases_rows, "redirect")),
+        root_path: website.root_path.clone(),
+        document_root: if website.document_root.is_empty() {
+            "public_html".to_string()
+        } else {
+            website.document_root.clone()
+        },
+        rewrite_mode,
+        linux_user: website.linux_user.clone().unwrap_or_default(),
+        app_type,
+        app_port: app_port.and_then(|p| u16::try_from(p).ok()),
+        suspended,
+        ssl,
+    };
+    write_apache_site(state, &site)
+        .await
+        .map_err(|e| bad_request(&e))
+}
+
 pub(super) async fn rewrite_website_vhost(
     state: &AppState,
     website: &snpanel_db::Website,
     overrides: RewriteOverrides,
 ) -> Result<String, Response> {
+    if crate::system::is_hosting_edition() {
+        return rewrite_apache_vhost(state, website, overrides).await;
+    }
     // Read before anything moves a field out of `overrides`.
     let (cert, key, ca) = vhost_ssl_paths(website, &overrides);
     let aliases_rows = state
@@ -3413,7 +3557,19 @@ async fn enable_ssl(
     // nginx plugin. That plugin only ever touches `$domain`, for exactly this
     // reason: it has no way to build a new, correctly confined block for an
     // alias and falls back to cloning whichever server block it finds first.
-    if !domains_by_mode(&aliases_rows, "redirect").is_empty() {
+    if crate::system::is_hosting_edition() {
+        // Nothing edited the vhost: the panel writes it, with the
+        // certificate and the redirect from http, here.
+        if let Err(r) = rewrite_owned_vhost(&state, &updated, RewriteOverrides::default()).await {
+            tracing::error!("writing the HTTPS vhost of {} failed: {r}", website.domain);
+            return crate::errors::error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!(
+                    "The certificate was issued, but the vhost could not be switched to HTTPS: {r}"
+                ),
+            );
+        }
+    } else if !domains_by_mode(&aliases_rows, "redirect").is_empty() {
         let _ = rewrite_owned_vhost(&state, &updated, RewriteOverrides::default()).await;
     }
     sync_alias_ssl_flags(&state, &updated).await;
@@ -3532,6 +3688,17 @@ pub(super) async fn release_site_certificates(
 /// a later site taking it must not open its log viewer on this one's traffic.
 pub(super) async fn delete_website_vhost(state: &AppState, domain: &str) {
     if state.settings.command_dry_run {
+        return;
+    }
+    if crate::system::is_hosting_edition() {
+        let result = shell::privileged(false, "apache-site-delete", &[domain], None, None).await;
+        if !result.ok() {
+            tracing::error!(
+                "removing the vhost of {domain} failed: {}",
+                result.stderr.trim()
+            );
+        }
+        let _ = shell::privileged(false, "site-logs-delete", &[domain], None, None).await;
         return;
     }
     let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
@@ -4018,6 +4185,28 @@ async fn create_site_from(
         }
     };
 
+    // Hosting Edition: CRS is loaded once for the whole server, so a site's
+    // opt-in costs nothing and a new site starts with it, as the sites
+    // already there do. (On nginx each site's CRS is ~50 MB and stays off
+    // until chosen.)
+    if crate::system::is_hosting_edition() {
+        if let Err(e) = state.db.websites().set_crs_enabled(website_id, true).await {
+            tracing::warn!("turning CRS on for the new {} failed: {e}", request.domain);
+        } else if let Ok(Some(row)) = state.db.websites().by_id(website_id).await {
+            let mode = super::waf::server_crs_mode();
+            match crate::waf::sync_website_rules(state.settings.command_dry_run, &row, &mode).await
+            {
+                Ok(r) if r.ok() => {}
+                Ok(r) => tracing::warn!(
+                    "CRS rules for the new {}: {}",
+                    request.domain,
+                    r.stderr.trim()
+                ),
+                Err(e) => tracing::warn!("CRS rules for the new {}: {}", request.domain, e.0),
+            }
+        }
+    }
+
     if let Some(info) = &db_info {
         // C3: the column holds Fernet ciphertext, never the password.
         let encrypted =
@@ -4183,6 +4372,22 @@ pub(super) async fn ensure_new_site_waf(state: &AppState, domain: &str) -> Resul
 
 /// Source: `nginx.write_vhost` for a site that has no row yet.
 pub(super) async fn write_site_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+    if crate::system::is_hosting_edition() {
+        let apache = crate::apache_vhost::ApacheSite {
+            domain: site.domain.to_string(),
+            aliases: Vec::new(),
+            redirects: Vec::new(),
+            root_path: site.root_path.to_string(),
+            document_root: "public_html".to_string(),
+            rewrite_mode: site.rewrite_mode.to_string(),
+            linux_user: site.linux_user.to_string(),
+            app_type: site.app_type.to_string(),
+            app_port: site.app_port.and_then(|p| u16::try_from(p).ok()),
+            suspended: false,
+            ssl: None,
+        };
+        return write_apache_site(state, &apache).await.map(drop);
+    }
     let custom = snpanel_nginx::CustomDirectives::validate("").map_err(|e| e.to_string())?;
     let root = std::path::PathBuf::from(site.root_path);
     let socket = new_site_fpm_socket(site);
@@ -4270,6 +4475,12 @@ async fn cleanup_failed_site(state: &AppState, site: &NewSite<'_>) {
 /// silently overwritten by a fresh create - taking whatever that file was
 /// serving down with it.
 pub(super) async fn vhost_exists(state: &AppState, domain: &str) -> bool {
+    if crate::system::is_hosting_edition() {
+        return tokio::fs::metadata(format!("{APACHE_SITES_DIR}/{domain}.conf"))
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+    }
     let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
         .join(format!("{domain}.conf"));
     tokio::fs::metadata(&path)

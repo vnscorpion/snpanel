@@ -25,6 +25,7 @@
 #![allow(clippy::result_large_err)]
 
 mod access_log;
+mod apache_vhost;
 mod archive;
 mod auth;
 mod auth_log;

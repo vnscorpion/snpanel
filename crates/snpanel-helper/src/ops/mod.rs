@@ -14,6 +14,7 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod apache;
 pub mod cpapi;
 pub mod fail2ban;
 pub mod firewall;
@@ -383,6 +384,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveUsage { user } => lve::usage(user),
         HelperRequest::WebStatus => web::status(),
+        HelperRequest::ApacheSiteWrite { domain, content } => {
+            apache::site_write(domain.as_str(), content)
+        }
+        HelperRequest::ApacheSiteDelete { domain } => apache::site_delete(domain.as_str()),
         HelperRequest::WafSiteEnable { domain, on } => {
             if waf_apache::active() {
                 waf_apache::site_enable(domain.as_str(), *on)

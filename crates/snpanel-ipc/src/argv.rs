@@ -649,6 +649,13 @@ impl HelperRequest {
                 user: user_of(&rest[0])?,
             },
             ("web-status", 0) => HelperRequest::WebStatus,
+            ("apache-site-write", 1) => HelperRequest::ApacheSiteWrite {
+                domain: domain_of(&rest[0])?,
+                content: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
+            ("apache-site-delete", 1) => HelperRequest::ApacheSiteDelete {
+                domain: domain_of(&rest[0])?,
+            },
             ("waf-site-enable", 2) => HelperRequest::WafSiteEnable {
                 domain: domain_of(&rest[0])?,
                 on: match rest[1].as_str() {

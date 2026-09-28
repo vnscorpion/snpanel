@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 179;
+const ANSWERED_VERBS: usize = 181;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -121,6 +121,7 @@ fn print_help(sink: audit::Sink) {
         "  cpapi-sync      CloudLinux integration snapshot (JSON on stdin)",
         "  web-*           status, switch <lsws|apache> (who answers 80/443)",
         "  waf-site-enable <domain> on|off, waf-site-part-save <domain> bots|flood",
+        "  apache-site-write <domain> (vhost on stdin), apache-site-delete <domain>",
         "  lsws-*          restart, admin-password (LiteSpeed WebAdmin)",
     ] {
         println!("{line}");
