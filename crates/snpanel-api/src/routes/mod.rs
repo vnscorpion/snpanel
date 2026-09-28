@@ -11,6 +11,7 @@ pub mod databases;
 pub mod fail2ban;
 pub mod firewall;
 pub mod health;
+pub mod lve;
 pub mod maintenance;
 pub mod malware;
 pub mod malware_quarantine;
@@ -54,6 +55,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(sftp_accounts::router())
         .merge(firewall::router())
         .merge(fail2ban::router())
+        .merge(lve::router())
         .merge(databases::router())
         .merge(updates::router())
         .merge(addons::router())
@@ -92,6 +94,7 @@ pub const PORTED_PREFIXES: &[&str] = &[
     "/api/dashboard",
     "/api/databases",
     "/api/firewall",
+    "/api/hosting",
     "/api/maintenance",
     "/api/malware",
     "/api/packages",

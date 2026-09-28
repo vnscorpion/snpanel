@@ -38,7 +38,7 @@ export const NAV_PARENT_PAGE = { 'waf-site': 'waf', 'api-tokens': 'panel-setting
 // Settings stays lit on them, and their header leads back to it. 'waf-site'
 // is reached from inside WAF. An addon's page is not among them: it has a
 // sidebar entry of its own.
-export const SETTINGS_PAGE_KEYS = ['settings', 'panel-settings', 'api-tokens', 'security', 'php', 'firewall', 'waf', 'waf-site', 'access-logs', 'updates', 'addons', 'services'];
+export const SETTINGS_PAGE_KEYS = ['settings', 'panel-settings', 'api-tokens', 'security', 'php', 'firewall', 'waf', 'waf-site', 'access-logs', 'updates', 'addons', 'services', 'lve'];
 export const PAGE_ROUTES = {
   dashboard: '/',
   websites: '/website',
@@ -67,6 +67,7 @@ export const PAGE_ROUTES = {
   'access-logs': '/access-logs',
   updates: '/updates',
   services: '/services',
+  lve: '/lve',
   addons: '/addons',
 };
 

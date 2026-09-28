@@ -95,6 +95,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "clamav-status"
         | "maldet-status"
         | "fail2ban-status"
+            | "lve-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -129,6 +130,8 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
 
         // Accounts, and a site's runtime, which is an account and a pool.
         "panel-user-ensure" | "panel-user-delete" | "panel-user-password" => &[Accounts],
+        // LVE limits are per account; the default LVE is every account's.
+        "lve-set" | "lve-reset" => &[Accounts],
         "sftp-sub-create" | "sftp-sub-password" | "sftp-sub-delete" => &[Accounts],
         "site-runtime-ensure" | "site-runtime-move" | "site-runtime-delete" | "rm-site" => {
             &[Accounts, Systemd, Php]

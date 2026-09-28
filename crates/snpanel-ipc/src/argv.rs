@@ -635,6 +635,32 @@ impl HelperRequest {
             // called; `php-pools-retune` is the name this port gave it.
             ("php-pools-retune", 0) | ("php-fpm-retune", 0) => HelperRequest::PhpPoolsRetune,
             ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
+            ("lve-status", 0) => HelperRequest::LveStatus,
+            // lve-set <default|user> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
+            ("lve-set", 7) => {
+                let user = match rest[0].as_str() {
+                    "default" => None,
+                    name => Some(user_of(name)?),
+                };
+                let n = |i: usize, what: &str| {
+                    rest[i].parse::<u32>().map_err(|_| {
+                        InvocationError::invalid(format!("invalid {what}: {}", rest[i]))
+                    })
+                };
+                let limits = crate::LveLimits {
+                    speed_percent: n(1, "speed")?,
+                    pmem_mb: n(2, "pmem")?,
+                    ep: n(3, "entry processes")?,
+                    nproc: n(4, "nproc")?,
+                    io_kbps: n(5, "io")?,
+                    iops: n(6, "iops")?,
+                };
+                limits.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::LveSet { user, limits }
+            }
+            ("lve-reset", 1) => HelperRequest::LveReset {
+                user: user_of(&rest[0])?,
+            },
             ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
                 version: php_or_none(&rest[0])?
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
@@ -1391,6 +1417,41 @@ mod tests {
     /// did not map at all: the unmapped one fell through to the bash and
     /// still worked, while a wrong arity was a refusal the customer saw. Both
     /// are refusals now, and the arity is still what this pins.
+    #[test]
+    fn the_lve_verbs_map_and_refuse_bad_limits() {
+        assert!(matches!(map(&["lve-status"]), Ok(HelperRequest::LveStatus)));
+        match map(&[
+            "lve-set", "default", "100", "1024", "20", "100", "1024", "1024",
+        ]) {
+            Ok(HelperRequest::LveSet { user: None, limits }) => {
+                assert_eq!(limits.pmem_mb, 1024);
+            }
+            other => panic!("{other:?}"),
+        }
+        match map(&[
+            "lve-set", "alice", "150", "1536", "30", "120", "2048", "2048",
+        ]) {
+            Ok(HelperRequest::LveSet {
+                user: Some(u),
+                limits,
+            }) => {
+                assert_eq!((u.as_str(), limits.speed_percent), ("alice", 150));
+            }
+            other => panic!("{other:?}"),
+        }
+        // out of range, not a number, a reserved user, the wrong arity
+        assert!(map(&["lve-set", "alice", "0", "1024", "20", "100", "1024", "1024"]).is_err());
+        assert!(map(&["lve-set", "alice", "100", "1G", "20", "100", "1024", "1024"]).is_err());
+        assert!(map(&["lve-set", "root", "100", "1024", "20", "100", "1024", "1024"]).is_err());
+        assert!(map(&["lve-set", "alice", "100", "1024"]).is_err());
+        assert!(matches!(
+            map(&["lve-reset", "alice"]),
+            Ok(HelperRequest::LveReset { .. })
+        ));
+        assert!(map(&["lve-reset", "root"]).is_err());
+        assert!(map(&["lve-reset"]).is_err());
+    }
+
     #[test]
     fn the_stage_d_verbs_map_with_the_bashs_arities() {
         // No arguments and no payload.

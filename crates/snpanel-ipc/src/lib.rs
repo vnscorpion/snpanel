@@ -18,7 +18,9 @@
 mod argv;
 pub use argv::InvocationError;
 mod fail2ban;
+mod lve;
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
+pub use lve::LveLimits;
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -1256,6 +1258,20 @@ pub enum HelperRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         php_version: Option<PhpVersion>,
     },
+    /// `lve-status` - CloudLinux LVE limits: the default LVE and every panel
+    /// user's, with which of a user's limits are their own rather than the
+    /// default. Read-only.
+    LveStatus,
+    /// `lve-set` - set LVE limits for the default LVE (`user: None`) or for
+    /// one user. The limits are range-checked when the request is built.
+    LveSet {
+        user: Option<PanelUsername>,
+        limits: LveLimits,
+    },
+    /// `lve-reset` - return one user to the default LVE's limits.
+    LveReset {
+        user: PanelUsername,
+    },
 }
 
 impl HelperRequest {
@@ -1433,6 +1449,9 @@ impl HelperRequest {
             Self::Fail2banStop => "fail2ban-stop",
             Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
+            Self::LveStatus => "lve-status",
+            Self::LveSet { .. } => "lve-set",
+            Self::LveReset { .. } => "lve-reset",
         }
     }
 }
