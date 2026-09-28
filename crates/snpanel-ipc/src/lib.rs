@@ -1276,6 +1276,16 @@ pub enum HelperRequest {
     /// running and answering, the last failover, LiteSpeed's version,
     /// licence and WebAdmin port. Read-only.
     WebStatus,
+    /// `site-php-set` - a website's own PHP version on the Hosting Edition
+    /// (MultiPHP: an `.htaccess` handler for LiteSpeed, a CloudLinux isolate
+    /// with the Selector's per-domain version for Apache). `None` follows
+    /// the owner's PHP Selector version.
+    SitePhpSet {
+        user: PanelUsername,
+        domain: Domain,
+        document_root: String,
+        version: Option<snpanel_core::PhpVersion>,
+    },
     /// `apache-site-write` - a website's vhost on the Hosting Edition,
     /// rendered by the API, on stdin.
     ApacheSiteWrite {
@@ -1522,6 +1532,7 @@ impl HelperRequest {
             Self::LvePackages => "lve-packages",
             Self::LveUsage { .. } => "lve-usage",
             Self::WebStatus => "web-status",
+            Self::SitePhpSet { .. } => "site-php-set",
             Self::ApacheSiteWrite { .. } => "apache-site-write",
             Self::ApacheSiteDelete { .. } => "apache-site-delete",
             Self::WafSiteEnable { .. } => "waf-site-enable",

@@ -1359,6 +1359,8 @@ export default {
   "Default limits": "Giới hạn mặc định",
   "Use the default limits": "Dùng giới hạn mặc định",
   "Use default": "Dùng mặc định",
+  "Account default (PHP Selector)": "Theo tài khoản (PHP Selector)",
+  "account default": "theo tài khoản",
   "Web server": "Web server",
   "LiteSpeed serves the sites; Apache stands by and takes over if LiteSpeed stops or its licence runs out.": "LiteSpeed phục vụ các site; Apache chạy dự phòng và tự nhận thay nếu LiteSpeed dừng hoặc hết bản quyền.",
   "Switching the sites back to LiteSpeed...": "Đang chuyển các site về LiteSpeed...",

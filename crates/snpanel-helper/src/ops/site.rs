@@ -1627,7 +1627,7 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 /// [`write_atomic`], with the temporary given to `owner` (`user:group`)
 /// before it takes the file's place.
-fn write_atomic_owned(
+pub(crate) fn write_atomic_owned(
     path: &Path,
     bytes: &[u8],
     mode: u32,

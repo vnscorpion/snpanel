@@ -246,7 +246,8 @@ export function websiteConfigForm(site = {}) {
   const appType = site.app_type || 'wordpress';
   return {
     app_type: appType,
-    php_version: site.php_version || '8.4',
+    // '' is the Hosting Edition's "follow the owner's PHP Selector version".
+    php_version: site.php_version === '' ? 'inherit' : (site.php_version || '8.4'),
     app_id: site.app_id ? String(site.app_id) : '',
     nginx_rewrite_mode: appType === 'wordpress'
       ? 'front_controller'

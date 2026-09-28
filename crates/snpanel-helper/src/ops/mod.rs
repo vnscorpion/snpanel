@@ -23,6 +23,7 @@ pub mod fwrules;
 pub mod lve;
 pub mod mariadb;
 pub mod misc;
+pub mod multiphp;
 pub mod nginx;
 pub mod orphans;
 pub mod packages;
@@ -384,6 +385,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveUsage { user } => lve::usage(user),
         HelperRequest::WebStatus => web::status(),
+        HelperRequest::SitePhpSet {
+            user,
+            domain,
+            document_root,
+            version,
+        } => multiphp::site_php_set(user, domain, document_root, *version),
         HelperRequest::ApacheSiteWrite { domain, content } => {
             apache::site_write(domain.as_str(), content)
         }

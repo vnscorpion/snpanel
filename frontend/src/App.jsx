@@ -1984,7 +1984,8 @@ function App() {
     const original = nginxCustomEditing.site || {};
     const body = {};
     const nextAppType = websiteSettingsForm.app_type || original.app_type || 'wordpress';
-    const nextPhp = websiteSettingsForm.php_version || original.php_version || '8.4';
+    const originalPhp = original.php_version === '' ? 'inherit' : original.php_version;
+    const nextPhp = websiteSettingsForm.php_version || originalPhp || '8.4';
     const nextRewrite = nextAppType === 'wordpress'
       ? 'front_controller'
       : nextAppType === 'static' || isProxiedAppType(nextAppType)
@@ -2005,7 +2006,7 @@ function App() {
       }
     }
     if (nextAppType !== (original.app_type || 'wordpress')) body.app_type = nextAppType;
-    if (nextAppType !== 'static' && !isProxiedAppType(nextAppType) && nextPhp !== original.php_version) body.php_version = nextPhp;
+    if (nextAppType !== 'static' && !isProxiedAppType(nextAppType) && nextPhp !== originalPhp) body.php_version = nextPhp;
     if (nextRewrite !== (original.nginx_rewrite_mode || (original.app_type === 'wordpress' ? 'front_controller' : 'none'))) {
       body.nginx_rewrite_mode = nextRewrite;
     }
@@ -3823,6 +3824,9 @@ function App() {
   // so one silent read says whether its pages exist here at all.
   const [cloudlinuxAvailable, setCloudlinuxAvailable] = useState(false);
   const [wafToggling, setWafToggling] = useState(null);
+  // On CloudLinux a new site follows its owner's PHP Selector version unless
+  // a version of its own is chosen (MultiPHP).
+  useEffect(() => { if (cloudlinuxAvailable) setPhpVersion('inherit'); }, [cloudlinuxAvailable]);
   useEffect(() => {
     if (!isAuthenticated) { setCloudlinuxAvailable(false); return; }
     request('/hosting/cloudlinux', { silent: true }).then(d => setCloudlinuxAvailable(!!d?.available));

@@ -649,6 +649,21 @@ impl HelperRequest {
                 user: user_of(&rest[0])?,
             },
             ("web-status", 0) => HelperRequest::WebStatus,
+            ("site-php-set", 4) => HelperRequest::SitePhpSet {
+                user: user_of(&rest[0])?,
+                domain: domain_of(&rest[1])?,
+                document_root: snpanel_core::DocumentRoot::parse(&rest[2])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?
+                    .as_str()
+                    .to_string(),
+                version: match rest[3].as_str() {
+                    "inherit" => None,
+                    v => Some(
+                        snpanel_core::PhpVersion::parse(v)
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    ),
+                },
+            },
             ("apache-site-write", 1) => HelperRequest::ApacheSiteWrite {
                 domain: domain_of(&rest[0])?,
                 content: String::from_utf8_lossy(&stdin()).into_owned(),
@@ -1591,6 +1606,46 @@ mod tests {
         ));
         assert!(map(&["web-switch", "nginx"]).is_err());
         assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
+        assert!(matches!(
+            map(&[
+                "site-php-set",
+                "alice",
+                "a.example.com",
+                "public_html",
+                "8.3"
+            ]),
+            Ok(HelperRequest::SitePhpSet {
+                version: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            map(&[
+                "site-php-set",
+                "alice",
+                "a.example.com",
+                "public_html",
+                "inherit"
+            ]),
+            Ok(HelperRequest::SitePhpSet { version: None, .. })
+        ));
+        assert!(map(&["site-php-set", "alice", "a.example.com", "/etc", "8.3"]).is_err());
+        assert!(map(&[
+            "site-php-set",
+            "alice",
+            "a.example.com",
+            "public_html",
+            "9.9"
+        ])
+        .is_err());
+        assert!(map(&[
+            "site-php-set",
+            "root",
+            "a.example.com",
+            "public_html",
+            "8.3"
+        ])
+        .is_err());
         assert!(matches!(
             map(&["waf-site-enable", "a.example.com", "off"]),
             Ok(HelperRequest::WafSiteEnable { on: false, .. })

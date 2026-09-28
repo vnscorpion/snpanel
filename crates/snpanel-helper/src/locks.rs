@@ -183,6 +183,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "waf-site-save"
         | "waf-site-enable"
         | "apache-site-write"
+        | "site-php-set"
         | "apache-site-delete"
         | "waf-site-part-save"
         | "waf-site-delete"

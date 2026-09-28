@@ -3795,6 +3795,12 @@ async fn delete_website(
     // The owner's SFTP accounts shut into this site's folder go with it:
     // their mount would be of a folder no longer there.
     super::sftp_accounts::drop_for_site(&state, website.owner_id, &website.root_path).await;
+    // Hosting Edition: the site's isolate (its own PHP version) goes with it.
+    if crate::system::is_hosting_edition() && !website.php_version.is_empty() {
+        if let Err(e) = set_hosting_site_php(&state, &website, "").await {
+            tracing::warn!("undoing the PHP version of {domain}: {e}");
+        }
+    }
     delete_website_vhost(&state, &domain).await;
 
     // The vhost is gone, so nothing reads the certificate or the rule file any
@@ -4000,6 +4006,7 @@ fn create_request(payload: &Value, force_wordpress: Option<bool>) -> Result<Crea
         return Err("domain is required".to_string());
     }
     let php_version = match payload.get("php_version").and_then(Value::as_str) {
+        Some(v) if v.trim() == "inherit" => String::new(),
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         // `WebsiteCreate.php_version` has no default of its own; the column's
         // is what a row gets, and the vhost renderer needs a value now.
@@ -4190,6 +4197,25 @@ async fn create_site_from(
     // already there do. (On nginx each site's CRS is ~50 MB and stays off
     // until chosen.)
     if crate::system::is_hosting_edition() {
+        // A version chosen at creation is the site's own (MultiPHP); none,
+        // or "inherit", follows the owner's PHP Selector version.
+        if let Ok(Some(row)) = state.db.websites().by_id(website_id).await {
+            if !row.php_version.is_empty() {
+                // CloudLinux finds a domain's owner through the CPAPI
+                // snapshot; the new domain has to be in it before an isolate
+                // can be made for it.
+                if let Err(e) = crate::cpapi_sync::sync_now(&state).await {
+                    tracing::warn!("CPAPI snapshot before the new {}: {e}", request.domain);
+                }
+                if let Err(e) = set_hosting_site_php(&state, &row, &row.php_version).await {
+                    tracing::warn!(
+                        "PHP {} for the new {}: {e}",
+                        row.php_version,
+                        request.domain
+                    );
+                }
+            }
+        }
         if let Err(e) = state.db.websites().set_crs_enabled(website_id, true).await {
             tracing::warn!("turning CRS on for the new {} failed: {e}", request.domain);
         } else if let Ok(Some(row)) = state.db.websites().by_id(website_id).await {
@@ -5009,6 +5035,10 @@ fn website_update_fields(payload: &Value) -> Result<WebsiteUpdateFields, Respons
     };
 
     let php_version = match text("php_version") {
+        // Hosting Edition: the site follows its owner's PHP Selector version.
+        Some(v) if (v == "inherit" || v.is_empty()) && crate::system::is_hosting_edition() => {
+            Some(String::new())
+        }
         Some(v) => {
             if !snpanel_nginx::ALLOWED_PHP_VERSIONS.contains(&v) {
                 let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_PHP_VERSIONS.to_vec();
@@ -5347,6 +5377,9 @@ async fn apply_php_version(
     website: &mut snpanel_db::Website,
     php_version: &str,
 ) -> Result<(), Response> {
+    if crate::system::is_hosting_edition() {
+        return apply_hosting_php_version(state, website, php_version).await;
+    }
     let app_type = current_app_type(website).to_string();
     let runtime_php = matches!(app_type.as_str(), "wordpress" | "php").then_some(php_version);
     if let (Some(linux_user), Some(runtime)) = (
@@ -5395,6 +5428,87 @@ async fn apply_php_version(
     // on a version it no longer has. A failure here is not worth undoing the
     // version change for.
     retarget_website_cron(state, website).await;
+    Ok(())
+}
+
+/// The document root `.htaccess` lives in, relative to the site's root, as
+/// the site serves it (Laravel and CodeIgniter from `public`).
+fn served_document_root(website: &snpanel_db::Website) -> String {
+    let base = if website.document_root.is_empty() {
+        "public_html"
+    } else {
+        website.document_root.trim_matches('/')
+    };
+    if matches!(
+        website.nginx_rewrite_mode.as_str(),
+        "laravel" | "codeigniter"
+    ) && !base.ends_with("/public")
+    {
+        format!("{base}/public")
+    } else {
+        base.to_string()
+    }
+}
+
+/// Give a site its own PHP version on the Hosting Edition (MultiPHP), or
+/// hand it back to its owner's PHP Selector version (`""`).
+pub(super) async fn set_hosting_site_php(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    php_version: &str,
+) -> Result<(), String> {
+    let app_type = current_app_type(website);
+    let Some(user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+        return Ok(());
+    };
+    if !matches!(app_type, "wordpress" | "php") || state.settings.command_dry_run {
+        return Ok(());
+    }
+    let docroot = served_document_root(website);
+    let version = if php_version.is_empty() {
+        "inherit"
+    } else {
+        php_version
+    };
+    let result = shell::privileged(
+        false,
+        "site-php-set",
+        &[user, &website.domain, &docroot, version],
+        None,
+        None,
+    )
+    .await;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(result
+            .failure_detail("Could not set the PHP version")
+            .trim()
+            .to_string())
+    }
+}
+
+/// `apply_php_version` on the Hosting Edition: no pool and no vhost to
+/// rewrite - the version is the site's `.htaccess` handler (LiteSpeed) and
+/// its CloudLinux isolate (Apache).
+async fn apply_hosting_php_version(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    php_version: &str,
+) -> Result<(), Response> {
+    set_hosting_site_php(state, website, php_version)
+        .await
+        .map_err(|m| bad_request(&m))?;
+    state
+        .db
+        .websites()
+        .set_php_version(website.id, php_version)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the PHP version of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.php_version = php_version.to_string();
     Ok(())
 }
 
