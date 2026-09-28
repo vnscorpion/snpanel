@@ -204,6 +204,86 @@ fn sync_webadmin() {
     );
 }
 
+/// The Hosting Edition's default vhost (ACME and phpMyAdmin), for Apache
+/// and LiteSpeed alike. Loaded before any site's, so it is also what answers
+/// a name no site claims - on 8443 too, with the panel's certificate, which
+/// is what https://<panel host>/phpmyadmin/ needs (without it the first
+/// site's vhost answered with that site's certificate).
+pub(crate) fn render_tools_apache(tls: Option<(&str, &str)>) -> String {
+    let body = r#"    ErrorLog /var/log/httpd/snpanel-tools.error.log
+    CustomLog /var/log/httpd/snpanel-tools.access.log combined
+    LimitRequestBody 1153433600
+
+    Alias /.well-known/acme-challenge/ /var/www/snpanel-acme/.well-known/acme-challenge/
+
+    # phpMyAdmin runs as its own system user, outside CageFS, never as a customer
+    SuexecUserGroup snpanel-pma snpanel-pma
+    RedirectMatch 301 ^/phpmyadmin$ /phpmyadmin/
+    Alias /phpmyadmin/ /usr/share/phpMyAdmin/
+    <Directory /usr/share/phpMyAdmin/>
+        Options -Indexes
+        AllowOverride None
+        DirectoryIndex index.php
+        Require all granted
+        <FilesMatch "\.php$">
+            SetHandler application/x-httpd-lsphp
+        </FilesMatch>
+    </Directory>
+    <Directory /usr/share/phpMyAdmin/setup/>
+        Require all denied
+    </Directory>
+    <Directory /var/www/snpanel-acme/>
+        Options None
+        AllowOverride None
+        Require all granted
+    </Directory>
+"#;
+    let mut out = String::from(
+        "# SNPANEL MANAGED - default vhost: ACME + phpMyAdmin. Written by the panel.\n\
+         # First vhost loaded, so it answers any Host no site claims (nginx: default_server).\n\
+         <VirtualHost *:8080>\n    ServerName snpanel-default.invalid\n    DocumentRoot /var/www/snpanel-acme\n",
+    );
+    out.push_str(body);
+    out.push_str("</VirtualHost>\n");
+    if let Some((cert, key)) = tls {
+        out.push_str(&format!(
+            "\n<VirtualHost *:8443>\n    ServerName snpanel-default.invalid\n    DocumentRoot /var/www/snpanel-acme\n    SSLEngine on\n    SSLCertificateFile {cert}\n    SSLCertificateKeyFile {key}\n"
+        ));
+        out.push_str(body);
+        out.push_str("</VirtualHost>\n");
+    }
+    out
+}
+
+/// Write the Hosting Edition's tools vhost, check it, reload both servers;
+/// the previous file comes back if Apache refuses the new one.
+fn refresh_tools_apache(config: &ToolsConfig) -> HelperResponse {
+    let tls = config
+        .tls()
+        .then_some((config.cert.as_str(), config.key.as_str()));
+    let text = render_tools_apache(tls);
+    let previous = std::fs::read(APACHE_TOOLS_CONF).ok();
+    if previous.as_deref() == Some(text.as_bytes()) {
+        return HelperResponse::ok();
+    }
+    if let Err(e) =
+        crate::ops::nginx::write_atomic(Path::new(APACHE_TOOLS_CONF), text.as_bytes(), 0o644)
+    {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {APACHE_TOOLS_CONF}: {e}"),
+        );
+    }
+    if let Err(resp) = crate::ops::waf_apache::apply() {
+        if let Some(bytes) = previous {
+            let _ = std::fs::write(APACHE_TOOLS_CONF, bytes);
+            let _ = crate::ops::waf_apache::apply();
+        }
+        return resp;
+    }
+    HelperResponse::ok()
+}
+
 /// Source: `refresh_tools_nginx`.
 fn refresh_tools_nginx() -> HelperResponse {
     let env = env_file();
@@ -234,7 +314,7 @@ fn refresh_tools_nginx() -> HelperResponse {
     // and the panel never restarted onto it.
     if !crate::ops::runtime::have("nginx") && Path::new(APACHE_TOOLS_CONF).exists() {
         rewrite_phpmyadmin(scheme, &port, tls, &host);
-        return HelperResponse::ok();
+        return refresh_tools_apache(&config);
     }
 
     // The distribution's own default vhost also claims `default_server` on
@@ -274,16 +354,30 @@ fn detect_ip() -> String {
 /// a panel that refused to change its own URL because a database tool is not
 /// installed would be the wrong trade.
 fn rewrite_phpmyadmin(scheme: &str, port: &str, secure: bool, host: &str) {
-    const SIGNON: &str = "/usr/share/phpmyadmin/snpanel-signon.php";
-    const CONF_SIGNON: &str = "/etc/phpmyadmin/conf.d/snpanel-signon.php";
+    // Debian's paths, or the RHEL family's (phpMyAdmin, capitalised).
+    let pick = |debian: &'static str, rhel: &'static str| {
+        if Path::new(debian).exists() || !Path::new(rhel).exists() {
+            debian
+        } else {
+            rhel
+        }
+    };
+    let signon = pick(
+        "/usr/share/phpmyadmin/snpanel-signon.php",
+        "/usr/share/phpMyAdmin/snpanel-signon.php",
+    );
+    let conf_signon = pick(
+        "/etc/phpmyadmin/conf.d/snpanel-signon.php",
+        "/etc/phpMyAdmin/conf.d/snpanel-signon.php",
+    );
 
-    if let Ok(text) = std::fs::read_to_string(SIGNON) {
+    if let Ok(text) = std::fs::read_to_string(signon) {
         let rewritten = phpmyadmin::rewrite_sso_url(&text, scheme, port);
         if rewritten != text {
-            let _ = std::fs::write(SIGNON, rewritten);
+            let _ = std::fs::write(signon, rewritten);
         }
     }
-    for path in [CONF_SIGNON, SIGNON] {
+    for path in [conf_signon, signon] {
         if let Ok(text) = std::fs::read_to_string(path) {
             let rewritten = phpmyadmin::rewrite_secure_flag(&text, secure);
             if rewritten != text {
@@ -292,10 +386,10 @@ fn rewrite_phpmyadmin(scheme: &str, port: &str, secure: bool, host: &str) {
         }
     }
     if !host.is_empty() {
-        if let Ok(text) = std::fs::read_to_string(CONF_SIGNON) {
+        if let Ok(text) = std::fs::read_to_string(conf_signon) {
             let rewritten = phpmyadmin::rewrite_absolute_uri(&text, scheme, host);
             if rewritten != text {
-                let _ = std::fs::write(CONF_SIGNON, rewritten);
+                let _ = std::fs::write(conf_signon, rewritten);
             }
         }
     }
@@ -785,6 +879,22 @@ fn write_private(path: &str, contents: &str) -> Result<(), HelperResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hosting_tools_vhost_serves_https_with_the_panel_certificate() {
+        let plain = render_tools_apache(None);
+        assert!(plain.contains("<VirtualHost *:8080>"));
+        assert!(!plain.contains("*:8443"));
+        let tls = render_tools_apache(Some((
+            "/etc/snpanel/panel-fullchain.pem",
+            "/etc/snpanel/panel-privkey.pem",
+        )));
+        let (_, https) = tls.split_once("<VirtualHost *:8443>").unwrap();
+        assert!(https.contains("SSLCertificateFile /etc/snpanel/panel-fullchain.pem"));
+        assert!(https.contains("Alias /phpmyadmin/ /usr/share/phpMyAdmin/"));
+        assert!(https.contains("SuexecUserGroup snpanel-pma snpanel-pma"));
+        assert!(https.contains(r#"<FilesMatch "\.php$">"#));
+    }
 
     /// C19: the tools vhost is byte-identical to the bash's heredoc.
     ///
