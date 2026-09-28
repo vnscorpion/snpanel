@@ -1,0 +1,34 @@
+#!/bin/bash
+# snpanel-webswitch lsws|apache  (CL-0 prototype of `snpanel web switch`)
+#
+# Both web servers always run and read the same vhosts:
+#   Apache    Listen 8080/8443            (hot standby, never exposed)
+#   LiteSpeed Apache config + offset 1000 -> 9080/9443
+# Who answers the public 80/443 is decided by one nftables table, replaced in
+# a single transaction, so a switch takes milliseconds and restarts nothing.
+set -euo pipefail
+case "${1:-}" in
+  lsws)   HTTP=9080; HTTPS=9443 ;;
+  apache) HTTP=8080; HTTPS=8443 ;;
+  *) echo "usage: $0 lsws|apache" >&2; exit 2 ;;
+esac
+nft -f - <<EOF
+table inet snpanel_webfailover
+delete table inet snpanel_webfailover
+table inet snpanel_webfailover {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    tcp dport 80 redirect to :$HTTP
+    tcp dport 443 redirect to :$HTTPS
+  }
+  chain output {
+    type nat hook output priority -100; policy accept;
+    ip daddr 127.0.0.0/8 tcp dport 80 redirect to :$HTTP
+    ip daddr 127.0.0.0/8 tcp dport 443 redirect to :$HTTPS
+  }
+}
+EOF
+mkdir -p /var/lib/snpanel
+echo "$1" > /var/lib/snpanel/webserver.tmp && mv /var/lib/snpanel/webserver.tmp /var/lib/snpanel/webserver
+echo "$(date '+%F %T.%3N') switch -> $1 (80->$HTTP, 443->$HTTPS)" >> /var/log/snpanel-webswitch.log
+echo "live: $1"
