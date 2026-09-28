@@ -120,7 +120,9 @@ impl<'a> PackageRepo<'a> {
         .bind(f.database_limit.unwrap_or(5))
         .bind(f.alias_limit.unwrap_or(0))
         .bind(f.backup_retention_days.unwrap_or(7))
-        .bind(f.terminal_enabled.unwrap_or(false))
+        // On by default: an account without a package has always had the
+        // terminal, and one on a package should not quietly lose it.
+        .bind(f.terminal_enabled.unwrap_or(true))
         .bind(f.waf_enabled.unwrap_or(true))
         .bind(f.wordpress_enabled.unwrap_or(true))
         .bind(f.node_apps_limit.unwrap_or(0))
@@ -177,9 +179,11 @@ impl<'a> PackageRepo<'a> {
         sqlx::query(
             "UPDATE users SET \
                 website_limit = (SELECT website_limit FROM user_packages WHERE id = ?), \
-                storage_limit_mb = (SELECT storage_limit_mb FROM user_packages WHERE id = ?) \
+                storage_limit_mb = (SELECT storage_limit_mb FROM user_packages WHERE id = ?), \
+                terminal_enabled = (SELECT terminal_enabled FROM user_packages WHERE id = ?) \
              WHERE package_id = ?",
         )
+        .bind(id)
         .bind(id)
         .bind(id)
         .bind(id)
@@ -242,7 +246,8 @@ mod tests {
                 username TEXT,
                 package_id INTEGER,
                 website_limit INTEGER,
-                storage_limit_mb INTEGER
+                storage_limit_mb INTEGER,
+                terminal_enabled BOOLEAN DEFAULT 1 NOT NULL
             )",
         )
         .execute(&pool)
@@ -269,7 +274,7 @@ mod tests {
         assert_eq!(p.database_limit, 5);
         assert_eq!(p.alias_limit, 0);
         assert_eq!(p.backup_retention_days, 7);
-        assert!(!p.terminal_enabled, "a shell is not handed out implicitly");
+        assert!(p.terminal_enabled, "every account has the terminal unless its package says otherwise");
         assert!(p.waf_enabled);
         assert!(p.wordpress_enabled);
         assert_eq!(p.node_apps_limit, 0);
@@ -348,6 +353,29 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(other, (5, 1024));
+        // The terminal follows the package too: turned off on it, off for
+        // its members - and only for them.
+        repo.update(
+            p.id,
+            &PackageFields {
+                terminal_enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let terminal = |id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>("SELECT terminal_enabled FROM users WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert!(!terminal(1).await);
+        assert!(terminal(2).await, "a user on no package keeps its own");
     }
 
     #[tokio::test]
