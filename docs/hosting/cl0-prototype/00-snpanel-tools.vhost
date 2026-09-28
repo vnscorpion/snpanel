@@ -1,0 +1,33 @@
+# SNPANEL MANAGED - default vhost: ACME + phpMyAdmin (CL-0 prototype)
+# First vhost loaded, so it answers any Host no site claims (nginx: default_server).
+<VirtualHost *:80>
+    ServerName snpanel-default.invalid
+    DocumentRoot /var/www/snpanel-acme
+    ErrorLog /var/log/httpd/snpanel-tools.error.log
+    CustomLog /var/log/httpd/snpanel-tools.access.log combined
+    LimitRequestBody 1153433600
+
+    Alias /.well-known/acme-challenge/ /var/www/snpanel-acme/.well-known/acme-challenge/
+
+    # phpMyAdmin runs as its own system user, outside CageFS, never as a customer
+    SuexecUserGroup snpanel-pma snpanel-pma
+    RedirectMatch 301 ^/phpmyadmin$ /phpmyadmin/
+    Alias /phpmyadmin/ /usr/share/phpMyAdmin/
+    <Directory /usr/share/phpMyAdmin/>
+        Options -Indexes
+        AllowOverride None
+        DirectoryIndex index.php
+        Require all granted
+        <FilesMatch "\.php$">
+            SetHandler application/x-httpd-lsphp
+        </FilesMatch>
+    </Directory>
+    <Directory /usr/share/phpMyAdmin/setup/>
+        Require all denied
+    </Directory>
+    <Directory /var/www/snpanel-acme/>
+        Options None
+        AllowOverride None
+        Require all granted
+    </Directory>
+</VirtualHost>

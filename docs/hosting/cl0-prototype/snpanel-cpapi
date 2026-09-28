@@ -1,0 +1,121 @@
+#!/usr/bin/python3
+"""snpanel-cpapi - CloudLinux "vendors" integration scripts (CL-0 prototype).
+
+The real one will be a static Rust binary. This one proves the contract:
+
+    snpanel-cpapi <panel_info|users|domains|packages|admins|resellers|php|db_info> [args]
+
+It never opens SNPanel's database. It reads /var/lib/snpanel-cpapi/data.json,
+a snapshot without secrets that the panel (root) rewrites whenever users,
+sites, aliases or packages change. `domains` is called by every UNIX user and
+from inside CageFS, so the snapshot is mounted into the cage and, when the
+caller is not root, filtered to the caller's own domains.
+"""
+import json
+import os
+import pwd
+import sys
+
+DATA = "/var/lib/snpanel-cpapi/data.json"
+
+
+def out(data):
+    print(json.dumps({"data": data, "metadata": {"result": "ok"}}))
+    sys.exit(0)
+
+
+def fail(message, result="InternalAPIError"):
+    print(json.dumps({"data": None, "metadata": {"result": result, "message": message}}))
+    sys.exit(1)
+
+
+def arg(name):
+    a = sys.argv[2:]
+    return a[a.index(name) + 1] if name in a and a.index(name) + 1 < len(a) else None
+
+
+def main():
+    if len(sys.argv) < 2:
+        fail("no command")
+    cmd = sys.argv[1]
+    try:
+        with open(DATA) as f:
+            snap = json.load(f)
+    except OSError as e:
+        fail(f"snapshot unreadable: {e}")
+
+    caller = os.getuid()
+    caller_name = pwd.getpwuid(caller).pw_name if caller else None
+
+    if cmd == "panel_info":
+        out({
+            "name": "SNPanel",
+            "version": snap["version"],
+            "user_login_url": snap["login_url"],
+            "supported_cl_features": {
+                "php_selector": True, "ruby_selector": False, "python_selector": False,
+                "nodejs_selector": False, "mod_lsapi": True, "mysql_governor": True,
+                "cagefs": True, "reseller_limits": False, "xray": False,
+                "accelerate_wp": False, "autotracing": False,
+            },
+        })
+
+    if cmd == "domains":
+        owner, name = arg("--owner"), arg("--name")
+        with_php = "--with-php" in sys.argv
+        doms = snap["domains"]
+        if caller:  # an unprivileged caller only ever sees its own domains
+            doms = {d: v for d, v in doms.items() if v["owner"] == caller_name}
+        if owner:
+            doms = {d: v for d, v in doms.items() if v["owner"] == owner}
+        if name:
+            doms = {d: v for d, v in doms.items() if d == name}
+            if not doms:
+                fail(f"domain {name} not found", "NotFound")
+        res = {}
+        for d, v in doms.items():
+            e = {"owner": v["owner"], "document_root": v["document_root"], "is_main": v["is_main"]}
+            if with_php:
+                ver = v["php_version"].replace(".", "")
+                e["php"] = {
+                    "php_version_id": f"alt-php{ver}", "version": ver,
+                    "ini_path": f"/opt/alt/php{ver}/etc/php.d/", "is_native": False,
+                    "handler": "lsapi",
+                }
+            res[d] = e
+        out(res)
+
+    if caller:
+        fail("root only", "PermissionDenied")
+
+    if cmd == "users":
+        users = snap["users"]
+        if arg("--owner"):
+            users = [u for u in users if u["owner"] == arg("--owner")]
+        if arg("--username"):
+            users = [u for u in users if u["username"] == arg("--username")]
+        if arg("--unix-id"):
+            users = [u for u in users if u["id"] == int(arg("--unix-id"))]
+        if arg("--package-name"):
+            users = [u for u in users if (u["package"] or {}).get("name") == arg("--package-name")]
+        if arg("--fields"):
+            keep = set(arg("--fields").split(","))
+            users = [{k: v for k, v in u.items() if k in keep} for u in users]
+        out(users)
+    if cmd == "packages":
+        out([{"name": p, "owner": "admin"} for p in snap["packages"]])
+    if cmd == "admins":
+        out([{"name": "admin", "unix_user": None, "locale_code": "EN_us",
+              "email": snap.get("admin_email"), "is_main": True}])
+    if cmd == "resellers":
+        out([])
+    if cmd == "php":
+        out([{"identifier": f"alt-php{v}", "version": v, "modules_dir": f"/opt/alt/php{v}/usr/lib64/php/modules/",
+              "dir": f"/opt/alt/php{v}/", "bin": f"/opt/alt/php{v}/usr/bin/php",
+              "ini": f"/opt/alt/php{v}/etc/php.ini"} for v in snap["php_versions"]])
+    if cmd == "db_info":
+        out({"mysql": None})
+    fail(f"unknown command {cmd}", "NotImplemented")
+
+
+main()
