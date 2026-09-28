@@ -239,6 +239,9 @@ pub fn site_php_set(
     let d = domain.as_str();
     match version {
         Some(v) => {
+            let already = exec::run(&["cagefsctl", "--isolates-list", user.as_str()])
+                .map(|o| o.stdout.lines().any(|l| l.trim() == d))
+                .unwrap_or(false);
             let _ = exec::run(&["cagefsctl", "--isolates-allow", user.as_str()]);
             let enabled = exec::run(&["cagefsctl", "--isolates-enable", d]);
             let listed = exec::run(&["cagefsctl", "--isolates-list", user.as_str()])
@@ -265,6 +268,31 @@ pub fn site_php_set(
             let ok = matches!(&set, Ok(o) if o.ok() && o.stdout.contains("success"));
             if !ok {
                 return exec::respond("cloudlinux-selector set --domain", set);
+            }
+            // A new isolate starts with whatever module list CageFS made for
+            // the account, which can lack the MySQL drivers (WordPress then
+            // answers 500). Give it the Selector's defaults once; later
+            // changes are the customer's, and are left alone.
+            if !already {
+                let reset = exec::run(&[
+                    "runuser",
+                    "-u",
+                    user.as_str(),
+                    "--",
+                    "cloudlinux-selector",
+                    "set",
+                    "--json",
+                    "--interpreter",
+                    "php",
+                    "--reset-extensions",
+                    "--version",
+                    &v.dotted(),
+                    "--domain",
+                    d,
+                ]);
+                if !matches!(&reset, Ok(o) if o.ok() && o.stdout.contains("success")) {
+                    return exec::respond("cloudlinux-selector --reset-extensions", reset);
+                }
             }
         }
         None => {

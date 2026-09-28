@@ -111,9 +111,12 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
         .iter()
         .find(|u| u.role == "admin")
         .map(|u| u.email.clone());
+    // Every account with a UNIX user, the administrator's too: its sites
+    // are hosted like anyone's and CloudLinux has to know whose they are
+    // (limits, CageFS isolates). Accounts without one are dropped by the
+    // helper, which resolves the uids.
     let cl_users: Vec<CpapiUser> = users
         .iter()
-        .filter(|u| u.role != "admin")
         .filter_map(|u| {
             Some(CpapiUser {
                 username: PanelUsername::parse(&u.username).ok()?,

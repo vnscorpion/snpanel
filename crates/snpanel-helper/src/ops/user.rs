@@ -87,6 +87,7 @@ fn web_user() -> String {
 /// root-owned home (the SFTP chroot needs it) would refuse them: WP-CLI's
 /// cache everywhere, and CloudLinux's own state there.
 const HOME_DIRS: &[&str] = &[".wp-cli"];
+const CAGEFSCTL: &str = "/usr/sbin/cagefsctl";
 const CLOUDLINUX_HOME_DIRS: &[&str] = &[".lve", ".lvestats"];
 
 pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperResponse {
@@ -190,6 +191,22 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
                 let p = path.to_string_lossy();
                 let _ = exec::run(&["chown", &owner, &p]);
                 let _ = exec::run(&["chmod", "0700", &p]);
+            }
+        }
+    }
+
+    // CloudLinux: every panel account in CageFS. The mode is "disable all"
+    // (CageFS is opt-in per account), so an account nothing enabled - any
+    // created after the conversion, and the administrator's own - had its
+    // sites run outside it: its PHP could see the rest of the server.
+    if snpanel_osabi::hosting::cloudlinux().is_some() && Path::new(CAGEFSCTL).exists() {
+        let enabled = exec::run(&[CAGEFSCTL, "--user-status", user.as_str()])
+            .map(|o| o.stdout.trim().ends_with("Enabled"))
+            .unwrap_or(false);
+        if !enabled {
+            let out = exec::run(&[CAGEFSCTL, "--enable", user.as_str()]);
+            if !matches!(&out, Ok(o) if o.ok()) {
+                return exec::respond("cagefsctl --enable", out);
             }
         }
     }
