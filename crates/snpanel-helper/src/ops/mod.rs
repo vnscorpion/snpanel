@@ -18,6 +18,7 @@ pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
 pub mod fwrules;
+pub mod lve;
 pub mod mariadb;
 pub mod misc;
 pub mod nginx;
@@ -375,6 +376,9 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
         HelperRequest::MariadbRetune => mariadb::retune(),
+        HelperRequest::LveStatus => lve::status(),
+        HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
+        HelperRequest::LveReset { user } => lve::reset(user),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,

@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
+import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Gauge, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -51,6 +51,7 @@ const CronPage = lazy(() => import('./pages/Cron.jsx'));
 const FilesPage = lazy(() => import('./pages/Files.jsx'));
 const BackupsPage = lazy(() => import('./pages/Backups.jsx'));
 const ServicesPage = lazy(() => import('./pages/Services.jsx'));
+const LvePage = lazy(() => import('./pages/Lve.jsx'));
 const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
@@ -3810,6 +3811,14 @@ function App() {
     if (isAuthenticated && page === 'fail2ban' && isAdmin && fail2banAddonInstalled) loadFail2ban();
   }, [isAuthenticated, page, isAdmin, fail2banAddonInstalled]);
 
+  // CloudLinux LVE: the endpoint answers 409 on a server that is not running
+  // it, so one silent read says whether the page exists here at all.
+  const [lveAvailable, setLveAvailable] = useState(false);
+  useEffect(() => {
+    if (!isAuthenticated || !isAdmin) { setLveAvailable(false); return; }
+    request('/hosting/lve', { silent: true }).then(d => setLveAvailable(!!d));
+  }, [isAuthenticated, isAdmin]);
+
   useEffect(() => {
     if (!isAuthenticated || page !== 'malware' || !isAdmin || !malwareAddonInstalled) return;
     loadMalwareScanStatus();
@@ -3931,7 +3940,8 @@ function App() {
     ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
     ...(isAdmin ? [['updates', t('Updates'), RefreshCw, t('The panel and system packages')]] : []),
     ...(isAdmin ? [['addons', t('Addons'), Boxes, t('Install or remove addons')]] : []),
-    ['services', t('Services Status'), Activity, t('nginx, PHP-FPM, MariaDB and Redis')],
+    ...(isAdmin && lveAvailable ? [['lve', t('Resource limits (LVE)'), Gauge, t('CPU, memory, processes and IO per account')]] : []),
+    ['services', t('Services Status'), Activity, lveAvailable ? t('LiteSpeed, Apache, MariaDB and Redis') : t('nginx, PHP-FPM, MariaDB and Redis')],
   ];
 
   // An addon's page opened by its address while the addon is not installed
@@ -4683,6 +4693,7 @@ function App() {
     if (page === 'access-logs') return <WafAccessLogsPage />;
     if (page === 'updates') return <UpdatesPage />;
     if (page === 'services') return <ServicesPage />;
+    if (page === 'lve') return isAdmin ? <LvePage /> : null;
     // One page for both addresses: the tokens are a tab of Panel settings.
     if (page === 'settings') return <SettingsPage />;
     if (page === 'panel-settings' || page === 'api-tokens') return <PanelSettingsPage />;

@@ -45,11 +45,18 @@ pub fn cloudlinux_from(release: Option<&str>, proc_modules: &str) -> Option<Clou
     })
 }
 
+/// Where a loaded module appears in sysfs. Readable by every account, unlike
+/// `/proc/modules`, which CloudLinux refuses to non-root users ("Operation not
+/// permitted") - and the panel's API runs as one.
+const LVE_SYSFS: &str = "/sys/module/kmodlve";
+
 /// [`cloudlinux_from`] for this machine.
 pub fn cloudlinux() -> Option<CloudLinux> {
     let release = std::fs::read_to_string(CLOUDLINUX_RELEASE).ok();
     let modules = std::fs::read_to_string("/proc/modules").unwrap_or_default();
-    cloudlinux_from(release.as_deref(), &modules)
+    let mut cl = cloudlinux_from(release.as_deref(), &modules)?;
+    cl.lve_loaded |= Path::new(LVE_SYSFS).is_dir();
+    Some(cl)
 }
 
 /// Another control panel, by the file each one installs.
