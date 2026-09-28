@@ -297,9 +297,6 @@ async fn save_website_waf(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -437,6 +434,24 @@ fn write_panel_settings(data: &Value) -> std::io::Result<()> {
 async fn update_bot_block(state: &AppState, domain: &str, bots: &[String]) -> Result<(), String> {
     if state.settings.command_dry_run {
         return Ok(());
+    }
+    // Hosting Edition: a ModSecurity rule in the site's WAF directory, read
+    // by Apache and LiteSpeed alike.
+    if crate::system::is_hosting_edition() {
+        let content = crate::waf::render_bot_rules(bots).map_err(|e| e.0)?;
+        let result = crate::shell::privileged(
+            false,
+            "waf-site-part-save",
+            &[domain, "bots"],
+            Some(&content),
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(result.failure_detail("Could not save the blocked bots"))
+        };
     }
     let Some(path) = super::websites::vhost_path_for(state, domain) else {
         return Err("Invalid domain".to_string());
@@ -636,9 +651,6 @@ async fn save_website_bots(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -676,9 +688,6 @@ async fn apply_blocked_bots(State(state): State<AppState>, req: Request) -> Resp
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -1015,9 +1024,6 @@ async fn set_website_crs(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -1093,6 +1099,10 @@ async fn set_website_crs(
              so nothing is loaded yet.",
             website.domain
         )
+    } else if crate::system::is_hosting_edition() {
+        // Apache and LiteSpeed load CRS once for the whole server, and the
+        // change is live already: there is no per-site memory to wait for.
+        format!("OWASP CRS is {mode} on {}.", website.domain)
     } else {
         format!(
             "OWASP CRS is {mode} on {}. Restart nginx to see the memory change; \

@@ -1276,6 +1276,19 @@ pub enum HelperRequest {
     /// running and answering, the last failover, LiteSpeed's version,
     /// licence and WebAdmin port. Read-only.
     WebStatus,
+    /// `waf-site-enable` - a site's WAF on or off, on the Hosting Edition
+    /// (nginx does this with a block in the vhost, written by the API).
+    WafSiteEnable {
+        domain: Domain,
+        on: bool,
+    },
+    /// `waf-site-part-save` - a site's bot block or flood limit, as
+    /// ModSecurity rules, on the Hosting Edition. Empty removes it.
+    WafSitePartSave {
+        domain: Domain,
+        part: String,
+        content: String,
+    },
     /// `web-switch` - move 80/443 to one web server. Refused when that
     /// server is not answering on its own port.
     WebSwitch {
@@ -1499,6 +1512,8 @@ impl HelperRequest {
             Self::LvePackages => "lve-packages",
             Self::LveUsage { .. } => "lve-usage",
             Self::WebStatus => "web-status",
+            Self::WafSiteEnable { .. } => "waf-site-enable",
+            Self::WafSitePartSave { .. } => "waf-site-part-save",
             Self::WebSwitch { .. } => "web-switch",
             Self::LswsRestart => "lsws-restart",
             Self::LswsAdminPassword => "lsws-admin-password",

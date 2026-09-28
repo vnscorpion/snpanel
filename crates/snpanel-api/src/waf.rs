@@ -346,6 +346,158 @@ pub fn render_site_rules<S: AsRef<str>>(
     Ok(content)
 }
 
+/// Every CRS rule, and the two detect-mode rules the panel adds; removed per
+/// site on the Hosting Edition, where CRS is loaded server-wide.
+pub const HOSTING_CRS_REMOVE: &str = "SecRuleRemoveById 900000-999999 1009001-1009002";
+
+/// `render_site_rules` for the Hosting Edition: the same rules, for Apache's
+/// mod_security2 and LiteSpeed, which read `/etc/httpd/snpanel/waf/<domain>/`
+/// from inside the site's vhost.
+///
+/// Three differences, all forced by the engine. There is nothing to include:
+/// the engine and CRS are configured server-wide, so a site without CRS has
+/// it *removed* rather than not included. mod_security2 refuses an action
+/// list without its closing quote, which libmodsecurity lets pass, and most
+/// of `DEFAULT_RULES` are written that way.
+pub fn render_site_rules_hosting<S: AsRef<str>>(
+    domain: &str,
+    enabled_rule_ids: &[S],
+    custom_rules: &str,
+    crs_mode: &str,
+) -> Result<String, WafError> {
+    let safe_domain = validate_domain(domain)?;
+    let enabled = validate_enabled_rule_ids(enabled_rule_ids)?;
+    let custom = validate_custom_rules(custom_rules)?;
+    let mode = normalize_crs_mode(crs_mode);
+
+    let mut chunks: Vec<String> = vec![
+        format!("# SNPANEL MANAGED - WAF rules for {safe_domain} (Apache and LiteSpeed)"),
+        String::new(),
+        "# SNPanel selected default rules".to_string(),
+    ];
+    for rule in DEFAULT_RULES {
+        if !enabled.iter().any(|id| id == rule.id) {
+            continue;
+        }
+        chunks.push(format!(
+            "# {} - {} ({})",
+            rule.category, rule.title, rule.id
+        ));
+        chunks.push(close_action_quotes(rule.rules.trim()));
+    }
+    chunks.push(String::new());
+    if mode == "off" {
+        chunks.push("# OWASP CRS: not for this site".to_string());
+        chunks.push(HOSTING_CRS_REMOVE.to_string());
+    } else {
+        chunks.push(format!("# OWASP CRS ({mode}): loaded server-wide"));
+    }
+    chunks.push(String::new());
+    chunks.push("# SNPanel custom rules".to_string());
+    if !custom.is_empty() {
+        chunks.push(custom);
+    }
+    let content = chunks.join("\n").trim().to_string() + "\n";
+    if content.len() > MAX_SITE_RULE_BYTES {
+        return refuse("WAF site rules are too large");
+    }
+    Ok(content)
+}
+
+/// The site rule file for this server's web server: nginx's, or the Hosting
+/// Edition's for Apache and LiteSpeed. Every writer goes through here, so no
+/// path can hand one engine the other's file.
+pub fn render_site_rules_here<S: AsRef<str>>(
+    domain: &str,
+    enabled_rule_ids: &[S],
+    custom_rules: &str,
+    crs_mode: &str,
+) -> Result<String, WafError> {
+    if crate::system::is_hosting_edition() {
+        render_site_rules_hosting(domain, enabled_rule_ids, custom_rules, crs_mode)
+    } else {
+        render_site_rules(domain, enabled_rule_ids, custom_rules, crs_mode)
+    }
+}
+
+/// Close a one-line rule's action list when it was left open: an odd count
+/// of unescaped double quotes means the last one never closed.
+fn close_action_quotes(rule: &str) -> String {
+    let mut quotes = 0;
+    let mut escaped = false;
+    for c in rule.chars() {
+        match c {
+            '\\' if !escaped => {
+                escaped = true;
+                continue;
+            }
+            '"' if !escaped => quotes += 1,
+            _ => {}
+        }
+        escaped = false;
+    }
+    if quotes % 2 == 1 {
+        format!("{rule}\"")
+    } else {
+        rule.to_string()
+    }
+}
+
+/// Python's `re.escape`: everything but letters, digits and `_`.
+fn regex_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() * 2);
+    for c in value.chars() {
+        if !(c.is_alphanumeric() || c == '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A site's bot block as a ModSecurity rule (the Hosting Edition's
+/// equivalent of the nginx `if ($http_user_agent ~* ...)`). Names come
+/// through `normalize_blocked_bots`, which refuses quotes, backslashes and
+/// control characters. Empty when nothing is blocked.
+pub fn render_bot_rules(bots: &[String]) -> Result<String, WafError> {
+    let safe = snpanel_nginx::normalize_blocked_bots(bots).map_err(|e| WafError(e.to_string()))?;
+    if safe.is_empty() {
+        return Ok(String::new());
+    }
+    let alternation: Vec<String> = safe.iter().map(|b| regex_escape(b)).collect();
+    Ok(format!(
+        "# SNPANEL MANAGED - blocked bots\nSecRule REQUEST_HEADERS:User-Agent \"@rx (?i)(?:{})\" \"id:1990001,phase:1,deny,status:403,log,msg:'SNPanel blocked bot'\"\n",
+        alternation.join("|")
+    ))
+}
+
+/// A site's HTTP flood limit as ModSecurity rules: at most `requests +
+/// burst` requests per client address in each window of `window` seconds,
+/// then 429 until the window ends. The window is fixed (it starts with the
+/// first request and is not extended by later ones), so a steady client
+/// under the rate is never shut out. The connection limit has no ModSecurity
+/// equivalent and is not enforced here. Empty when the limit is off.
+pub fn render_flood_rules(
+    domain: &str,
+    enabled: bool,
+    config: &snpanel_nginx::HttpFloodConfig,
+) -> Result<String, WafError> {
+    let safe_domain = validate_domain(domain)?;
+    if !enabled {
+        return Ok(String::new());
+    }
+    let window = config.access_limit_window.clamp(1, 3600);
+    let allowed =
+        (config.access_limit_requests.max(1) + config.access_limit_burst.max(0)).min(1_000_000);
+    Ok(format!(
+        "# SNPANEL MANAGED - HTTP flood limit: {allowed} requests per {window}s per address\n\
+         SecAction \"id:1990100,phase:1,nolog,pass,t:none,initcol:ip=%{{REMOTE_ADDR}}_{safe_domain}\"\n\
+         SecRule &IP:SNPANEL_FLOOD \"@eq 0\" \"id:1990101,phase:1,nolog,pass,t:none,setvar:ip.snpanel_flood=0,expirevar:ip.snpanel_flood={window}\"\n\
+         SecAction \"id:1990102,phase:1,nolog,pass,t:none,setvar:ip.snpanel_flood=+1\"\n\
+         SecRule IP:SNPANEL_FLOOD \"@gt {allowed}\" \"id:1990103,phase:1,deny,status:429,log,msg:'SNPanel HTTP flood limit'\"\n"
+    ))
+}
+
 /// Source: `site_uses_crs` - "CRS applies to a site only when both toggles
 /// agree".
 ///
@@ -403,7 +555,7 @@ pub async fn sync_site_rules(
 ) -> Result<crate::shell::CommandResult, WafError> {
     let safe_domain = validate_domain(domain)?;
     let mode = normalize_crs_mode(crs_mode);
-    let content = render_site_rules(&safe_domain, enabled_rule_ids, custom_rules, mode)?;
+    let content = render_site_rules_here(&safe_domain, enabled_rule_ids, custom_rules, mode)?;
 
     Ok(crate::shell::privileged(
         dry_run,
@@ -472,10 +624,13 @@ pub fn crs_memory_estimate(site_count: usize) -> i64 {
 /// Source: `site_rules_file` - the path the vhost's
 /// `modsecurity_rules_file` points at.
 pub fn site_rules_file(domain: &str) -> Result<String, WafError> {
-    Ok(format!(
-        "/etc/nginx/modsec/sites/{}.conf",
-        validate_domain(domain)?
-    ))
+    let domain = validate_domain(domain)?;
+    // The Hosting Edition's is in the site's WAF directory, which its
+    // Apache/LiteSpeed vhost includes.
+    if crate::system::is_hosting_edition() {
+        return Ok(format!("/etc/httpd/snpanel/waf/{domain}/rules.conf"));
+    }
+    Ok(format!("/etc/nginx/modsec/sites/{domain}.conf"))
 }
 
 /// Source: `nginx.normalize_blocked_bots` when it is handed a **string**.
@@ -685,7 +840,7 @@ pub fn plan_website_config<S: AsRef<str>>(
     } else {
         "off"
     };
-    let content = render_site_rules(&website.domain, &selected, &custom, mode)?;
+    let content = render_site_rules_here(&website.domain, &selected, &custom, mode)?;
     Ok(SavedWafConfig {
         default_rules: python_json_list(&selected),
         custom_rules: custom,
@@ -735,6 +890,58 @@ pub async fn write_site_rules(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hosting_rules_close_every_action_list_and_remove_crs_when_off() {
+        let all: Vec<&str> = DEFAULT_RULES.iter().map(|r| r.id).collect();
+        let text = render_site_rules_hosting("a.example.com", &all, "", "off").unwrap();
+        for line in text.lines().filter(|l| l.starts_with("SecRule ")) {
+            let quotes = line.matches('"').count() - line.matches("\\\"").count();
+            assert_eq!(quotes % 2, 0, "unclosed: {line}");
+            assert!(line.ends_with('"'), "{line}");
+        }
+        assert!(text.contains(HOSTING_CRS_REMOVE));
+        assert!(!text.contains("Include"));
+        let on = render_site_rules_hosting("a.example.com", &all, "", "block").unwrap();
+        assert!(!on.contains("SecRuleRemoveById"));
+        // Custom rules last, so an exception can remove what came before.
+        let custom =
+            render_site_rules_hosting("a.example.com", &all, "SecRuleRemoveById 942100", "block")
+                .unwrap();
+        assert!(custom.trim_end().ends_with("SecRuleRemoveById 942100"));
+    }
+
+    #[test]
+    fn bots_become_one_escaped_user_agent_rule() {
+        let rule =
+            render_bot_rules(&["MJ12bot".into(), "Bad.Bot/1".into(), "mj12BOT".into()]).unwrap();
+        assert!(
+            rule.contains(r#""@rx (?i)(?:MJ12bot|Bad\.Bot\/1)""#),
+            "{rule}"
+        );
+        assert!(render_bot_rules(&[]).unwrap().is_empty());
+        assert!(render_bot_rules(&["bad\"bot".into()]).is_err());
+    }
+
+    #[test]
+    fn flood_limits_count_per_address_and_site_in_a_fixed_window() {
+        let cfg = snpanel_nginx::HttpFloodConfig {
+            access_limit_requests: 100,
+            access_limit_window: 10,
+            access_limit_burst: 20,
+            connection_limit: 60,
+        };
+        let text = render_flood_rules("a.example.com", true, &cfg).unwrap();
+        assert!(text.contains("initcol:ip=%{REMOTE_ADDR}_a.example.com"));
+        assert!(text.contains("expirevar:ip.snpanel_flood=10"));
+        assert!(text.contains("\"@gt 120\""));
+        // The expiry is set once, when the counter is created.
+        assert_eq!(text.matches("expirevar").count(), 1);
+        assert!(render_flood_rules("a.example.com", false, &cfg)
+            .unwrap()
+            .is_empty());
+        assert!(render_flood_rules("../x", true, &cfg).is_err());
+    }
 
     /// A website row built from the corpus's own description of one.
     ///

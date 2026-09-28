@@ -76,7 +76,7 @@ pub fn status() -> HelperResponse {
         "crs_version": CRS_VERSION,
         "crs_mode": read_mode().as_str(),
         // Rules apply server-wide here until per-site vhost rules exist.
-        "sites_with_rules": 0,
+        "sites_with_rules": sites_with_rules(),
     });
     HelperResponse::with_stdout(format!(
         "{}\n",
@@ -263,6 +263,199 @@ fn apply() -> Result<(), HelperResponse> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-site WAF
+// ---------------------------------------------------------------------------
+//
+// Every vhost carries `IncludeOptional /etc/httpd/snpanel/waf/<domain>/*.conf`,
+// and each file there is one feature, as each was one block of the nginx
+// vhost: `rules.conf` (the site's rule file, `rules.conf.off` while its WAF
+// is off), `waf-disabled.conf` (takes the server-wide CRS off the site while
+// its WAF is off), `bots.conf` and `flood.conf`. Apache and LiteSpeed both
+// read them, and both honour vhost-level SecRuleRemoveById and rules.
+
+/// Where a site's WAF files live.
+pub const SITE_DIR: &str = "/etc/httpd/snpanel/waf";
+/// Every CRS rule, and the two detect-mode rules the panel adds.
+pub const CRS_RULE_RANGE: &str = "SecRuleRemoveById 900000-999999 1009001-1009002";
+
+/// A part of a site's WAF that is written on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SitePart {
+    Bots,
+    Flood,
+}
+
+impl SitePart {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "bots" => Some(Self::Bots),
+            "flood" => Some(Self::Flood),
+            _ => None,
+        }
+    }
+    fn file(self) -> &'static str {
+        match self {
+            Self::Bots => "bots.conf",
+            Self::Flood => "flood.conf",
+        }
+    }
+}
+
+fn site_dir(domain: &str) -> PathBuf {
+    // `domain` is a Domain: no separators, so it cannot leave SITE_DIR.
+    Path::new(SITE_DIR).join(domain)
+}
+
+/// The site's files as they are, to put back if the change is refused.
+fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| std::fs::read(e.path()).ok().map(|b| (e.path(), b)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn restore(dir: &Path, before: &[(PathBuf, Vec<u8>)]) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.filter_map(Result::ok) {
+            if !before.iter().any(|(p, _)| *p == e.path()) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    for (path, bytes) in before {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Run `change` on a site's directory, then validate and reload; a change
+/// Apache refuses is undone, so one site's rules never take the others down.
+fn site_change(
+    domain: &str,
+    what: &str,
+    change: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> HelperResponse {
+    let dir = site_dir(domain);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", dir.display()),
+        );
+    }
+    let before = snapshot(&dir);
+    if let Err(e) = change(&dir) {
+        restore(&dir, &before);
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("{what} for {domain}: {e}"),
+        );
+    }
+    if let Err(mut resp) = apply() {
+        restore(&dir, &before);
+        // Back to what was running; a failure here is reported with the first.
+        let _ = apply();
+        if let Some(err) = resp.error.as_mut() {
+            err.message = format!(
+                "{what} for {domain} rejected, previous state restored: {}",
+                err.message
+            );
+        }
+        return resp;
+    }
+    HelperResponse::with_stdout(format!("{what} saved: {domain}\n"))
+}
+
+/// `waf-site-save` on the Hosting Edition. While the site's WAF is off the
+/// rules wait in `rules.conf.off`, as the nginx rule file waited for its
+/// vhost block.
+pub fn site_rules_save(domain: &str, content: &str) -> HelperResponse {
+    let content = content.to_string();
+    site_change(domain, "WAF rules", move |dir| {
+        let off = dir.join("rules.conf.off");
+        let target = if off.exists() && !dir.join("rules.conf").exists() {
+            off
+        } else {
+            dir.join("rules.conf")
+        };
+        std::fs::write(target, content)
+    })
+}
+
+/// `waf-site-enable`.
+pub fn site_enable(domain: &str, on: bool) -> HelperResponse {
+    site_change(domain, if on { "WAF on" } else { "WAF off" }, move |dir| {
+        let (live, parked) = (dir.join("rules.conf"), dir.join("rules.conf.off"));
+        let disabled = dir.join("waf-disabled.conf");
+        if on {
+            if parked.exists() {
+                std::fs::rename(&parked, &live)?;
+            }
+            match std::fs::remove_file(&disabled) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        } else {
+            if live.exists() {
+                std::fs::rename(&live, &parked)?;
+            }
+            std::fs::write(
+                &disabled,
+                format!("# SNPANEL MANAGED - this site's WAF is off: no OWASP CRS here.\n{CRS_RULE_RANGE}\n"),
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// `waf-site-part-save`: an empty part removes the file.
+pub fn site_part_save(domain: &str, part: SitePart, content: &str) -> HelperResponse {
+    let content = content.to_string();
+    site_change(domain, part.file(), move |dir| {
+        let path = dir.join(part.file());
+        if content.trim().is_empty() {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        } else {
+            std::fs::write(path, content)
+        }
+    })
+}
+
+/// `waf-site-delete` on the Hosting Edition.
+pub fn site_delete(domain: &str) -> HelperResponse {
+    let dir = site_dir(domain);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {
+            let _ = apply();
+            HelperResponse::ok()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => HelperResponse::ok(),
+        Err(e) => HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("removing {}: {e}", dir.display()),
+        ),
+    }
+}
+
+/// How many sites have WAF rules in place, for `waf-status`.
+pub fn sites_with_rules() -> usize {
+    std::fs::read_dir(SITE_DIR)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|e| e.path().join("rules.conf").is_file())
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn write_file(path: &str, text: &str) -> Result<(), HelperResponse> {

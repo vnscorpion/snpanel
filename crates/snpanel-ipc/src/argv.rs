@@ -149,6 +149,10 @@ fn user_of(raw: &str) -> Result<PanelUsername, InvocationError> {
     PanelUsername::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
 
+fn domain_of(raw: &str) -> Result<snpanel_core::Domain, InvocationError> {
+    snpanel_core::Domain::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
+}
+
 fn package_of(raw: &str) -> Result<crate::LvePackageName, InvocationError> {
     crate::LvePackageName::parse(raw).map_err(InvocationError::invalid)
 }
@@ -645,6 +649,36 @@ impl HelperRequest {
                 user: user_of(&rest[0])?,
             },
             ("web-status", 0) => HelperRequest::WebStatus,
+            ("waf-site-enable", 2) => HelperRequest::WafSiteEnable {
+                domain: domain_of(&rest[0])?,
+                on: match rest[1].as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "waf-site-enable takes on or off, not {other}"
+                        )))
+                    }
+                },
+            },
+            ("waf-site-part-save", 2) => HelperRequest::WafSitePartSave {
+                domain: domain_of(&rest[0])?,
+                part: match rest[1].as_str() {
+                    p @ ("bots" | "flood") => p.to_string(),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "unknown WAF part {other}"
+                        )))
+                    }
+                },
+                content: {
+                    let text = String::from_utf8_lossy(&stdin()).into_owned();
+                    if text.len() > 256 * 1024 || text.contains('\0') {
+                        return Err(InvocationError::invalid("WAF part too large or not text"));
+                    }
+                    text
+                },
+            },
             ("web-switch", 1) => HelperRequest::WebSwitch {
                 to: crate::WebServer::parse(&rest[0]).map_err(InvocationError::invalid)?,
             },
@@ -1550,6 +1584,20 @@ mod tests {
         ));
         assert!(map(&["web-switch", "nginx"]).is_err());
         assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
+        assert!(matches!(
+            map(&["waf-site-enable", "a.example.com", "off"]),
+            Ok(HelperRequest::WafSiteEnable { on: false, .. })
+        ));
+        assert!(map(&["waf-site-enable", "a.example.com", "maybe"]).is_err());
+        assert!(map(&["waf-site-enable", "../etc", "on"]).is_err());
+        assert!(matches!(
+            HelperRequest::from_argv(
+                &argv(&["waf-site-part-save", "a.example.com", "bots"]),
+                Vec::new
+            ),
+            Ok(HelperRequest::WafSitePartSave { .. })
+        ));
+        assert!(map(&["waf-site-part-save", "a.example.com", "rules"]).is_err());
     }
 
     #[test]

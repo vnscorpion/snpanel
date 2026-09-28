@@ -181,6 +181,8 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "panel-sni-sync"
         | "panel-url-set"
         | "waf-site-save"
+        | "waf-site-enable"
+        | "waf-site-part-save"
         | "waf-site-delete"
         | "waf-crs-mode"
         | "waf-custom-save"

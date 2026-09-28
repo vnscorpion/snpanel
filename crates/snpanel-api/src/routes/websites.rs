@@ -1432,6 +1432,25 @@ pub(super) async fn update_waf_block(
     if state.settings.command_dry_run {
         return Ok(());
     }
+    // Hosting Edition: the site's rule file is parked or put back, and the
+    // server-wide CRS taken off the site while its WAF is off.
+    if crate::system::is_hosting_edition() {
+        let result = shell::privileged(
+            false,
+            "waf-site-enable",
+            &[domain, if enabled { "on" } else { "off" }],
+            None,
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(bad_request(
+                &result.failure_detail("Could not switch the WAF"),
+            ))
+        };
+    }
     let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
     };
@@ -1478,9 +1497,6 @@ async fn set_waf(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1622,6 +1638,11 @@ async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
 /// go through [`sync_http_flood_zones`], which turns this into the response
 /// they always made.
 pub(super) async fn sync_flood_zones(state: &AppState) -> Result<(), String> {
+    // The Hosting Edition keeps each site's limit in its own rules; there is
+    // no shared zone file.
+    if crate::system::is_hosting_edition() {
+        return Ok(());
+    }
     let websites = state.db.websites().list(None, "").await.map_err(|e| {
         tracing::error!("listing websites for the flood zones failed: {e}");
         format!("could not list the websites for the flood zones: {e}")
@@ -1836,6 +1857,26 @@ async fn update_http_flood_block(
     if state.settings.command_dry_run {
         return Ok(());
     }
+    // Hosting Edition: ModSecurity counters in the site's WAF directory.
+    if crate::system::is_hosting_edition() {
+        let content = crate::waf::render_flood_rules(domain, enabled, config)
+            .map_err(|e| bad_request(&e.0))?;
+        let result = shell::privileged(
+            false,
+            "waf-site-part-save",
+            &[domain, "flood"],
+            Some(&content),
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(bad_request(
+                &result.failure_detail("Could not save the flood limit"),
+            ))
+        };
+    }
     let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
     };
@@ -1903,9 +1944,6 @@ async fn set_http_flood(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
         return not_enough_permissions();
     }

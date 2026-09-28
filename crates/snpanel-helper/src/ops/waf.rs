@@ -550,6 +550,9 @@ fn nginx_memory_pss_mb() -> u64 {
 
 /// `waf-site-save`: per-site rule file.
 pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::site_rules_save(domain.as_str(), content);
+    }
     if let Err(e) = std::fs::create_dir_all(WAF_SITE_DIR) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -601,6 +604,9 @@ pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
 
 /// `waf-site-delete`.
 pub fn site_rules_delete(domain: &Domain) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::site_delete(domain.as_str());
+    }
     let path = Path::new(WAF_SITE_DIR).join(format!("{domain}.conf"));
     match std::fs::remove_file(&path) {
         Ok(()) => HelperResponse::ok(),

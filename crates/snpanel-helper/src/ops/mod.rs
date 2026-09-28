@@ -383,6 +383,30 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveUsage { user } => lve::usage(user),
         HelperRequest::WebStatus => web::status(),
+        HelperRequest::WafSiteEnable { domain, on } => {
+            if waf_apache::active() {
+                waf_apache::site_enable(domain.as_str(), *on)
+            } else {
+                HelperResponse::failed(
+                    HelperErrorKind::BadRequest,
+                    "waf-site-enable is for the Hosting Edition; nginx sites use their vhost block"
+                        .to_string(),
+                )
+            }
+        }
+        HelperRequest::WafSitePartSave {
+            domain,
+            part,
+            content,
+        } => match waf_apache::SitePart::parse(part) {
+            Some(part) if waf_apache::active() => {
+                waf_apache::site_part_save(domain.as_str(), part, content)
+            }
+            _ => HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                "waf-site-part-save is for the Hosting Edition".to_string(),
+            ),
+        },
         HelperRequest::WebSwitch { to } => web::switch(*to),
         HelperRequest::LswsRestart => web::lsws_restart(),
         HelperRequest::LswsAdminPassword => web::lsws_admin_password(),
