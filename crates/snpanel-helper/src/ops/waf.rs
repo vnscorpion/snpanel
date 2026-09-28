@@ -1593,6 +1593,11 @@ fn write_main_conf() -> Result<(), HelperResponse> {
 /// WAF page uses this to show what is actually loaded, and a file edited by
 /// hand would otherwise be reported as SNPanel's own.
 pub fn default_rules() -> HelperResponse {
+    // Hosting Edition: shown, not loaded from here - each site's rules.conf
+    // carries the ones it selected.
+    if super::waf_apache::active() {
+        return HelperResponse::with_stdout(DEFAULT_RULES.to_string());
+    }
     if let Err(resp) = write_default_rules() {
         return resp;
     }
@@ -1607,6 +1612,11 @@ pub fn default_rules() -> HelperResponse {
 
 /// `waf-custom-rules` - what an administrator has added, if anything.
 pub fn custom_rules() -> HelperResponse {
+    if super::waf_apache::active() {
+        return HelperResponse::with_stdout(
+            std::fs::read_to_string(super::waf_apache::CUSTOM_CONF).unwrap_or_default(),
+        );
+    }
     if let Err(resp) = ensure_modsec_dir() {
         return resp;
     }
@@ -1653,6 +1663,9 @@ pub fn custom_rules_save(content: &str) -> HelperResponse {
             HelperErrorKind::BadRequest,
             "WAF custom rules must be 64 KB or smaller".to_string(),
         );
+    }
+    if super::waf_apache::active() {
+        return super::waf_apache::custom_rules_save(content);
     }
     if let Err(resp) = write_default_rules() {
         return resp;

@@ -446,6 +446,48 @@ pub fn site_delete(domain: &str) -> HelperResponse {
     }
 }
 
+/// Server-wide custom rules. `zz-` so the stock `modsecurity.d/*.conf`
+/// include loads it after CRS, where a `SecRuleRemoveById` exception has
+/// something to remove.
+pub const CUSTOM_CONF: &str = "/etc/httpd/modsecurity.d/zz-snpanel-custom.conf";
+
+/// `waf-custom-save` on the Hosting Edition: validated with `httpd -t`, and
+/// the previous file put back when Apache refuses it (nginx's version leaves
+/// a refused file in place and relies on the reload not happening; here a
+/// refused file would stop the next Apache or LiteSpeed start).
+pub fn custom_rules_save(content: &str) -> HelperResponse {
+    let previous = std::fs::read(CUSTOM_CONF).ok();
+    let text = if content.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "# SNPANEL MANAGED - server-wide custom WAF rules (Settings > WAF)\n{}\n",
+            content.trim_end()
+        )
+    };
+    if let Err(e) = std::fs::write(CUSTOM_CONF, text) {
+        return HelperResponse::failed(
+            HelperErrorKind::Internal,
+            format!("writing {CUSTOM_CONF}: {e}"),
+        );
+    }
+    if let Err(mut resp) = apply() {
+        let _ = match &previous {
+            Some(bytes) => std::fs::write(CUSTOM_CONF, bytes),
+            None => std::fs::remove_file(CUSTOM_CONF),
+        };
+        let _ = apply();
+        if let Some(err) = resp.error.as_mut() {
+            err.message = format!(
+                "WAF custom rules rejected, previous rules restored: {}",
+                err.message
+            );
+        }
+        return resp;
+    }
+    HelperResponse::with_stdout("WAF custom rules saved\n".to_string())
+}
+
 /// How many sites have WAF rules in place, for `waf-status`.
 pub fn sites_with_rules() -> usize {
     std::fs::read_dir(SITE_DIR)

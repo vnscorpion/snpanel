@@ -28,6 +28,7 @@ export default function WafPage() {
     setGlobalBots,
     setNewBotName,
     toggleWebsiteWaf,
+    wafToggling,
     wafRules,
     websites,
   } = usePanel();
@@ -80,7 +81,7 @@ export default function WafPage() {
           const bots = botCountFor(site.id);
           return <div className="waf-site-row" key={site.id}>
             <label className="waf-switch" title={site.waf_enabled ? t('Turn the WAF off for {domain}', { domain: site.domain }) : t('Turn the WAF on for {domain}', { domain: site.domain })}>
-              <input type="checkbox" role="switch" checked={!!site.waf_enabled} disabled={!!loading || engine === false}
+              <input type="checkbox" role="switch" checked={!!site.waf_enabled} disabled={!!loading || !!wafToggling || engine === false}
                 onChange={() => toggleWebsiteWaf(site)} aria-label={t('WAF for {domain}', { domain: site.domain })} />
               <span className="waf-switch-track" aria-hidden="true"><span className="waf-switch-thumb"/></span>
             </label>

@@ -2150,6 +2150,11 @@ function App() {
   }
 
   async function toggleWebsiteWaf(site) {
+    // One switch at a time, until the list says what the switch is now: a
+    // second click before the refresh read the old state and sent it again.
+    if (wafToggling) return;
+    setWafToggling(site.id);
+    try {
     const next = !site.waf_enabled;
     const data = await request(`/websites/${site.id}/waf`, {
       method: 'PATCH',
@@ -2162,6 +2167,9 @@ function App() {
       // state comes from here.
       if (isAdmin) await loadCrs();
       if (String(selectedWafWebsiteId) === String(site.id)) await loadWebsiteWafConfig(site.id, false);
+    }
+    } finally {
+      setWafToggling(null);
     }
   }
 
@@ -3814,6 +3822,7 @@ function App() {
   // CloudLinux: the endpoint answers 409 on a server that is not running it,
   // so one silent read says whether its pages exist here at all.
   const [cloudlinuxAvailable, setCloudlinuxAvailable] = useState(false);
+  const [wafToggling, setWafToggling] = useState(null);
   useEffect(() => {
     if (!isAuthenticated) { setCloudlinuxAvailable(false); return; }
     request('/hosting/cloudlinux', { silent: true }).then(d => setCloudlinuxAvailable(!!d?.available));
@@ -4632,6 +4641,7 @@ function App() {
       toggleUploadScan,
       toggleWafDefaultRule,
       toggleWebsiteWaf,
+      wafToggling,
       twoFactorCode,
       twoFactorSetup,
       twoFactorStatus,

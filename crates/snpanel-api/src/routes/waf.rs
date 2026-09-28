@@ -800,9 +800,6 @@ async fn save_custom_rules(State(state): State<AppState>, req: Request) -> Respo
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Some(r) = crate::system::hosting_waf_refusal() {
-        return r;
-    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
