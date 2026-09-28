@@ -189,6 +189,21 @@ pub(crate) fn render_tools_nginx(config: &ToolsConfig) -> String {
     )
 }
 
+/// LiteSpeed WebAdmin serves the panel's certificate too, and renews with it.
+fn sync_webadmin() {
+    if !std::path::Path::new("/usr/local/lsws/bin/lswsctrl").exists() {
+        return;
+    }
+    let env = env_file();
+    let get = |k: &str| env_get(&env, k).unwrap_or_default();
+    install_hook("snpanel-webadmin-cert", crate::ops::web::WEBADMIN_CERT_HOOK);
+    crate::ops::web::sync_webadmin_cert(
+        &get("PANEL_SSL_MODE"),
+        &get("PANEL_SSL_CERT"),
+        &get("PANEL_SSL_KEY"),
+    );
+}
+
 /// Source: `refresh_tools_nginx`.
 fn refresh_tools_nginx() -> HelperResponse {
     let env = env_file();
@@ -503,6 +518,7 @@ pub fn url_set(ctx: &super::Context, https: bool, host: &str, port: Port) -> Hel
     }
 
     allow_panel_port(ctx);
+    sync_webadmin();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;
@@ -550,6 +566,7 @@ pub fn ssl_use_domain(ctx: &super::Context, domain: &Domain, port: Port) -> Help
     install_hook("snpanel-sni-certs", SNI_HOOK);
     let _ = crate::ops::ssl::sync_sni();
     allow_panel_port(ctx);
+    sync_webadmin();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;
@@ -643,6 +660,7 @@ pub fn ssl_install(
     install_hook("snpanel-sni-certs", SNI_HOOK);
     let _ = crate::ops::ssl::sync_sni();
     allow_panel_port(ctx);
+    sync_webadmin();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;

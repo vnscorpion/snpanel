@@ -275,8 +275,86 @@ pub fn lsws_admin_password() -> HelperResponse {
     ))
 }
 
+const ADMIN_CERT: &str = "/usr/local/lsws/admin/conf/cert/admin.crt";
+const ADMIN_KEY: &str = "/usr/local/lsws/admin/conf/cert/admin.key";
+
+/// Whether the panel is on a certificate worth giving WebAdmin: a real one
+/// (Let's Encrypt, or a site's), not its self-signed fallback.
+pub fn panel_cert_is_real(mode: &str) -> bool {
+    matches!(mode, "letsencrypt" | "domain")
+}
+
+/// Give LiteSpeed WebAdmin (7080) the panel's certificate, so it is served
+/// for the panel's hostname without a browser warning. LiteSpeed's own
+/// self-signed pair is kept once as `*.lsws-orig`. Best effort: WebAdmin
+/// keeping its own certificate is not a reason to fail the panel's.
+pub(crate) fn sync_webadmin_cert(mode: &str, cert: &str, key: &str) {
+    if !Path::new(LSWS_CTRL).exists() || !Path::new(ADMIN_CERT).parent().is_some_and(Path::exists) {
+        return;
+    }
+    if !panel_cert_is_real(mode) {
+        return;
+    }
+    let (Ok(chain), Ok(private)) = (std::fs::read(cert), std::fs::read(key)) else {
+        return;
+    };
+    if std::fs::read(ADMIN_CERT).ok().as_deref() == Some(chain.as_slice()) {
+        return;
+    }
+    for path in [ADMIN_CERT, ADMIN_KEY] {
+        let orig = format!("{path}.lsws-orig");
+        if !Path::new(&orig).exists() {
+            let _ = std::fs::copy(path, &orig);
+        }
+    }
+    let wrote = crate::ops::nginx::write_atomic(Path::new(ADMIN_KEY), &private, 0o600)
+        .and_then(|_| crate::ops::nginx::write_atomic(Path::new(ADMIN_CERT), &chain, 0o644));
+    if wrote.is_ok() {
+        let _ = exec::run(&["systemctl", "try-reload-or-restart", "lshttpd"]);
+    }
+}
+
+/// Installed by the panel on a LiteSpeed server: renews WebAdmin's copy of
+/// the panel certificate along with the panel's own.
+pub(crate) const WEBADMIN_CERT_HOOK: &str = r#"#!/usr/bin/env bash
+# Installed by SNPanel. Gives LiteSpeed WebAdmin (7080) the renewed panel certificate.
+set -euo pipefail
+env_file="/opt/snpanel/backend/.env"
+cert_dir="/usr/local/lsws/admin/conf/cert"
+[[ -f "$env_file" && -d "$cert_dir" ]] || exit 0
+mode="$(sed -nE 's/^PANEL_SSL_MODE=//p' "$env_file" | tail -n1 | tr -d '"')"
+domain="$(sed -nE 's/^PANEL_DOMAIN=//p' "$env_file" | tail -n1 | tr -d '"')"
+[[ ( "$mode" == "letsencrypt" || "$mode" == "domain" ) && -n "$domain" ]] || exit 0
+# RENEWED_LINEAGE is set by certbot to the live directory that just changed.
+[[ "${RENEWED_LINEAGE:-}" == "/etc/letsencrypt/live/${domain}" ]] || exit 0
+install -m 0600 -o root -g root "${RENEWED_LINEAGE}/privkey.pem" "${cert_dir}/admin.key"
+install -m 0644 -o root -g root "${RENEWED_LINEAGE}/fullchain.pem" "${cert_dir}/admin.crt"
+systemctl try-reload-or-restart lshttpd || true
+"#;
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn webadmin_gets_only_a_real_panel_certificate() {
+        assert!(super::panel_cert_is_real("letsencrypt"));
+        assert!(super::panel_cert_is_real("domain"));
+        assert!(!super::panel_cert_is_real("selfsigned"));
+        assert!(!super::panel_cert_is_real(""));
+    }
+
+    #[test]
+    fn the_webadmin_hook_checks_its_lineage_and_keeps_the_key_private() {
+        let hook = super::WEBADMIN_CERT_HOOK;
+        assert!(hook.starts_with("#!/usr/bin/env bash\n"));
+        assert!(hook.contains("set -euo pipefail"));
+        assert!(hook.matches("RENEWED_LINEAGE").count() >= 2);
+        let key_line = hook.lines().find(|l| l.contains("privkey.pem")).unwrap();
+        assert!(
+            key_line.contains("-m 0600") && key_line.contains("-g root"),
+            "{key_line}"
+        );
+    }
+
     use super::*;
 
     const LOG_SAMPLE: &str = "2026-09-28 07:35:58.015 switch -> lsws (80->9080, 443->9443)
