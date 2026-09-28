@@ -1,0 +1,18 @@
+#!/bin/sh
+# snpanel-ui-user-info <token> - CloudLinux Manager's `ui_user_info` for SNPanel.
+#
+# CloudLinux's LveManager.php (running as the unprivileged snpanel-lvem) calls
+# this with the token the panel minted for one opened view. Identity comes from
+# the panel, never from the OS account this runs as (CloudLinux F-37 /
+# CLOS-5551): the panel answers on loopback only, and only for a token it
+# issued to a signed-in, still-valid session. Anything else prints {} and
+# fails, which CloudLinux treats as "not signed in".
+PORT="${SNPANEL_PANEL_PORT:-2222}"
+token="$1"
+case "$token" in
+  '' | *[!0-9a-f]*) echo '{}'; exit 1 ;;
+esac
+[ "${#token}" -eq 64 ] || { echo '{}'; exit 1; }
+# -k: the panel's certificate is for its public name; this is loopback.
+out=$(curl -fsSk --max-time 5 "https://127.0.0.1:${PORT}/api/hosting/cloudlinux/identity/${token}") || { echo '{}'; exit 1; }
+printf '%s\n' "$out"

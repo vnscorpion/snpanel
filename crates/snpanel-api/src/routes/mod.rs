@@ -6,6 +6,7 @@
 
 pub mod addons;
 pub mod auth;
+pub mod cloudlinux;
 pub mod dashboard;
 pub mod databases;
 pub mod fail2ban;
@@ -56,6 +57,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(firewall::router())
         .merge(fail2ban::router())
         .merge(lve::router())
+        .merge(cloudlinux::router())
         .merge(databases::router())
         .merge(updates::router())
         .merge(addons::router())

@@ -51,7 +51,7 @@ const CronPage = lazy(() => import('./pages/Cron.jsx'));
 const FilesPage = lazy(() => import('./pages/Files.jsx'));
 const BackupsPage = lazy(() => import('./pages/Backups.jsx'));
 const ServicesPage = lazy(() => import('./pages/Services.jsx'));
-const LvePage = lazy(() => import('./pages/Lve.jsx'));
+const CloudLinuxPage = lazy(() => import('./pages/CloudLinux.jsx'));
 const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
@@ -3811,13 +3811,13 @@ function App() {
     if (isAuthenticated && page === 'fail2ban' && isAdmin && fail2banAddonInstalled) loadFail2ban();
   }, [isAuthenticated, page, isAdmin, fail2banAddonInstalled]);
 
-  // CloudLinux LVE: the endpoint answers 409 on a server that is not running
-  // it, so one silent read says whether the page exists here at all.
-  const [lveAvailable, setLveAvailable] = useState(false);
+  // CloudLinux: the endpoint answers 409 on a server that is not running it,
+  // so one silent read says whether its pages exist here at all.
+  const [cloudlinuxAvailable, setCloudlinuxAvailable] = useState(false);
   useEffect(() => {
-    if (!isAuthenticated || !isAdmin) { setLveAvailable(false); return; }
-    request('/hosting/lve', { silent: true }).then(d => setLveAvailable(!!d));
-  }, [isAuthenticated, isAdmin]);
+    if (!isAuthenticated) { setCloudlinuxAvailable(false); return; }
+    request('/hosting/cloudlinux', { silent: true }).then(d => setCloudlinuxAvailable(!!d?.available));
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (!isAuthenticated || page !== 'malware' || !isAdmin || !malwareAddonInstalled) return;
@@ -3918,6 +3918,9 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
+    // CloudLinux's own pages for hosting customers (the administrator has
+    // all of them in CloudLinux Manager, under Settings).
+    ...(cloudlinuxAvailable && !isAdmin ? [['resource-usage', t('Resource usage'), Gauge], ['php-selector', t('PHP version'), Code2]] : []),
     // The addons with a page of their own, while they are installed, in the
     // Addons page's order: AI assistants for every account, the others for
     // administrators.
@@ -3940,8 +3943,8 @@ function App() {
     ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
     ...(isAdmin ? [['updates', t('Updates'), RefreshCw, t('The panel and system packages')]] : []),
     ...(isAdmin ? [['addons', t('Addons'), Boxes, t('Install or remove addons')]] : []),
-    ...(isAdmin && lveAvailable ? [['lve', t('Resource limits (LVE)'), Gauge, t('CPU, memory, processes and IO per account')]] : []),
-    ['services', t('Services Status'), Activity, lveAvailable ? t('LiteSpeed, Apache, MariaDB and Redis') : t('nginx, PHP-FPM, MariaDB and Redis')],
+    ...(isAdmin && cloudlinuxAvailable ? [['cloudlinux', t('CloudLinux Manager'), Gauge, t('LVE limits, CageFS, PHP Selector and resource usage')]] : []),
+    ['services', t('Services Status'), Activity, cloudlinuxAvailable ? t('LiteSpeed, Apache, MariaDB and Redis') : t('nginx, PHP-FPM, MariaDB and Redis')],
   ];
 
   // An addon's page opened by its address while the addon is not installed
@@ -4693,7 +4696,9 @@ function App() {
     if (page === 'access-logs') return <WafAccessLogsPage />;
     if (page === 'updates') return <UpdatesPage />;
     if (page === 'services') return <ServicesPage />;
-    if (page === 'lve') return isAdmin ? <LvePage /> : null;
+    if (page === 'cloudlinux') return isAdmin ? <CloudLinuxPage plugin="lvemanager" title={t('CloudLinux Manager')} about={t('LVE limits, CageFS, PHP Selector and resource usage')} /> : null;
+    if (page === 'resource-usage') return <CloudLinuxPage plugin="resource_usage" title={t('Resource usage')} about={t('CPU, memory and IO your account uses, and when it reached its limits')} />;
+    if (page === 'php-selector') return <CloudLinuxPage plugin="php_selector" title={t('PHP version')} about={t('Pick the PHP version and extensions for your account or one domain')} />;
     // One page for both addresses: the tokens are a tab of Panel settings.
     if (page === 'settings') return <SettingsPage />;
     if (page === 'panel-settings' || page === 'api-tokens') return <PanelSettingsPage />;

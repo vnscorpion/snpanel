@@ -38,6 +38,7 @@ mod backups;
 mod clamav;
 mod client;
 mod cloudflare;
+mod cloudlinux_ui;
 mod compose;
 mod cron;
 mod cron_due;
@@ -474,6 +475,17 @@ fn tls_config(
 fn build_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", routes::api_router())
+        // CloudLinux Manager's own UI, reverse-proxied onto the panel origin
+        // (Hosting Edition only; `cloudlinux_ui::proxy` 404s elsewhere).
+        .route(
+            "/cloudlinux",
+            axum::routing::get(cloudlinux_ui::redirect_to_dir),
+        )
+        .route("/cloudlinux/", axum::routing::any(cloudlinux_ui::proxy))
+        .route(
+            "/cloudlinux/{*rest}",
+            axum::routing::any(cloudlinux_ui::proxy),
+        )
         // Anything not matched above: proxy it, or 404 once there is nothing
         // left to proxy to.
         .fallback(fallback)
