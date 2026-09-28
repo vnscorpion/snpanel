@@ -82,8 +82,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             menu::run()?;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor { json } => {
-            let report = doctor::run(env_path.as_deref());
+        Command::Doctor {
+            json,
+            enterprise_readiness,
+        } => {
+            let report = if enterprise_readiness {
+                doctor::readiness()
+            } else {
+                doctor::run(env_path.as_deref())
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report.to_json())?);
             } else {

@@ -4051,6 +4051,15 @@ async fn build_new_site(
     // pool. `"none"` rather than an empty argument when there is no runtime
     // PHP: the helper reads the third argument positionally.
     let php_arg = site.runtime_php.unwrap_or("none");
+    // Whether the site directory was already there. If the ensure fails
+    // part-way it may have created it, and a directory with no row is
+    // invisible to the panel - but one that existed before this request may
+    // hold someone's files, so only a directory this request made is removed.
+    // Anything but a clean "not found" counts as existing.
+    let existed_before = !matches!(
+        tokio::fs::symlink_metadata(site.root_path).await,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
     let ensured = shell::privileged(
         dry,
         "site-runtime-ensure",
@@ -4060,10 +4069,14 @@ async fn build_new_site(
     )
     .await;
     if !ensured.ok() {
-        return Err(ensured
+        let message = ensured
             .failure_detail("Could not prepare the website directory")
             .trim()
-            .to_string());
+            .to_string();
+        if !existed_before && !dry {
+            cleanup_failed_site(state, site).await;
+        }
+        return Err(message);
     }
 
     let mut db_info = None;

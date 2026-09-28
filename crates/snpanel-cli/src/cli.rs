@@ -116,6 +116,11 @@ pub enum Command {
         /// Print the findings as JSON.
         #[arg(long)]
         json: bool,
+        /// Check whether this machine can take `snpanel upgrade cloudlinux`
+        /// (AlmaLinux 10, x86-64-v3, not a container, RAM/disk). Read-only,
+        /// needs no licence.
+        #[arg(long)]
+        enterprise_readiness: bool,
     },
 }
 
