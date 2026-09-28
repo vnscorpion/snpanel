@@ -1,4 +1,4 @@
-import { Ban, Globe, HardDrive, LogIn, Pencil, Play, Plus, RefreshCw, Save, Trash2, Users, X } from 'lucide-react';
+import { Ban, Globe, HardDrive, LogIn, Pencil, Play, Plus, RefreshCw, Save, Terminal as TerminalIcon, Trash2, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 import SftpAccess from '../components/SftpAccess.jsx';
@@ -188,6 +188,7 @@ export default function UsersPage() {
           <label><span>{t('Package name')}</span><input value={newPackage.name} onChange={e => setNewPackage(prev => ({ ...prev, name: e.target.value }))} placeholder={t('Starter')} /></label>
           <label><span>{t('Website limit')}</span><input type="number" min="0" max="1000" value={newPackage.website_limit} onChange={e => setNewPackage(prev => ({ ...prev, website_limit: e.target.value }))} /></label>
           <label><span>{t('Storage (MB)')}</span><input type="number" min="0" max="1048576" value={newPackage.storage_limit_mb} onChange={e => setNewPackage(prev => ({ ...prev, storage_limit_mb: e.target.value }))} /></label>
+          <label className="check-line package-check"><input type="checkbox" checked={!!newPackage.terminal_enabled} onChange={e => setNewPackage(prev => ({ ...prev, terminal_enabled: e.target.checked }))} /><span>{t('Terminal')}</span></label>
           <button disabled={!!loading || !newPackage.name.trim()} onClick={createPackage}><Plus size={14}/> {t('Create package')}</button>
         </div>
         <div className="package-list">
@@ -197,6 +198,7 @@ export default function UsersPage() {
               <label><span>{t('Name')}</span><input value={editingPackageForm.name} onChange={e => setEditingPackageForm(prev => ({ ...prev, name: e.target.value }))} /></label>
               <label><span>{t('Website limit')}</span><input type="number" min="0" max="1000" value={editingPackageForm.website_limit} onChange={e => setEditingPackageForm(prev => ({ ...prev, website_limit: e.target.value }))} /></label>
               <label><span>{t('Storage (MB)')}</span><input type="number" min="0" max="1048576" value={editingPackageForm.storage_limit_mb} onChange={e => setEditingPackageForm(prev => ({ ...prev, storage_limit_mb: e.target.value }))} /></label>
+              <label className="check-line package-check"><input type="checkbox" checked={!!editingPackageForm.terminal_enabled} onChange={e => setEditingPackageForm(prev => ({ ...prev, terminal_enabled: e.target.checked }))} /><span>{t('Terminal')}</span></label>
               <div className="row-actions">
                 <button className="mini secondary-light" onClick={cancelEditingPackage}>{t('Cancel')}</button>
                 <button className="mini" disabled={!!loading || !editingPackageForm.name.trim()} onClick={() => updatePackage(item.id)}><Save size={14}/> {t('Save')}</button>
@@ -205,6 +207,7 @@ export default function UsersPage() {
               <div className="user-main"><strong>{item.name}</strong><small>{t('{sites} websites · {mb} MB', { sites: item.website_limit, mb: item.storage_limit_mb })}</small></div>
               <span className="user-metric"><Globe size={13}/>{t('{count} websites', { count: item.website_limit })}</span>
               <span className="user-metric"><HardDrive size={13}/>{item.storage_limit_mb} MB</span>
+              <span className={`user-metric ${item.terminal_enabled ? '' : 'muted'}`}><TerminalIcon size={13}/>{item.terminal_enabled ? t('Terminal on') : t('Terminal off')}</span>
               <div className="row-actions">
                 <button className="mini secondary-light" disabled={!!loading} onClick={() => startEditingPackage(item)}><Pencil size={14}/> {t('Edit')}</button>
                 <button className="mini danger" disabled={!!loading || users.some(user => user.package_id === item.id)} onClick={() => deletePackage(item)}

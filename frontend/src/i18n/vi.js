@@ -1359,6 +1359,8 @@ export default {
   "Default limits": "Giới hạn mặc định",
   "Use the default limits": "Dùng giới hạn mặc định",
   "Use default": "Dùng mặc định",
+  "Terminal on": "Có Terminal",
+  "Terminal off": "Không có Terminal",
   "Account default (PHP Selector)": "Theo tài khoản (PHP Selector)",
   "account default": "theo tài khoản",
   "Web server": "Web server",
