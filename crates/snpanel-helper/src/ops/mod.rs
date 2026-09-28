@@ -38,6 +38,7 @@ pub mod system;
 pub mod terminal;
 pub mod user;
 pub mod waf;
+pub mod waf_apache;
 
 use snpanel_ipc::{HelperErrorKind, HelperRequest, HelperResponse};
 use snpanel_osabi::firewall::rules::{Action, FirewallState};

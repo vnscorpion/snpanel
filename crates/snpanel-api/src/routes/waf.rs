@@ -297,6 +297,9 @@ async fn save_website_waf(
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -633,6 +636,9 @@ async fn save_website_bots(
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -670,6 +676,9 @@ async fn apply_blocked_bots(State(state): State<AppState>, req: Request) -> Resp
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -782,6 +791,9 @@ async fn save_custom_rules(State(state): State<AppState>, req: Request) -> Respo
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -821,6 +833,9 @@ async fn save_custom_rules(State(state): State<AppState>, req: Request) -> Respo
 
 /// Source: `install_waf`.
 async fn install_engine(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -847,6 +862,9 @@ async fn install_engine(State(state): State<AppState>, current: CurrentUser) -> 
 
 /// Source: `update_waf_rules`.
 async fn update_rules(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -997,6 +1015,9 @@ async fn set_website_crs(
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -1205,6 +1226,11 @@ pub(super) async fn switch_crs_mode(
         let state = state.clone();
         async move {
             let mut problems: Vec<Value> = Vec::new();
+            // Hosting Edition: CRS is one server-wide include; there are no
+            // per-site rule files (and no nginx to test them with).
+            if crate::system::is_hosting_edition() {
+                return problems;
+            }
             for site in sites {
                 match crate::waf::sync_website_rules(
                     state.settings.command_dry_run,

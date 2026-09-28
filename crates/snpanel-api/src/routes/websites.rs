@@ -1478,6 +1478,9 @@ async fn set_waf(
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1900,6 +1903,9 @@ async fn set_http_flood(
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
         return not_enough_permissions();
     }

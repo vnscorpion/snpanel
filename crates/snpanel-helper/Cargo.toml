@@ -21,6 +21,7 @@ path = "src/bin/snpanel-extract.rs"
 [dependencies]
 zip.workspace = true
 tar.workspace = true
+sha2.workspace = true
 flate2.workspace = true
 snpanel-core = { path = "../snpanel-core" }
 snpanel-ipc = { path = "../snpanel-ipc" }

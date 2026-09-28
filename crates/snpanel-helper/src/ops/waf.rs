@@ -61,6 +61,9 @@ impl CrsMode {
 /// a refresh. Pretty JSON and a newline is what the CLI printed from `data`,
 /// so the sudo path shows what it always showed.
 pub fn status() -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::status();
+    }
     let module_loaded = exec::run(&["nginx", "-V"])
         .map(|o| {
             // nginx -V writes its configure line to stderr.
@@ -138,6 +141,9 @@ const STRAY_MODE_MARKER: &str = "/etc/nginx/modsec/crs-mode";
 /// a file that did not exist: nginx refused it, and the rollback left the
 /// vhost naming a rules file that was gone.
 pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::crs_mode_set(mode);
+    }
     if let Err(e) = std::fs::create_dir_all(WAF_DIR) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -356,6 +362,21 @@ fn web_account() -> String {
 /// with every memory figure zero, on servers that had it installed and
 /// blocking.
 pub fn crs_status() -> HelperResponse {
+    if super::waf_apache::active() {
+        let (available_mb, total_mb) = memory_mb();
+        return HelperResponse::with_stdout(crs_status_lines(CrsStatusFacts {
+            mode: super::waf_apache::read_mode().as_str(),
+            // No nginx here; CRS runs inside Apache/LiteSpeed.
+            nginx_pss_mb: 0,
+            ram_available_mb: available_mb,
+            ram_total_mb: total_mb,
+            installed: super::waf_apache::crs_installed(),
+            conf: Path::new(super::waf_apache::CRS_CONF).is_file(),
+            rule_files: super::waf_apache::rule_files(),
+            // Server-wide: every site is covered while CRS is on.
+            sites_including: 0,
+        }));
+    }
     let rules_dir = crs_rules_dir();
     let (available_mb, total_mb) = memory_mb();
     HelperResponse::with_stdout(crs_status_lines(CrsStatusFacts {
