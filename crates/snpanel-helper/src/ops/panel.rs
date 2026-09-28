@@ -37,6 +37,8 @@ const PANEL_KEY: &str = "/etc/snpanel/panel-privkey.pem";
 const LIVE_DIR: &str = "/etc/letsencrypt/live";
 const ACME_WEBROOT: &str = "/var/www/snpanel-acme";
 const TOOLS_CONF: &str = "/etc/nginx/conf.d/00-snpanel-tools.conf";
+/// The Hosting Edition's tools vhost, for Apache and LiteSpeed alike.
+const APACHE_TOOLS_CONF: &str = "/etc/httpd/snpanel/00-tools.conf";
 const HOOK_DIR: &str = "/etc/letsencrypt/renewal-hooks/deploy";
 /// Source: `DEFAULT_PANEL_PORT`.
 const DEFAULT_PANEL_PORT: &str = "2222";
@@ -208,6 +210,17 @@ fn refresh_tools_nginx() -> HelperResponse {
         php_version: std::env::var("PHP_DEFAULT").unwrap_or_else(|_| "8.4".to_string()),
     };
     let tls = config.tls();
+    let scheme = if tls { "https" } else { "http" };
+
+    // Hosting Edition: nginx is gone, and Apache/LiteSpeed serve the tools
+    // (ACME, phpMyAdmin) from their own default vhost, which the upgrade
+    // writes. The certificate and the panel's URL are already in place by
+    // now; failing here left an installed certificate reported as an error
+    // and the panel never restarted onto it.
+    if !crate::ops::runtime::have("nginx") && Path::new(APACHE_TOOLS_CONF).exists() {
+        rewrite_phpmyadmin(scheme, &port, tls, &host);
+        return HelperResponse::ok();
+    }
 
     // The distribution's own default vhost also claims `default_server` on
     // :80, and two of them is a configuration nginx refuses to load.
@@ -222,7 +235,6 @@ fn refresh_tools_nginx() -> HelperResponse {
         );
     }
 
-    let scheme = if tls { "https" } else { "http" };
     rewrite_phpmyadmin(scheme, &port, tls, &host);
 
     let checked = exec::run(&["nginx", "-t"]);
