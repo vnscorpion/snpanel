@@ -34,6 +34,7 @@ pub mod updates;
 pub mod user_restore;
 pub mod users;
 pub mod waf;
+pub mod web;
 pub mod websites;
 
 use axum::Router;
@@ -57,6 +58,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(firewall::router())
         .merge(fail2ban::router())
         .merge(lve::router())
+        .merge(web::router())
         .merge(cloudlinux::router())
         .merge(databases::router())
         .merge(updates::router())

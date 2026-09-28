@@ -40,6 +40,7 @@ pub mod terminal;
 pub mod user;
 pub mod waf;
 pub mod waf_apache;
+pub mod web;
 
 use snpanel_ipc::{HelperErrorKind, HelperRequest, HelperResponse};
 use snpanel_osabi::firewall::rules::{Action, FirewallState};
@@ -381,6 +382,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LveStatus => lve::status(),
         HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveUsage { user } => lve::usage(user),
+        HelperRequest::WebStatus => web::status(),
+        HelperRequest::WebSwitch { to } => web::switch(*to),
+        HelperRequest::LswsRestart => web::lsws_restart(),
+        HelperRequest::LswsAdminPassword => web::lsws_admin_password(),
         HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
         HelperRequest::LveReset { user } => lve::reset(user),
         HelperRequest::LvePackageSet { package, limits } => lve::package_set(package, limits),

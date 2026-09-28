@@ -644,6 +644,12 @@ impl HelperRequest {
             ("lve-usage", 1) => HelperRequest::LveUsage {
                 user: user_of(&rest[0])?,
             },
+            ("web-status", 0) => HelperRequest::WebStatus,
+            ("web-switch", 1) => HelperRequest::WebSwitch {
+                to: crate::WebServer::parse(&rest[0]).map_err(InvocationError::invalid)?,
+            },
+            ("lsws-restart", 0) => HelperRequest::LswsRestart,
+            ("lsws-admin-password", 0) => HelperRequest::LswsAdminPassword,
             // lve-set <default|user> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
             ("lve-set", 7) => {
                 let user = match rest[0].as_str() {
@@ -1536,6 +1542,14 @@ mod tests {
             Ok(HelperRequest::LveUsage { .. })
         ));
         assert!(map(&["lve-usage", "root"]).is_err());
+        assert!(matches!(
+            map(&["web-switch", "lsws"]),
+            Ok(HelperRequest::WebSwitch {
+                to: crate::WebServer::Lsws
+            })
+        ));
+        assert!(map(&["web-switch", "nginx"]).is_err());
+        assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
     }
 
     #[test]

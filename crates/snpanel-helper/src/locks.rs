@@ -98,6 +98,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "lve-status"
         | "lve-packages"
         | "lve-usage"
+        | "web-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -136,6 +137,9 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         "lve-set" | "lve-reset" => &[Accounts],
         // A package's limits reach every account on it; the snapshot says
         // which accounts those are.
+        // Who answers 80/443 is an nftables table; LiteSpeed is a unit.
+        "web-switch" => &[Firewall],
+        "lsws-restart" | "lsws-admin-password" => &[Systemd],
         "lve-package-set" | "lve-package-reset" | "lve-package-rename" | "cpapi-sync" => {
             &[Accounts]
         }

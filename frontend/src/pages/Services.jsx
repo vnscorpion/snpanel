@@ -1,6 +1,7 @@
 import { Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
+import WebServerPanel from '../components/WebServerPanel.jsx';
 
 // What a unit name stands for, where the name alone does not say it.
 const SERVICE_LABELS = {
@@ -48,5 +49,8 @@ export default function ServicesPage() {
     </section>;
   }
 
-  return renderServices();
+  return <>
+    {isAdmin && <WebServerPanel/>}
+    {renderServices()}
+  </>;
 }

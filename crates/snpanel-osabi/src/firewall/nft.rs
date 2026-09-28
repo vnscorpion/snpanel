@@ -248,6 +248,15 @@ fn render_chains(out: &mut String, rs: &FirewallRuleset) {
     }
     out.push('\n');
 
+    // The Hosting Edition redirects 80/443 to whichever web server is live
+    // (9080/9443 LiteSpeed, 8080/8443 Apache - `inet snpanel_webfailover`),
+    // and this chain sees the port after the redirect. 80 and 443 are open
+    // on every server anyway; this keeps them open when they are redirected.
+    // Nothing redirects them on a Standard server, so it never matches there.
+    let _ = writeln!(
+        out,
+        "        ct status dnat ct original proto-dst {{ 80, 443 }} return comment \"snpanel-webfailover\""
+    );
     let _ = writeln!(out, "        tcp dport @protected return");
     let _ = writeln!(out, "        tcp dport @open_tcp return");
     let _ = writeln!(out, "        udp dport @open_udp return");
@@ -272,6 +281,20 @@ mod tests {
             protected_ports: FirewallRuleset::compute_protected_ports(&[22], 2222),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn redirected_web_traffic_survives_a_rebuild() {
+        // Rebuilding the table must not drop what the Hosting Edition's
+        // 80/443 redirect relies on: the live web server's own port is
+        // not in any open set.
+        let out = render(&ruleset(""));
+        let failover = out
+            .find("ct status dnat ct original proto-dst { 80, 443 } return")
+            .unwrap();
+        let deny = out.find("ip saddr @deny4 drop").unwrap();
+        let protected = out.find("tcp dport @protected return").unwrap();
+        assert!(deny < failover && failover < protected);
     }
 
     #[test]

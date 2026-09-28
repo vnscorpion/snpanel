@@ -22,7 +22,7 @@ mod fail2ban;
 mod lve;
 pub use cpapi::{CpapiDomain, CpapiSnapshot, CpapiUser};
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
-pub use lve::{LveLimits, LvePackageName};
+pub use lve::{LveLimits, LvePackageName, WebServer};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -1272,6 +1272,21 @@ pub enum HelperRequest {
     LveUsage {
         user: PanelUsername,
     },
+    /// `web-status` - which web server answers 80/443, whether each is
+    /// running and answering, the last failover, LiteSpeed's version,
+    /// licence and WebAdmin port. Read-only.
+    WebStatus,
+    /// `web-switch` - move 80/443 to one web server. Refused when that
+    /// server is not answering on its own port.
+    WebSwitch {
+        to: WebServer,
+    },
+    /// `lsws-restart` - LiteSpeed's graceful restart through systemd, or a
+    /// start when it is down.
+    LswsRestart,
+    /// `lsws-admin-password` - a new random password for LiteSpeed
+    /// WebAdmin's `admin`, printed once.
+    LswsAdminPassword,
     /// `lve-set` - set LVE limits for the default LVE (`user: None`) or for
     /// one user. The limits are range-checked when the request is built.
     LveSet {
@@ -1483,6 +1498,10 @@ impl HelperRequest {
             Self::LveStatus => "lve-status",
             Self::LvePackages => "lve-packages",
             Self::LveUsage { .. } => "lve-usage",
+            Self::WebStatus => "web-status",
+            Self::WebSwitch { .. } => "web-switch",
+            Self::LswsRestart => "lsws-restart",
+            Self::LswsAdminPassword => "lsws-admin-password",
             Self::LveSet { .. } => "lve-set",
             Self::LveReset { .. } => "lve-reset",
             Self::LvePackageSet { .. } => "lve-package-set",

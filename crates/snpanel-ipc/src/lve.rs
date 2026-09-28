@@ -68,6 +68,32 @@ impl LveLimits {
     }
 }
 
+/// Which web server answers the public 80/443 on a Hosting Edition server
+/// with LiteSpeed: LiteSpeed itself, or the Apache standby it fails over to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebServer {
+    Lsws,
+    Apache,
+}
+
+impl WebServer {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "lsws" => Ok(Self::Lsws),
+            "apache" => Ok(Self::Apache),
+            other => Err(format!("unknown web server {other:?} (lsws or apache)")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lsws => "lsws",
+            Self::Apache => "apache",
+        }
+    }
+}
+
 /// A hosting package's name as CloudLinux knows it: the panel package's own
 /// name, which is what the CPAPI `packages` and `users` scripts report and
 /// what `lvectl package-set` keys its limits by.
