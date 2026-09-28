@@ -44,6 +44,49 @@ if (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') {
     $_SERVER['SERVER_PORT'] = '443';
 }
 
+// The end-user plugins' handlers run cloudlinux-cli-user.py as whoever runs
+// PHP, and that CLI assumes it already is the customer (it never switches uid;
+// the selector reads the CageFS state of its own process). Under a control
+// panel PHP runs as the customer; here one daemon serves everyone, so run the
+// CLI as the account the panel vouched for through ui_user_info. The name comes
+// from the validated token only, and sudoers allows just this binary and only
+// as members of snpanel-sftp (panel accounts), never root.
+$userHandlers = [
+    'send-request-php-selector.php' => 'php-selector',
+    'send-request-resource-usage.php' => 'resource_usage',
+    'send-request-nodejs.php' => 'nodejs_selector',
+    'send-request-python.php' => 'python_selector',
+    'send-request-xray.php' => 'xray',
+    'send-request-awp.php' => 'wpos',
+];
+if (dirname($real) === $base && isset($userHandlers[basename($real)])) {
+    $_SERVER['SCRIPT_FILENAME'] = $real;
+    $_SERVER['SCRIPT_NAME'] = $prefix . $rel;
+    $_SERVER['PHP_SELF'] = $prefix . $rel;
+    chdir($base);
+    require_once $base . '/LveManager.php';
+
+    class SnpanelUserLveManager extends LveManager
+    {
+        const USER_CLI = '/usr/share/l.v.e-manager/utils/cloudlinux-cli-user.py';
+        // Fails closed until the token resolved to a plausible account.
+        public $CLOUDLINUX_CLI = '/bin/false';
+
+        public function __construct()
+        {
+            parent::__construct();
+            $login = isset($this->userData->userName) ? (string) $this->userData->userName : '';
+            if ($login !== 'root' && preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $login)) {
+                $this->CLOUDLINUX_CLI = '/usr/bin/sudo -n -u ' . escapeshellarg($login) . ' ' . self::USER_CLI;
+            }
+        }
+    }
+
+    $manager = new SnpanelUserLveManager();
+    $manager->processRequest(LveManager::OWNER_USER, $userHandlers[basename($real)]);
+    return true;
+}
+
 if (substr($real, -4) === '.php') {
     $_SERVER['SCRIPT_FILENAME'] = $real;
     $_SERVER['SCRIPT_NAME'] = $prefix . $rel;
