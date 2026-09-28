@@ -833,6 +833,10 @@ const WP_CLI: &str = "/usr/local/bin/wp";
 /// to the panel exactly like a command that produced nothing.
 const PCRE_JIT_OFF: &str = "-d";
 const PCRE_JIT_OFF_VALUE: &str = "pcre.jit=0";
+/// WP-CLI unpacks WordPress in memory: the CLI's own 128M (CloudLinux's
+/// alt-php, or any distribution's default) runs out half way through
+/// `core download`. The panel's own default limit, for the CLI too.
+const WP_MEMORY: &str = "memory_limit=1024M";
 
 /// `wp`: WP-CLI as the web user.
 pub fn wp(args: &[String]) -> HelperResponse {
@@ -859,6 +863,9 @@ pub fn wp_site(
         );
     }
     let binary = match php {
+        // CloudLinux's versions are alt-php, under /opt/alt; `php8.3` is a
+        // name only the Standard edition's packages provide.
+        Some(v) if super::apache::active() => format!("/opt/alt/php{}/usr/bin/php", v.compact()),
         // The version is a parsed `PhpVersion`, so `require_php_version` has
         // already happened in the type.
         Some(v) => format!("php{v}"),
@@ -894,10 +901,12 @@ fn wp_argv(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> Vec<
         "--".into(),
         "env".into(),
         format!("HOME={home}"),
-        "WP_CLI_PHP_ARGS=-d pcre.jit=0".into(),
+        format!("WP_CLI_PHP_ARGS=-d pcre.jit=0 -d {WP_MEMORY}"),
         php_binary.into(),
         PCRE_JIT_OFF.into(),
         PCRE_JIT_OFF_VALUE.into(),
+        "-d".into(),
+        WP_MEMORY.into(),
         WP_CLI.into(),
     ];
     argv.extend(args.iter().cloned());
@@ -1830,6 +1839,14 @@ mod tests {
 
         let plain = wp_argv("bp_site", "/home/bp_site", "php", &args);
         assert!(plain.contains(&"php".to_string()), "{plain:?}");
+        // Enough memory to unpack WordPress, for wp and for what it runs.
+        assert!(
+            plain.contains(&"memory_limit=1024M".to_string()),
+            "{plain:?}"
+        );
+        assert!(plain
+            .iter()
+            .any(|a| a.starts_with("WP_CLI_PHP_ARGS=") && a.contains("memory_limit=1024M")));
         assert!(
             !plain.iter().any(|a| a.starts_with("php8")),
             "no version should be invented: {plain:?}"

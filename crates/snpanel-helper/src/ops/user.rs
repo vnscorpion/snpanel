@@ -83,8 +83,10 @@ fn web_user() -> String {
 }
 
 /// `panel-user-ensure`. Idempotent: safe to run against an existing account.
-/// Directories CloudLinux's tools create in a customer's home as the
-/// customer, which a root-owned home would refuse them.
+/// Directories tools create in a customer's home as the customer, which a
+/// root-owned home (the SFTP chroot needs it) would refuse them: WP-CLI's
+/// cache everywhere, and CloudLinux's own state there.
+const HOME_DIRS: &[&str] = &[".wp-cli"];
 const CLOUDLINUX_HOME_DIRS: &[&str] = &[".lve", ".lvestats"];
 
 pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperResponse {
@@ -165,14 +167,21 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
     // Any inherited ACL would silently widen access past the mode bits.
     let _ = exec::run(&["setfacl", "-b", &home_str]);
 
-    // CloudLinux writes a few things into the customer's home as the
-    // customer - isolatectl's log (~/.lve), lve-stats' notification marker
-    // (~/.lvestats) - and the home is root's (the SFTP chroot needs that).
+    // Tools write a few things into the customer's home as the customer -
+    // WP-CLI's cache (~/.wp-cli), and on CloudLinux isolatectl's log (~/.lve)
+    // and lve-stats' notification marker (~/.lvestats) - and the home is
+    // root's (the SFTP chroot needs that).
     // Made here, the customer's own, private. The home being root's is also
     // what keeps these from being a symlink the customer planted.
-    if snpanel_osabi::hosting::cloudlinux().is_some() {
+    {
         let owner = format!("{0}:{0}", user.as_str());
-        for dir in CLOUDLINUX_HOME_DIRS {
+        let cloudlinux = snpanel_osabi::hosting::cloudlinux().is_some();
+        let dirs = HOME_DIRS.iter().chain(if cloudlinux {
+            CLOUDLINUX_HOME_DIRS
+        } else {
+            &[]
+        });
+        for dir in dirs {
             let path = home.join(dir);
             if path.is_symlink() {
                 let _ = std::fs::remove_file(&path);
