@@ -33,6 +33,7 @@ pub fn router() -> Router<AppState> {
             "/hosting/lve/users/{username}",
             put(set_user).delete(reset_user).fallback(crate::fallback),
         )
+        .route("/hosting/usage", get(usage).fallback(crate::fallback))
         .route(
             "/hosting/lve/packages",
             get(read_packages).fallback(crate::fallback),
@@ -289,6 +290,83 @@ async fn reset_user(
         Ok(v) => axum::Json(v).into_response(),
         Err(r) => r,
     }
+}
+
+/// How long one account's usage is reused: the dashboard asks on every
+/// visit, and the answer costs a few seconds of lvestats queries.
+const USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn usage_cache(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// `GET /hosting/usage` - the signed-in account's own LVE usage, for its
+/// dashboard. An administrator may name an account with `?user=`; nobody
+/// else can see anyone's but their own.
+async fn usage(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, _) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match snpanel_osabi::hosting::cloudlinux() {
+        Some(cl) if cl.lve_loaded => {}
+        _ => return crate::errors::conflict("Resource usage needs CloudLinux on this server."),
+    }
+    let asked = parts.uri.query().and_then(|q| {
+        q.split('&')
+            .find_map(|kv| kv.strip_prefix("user="))
+            .map(str::to_string)
+    });
+    let name = match asked {
+        Some(name) if permissions::has_role(&current.user.role, Role::Admin) => name,
+        Some(_) => return not_enough_permissions(),
+        None => current.user.username.clone(),
+    };
+    let user = match PanelUsername::parse(&name) {
+        Ok(u) => u,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
+    };
+    if let Ok(cache) = usage_cache().lock() {
+        if let Some((at, v)) = cache.get(user.as_str()) {
+            if at.elapsed() < USAGE_TTL {
+                return axum::Json(v.clone()).into_response();
+            }
+        }
+    }
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "lve-usage",
+        &[user.as_str()],
+        None,
+        None,
+    )
+    .await;
+    if !result.ok() {
+        return helper_error(&result.failure_detail("Could not read the resource usage"));
+    }
+    let Ok(mut value) = serde_json::from_str::<Value>(result.stdout.trim()) else {
+        return error(StatusCode::BAD_GATEWAY, "Unreadable resource usage");
+    };
+    // The package is the panel's to name.
+    value["package"] = match crate::cpapi_sync::package_of(&state, user.as_str()).await {
+        Some(p) => json!(p),
+        None => Value::Null,
+    };
+    if let Ok(mut cache) = usage_cache().lock() {
+        if cache.len() > 10_000 {
+            cache.clear();
+        }
+        cache.insert(
+            user.as_str().to_string(),
+            (std::time::Instant::now(), value.clone()),
+        );
+    }
+    axum::Json(value).into_response()
 }
 
 /// A panel package's name as CloudLinux keys its limits.

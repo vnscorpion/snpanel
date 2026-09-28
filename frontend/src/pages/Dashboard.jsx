@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import LveStats from '../components/LveStats.jsx';
 import {
   Activity,
   Archive,
@@ -74,6 +75,7 @@ export default function DashboardPage() {
   const {
     ResourceCard,
     addons,
+    cloudlinuxAvailable,
     currentUser,
     formatBytes,
     formatPercent,
@@ -252,7 +254,7 @@ export default function DashboardPage() {
   const storagePercent = storageLimit === null ? null : storageLimit > 0 ? (storageUsed / storageLimit) * 100 : 100;
   const siteLimit = Number(currentUser?.website_limit) || 0;
 
-  return <div className="dashboard">
+  const body = <div className="dashboard">
     {isAdmin && <section className="resource-grid" aria-label={t('Server resources')}>
       <ResourceCard icon={Cpu} label="CPU" value={formatPercent(cpu.percent)} percent={cpu.percent} detail={cpu.load?.length ? t('Load {load}', { load: cpu.load.join(' / ') }) : t('{count} cores', { count: cpu.cores || '--' })} />
       <ResourceCard icon={MemoryStick} label="RAM" value={formatPercent(memory.percent)} percent={memory.percent} detail={`${formatBytes(memory.used)} / ${formatBytes(memory.total)}`} />
@@ -311,4 +313,11 @@ export default function DashboardPage() {
       </section>
     </div>
   </div>;
+
+  // On CloudLinux a customer sees what the account uses beside the rest,
+  // as cPanel's Statistics column does.
+  if (cloudlinuxAvailable && !isAdmin) {
+    return <div className="dash-layout">{body}<LveStats/></div>;
+  }
+  return body;
 }

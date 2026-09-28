@@ -59,11 +59,16 @@ fn size_mb(text: &str) -> u64 {
 
 /// The default LVE row out of `lvectl list --json`.
 pub fn parse_default(lvectl_list: &str) -> Option<Value> {
+    parse_row(lvectl_list, "default")
+}
+
+/// One row (`"default"`, or a uid) out of `lvectl list --json`, as limits.
+pub fn parse_row(lvectl_list: &str, id: &str) -> Option<Value> {
     let v: Value = serde_json::from_str(lvectl_list).ok()?;
     let row = v["data"]
         .as_array()?
         .iter()
-        .find(|r| r["ID"].as_str() == Some("default"))?;
+        .find(|r| r["ID"].as_str().map(str::trim) == Some(id))?;
     let n = |k: &str| {
         row[k]
             .as_str()
@@ -306,6 +311,129 @@ pub fn packages() -> HelperResponse {
         )),
         Err(r) => r,
     }
+}
+
+/// What an LVE uses right now, out of `/proc/lve/list`: entry processes,
+/// processes and physical memory (in MB). Columns are found by the header,
+/// which names them; rows are `<lvp>,<id>`.
+pub fn parse_proc_list(proc_list: &str, uid: u32) -> Option<Value> {
+    let mut lines = proc_list.lines();
+    let header = lines.next()?;
+    // "10:LVE\tlCPU..." - the version, then the column names.
+    let header = header.split_once(':').map_or(header, |(_, h)| h);
+    let columns: Vec<&str> = header.split('\t').collect();
+    let want = uid.to_string();
+    let row = lines.find(|l| {
+        let id = l.split('\t').next().unwrap_or("");
+        id.rsplit(',').next() == Some(want.as_str())
+    })?;
+    let values: Vec<&str> = row.split('\t').collect();
+    let col = |name: &str| -> u64 {
+        columns
+            .iter()
+            .position(|c| *c == name)
+            .and_then(|i| values.get(i))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    Some(json!({
+        "ep": col("EP"),
+        "nproc": col("NPROC"),
+        "pmem_mb": col("MEMPHY") * 4 / 1024,
+    }))
+}
+
+/// One account out of `cloudlinux-statistics --json`: the averages over the
+/// period (CPU in %, memory in MB, IO in KB/s) and the faults per limit.
+pub fn parse_statistics(stats: &str, uid: u32) -> Option<(Value, Value)> {
+    let v: Value = serde_json::from_str(stats).ok()?;
+    let user = v["users"]
+        .as_array()?
+        .iter()
+        .find(|u| u["id"].as_u64() == Some(u64::from(uid)))?;
+    let usage = |k: &str| user["usage"][k]["lve"].as_f64().unwrap_or(0.0);
+    let fault = |k: &str| user["faults"][k]["lve"].as_u64().unwrap_or(0);
+    let round = |x: f64| (x * 10.0).round() / 10.0;
+    Some((
+        json!({
+            "cpu_percent": round(usage("cpu")),
+            "pmem_mb": round(usage("pmem") / 1_048_576.0),
+            "ep": round(usage("ep")),
+            "nproc": round(usage("nproc")),
+            "io_kbps": round(usage("io") / 1024.0),
+            "iops": round(usage("iops")),
+        }),
+        json!({
+            "cpu": fault("cpu"),
+            "pmem": fault("pmem"),
+            "ep": fault("ep"),
+            "nproc": fault("nproc"),
+            "io": fault("io"),
+            "iops": fault("iops"),
+        }),
+    ))
+}
+
+/// `lve-usage`: limits, usage now (CPU, IO and IOPS averaged over the last
+/// five minutes, which is as close to "now" as lvestats has; the rest read
+/// live), and the last day's faults.
+pub fn usage(user: &PanelUsername) -> HelperResponse {
+    if let Err(r) = require_lve() {
+        return r;
+    }
+    let Ok(uid) = crate::peercred::uid_of(user.as_str()) else {
+        return HelperResponse::failed(
+            HelperErrorKind::NotFound,
+            format!("No such user ({})", user.as_str()),
+        );
+    };
+    // The two statistics queries take a couple of seconds each; run them
+    // side by side.
+    let stats = |period: &'static str| {
+        std::thread::spawn(move || {
+            exec::run(&["cloudlinux-statistics", "--json", "--period", period])
+                .ok()
+                .filter(exec::Output::ok)
+                .map(|o| o.stdout)
+        })
+    };
+    let recent = stats("5m");
+    let day = stats("1d");
+    let limits = match exec::run(&["lvectl", "list", "--json"]) {
+        Ok(o) if o.ok() => {
+            parse_row(&o.stdout, &uid.to_string()).or_else(|| parse_default(&o.stdout))
+        }
+        other => return exec::respond("lvectl list", other),
+    };
+    let live = std::fs::read_to_string("/proc/lve/list")
+        .ok()
+        .and_then(|s| parse_proc_list(&s, uid));
+    let recent = recent.join().ok().flatten();
+    let day = day.join().ok().flatten();
+    let averages = recent.as_deref().and_then(|s| parse_statistics(s, uid));
+    let faults = day
+        .as_deref()
+        .and_then(|s| parse_statistics(s, uid))
+        .map(|(_, f)| f)
+        .unwrap_or_else(|| json!({"cpu":0,"pmem":0,"ep":0,"nproc":0,"io":0,"iops":0}));
+    let avg = |k: &str| averages.as_ref().map_or(json!(0), |(a, _)| a[k].clone());
+    let now = |k: &str| live.as_ref().map_or_else(|| avg(k), |l| l[k].clone());
+    HelperResponse::with_stdout(format!(
+        "{}\n",
+        json!({
+            "username": user.as_str(),
+            "limits": limits,
+            "usage": {
+                "cpu_percent": avg("cpu_percent"),
+                "pmem_mb": now("pmem_mb"),
+                "ep": now("ep"),
+                "nproc": now("nproc"),
+                "io_kbps": avg("io_kbps"),
+                "iops": avg("iops"),
+            },
+            "faults_24h": faults,
+        })
+    ))
 }
 
 /// `lve-status`.
@@ -559,6 +687,41 @@ mod tests {
         assert_eq!(pkgs[0]["custom"], true);
         assert_eq!(pkgs[0]["limits"]["pmem_mb"], 512);
         assert_eq!(pkgs[1]["custom"], false);
+    }
+
+    #[test]
+    fn a_users_row_is_read_like_the_default() {
+        let l = parse_row(LVECTL_LIST, "48").unwrap();
+        assert_eq!(l["speed_percent"], 400);
+        assert_eq!(l["pmem_mb"], 2_048_000);
+        assert_eq!(parse_row(LVECTL_LIST, "4"), None);
+    }
+
+    // /proc/lve/list on the CL-0 machine, with one busy LVE.
+    const PROC_LIST: &str = "10:LVE\tlCPU\tlCPUW\tnCPU\tlEP\tlNPROC\tlMEM\tlMEMPHY\tlIO\tlIOPS\tlNETO\tlNETI\tEP\tCPU\tMEM\tIO\tfMEM\tfEP\tMEMPHY\tfMEMPHY\tNPROC\tfNPROC\tIOPS\tNETO\tNETI
+0,0\t\t10000\t100\t1\t20\t100\t0\t262144\t1024\t1024\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0
+0,1001\t5000\t100\t1\t10\t50\t0\t131072\t1024\t512\t0\t0\t3\t123\t40000\t0\t0\t0\t25600\t0\t7\t0\t0\t0\t0
+0,10010\t5000\t100\t1\t10\t50\t0\t131072\t1024\t512\t0\t0\t9\t0\t0\t0\t0\t0\t99999\t0\t9\t0\t0\t0\t0";
+
+    #[test]
+    fn live_usage_is_read_by_column_name() {
+        let u = parse_proc_list(PROC_LIST, 1001).unwrap();
+        assert_eq!(u, json!({"ep": 3, "nproc": 7, "pmem_mb": 100}));
+        assert_eq!(parse_proc_list(PROC_LIST, 42), None);
+    }
+
+    #[test]
+    fn statistics_are_converted_to_the_panels_units() {
+        let stats = r#"{"result":"success","users":[{"id":1001,"username":"alice",
+            "faults":{"cpu":{"lve":0},"ep":{"lve":2},"io":{"lve":13},"iops":{"lve":0},"nproc":{"lve":0},"pmem":{"lve":1},"vmem":{"lve":0}},
+            "usage":{"cpu":{"lve":0.371,"mysql":0.1},"ep":{"lve":0.0},"io":{"lve":5347.584},"iops":{"lve":0.121},"nproc":{"lve":0.138},"pmem":{"lve":5366562.816},"vmem":{"lve":0.0}}}]}"#;
+        let (avg, faults) = parse_statistics(stats, 1001).unwrap();
+        assert_eq!(avg["cpu_percent"], 0.4);
+        assert_eq!(avg["pmem_mb"], 5.1);
+        assert_eq!(avg["io_kbps"], 5.2);
+        assert_eq!(faults["io"], 13);
+        assert_eq!(faults["ep"], 2);
+        assert_eq!(parse_statistics(stats, 1002), None);
     }
 
     #[test]

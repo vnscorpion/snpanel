@@ -205,6 +205,16 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
     Ok(snapshot)
 }
 
+/// The name of the package an account is on, if any.
+pub async fn package_of(state: &AppState, username: &str) -> Option<String> {
+    let pool = state.db.pool();
+    let user = UserRepo::new(pool).by_username(username).await.ok()??;
+    UserRepo::new(pool)
+        .package_name(user.package_id)
+        .await
+        .ok()?
+}
+
 /// Build the snapshot and have the helper write it.
 pub async fn sync_now(state: &AppState) -> Result<(), String> {
     let snapshot = build(state).await?;

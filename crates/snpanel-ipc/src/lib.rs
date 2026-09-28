@@ -1267,6 +1267,11 @@ pub enum HelperRequest {
     /// `lve-packages` - the default LVE and every package's limits, without
     /// the per-account listing (which is the slow part of `lve-status`).
     LvePackages,
+    /// `lve-usage` - one account's LVE limits, what it uses now, and how
+    /// often it hit a limit in the last day. Read-only.
+    LveUsage {
+        user: PanelUsername,
+    },
     /// `lve-set` - set LVE limits for the default LVE (`user: None`) or for
     /// one user. The limits are range-checked when the request is built.
     LveSet {
@@ -1477,6 +1482,7 @@ impl HelperRequest {
             Self::TerminalExec { .. } => "terminal-exec",
             Self::LveStatus => "lve-status",
             Self::LvePackages => "lve-packages",
+            Self::LveUsage { .. } => "lve-usage",
             Self::LveSet { .. } => "lve-set",
             Self::LveReset { .. } => "lve-reset",
             Self::LvePackageSet { .. } => "lve-package-set",

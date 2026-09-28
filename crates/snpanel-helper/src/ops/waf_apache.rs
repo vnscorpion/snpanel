@@ -251,11 +251,15 @@ fn apply() -> Result<(), HelperResponse> {
     if !matches!(&reloaded, Ok(o) if o.ok()) {
         return Err(exec::respond("systemctl reload httpd", reloaded));
     }
-    let lsws = "/usr/local/lsws/bin/lswsctrl";
-    if Path::new(lsws).exists() {
-        let restarted = exec::run(&[lsws, "restart"]);
+    // Through systemd, never `lswsctrl restart` directly: a LiteSpeed started
+    // by the helper lives in the helper's cgroup, and the next restart of
+    // snpanel-helper kills it (the failover then moves every site to Apache).
+    // The unit's reload is lswsctrl's graceful restart, run in lshttpd's own
+    // cgroup; try-... leaves a LiteSpeed an administrator stopped stopped.
+    if Path::new("/usr/local/lsws/bin/lswsctrl").exists() {
+        let restarted = exec::run(&["systemctl", "try-reload-or-restart", "lshttpd"]);
         if !matches!(&restarted, Ok(o) if o.ok()) {
-            return Err(exec::respond("lswsctrl restart", restarted));
+            return Err(exec::respond("systemctl reload lshttpd", restarted));
         }
     }
     Ok(())

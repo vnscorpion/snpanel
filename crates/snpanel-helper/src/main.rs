@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 172;
+const ANSWERED_VERBS: usize = 173;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -116,8 +116,8 @@ fn print_help(sink: audit::Sink) {
         "  clamav-*        status, start, stop;   maldet-status",
         "  systemctl, daemon-reload, service-status, fastcgi-cache-clear",
         "  selinux-*       restore-site, port-add (no-op off the RHEL family)",
-        "  lve-*           status, packages, set, reset, package-set, package-reset,",
-        "                  package-rename (CloudLinux only)",
+        "  lve-*           status, packages, usage, set, reset, package-set,",
+        "                  package-reset, package-rename (CloudLinux only)",
         "  cpapi-sync      CloudLinux integration snapshot (JSON on stdin)",
     ] {
         println!("{line}");

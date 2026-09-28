@@ -380,6 +380,7 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::MariadbRetune => mariadb::retune(),
         HelperRequest::LveStatus => lve::status(),
         HelperRequest::LvePackages => lve::packages(),
+        HelperRequest::LveUsage { user } => lve::usage(user),
         HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
         HelperRequest::LveReset { user } => lve::reset(user),
         HelperRequest::LvePackageSet { package, limits } => lve::package_set(package, limits),

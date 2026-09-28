@@ -641,6 +641,9 @@ impl HelperRequest {
             ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
             ("lve-status", 0) => HelperRequest::LveStatus,
             ("lve-packages", 0) => HelperRequest::LvePackages,
+            ("lve-usage", 1) => HelperRequest::LveUsage {
+                user: user_of(&rest[0])?,
+            },
             // lve-set <default|user> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
             ("lve-set", 7) => {
                 let user = match rest[0].as_str() {
@@ -1528,6 +1531,11 @@ mod tests {
             Ok(HelperRequest::LvePackageRename { .. })
         ));
         assert!(map(&["lve-package-reset", ""]).is_err());
+        assert!(matches!(
+            map(&["lve-usage", "alice"]),
+            Ok(HelperRequest::LveUsage { .. })
+        ));
+        assert!(map(&["lve-usage", "root"]).is_err());
     }
 
     #[test]

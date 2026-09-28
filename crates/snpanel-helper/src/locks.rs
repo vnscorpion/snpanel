@@ -97,6 +97,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "fail2ban-status"
         | "lve-status"
         | "lve-packages"
+        | "lve-usage"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
