@@ -20,12 +20,30 @@ use crate::exec;
 
 /// Source: `MARIADB_TUNING_CONF`.
 ///
-/// The bash hard-codes the Debian path and so does this. On the RHEL family
-/// MariaDB reads `/etc/my.cnf.d`, so the file lands where nothing reads it and
-/// the tuning has never applied there. Writing it to the right directory
-/// would start applying tuning to EL boxes that have run without it, which is
-/// a change in behaviour and not this port's to make.
-pub const TUNING_CONF: &str = "/etc/mysql/mariadb.conf.d/90-snpanel-tuning.cnf";
+/// The bash hard-coded the Debian directory, so on the RHEL family the file
+/// landed in `/etc/mysql/mariadb.conf.d`, which MariaDB there never reads: EL
+/// boxes ran untuned. The port kept that to stay 1:1; it is fixed now that the
+/// port is done (hosting plan A2), because CloudLinux is RHEL-family and MySQL
+/// Governor sizes itself against the server's real settings.
+pub const TUNING_FILE: &str = "90-snpanel-tuning.cnf";
+
+/// Where the tuning goes on the Debian family, and the fallback when the
+/// platform cannot be detected - the path every existing box already has.
+const DEBIAN_CONF_DIR: &str = "/etc/mysql/mariadb.conf.d";
+
+/// The tuning file inside `conf_dir` - the directory MariaDB on this
+/// distribution includes (`Platform::mariadb_conf_dir`).
+pub fn tuning_conf_in(conf_dir: &std::path::Path) -> std::path::PathBuf {
+    conf_dir.join(TUNING_FILE)
+}
+
+/// The tuning file on this machine.
+pub fn tuning_conf() -> std::path::PathBuf {
+    let dir = snpanel_osabi::detect()
+        .map(|p| p.mariadb_conf_dir())
+        .unwrap_or_else(|_| std::path::PathBuf::from(DEBIAN_CONF_DIR));
+    tuning_conf_in(&dir)
+}
 
 const SLOW_LOG_DIR: &str = "/var/log/mysql";
 const SLOW_LOG_FILE: &str = "/var/log/mysql/snpanel-slow.log";
@@ -355,12 +373,13 @@ pub fn retune() -> HelperResponse {
         &overrides(),
     );
 
-    let dir = match std::path::Path::new(TUNING_CONF).parent() {
+    let conf = tuning_conf();
+    let dir = match conf.parent() {
         Some(dir) => dir,
         None => {
             return HelperResponse::failed(
                 HelperErrorKind::Internal,
-                format!("{TUNING_CONF} has no parent directory"),
+                format!("{} has no parent directory", conf.display()),
             )
         }
     };
@@ -375,11 +394,18 @@ pub fn retune() -> HelperResponse {
         "0755",
         &dir.to_string_lossy(),
     ]);
-    if let Err(e) = std::fs::write(TUNING_CONF, tuning_file(&tuning)) {
+    if let Err(e) = std::fs::write(&conf, tuning_file(&tuning)) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
-            format!("writing {TUNING_CONF}: {e}"),
+            format!("writing {}: {e}", conf.display()),
         );
+    }
+    // Boxes on the RHEL family carry the file the old code wrote to the Debian
+    // directory, which nothing reads. Leaving it would make anyone checking
+    // the tuning look at the wrong file.
+    let stale = tuning_conf_in(std::path::Path::new(DEBIAN_CONF_DIR));
+    if stale != conf {
+        let _ = std::fs::remove_file(&stale);
     }
     ensure_slow_log();
 
@@ -406,6 +432,21 @@ pub fn retune() -> HelperResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snpanel_osabi::Platform;
+
+    #[test]
+    fn the_tuning_file_goes_where_each_family_reads_it() {
+        let el = snpanel_osabi::rhel::AlmaLinux10;
+        assert_eq!(
+            tuning_conf_in(&el.mariadb_conf_dir()),
+            std::path::PathBuf::from("/etc/my.cnf.d/90-snpanel-tuning.cnf")
+        );
+        let deb = snpanel_osabi::debian::Debian13;
+        assert_eq!(
+            tuning_conf_in(&deb.mariadb_conf_dir()),
+            std::path::PathBuf::from("/etc/mysql/mariadb.conf.d/90-snpanel-tuning.cnf")
+        );
+    }
 
     /// What the bash's own `calculate_mariadb_tuning` produces.
     ///

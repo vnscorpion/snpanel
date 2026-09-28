@@ -13,6 +13,7 @@ use std::path::Path;
 
 use snpanel_core::config::Settings;
 use snpanel_osabi::firewall::{legacy_iptables_present, FirewallBackend, NftablesBackend};
+use snpanel_osabi::hosting::{self, Level};
 use snpanel_osabi::{detect, CpuBaseline, Platform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,6 +51,9 @@ pub struct Finding {
     pub detail: String,
     /// What to do about it. Empty when there is nothing to do.
     pub remedy: String,
+    /// The exit code `snpanel upgrade cloudlinux` gives this check when it
+    /// fails. Only the readiness report sets it.
+    pub code: Option<u8>,
 }
 
 impl Finding {
@@ -59,6 +63,7 @@ impl Finding {
             severity,
             detail: detail.into(),
             remedy: String::new(),
+            code: None,
         }
     }
 
@@ -71,6 +76,8 @@ impl Finding {
 /// The result of a full run.
 #[derive(Debug, Default)]
 pub struct Report {
+    /// The heading `print` shows; "SNPanel doctor" when unset.
+    pub title: Option<&'static str>,
     pub findings: Vec<Finding>,
 }
 
@@ -105,6 +112,7 @@ impl Report {
                 "severity": f.severity.label(),
                 "detail": f.detail,
                 "remedy": f.remedy,
+                "code": f.code,
             })).collect::<Vec<_>>(),
         })
     }
@@ -117,7 +125,7 @@ impl Report {
             .max()
             .unwrap_or(0)
             .max(10);
-        println!("SNPanel doctor\n");
+        println!("{}\n", self.title.unwrap_or("SNPanel doctor"));
         for f in &self.findings {
             println!(
                 "  [{:>4}] {:<width$}  {}",
@@ -148,9 +156,57 @@ pub fn run(env_path: Option<&Path>) -> Report {
     check_config(&mut report, env_path);
     check_firewall_backend(&mut report, platform.as_deref());
     check_selinux(&mut report, platform.as_deref());
+    check_cloudlinux(&mut report, hosting::cloudlinux());
     check_paths(&mut report);
 
     report
+}
+
+/// `snpanel doctor --enterprise-readiness`: can this machine take
+/// `snpanel upgrade cloudlinux`? Read-only and licence-free, so it can be
+/// handed to a customer before they buy anything.
+pub fn readiness() -> Report {
+    readiness_from(&hosting::readiness(&hosting::gather()))
+}
+
+fn readiness_from(checks: &[hosting::Check]) -> Report {
+    let mut report = Report {
+        title: Some("SNPanel enterprise readiness (CloudLinux + LiteSpeed)"),
+        ..Report::default()
+    };
+    for c in checks {
+        let severity = match c.level {
+            Level::Pass => Severity::Ok,
+            Level::Warn => Severity::Warn,
+            Level::Fail => Severity::Fail,
+        };
+        let mut f = Finding::new(c.name, severity, c.detail.clone()).with_remedy(c.remedy.clone());
+        f.code = Some(c.exit_code).filter(|code| *code != 0);
+        report.push(f);
+    }
+    report
+}
+
+/// A converted machine says so; one converted but not rebooted is a warning,
+/// because LVE limits and CageFS are not in force until the module loads.
+fn check_cloudlinux(report: &mut Report, cl: Option<hosting::CloudLinux>) {
+    let Some(cl) = cl else { return };
+    if cl.lve_loaded {
+        report.push(Finding::new(
+            "cloudlinux",
+            Severity::Ok,
+            format!("{}, LVE module loaded", cl.release),
+        ));
+    } else {
+        report.push(
+            Finding::new(
+                "cloudlinux",
+                Severity::Warn,
+                format!("{}, but the LVE module is not loaded", cl.release),
+            )
+            .with_remedy("reboot to finish the CloudLinux conversion"),
+        );
+    }
 }
 
 fn check_platform(report: &mut Report) -> Option<Box<dyn Platform>> {
@@ -418,6 +474,60 @@ mod tests {
         check_config(&mut r, Some(Path::new("/nonexistent/path/.env")));
         assert_eq!(r.findings.len(), 1);
         assert_eq!(r.findings[0].severity, Severity::Warn);
+    }
+
+    #[test]
+    fn readiness_maps_levels_and_keeps_the_upgrade_exit_code() {
+        let checks = vec![
+            hosting::Check {
+                name: "os",
+                level: Level::Pass,
+                detail: "AlmaLinux 10.2".into(),
+                remedy: String::new(),
+                exit_code: hosting::exit::OS,
+            },
+            hosting::Check {
+                name: "virtualisation",
+                level: Level::Fail,
+                detail: "container (lxc)".into(),
+                remedy: "use a VPS".into(),
+                exit_code: hosting::exit::CONTAINER,
+            },
+            hosting::Check {
+                name: "home-fs",
+                level: Level::Warn,
+                detail: "ext4".into(),
+                remedy: "quota per UID".into(),
+                exit_code: 0,
+            },
+        ];
+        let r = readiness_from(&checks);
+        assert_eq!(r.exit_code(), 2);
+        assert_eq!(r.findings[1].code, Some(hosting::exit::CONTAINER));
+        assert_eq!(r.findings[2].code, None);
+        let json = r.to_json();
+        assert_eq!(json["findings"][1]["code"], 13);
+        assert!(json["findings"][2]["code"].is_null());
+    }
+
+    #[test]
+    fn a_converted_but_not_rebooted_machine_warns() {
+        let mut r = Report::default();
+        check_cloudlinux(
+            &mut r,
+            Some(hosting::CloudLinux {
+                release: "CloudLinux release 10".into(),
+                lve_loaded: false,
+            }),
+        );
+        assert_eq!(r.worst(), Severity::Warn);
+
+        let mut r = Report::default();
+        check_cloudlinux(&mut r, None);
+        assert!(
+            r.findings.is_empty(),
+            "a Standard box says nothing about CloudLinux"
+        );
     }
 
     #[test]
