@@ -224,6 +224,12 @@ pub const ALLOWED_SERVICES: &[&str] = &[
     "php8.3-fpm",
     "php8.4-fpm",
     "snpanel-api",
+    // Hosting Edition (CloudLinux): Apache, LiteSpeed, MySQL Governor and the
+    // LiteSpeed failover watchdog.
+    "httpd",
+    "lshttpd",
+    "db_governor",
+    "snpanel-webwatch",
 ];
 
 /// Services that must never be stopped: stopping one takes the panel down and

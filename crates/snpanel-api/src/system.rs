@@ -88,8 +88,52 @@ fn php_sort_key(service: &str) -> (usize, Vec<u32>) {
     (known, numeric)
 }
 
+/// A machine taken to CloudLinux by `snpanel upgrade cloudlinux` - Apache
+/// and/or LiteSpeed installed and nginx gone. The upgrade is one-way and
+/// removes nginx and PHP-FPM, so on such a machine they are not listed at all.
+fn is_hosting_edition() -> bool {
+    let unit = |name: &str| {
+        ["/usr/lib/systemd/system", "/etc/systemd/system"]
+            .iter()
+            .any(|dir| Path::new(dir).join(format!("{name}.service")).exists())
+    };
+    (unit("httpd") || unit("lshttpd")) && !unit("nginx")
+}
+
+/// The Hosting Edition's list, in the order the Services page shows it:
+/// the panel, the web servers (LiteSpeed first - it is the live one when
+/// installed), the database and its governor, the Redis-compatible server,
+/// the failover watchdog. Only units present on the machine are listed.
+pub fn hosting_services(present: &dyn Fn(&str) -> bool, redis: &str) -> Vec<String> {
+    [
+        "snpanel-api",
+        "lshttpd",
+        "httpd",
+        "mariadb",
+        "db_governor",
+        redis,
+        "snpanel-webwatch",
+    ]
+    .iter()
+    .filter(|name| **name == "snpanel-api" || present(name))
+    .map(|name| name.to_string())
+    .collect()
+}
+
+/// Whether `name.service` is installed and not masked.
+fn unit_present(name: &str) -> bool {
+    ["/etc/systemd/system", "/usr/lib/systemd/system"]
+        .iter()
+        .map(|dir| Path::new(dir).join(format!("{name}.service")))
+        .find(|p| p.symlink_metadata().is_ok())
+        .is_some_and(|p| std::fs::read_link(&p).map_or(true, |t| t != Path::new("/dev/null")))
+}
+
 /// Source: `list_services()`. The order is the contract.
 pub fn list_services() -> Vec<String> {
+    if is_hosting_edition() {
+        return hosting_services(&unit_present, redis_service());
+    }
     let mut out: Vec<String> = BASE_SERVICES[..2].iter().map(|s| s.to_string()).collect();
     out.extend(installed_php_services());
     out.push(BASE_SERVICES[2].to_string());
@@ -491,6 +535,40 @@ mod tests {
                 assert!(i > nginx && i < mariadb, "{s} is out of place");
             }
         }
+    }
+
+    #[test]
+    fn the_hosting_list_has_no_nginx_or_fpm_and_only_what_is_installed() {
+        let installed = [
+            "lshttpd",
+            "httpd",
+            "mariadb",
+            "db_governor",
+            "valkey",
+            "snpanel-webwatch",
+        ];
+        let present = |n: &str| installed.contains(&n);
+        assert_eq!(
+            hosting_services(&present, "valkey"),
+            [
+                "snpanel-api",
+                "lshttpd",
+                "httpd",
+                "mariadb",
+                "db_governor",
+                "valkey",
+                "snpanel-webwatch"
+            ]
+        );
+        // Apache only: no LiteSpeed, no watchdog, no governor yet.
+        let apache_only = |n: &str| ["httpd", "mariadb", "valkey"].contains(&n);
+        assert_eq!(
+            hosting_services(&apache_only, "valkey"),
+            ["snpanel-api", "httpd", "mariadb", "valkey"]
+        );
+        assert!(!hosting_services(&present, "valkey")
+            .iter()
+            .any(|s| s == "nginx" || s.ends_with("-fpm")));
     }
 
     #[test]

@@ -2,6 +2,14 @@ import { Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 
+// What a unit name stands for, where the name alone does not say it.
+const SERVICE_LABELS = {
+  lshttpd: 'LiteSpeed Web Server (PHP via LSPHP)',
+  httpd: 'Apache (PHP via mod_lsapi; LiteSpeed standby)',
+  db_governor: 'MySQL Governor',
+  'snpanel-webwatch': 'LiteSpeed failover watchdog',
+};
+
 export default function ServicesPage() {
   const t = useT();
   const {
@@ -26,13 +34,13 @@ export default function ServicesPage() {
           const active = text.includes('active (running)');
           const inactive = text.includes('inactive') || text.includes('failed');
           return <div className="service-card" key={name}>
-            <div><strong>{name}</strong><span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span></div>
+            <div><strong>{name}</strong>{SERVICE_LABELS[name] && <span className="hint"> {t(SERVICE_LABELS[name])}</span>}<span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span></div>
             {/* Only what applies: a running service restarts or stops, a
                 stopped one starts; while its state is unknown, both. */}
             {isAdmin && <div className="service-actions">
               {!active && <button className="mini" onClick={() => runServiceAction(name, 'start')}><Play size={13}/> {t('Start')}</button>}
               {!inactive && <button className="mini secondary-light" onClick={() => runServiceAction(name, 'restart')}><RotateCcw size={13}/> {t('Restart')}</button>}
-              {active && !['snpanel-api', 'redis-server'].includes(name) && <button className="mini secondary-light" onClick={() => runServiceAction(name, 'stop')}><Square size={13}/> {t('Stop')}</button>}
+              {active && !['snpanel-api', 'redis-server', 'valkey'].includes(name) && <button className="mini secondary-light" onClick={() => runServiceAction(name, 'stop')}><Square size={13}/> {t('Stop')}</button>}
             </div>}
           </div>;
         })}
