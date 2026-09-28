@@ -205,3 +205,39 @@ nftables   table inet snpanel_webfailover:  80 → 9080, 443 → 9443   (LSWS li
 2. Hỏi LiteSpeed/CloudLinux về F24.3: CloudLinux Isolates và PHP Selector theo domain dưới LSWS.
 3. Thử lại F23 (license hết hạn) và F25 (SSL) trên chính máy này khi có domain thật.
 4. Bắt đầu phase CL-R (tách lớp web/PHP), vì F16 cho thấy đây là điều kiện tiên quyết.
+
+---
+
+## 5. Buổi 2 (cùng ngày): chuyển hẳn sang LiteSpeed, gỡ Nginx và PHP-FPM
+
+**F27 — Lệch 403/404/301 giữa LiteSpeed và Apache: đã khắc phục hẳn.**
+- Mọi luật chặn giờ viết thêm bằng `RewriteRule "(?i)<mẫu>" - [F]`, đặt trước front controller. Khối `Require all denied` cũ giữ lại làm lớp phòng thủ thứ hai.
+- `RewriteRule [F]` trả **403 như nhau trên cả hai server**, dù file có tồn tại hay không.
+- Kết quả trên LiteSpeed: 30 khác biệt → **4**. Cả 4 là F24.3.
+
+**F28 — Bộ sinh vhost phải thay nguyên bộ trong một lần.**
+- Bản prototype cũ xoá vhost trước rồi mới sinh lại. Khi token API hết hạn, nó sinh ra **0 vhost**, và reload đó làm mọi site mất phục vụ khoảng 1 phút.
+- → Renderer trong Rust phải sinh toàn bộ vào thư mục tạm, rồi `rename` một lần. Nếu nguồn dữ liệu lỗi thì từ chối ghi. `gen_apache.py` đã sửa theo cách này.
+
+**F29 — Gỡ Nginx và PHP-FPM.**
+- Đã gỡ `nginx`, `nginx-core`, `php83-php-fpm`, `php84-php-fpm`. Kết quả: 0 khác biệt trên Apache, phpMyAdmin vẫn 200, panel vẫn OK.
+- RPM phpMyAdmin của EPEL đòi `nginx-filesystem` (chỉ là thư mục) và `php(httpd)`, mà chỉ `php8.4-fpm` của AppStream cung cấp. Nếu gỡ hai gói này, dnf **gỡ luôn phpMyAdmin**.
+- → Tạm thời giữ hai gói đó, và `systemctl mask php8.4-fpm` để nó không bao giờ chạy.
+- → Muốn sạch hẳn: Hosting Edition cài phpMyAdmin từ **tarball upstream** thay cho RPM của EPEL. Đây là việc của installer / lệnh nâng cấp.
+- Cấu hình cũ đã sao lưu ở `/root/cl0/removed/`.
+
+**F30 — PHP theo domain dưới LiteSpeed: giới hạn của nhà cung cấp, đã xác nhận.**
+- Tài liệu CloudLinux ghi: LiteSpeed + Isolates "Supported (cPanel only)". Bài KB *"Per-domain PHP Selector settings are not applied when CloudLinux Isolates is used with LiteSpeed"* nhắc tới task nội bộ **CLOS-4167**.
+- Đã thử 9 cách trên LiteSpeed 6.3.7. Kết quả chia làm hai nhóm:
+  - **đúng phiên bản nhưng chạy dưới `apache`**, tức mất suEXEC và là lỗ hổng bảo mật: `x-httpd-alt-php83___lsphp`, `x-httpd-alt-php83`, `x-lsphp83`, handler `ea-php83___lsphp` với đường dẫn kiểu cPanel, và khai báo app `alt-php83` riêng với `autoStart=2`;
+  - **đúng user nhưng sai phiên bản**: `x-httpd-lsphp83`, `x-httpd-php83` (kể cả khi có `/usr/local/php83/bin/lsphp` kiểu DirectAdmin), `phpSuExec=1`, và cài `mod_hostinglimits`.
+- **Không có cách cấu hình nào vừa giữ suEXEC vừa đổi được phiên bản theo domain dưới LiteSpeed.**
+
+**Quyết định đề xuất cho F30:**
+1. Phiên bản PHP **theo user** (Selector) chạy đúng trên cả hai web server. Đây là mặc định, và cũng là cách phần lớn nhà cung cấp hosting bán.
+2. PHP **theo domain** (Isolates + Selector `--domain`):
+   - khi Apache live: có tác dụng;
+   - khi LiteSpeed live: chưa có tác dụng; UI hiển thị "đang theo phiên bản của tài khoản (giới hạn của LiteSpeed)".
+   - Không dùng handler theo phiên bản vì nó mất suEXEC.
+3. Khách thật sự cần một site chạy phiên bản khác: tách site đó sang một user riêng. SNPanel đã có sẵn chức năng chuyển chủ sở hữu site.
+4. Mở ticket với LiteSpeed và CloudLinux, dẫn chiếu CLOS-4167, hỏi lộ trình hỗ trợ Isolates dưới LiteSpeed cho panel tự viết. Khi có hỗ trợ, SNPanel không phải sửa gì, vì cơ chế đang dùng đúng là Isolates.

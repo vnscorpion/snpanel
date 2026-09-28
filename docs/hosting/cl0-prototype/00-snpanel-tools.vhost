@@ -1,6 +1,6 @@
 # SNPANEL MANAGED - default vhost: ACME + phpMyAdmin (CL-0 prototype)
 # First vhost loaded, so it answers any Host no site claims (nginx: default_server).
-<VirtualHost *:80>
+<VirtualHost *:8080>
     ServerName snpanel-default.invalid
     DocumentRoot /var/www/snpanel-acme
     ErrorLog /var/log/httpd/snpanel-tools.error.log

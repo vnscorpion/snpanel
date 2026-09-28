@@ -93,7 +93,7 @@ Ba việc rủi ro nhất (convert kernel, đổi web server, đưa user vào ca
 | S7 | Từng user: CageFS + phiên bản Selector = phiên bản đa số trong các site của họ. Site lệch phiên bản → **Isolates + Selector theo domain** **[F7][F12]**. An toàn khi Nginx + FPM vẫn đang phục vụ **[F13]** | không | `cagefsctl --disable` |
 | S8 | Sinh vhost Apache (**cổng cố định**, `SetHandler application/x-httpd-lsphp`) **[F20]**. `httpd -t`. Chạy Apache **bóng** trên :8088, so sánh từng site Nginx:80 và Apache:8088 | không | không cần |
 | S9 | **Cutover:** dừng Nginx (không gỡ), Apache nhận :80. Đo được ~1,1 giây | ~1 giây | bật lại Nginx |
-| S10 | Dừng PHP-FPM (Remi), không gỡ | không | bật lại |
+| S10 | Dừng PHP-FPM (Remi). Sau 2 tuần ổn định thì gỡ `nginx nginx-core phpXX-php-fpm` **[F29]**. phpMyAdmin phải chuyển sang tarball upstream trước, vì RPM của EPEL kéo theo `nginx-filesystem` và `php8.4-fpm` | không | bật lại / cài lại |
 | S11 | MySQL Governor, rồi ghi `/etc/container/dbuser-map` và chạy `dbctl --lve-mode off`. Mặc định sau khi cài là `abusers`, tức **có hạn chế** **[F17]**. Có `--no-governor` để bỏ qua | DB lỗi **~95 giây** | dump + snapshot datadir |
 | S12 | Ghi `edition=cloudlinux`, chạy `snpanel doctor`, in báo cáo | không | — |
 
@@ -179,10 +179,11 @@ panel SNPanel ở :2222, không bị ảnh hưởng trong mọi trường hợp
   - Cổng 8080/9080 vẫn đóng từ bên ngoài.
 - **Khôi phục sau boot và sau khi firewall được sinh lại:** một oneshot kèm timer áp lại bảng nft theo `/var/lib/snpanel/webserver`.
 - **mod_lsapi khi LSWS live:** giữ mod_lsapi nạp sẵn trong Apache (đường A). Hai bên không xung đột vì đã tách cổng. Đã kiểm chứng: sau failover, PHP chạy đúng phiên bản của từng site.
-- **Chênh lệch đã biết của LSWS [F24]:**
-  - file bị chặn nhưng không tồn tại trả 404 thay vì 403;
-  - `uploads/*.php` trả 301;
-  - **PHP theo domain (Isolates) không có tác dụng dưới LSWS**, chỉ phiên bản của user có tác dụng. Đây là vấn đề mở, phải hỏi LiteSpeed/CloudLinux; UI phải cảnh báo khi LSWS đang live.
+- **Chênh lệch 403/404/301 giữa LSWS và Apache đã khắc phục** bằng các luật chặn viết thêm dạng `RewriteRule … [F]` **[F27]**.
+- **PHP theo domain dưới LSWS: giới hạn của nhà cung cấp [F30]**. CloudLinux chỉ hỗ trợ Isolates + LiteSpeed trên cPanel (CLOS-4167). Đã thử 9 cách, không cách nào vừa giữ suEXEC vừa đổi được phiên bản.
+  - Phiên bản theo **user** chạy đúng trên cả hai server.
+  - Phiên bản theo **domain** chỉ có tác dụng khi Apache live. UI phải ghi rõ điều này.
+  - Cần site khác phiên bản thì chuyển site đó sang một user riêng.
 
 ### 4.4 Watchdog `snpanel-webwatch.service`
 
@@ -227,6 +228,7 @@ Nhóm theo thứ tự phụ thuộc. Các file dẫn chiếu là code hiện t�
 | B5 | File `/var/lib/snpanel/webserver` là nguồn chân lý duy nhất cho "ai đang live". API, doctor và watchdog cùng đọc | mới |
 | B6 | Firewall cho phép luồng đã chuyển cổng: `ct original proto-dst { 80, 443 }` **[F21]** | bộ sinh ruleset nft trong helper |
 | B7 | `cleanup_failed_site` xoá cả thư mục site (lỗi có sẵn) **[F16]** | `routes/websites.rs:4191` |
+| B8 | Renderer vhost ghi nguyên bộ vào thư mục tạm rồi `rename` một lần; nguồn dữ liệu lỗi thì từ chối ghi **[F28]** | `snpanel-web` |
 
 **Tiêu chí xong B:** bản Standard chạy y hệt 1.1.0 (golden test nginx không đổi byte nào, acceptance 30/30 trên các distro).
 
