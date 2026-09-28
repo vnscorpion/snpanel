@@ -15,7 +15,7 @@ ExecStart=/usr/local/bin/snpanel-api-rust --run-backup-schedules --env /opt/snpa
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
-ReadWritePaths=/opt/snpanel /home /var/backups/snpanel /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel /home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage
+ReadWritePaths=/opt/snpanel /home /var/backups/snpanel -/etc/nginx/conf.d -/etc/nginx/snpanel/custom /tmp /var/lib/snpanel -/home/admin/snpanel_backups/da -/var/lib/snpanel/da-import -/var/lib/snpanel/import-stage
 PrivateTmp=true
 
 [Install]

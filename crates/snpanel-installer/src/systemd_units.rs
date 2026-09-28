@@ -59,10 +59,16 @@ impl UnitSettings {
     /// Listed here once rather than in two heredocs: the two units carried
     /// the same line and a path added to one of them only would be a backup
     /// that cannot write where the panel can.
+    ///
+    /// The nginx and DirectAdmin-import directories carry systemd's `-`
+    /// prefix: a missing path is then ignored instead of failing the unit
+    /// with 226/NAMESPACE. They are absent on a machine taken to CloudLinux
+    /// (the upgrade removes nginx) and before the first DA import, and a panel
+    /// that will not start over a directory it does not need is an outage.
     fn read_write_paths(&self) -> String {
         format!(
-            "{} /home {} /etc/nginx/conf.d /etc/nginx/snpanel/custom /tmp /var/lib/snpanel \
-/home/admin/snpanel_backups/da /var/lib/snpanel/da-import /var/lib/snpanel/import-stage",
+            "{} /home {} -/etc/nginx/conf.d -/etc/nginx/snpanel/custom /tmp /var/lib/snpanel \
+-/home/admin/snpanel_backups/da -/var/lib/snpanel/da-import -/var/lib/snpanel/import-stage",
             self.app_dir, self.backup_root
         )
     }
