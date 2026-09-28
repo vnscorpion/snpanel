@@ -40,6 +40,7 @@ export default function WebsitesPage() {
     openWordPressInstaller,
     phpVersion,
     phpVersions,
+    cloudlinuxAvailable,
     resetNginxDefault,
     saveNginxCustom,
     saveWebsiteSettings,
@@ -145,7 +146,7 @@ export default function WebsitesPage() {
           <option value="">{t('Select an application')}</option>
           {siteApps.items.map(app => <option key={app.id} value={app.id}>{app.name} · {t(SITE_APP_KIND_LABELS[app.kind] || app.kind)} · :{app.port}</option>)}
         </select></label>}
-        {selectedAppType !== 'static' && !proxied && <label><span>{t('PHP version')}</span><select
+        {selectedAppType !== 'static' && !proxied && !cloudlinuxAvailable && <label><span>{t('PHP version')}</span><select
           value={websiteSettingsForm.php_version}
           onChange={e => setWebsiteSettingsForm(prev => ({ ...prev, php_version: e.target.value }))}
           disabled={!!loading}
@@ -224,7 +225,7 @@ export default function WebsitesPage() {
       <div className="section-title">
         <div className="nginx-config-title">
           <h2>{t('Install WordPress - {domain}', { domain: wordpressInstaller.domain })}</h2>
-          <p className="hint">PHP {wordpressInstaller.php_version || '8.4'}</p>
+          {!cloudlinuxAvailable && <p className="hint">PHP {wordpressInstaller.php_version || '8.4'}</p>}
         </div>
         <button className="secondary-light" onClick={() => setWordpressInstaller(null)}><X size={14}/> {t('Close')}</button>
       </div>
@@ -332,7 +333,8 @@ export default function WebsitesPage() {
               <option value="">{t('Select an application')}</option>
               {siteApps.items.map(app => <option key={app.id} value={app.id}>{app.name} · {t(SITE_APP_KIND_LABELS[app.kind] || app.kind)} · :{app.port}</option>)}
             </select></label>
-            : <label className="field"><span>{t('PHP version')}</span><select value={phpVersion} onChange={e => setPhpVersion(e.target.value)}>
+            // On CloudLinux the account's PHP Selector decides the version.
+            : !cloudlinuxAvailable && <label className="field"><span>{t('PHP version')}</span><select value={phpVersion} onChange={e => setPhpVersion(e.target.value)}>
               {phpVersions.installed.map(v => <option key={v} value={v}>PHP {v}</option>)}
             </select></label>}
           {wpFieldsEnabled && <label className="field"><span>{t('Admin email')}</span><input value={adminEmail} onChange={e => setAdminEmail(e.target.value)} placeholder="admin@domain.com" /></label>}
@@ -404,7 +406,7 @@ export default function WebsitesPage() {
             <div className="site-meta">
               <span className={`badge site-ssl-badge ${site.ssl_enabled ? 'ok' : ''}`}>{site.ssl_enabled ? t('SSL OK') : t('No SSL')}</span>
               <span>{t('Type {value}', { value: <strong>{site.app_type || 'wordpress'}</strong> })}</span>
-              <span>PHP <strong>{site.php_version}</strong></span>
+              {!cloudlinuxAvailable && <span>PHP <strong>{site.php_version}</strong></span>}
               {site.app_type === 'php' && site.nginx_rewrite_mode && site.nginx_rewrite_mode !== 'none' && <span>{t('Rewrite {value}', { value: <strong>{site.nginx_rewrite_mode}</strong> })}</span>}
               {site.nginx_custom && <span className="badge ok">{t('Custom Nginx')}</span>}
               {site.waf_enabled && <span className="badge ok">WAF</span>}

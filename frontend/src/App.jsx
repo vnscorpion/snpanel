@@ -3946,7 +3946,9 @@ function App() {
   const settingsNavItems = [
     ...(isAdmin ? [['panel-settings', t('Panel settings'), SlidersHorizontal, t('Hostname, SSL, branding and API tokens')]] : []),
     ['security', t('Account security'), KeyRound, t('Password, two-step verification, passkeys')],
-    ...(isAdmin ? [['php', t('PHP config'), Code2, t('Versions, limits and extensions')]] : []),
+    // On CloudLinux PHP versions, limits and extensions are CloudLinux's (PHP
+    // Selector, in CloudLinux Manager); the panel's page would edit nothing.
+    ...(isAdmin && !cloudlinuxAvailable ? [['php', t('PHP config'), Code2, t('Versions, limits and extensions')]] : []),
     ...(isAdmin ? [['firewall', t('Firewall'), BrickWall, t('Open ports and blocked addresses')]] : []),
     ['waf', t('WAF'), ShieldCheck, t('Rules against attacks on websites')],
     ...(isAdmin ? [['access-logs', t('Access Logs'), ScrollText, t('Traffic of every website')]] : []),
@@ -4695,6 +4697,8 @@ function App() {
     if (page === 'backups') return <BackupsPage />;
     if (page === 'security') return <SecurityPage />;
     if (page === 'sftp') return <SftpPage />;
+    // On CloudLinux PHP is CloudLinux's: an old link lands on its Selector.
+    if (page === 'php' && cloudlinuxAvailable) return isAdmin ? <CloudLinuxPage plugin="lvemanager" title={t('CloudLinux Manager')} about={t('LVE limits, CageFS, PHP Selector and resource usage')} /> : null;
     if (page === 'php') return <PhpConfigPage />;
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;
