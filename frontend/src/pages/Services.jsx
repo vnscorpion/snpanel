@@ -35,7 +35,10 @@ export default function ServicesPage() {
           const active = text.includes('active (running)');
           const inactive = text.includes('inactive') || text.includes('failed');
           return <div className="service-card" key={name}>
-            <div><strong>{name}</strong>{SERVICE_LABELS[name] && <span className="hint"> {t(SERVICE_LABELS[name])}</span>}<span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span></div>
+            <div>
+              <div className="service-name"><strong>{name}</strong>{SERVICE_LABELS[name] && <small>{t(SERVICE_LABELS[name])}</small>}</div>
+              <span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span>
+            </div>
             {/* Only what applies: a running service restarts or stops, a
                 stopped one starts; while its state is unknown, both. */}
             {isAdmin && <div className="service-actions">
