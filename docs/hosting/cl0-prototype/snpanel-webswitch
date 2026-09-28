@@ -23,8 +23,11 @@ table inet snpanel_webfailover {
   }
   chain output {
     type nat hook output priority -100; policy accept;
-    ip daddr 127.0.0.0/8 tcp dport 80 redirect to :$HTTP
-    ip daddr 127.0.0.0/8 tcp dport 443 redirect to :$HTTPS
+    # Connections the server makes to itself - WordPress's loopback and
+    # REST checks, cron, wp-cli - reach a site by its public name, so its
+    # public address: every address of this machine, not only 127.0.0.0/8.
+    fib daddr type local tcp dport 80 redirect to :$HTTP
+    fib daddr type local tcp dport 443 redirect to :$HTTPS
   }
 }
 EOF
