@@ -47,6 +47,7 @@ mod da_jobs;
 mod errors;
 mod dns;
 mod mail;
+mod resellers;
 mod fail2ban;
 mod file_jobs;
 mod files;

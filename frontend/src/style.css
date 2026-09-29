@@ -969,3 +969,19 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .error-list{margin:8px 0;padding:8px;background:var(--danger-bg);border-radius:4px}
 .error-text{color:var(--color-danger);font-size:var(--text-base);margin:4px 0}
 .da-credentials{background:var(--surface);padding:12px;border-radius:6px;font-size:var(--text-sm);white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto;margin-top:8px}
+
+/* Resellers: what they and their accounts use beside their limits, the
+   prefix in front of their customers' usernames, and the limit fields. */
+.reseller-usage{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-2);margin:var(--space-3) 0}
+.reseller-meter{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.reseller-meter>span{font-size:var(--text-sm);color:var(--text-secondary);font-weight:600}
+.reseller-meter>strong{font-size:var(--text-lg)}
+.reseller-meter>i{display:block;height:6px;border-radius:999px;background:var(--surface-sunken);overflow:hidden}
+.reseller-meter>i>b{display:block;height:100%;background:var(--success-text)}
+.reseller-meter[data-level="mid"]>i>b{background:var(--warning-text)}
+.reseller-meter[data-level="high"]>i>b{background:var(--danger-text)}
+.user-prefix-input{display:flex;align-items:stretch;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);overflow:hidden}
+.user-prefix-input>span{display:flex;align-items:center;padding:0 8px;background:var(--surface-sunken);color:var(--text-secondary);font-weight:600;font-size:var(--text-sm)}
+.user-prefix-input>input{border:0;border-radius:0;min-width:0;flex:1}
+.reseller-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.reseller-create{margin-top:var(--space-3)}

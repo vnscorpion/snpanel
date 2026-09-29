@@ -18,13 +18,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch};
 use axum::Router;
 use serde_json::{json, Value};
-use snpanel_core::permissions::{self, Role};
 use snpanel_db::PackageFields;
 
 use crate::auth::CurrentUser;
 use crate::errors::{
     bad_request, check_length, check_range, conflict, internal_error, iso_datetime, missing_field,
-    not_enough_permissions, not_found,
+    not_found,
 };
 use crate::state::AppState;
 
@@ -57,22 +56,34 @@ fn to_json(p: &snpanel_db::Package) -> Value {
     })
 }
 
-/// Source: `ensure_role(current_user.role, Role.admin)`.
-fn require_admin(current: &CurrentUser) -> Result<(), Response> {
-    if permissions::has_role(&current.user.role, Role::Admin) {
-        Ok(())
-    } else {
-        Err(not_enough_permissions())
-    }
-}
-
 async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let owners: std::collections::HashMap<i64, i64> = match state.db.resellers().all_package_owners().await {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(e) => {
+            tracing::error!("listing package owners failed: {e}");
+            return internal_error();
+        }
+    };
     match state.db.packages().list().await {
         Ok(rows) => {
-            let out: Vec<Value> = rows.iter().map(to_json).collect();
+            // A reseller sees its own packages; the administrator every one,
+            // with whose it is.
+            let out: Vec<Value> = rows
+                .iter()
+                .filter(|p| match manager.reseller_id() {
+                    Some(id) => owners.get(&p.id) == Some(&id),
+                    None => true,
+                })
+                .map(|p| {
+                    let mut v = to_json(p);
+                    v["owner_id"] = json!(owners.get(&p.id));
+                    v
+                })
+                .collect();
             axum::Json(out).into_response()
         }
         Err(e) => {
@@ -88,9 +99,10 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -103,6 +115,12 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     let name = match normalise_name(name) {
         Ok(n) => n,
         Err(r) => return r,
+    };
+    // A reseller's package names start with its prefix: they share one list
+    // (and CloudLinux's) with every other reseller's.
+    let name = match &manager {
+        crate::resellers::Manager::Reseller { limits, .. } => crate::resellers::prefixed(&limits.prefix, &name),
+        crate::resellers::Manager::Admin => name,
     };
     if let Err(r) = check_length("name", &name, 1, 100) {
         return r;
@@ -140,6 +158,12 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         }
     };
 
+    if let Some(owner) = manager.reseller_id() {
+        if let Err(e) = state.db.resellers().set_package_owner(package.id, Some(owner)).await {
+            tracing::error!("recording a package's reseller failed: {e}");
+            return internal_error();
+        }
+    }
     audit_action(
         &state,
         &parts,
@@ -161,8 +185,19 @@ async fn update(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    if let Some(reseller) = manager.reseller_id() {
+        match state.db.resellers().package_owner(package_id).await {
+            Ok(Some(owner)) if owner == reseller => {}
+            Ok(_) => return not_found("Package not found"),
+            Err(e) => {
+                tracing::error!("package owner lookup failed: {e}");
+                return internal_error();
+            }
+        }
     }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
@@ -196,6 +231,10 @@ async fn update(
         let name = match normalise_name(text) {
             Ok(n) => n,
             Err(r) => return r,
+        };
+        let name = match &manager {
+            crate::resellers::Manager::Reseller { limits, .. } => crate::resellers::prefixed(&limits.prefix, &name),
+            crate::resellers::Manager::Admin => name,
         };
         if let Err(r) = check_length("name", &name, 1, 100) {
             return r;
@@ -249,8 +288,19 @@ async fn remove(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    if let Some(reseller) = manager.reseller_id() {
+        match state.db.resellers().package_owner(package_id).await {
+            Ok(Some(owner)) if owner == reseller => {}
+            Ok(_) => return not_found("Package not found"),
+            Err(e) => {
+                tracing::error!("package owner lookup failed: {e}");
+                return internal_error();
+            }
+        }
     }
 
     let package = match state.db.packages().by_id(package_id).await {

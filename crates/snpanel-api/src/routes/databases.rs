@@ -739,6 +739,12 @@ async fn create_database(State(state): State<AppState>, req: Request) -> Respons
     if let Err(r) = owner_and_site(&state, owner_id, website_id).await {
         return r;
     }
+    // Not in the Python: a reseller's limits, on what is really used.
+    if let Err(message) =
+        crate::resellers::check_room(&state, owner_id, crate::resellers::Resource::Database).await
+    {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message);
+    }
 
     // Two separate 409s, because the caller has to know which name to change.
     match state.db.databases().by_name(&db_name).await {
