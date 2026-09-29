@@ -342,6 +342,8 @@ async fn run() -> anyhow::Result<()> {
     // the Notifications addon is installed. Only the server runs it: a
     // one-shot process above has returned already.
     notify::watcher::start(state.clone());
+    // Every website and alias with a DNS zone, while the addon is installed.
+    dns::start(&state);
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;

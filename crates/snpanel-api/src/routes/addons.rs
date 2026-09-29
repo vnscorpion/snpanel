@@ -97,7 +97,7 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "summary": "Answers DNS for the websites' domains from this server with PowerDNS, and lets each account edit the records of its own domains.",
                 "details": [
                     "Installs PowerDNS Authoritative with a SQLite database and opens port 53 (UDP and TCP).",
-                    "A new website gets its zone from a template: the domain and www pointing at this server, mail, SPF and a CAA record for Let's Encrypt.",
+                    "Every website and alias gets its zone from a template, by itself - the ones that exist when the addon is installed as well: the domain and www pointing at this server, mail, SPF and a CAA record for Let's Encrypt.",
                     "Customers edit the A, AAAA, CNAME, MX, TXT, SRV, CAA and NS records of their own domains; the administrator sets the nameservers and the template.",
                 ],
                 "notes": [
@@ -480,6 +480,10 @@ async fn install(
         tracing::error!("writing addons.json failed: {e}");
         return crate::errors::internal_error();
     }
+    // Every website and alias there already is gets its zone now.
+    if slug == DNS {
+        crate::dns::ensure_all(&state).await;
+    }
 
     let _ = state
         .db
@@ -498,7 +502,7 @@ async fn install(
         "next_step": installing.unwrap_or(match slug.as_str() {
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
-            DNS => "Open DNS Manager to set the nameservers, then make zones for the websites.",
+            DNS => "Open DNS Manager to check the nameservers. Every website already has its zone.",
             MALWARE => "Open Malware Scanner to scan the websites, set the weekly scans and see the quarantine.",
             MCP => "Open AI assistants (MCP) to make a token for your assistant.",
             NOTIFICATIONS => "Open Notifications to set up e-mail, or a Telegram bot and its chat.",

@@ -57,8 +57,6 @@ pub struct DnsSettings {
     #[serde(default)]
     pub server_ipv6: String,
     pub default_ttl: u32,
-    /// Make a zone from the template when a website is created.
-    pub auto_zone: bool,
     pub template: Vec<TemplateRecord>,
 }
 
@@ -107,7 +105,6 @@ impl DnsSettings {
             server_ip: String::new(),
             server_ipv6: String::new(),
             default_ttl: 3600,
-            auto_zone: true,
             template: default_template(),
         }
     }
@@ -692,13 +689,127 @@ pub fn parent_zone<'a>(name: &str, zones: &'a [String]) -> Option<&'a String> {
 /// A website (or an alias) was created: its zone from the template, or -
 /// when it is under a zone this server already has - its own A and AAAA in
 /// that zone. Nothing is changed when the name already has records.
+///
+/// Every domain gets one: zones are not made by hand. [`ensure_all`] makes
+/// the ones missing - websites from before the addon, or a create that
+/// failed while PowerDNS was down.
 pub async fn website_created(domain: &str) {
-    if !crate::routes::addons::dns_installed() || !settings().auto_zone {
+    if !crate::routes::addons::dns_installed() {
         return;
     }
     if let Err(e) = website_created_inner(domain).await {
         tracing::warn!("DNS zone for {domain}: {e}");
     }
+}
+
+/// Every website domain and alias on the server, lower case.
+pub async fn all_domains(state: &crate::state::AppState) -> Result<Vec<String>, String> {
+    let sites = state.db.websites().all_by_id().await.map_err(|e| e.to_string())?;
+    let ids: Vec<i64> = sites.iter().map(|s| s.id).collect();
+    let aliases = state.db.websites().aliases_for(&ids).await.map_err(|e| e.to_string())?;
+    let mut domains: Vec<String> = sites
+        .into_iter()
+        .map(|s| s.domain)
+        .chain(aliases.into_iter().map(|a| a.domain))
+        .map(|d| d.to_ascii_lowercase())
+        .collect();
+    domains.sort();
+    domains.dedup();
+    Ok(domains)
+}
+
+/// The order zones are made in: parents first, so `blog.example.com` lands
+/// in `example.com`'s zone when both are websites here.
+pub fn by_depth(mut domains: Vec<String>) -> Vec<String> {
+    domains.sort_by_key(|d| (d.matches('.').count(), d.clone()));
+    domains
+}
+
+/// Whether `domain` already answers from here: its own zone, or records in
+/// a zone above it.
+fn covered(domain: &str, hosted: &[String], parents_with_name: &[String]) -> bool {
+    hosted.iter().any(|z| z == domain) || parents_with_name.iter().any(|d| d == domain)
+}
+
+/// A zone (or parent-zone records) for every domain that has none. Returns
+/// how many were made. Cheap when there is nothing to do: one listing.
+pub async fn ensure_domains(domains: Vec<String>) -> Result<usize, PdnsError> {
+    let hosted = zones().await?;
+    let missing: Vec<String> = domains
+        .into_iter()
+        .filter(|d| !hosted.contains(d))
+        .collect();
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    // Names already inside a parent zone count as covered; look once per
+    // parent rather than once per name.
+    let mut inside: Vec<String> = Vec::new();
+    let mut seen_parents: Vec<String> = Vec::new();
+    for d in &missing {
+        if let Some(parent) = parent_zone(d, &hosted) {
+            if !seen_parents.contains(parent) {
+                seen_parents.push(parent.clone());
+                if let Some(z) = zone(parent).await? {
+                    for set in z["rrsets"].as_array().into_iter().flatten() {
+                        if let Some(name) = set["name"].as_str() {
+                            inside.push(name.trim_end_matches('.').to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut made = 0;
+    for d in by_depth(missing) {
+        if covered(&d, &hosted, &inside) {
+            continue;
+        }
+        match website_created_inner(&d).await {
+            Ok(()) => made += 1,
+            Err(e) => tracing::warn!("DNS zone for {d}: {e}"),
+        }
+    }
+    Ok(made)
+}
+
+/// [`ensure_domains`] over every website and alias, when the addon is on.
+pub async fn ensure_all(state: &crate::state::AppState) -> usize {
+    if !crate::routes::addons::dns_installed() {
+        return 0;
+    }
+    let domains = match all_domains(state).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("listing domains for DNS failed: {e}");
+            return 0;
+        }
+    };
+    match ensure_domains(domains).await {
+        Ok(n) => {
+            if n > 0 {
+                tracing::info!("DNS: made {n} missing zone(s)");
+            }
+            n
+        }
+        Err(e) => {
+            tracing::warn!("DNS zones not checked: {e}");
+            0
+        }
+    }
+}
+
+/// At start: once PowerDNS has had time to come up, and then every ten
+/// minutes, so a website added while it was down still gets its zone.
+pub fn start(state: &crate::state::AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        loop {
+            ensure_all(&state).await;
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
 }
 
 async fn website_created_inner(domain: &str) -> Result<(), PdnsError> {
@@ -912,6 +1023,21 @@ mod tests {
         let mut bad = base;
         bad.server_ip = "300.1.1.1".into();
         assert!(bad.validated().is_err());
+    }
+
+    #[test]
+    fn parents_are_made_before_the_names_under_them() {
+        let order = by_depth(vec![
+            "blog.example.com".into(),
+            "a.b.example.org".into(),
+            "example.com".into(),
+            "example.org".into(),
+        ]);
+        assert_eq!(order, ["example.com", "example.org", "blog.example.com", "a.b.example.org"]);
+        let hosted = vec!["example.com".to_string()];
+        assert!(covered("example.com", &hosted, &[]));
+        assert!(covered("blog.example.com", &hosted, &["blog.example.com".into()]));
+        assert!(!covered("shop.example.com", &hosted, &["blog.example.com".into()]));
     }
 
     #[test]
