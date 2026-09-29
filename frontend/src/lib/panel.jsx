@@ -3,7 +3,7 @@
 // can import them without importing App.jsx, which imports the pages.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { msg, serverText, useT } from '../i18n/index.jsx';
-import { AlertCircle, Check, Moon, Sun, X } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, KeyRound, LogOut, Moon, Sun, X } from 'lucide-react';
 
 export const API = import.meta.env.VITE_API_URL || '/api';
 export const DEFAULT_SERVICE_NAMES = ['snpanel-api', 'nginx', 'php8.3-fpm', 'php8.4-fpm', 'mariadb', 'redis-server'];
@@ -146,6 +146,35 @@ export function ThemeToggle({ theme, onToggle, className = '' }) {
     aria-label={label}
     aria-pressed={isDark}
   >{isDark ? <Sun size={16}/> : <Moon size={16}/>}</button>;
+}
+
+// The signed-in account in the top bar: its initial, name and a menu with
+// its security page and signing out. Closes on a click outside or Escape.
+export function UserMenu({ username, detail, onSecurity, onLogout }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = (event) => { if (ref.current && !ref.current.contains(event.target)) setOpen(false); };
+    const escape = (event) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', escape); };
+  }, [open]);
+  const name = username || '?';
+  return <div className="user-menu" ref={ref}>
+    <button type="button" className="user-menu-trigger" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} title={t('Logged in as')}>
+      <span className="user-avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+      <span className="user-menu-name">{name}</span>
+      <ChevronDown size={14} className="user-menu-chevron" aria-hidden="true"/>
+    </button>
+    {open && <div className="user-menu-panel" role="menu">
+      <div className="user-menu-head"><strong>{name}</strong>{detail && <small>{detail}</small>}</div>
+      <button type="button" role="menuitem" onClick={() => { setOpen(false); onSecurity(); }}><KeyRound size={15} aria-hidden="true"/>{t('Account security')}</button>
+      <button type="button" role="menuitem" className="user-menu-logout" onClick={() => { setOpen(false); onLogout(); }}><LogOut size={15} aria-hidden="true"/>{t('Logout')}</button>
+    </div>}
+  </div>;
 }
 
 export function WordPressIcon({ size = 14 }) {

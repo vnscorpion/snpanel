@@ -6,6 +6,7 @@ import {
   ArrowRight,
   BrickWall,
   Bug,
+  CircleAlert,
   CircleCheckBig,
   Cpu,
   Database,
@@ -23,11 +24,11 @@ import {
   TriangleAlert,
   UserCog,
   UserPlus,
+  Zap,
 } from 'lucide-react';
 import { followInPanel, routeForPage, scanRoute } from '../lib/panel.jsx';
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
-import { addonIcon, addonPage } from '../lib/addons.jsx';
 import './Dashboard.css';
 
 // The dashboard says how things are, not where they are: the sidebar already
@@ -237,10 +238,6 @@ export default function DashboardPage() {
       ? { key: 'new-user', icon: UserPlus, label: t('New account'), page: 'users', before: () => setUserTab('add') }
       : { key: 'sftp', icon: FolderKey, label: t('SFTP accounts'), page: 'sftp' },
     isAdmin && { key: 'users', icon: UserCog, label: t('Panel users'), page: 'users', before: () => setUserTab('list') },
-    // Every installed addon has its way in from here too.
-    ...addons.items.filter((addon) => addon.installed).map((addon) => ({
-      key: `addon-${addon.slug}`, icon: addonIcon(addon.slug), label: addon.name, page: addonPage(addon.slug),
-    })),
   ].filter((action) => action && allowed.has(action.page));
 
   // ---- the resource figures ----
@@ -255,14 +252,19 @@ export default function DashboardPage() {
   const siteLimit = Number(currentUser?.website_limit) || 0;
 
   const body = <div className="dashboard">
-    {isAdmin && <section className="resource-grid" aria-label={t('Server resources')}>
+    {isAdmin && <section className="section dash-panel dash-resources" aria-labelledby="dash-resources-title">
+      <div className="dash-card-head"><span className="dash-card-icon"><Activity size={16} aria-hidden="true"/></span><h2 id="dash-resources-title">{t('Server resources')}</h2></div>
+      <div className="resource-grid">
       <ResourceCard icon={Cpu} label="CPU" value={formatPercent(cpu.percent)} percent={cpu.percent} detail={cpu.load?.length ? t('Load {load}', { load: cpu.load.join(' / ') }) : t('{count} cores', { count: cpu.cores || '--' })} />
       <ResourceCard icon={MemoryStick} label="RAM" value={formatPercent(memory.percent)} percent={memory.percent} detail={`${formatBytes(memory.used)} / ${formatBytes(memory.total)}`} />
       <ResourceCard icon={HardDrive} label={t('Disk')} value={formatPercent(disk.percent)} percent={disk.percent} detail={`${formatBytes(disk.used)} / ${formatBytes(disk.total)}`} />
       <ResourceCard icon={Network} label={t('Network')} value={`${formatBytes(networkTotal)}/s`} detail={t('Down {down}/s / Up {up}/s', { down: formatBytes(network.rx_per_sec), up: formatBytes(network.tx_per_sec) })} />
+      </div>
     </section>}
 
-    {currentUser && !isAdmin && <section className="resource-grid dash-usage" aria-label={t('Package usage')}>
+    {currentUser && !isAdmin && <section className="section dash-panel dash-resources dash-usage" aria-labelledby="dash-usage-title" style={{ '--meter-cols': 3 }}>
+      <div className="dash-card-head"><span className="dash-card-icon"><Activity size={16} aria-hidden="true"/></span><h2 id="dash-usage-title">{t('Package usage')}</h2></div>
+      <div className="resource-grid">
       <ResourceCard icon={Globe} label={t('Websites')} value={siteLimit > 0 ? `${total}/${siteLimit}` : total}
         percent={siteLimit > 0 ? (total / siteLimit) * 100 : null}
         detail={currentUser.package_name ? t('Package {name}', { name: currentUser.package_name }) : (siteLimit > 0 ? t('{count} left', { count: Math.max(0, siteLimit - total) }) : t('No limit'))} />
@@ -270,6 +272,7 @@ export default function DashboardPage() {
       {storagePercent === null
         ? <ResourceCard icon={HardDrive} label={t('Storage')} value={formatBytes(storageUsed)} detail={t('No limit')} />
         : <ResourceCard icon={HardDrive} label={t('Storage')} value={formatPercent(storagePercent)} percent={storagePercent} detail={`${formatBytes(storageUsed)} / ${formatBytes(storageLimit)}`} />}
+      </div>
     </section>}
 
     {cards.length > 0 && <section className={`dash-cards ${isAdmin ? 'admin' : 'customer'}`} aria-label={t('Status')}>
@@ -282,7 +285,7 @@ export default function DashboardPage() {
     <div className="dash-lower">
       <section className="section dash-attention" aria-labelledby="dash-attention-title">
         <div className="dash-section-head">
-          <h2 id="dash-attention-title">{t('Needs attention')}</h2>
+          <h2 id="dash-attention-title"><span className="dash-card-icon"><CircleAlert size={16} aria-hidden="true"/></span>{t('Needs attention')}</h2>
           <button type="button" className="secondary-light icon-button" onClick={load} disabled={refreshing}
             aria-label={t('Check again')} title={t('Check again')}><RefreshCw size={15} className={refreshing ? 'spin' : ''} aria-hidden="true"/></button>
         </div>
@@ -303,7 +306,7 @@ export default function DashboardPage() {
       </section>
 
       <section className="section dash-quick" aria-labelledby="dash-quick-title">
-        <div className="dash-section-head"><h2 id="dash-quick-title">{t('Quick actions')}</h2></div>
+        <div className="dash-section-head"><h2 id="dash-quick-title"><span className="dash-card-icon"><Zap size={16} aria-hidden="true"/></span>{t('Quick actions')}</h2></div>
         <div className="dash-actions">
           {actions.map(({ key, icon, label, page, options, before }) => <QuickAction key={key} icon={icon} label={label}
             href={options?.query ? `${routeForPage(page)}?${options.query}` : routeForPage(page)}

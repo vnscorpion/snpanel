@@ -72,7 +72,7 @@ export default function UsersPage() {
     const userTabButton = (key, Icon, label) => (
       <button
         type="button"
-        className={activeUserTab === key ? 'active' : ''}
+        className={activeUserTab === key ? 'tab active' : 'tab'}
         role="tab"
         aria-selected={activeUserTab === key}
         aria-controls={`users-tab-${key}`}
@@ -90,7 +90,7 @@ export default function UsersPage() {
           : <div><h2>{t('Panel users')}</h2><p className="hint">{t('Manage users, packages, and domain ownership.')}</p></div>}
       </div>
       {isReseller && <ResellerUsage key={users.map(u => `${u.id}:${u.is_active}`).join(',')} userId={currentUser?.id} request={request} t={t} />}
-      <div className="segmented user-tabs" role="tablist" aria-label={t('Panel user sections')}>
+      <div className="tab-bar user-tabs" role="tablist" aria-label={t('Panel user sections')}>
         {userTabButton('list', Users, t('Users'))}
         {userTabButton('packages', HardDrive, t('Packages'))}
         {userTabButton('add', Plus, t('Add user'))}

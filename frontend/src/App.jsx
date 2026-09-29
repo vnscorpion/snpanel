@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, Mail, Network, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Gauge, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
+import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, Mail, Network, Clock, Code2, Database, Download, FolderKey, FolderOpen, Gauge, Globe, Home, KeyRound, Lock, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -12,6 +12,7 @@ import {
   NotificationToast,
   SETTINGS_PAGE_KEYS,
   ThemeToggle,
+  UserMenu,
   WAF_ACCESS_LOG_DEFAULTS,
   csvCell,
   editorParamsFromLocation,
@@ -33,6 +34,7 @@ import './brand.css';
 import './file-manager.css';
 import './theme.css';
 import './responsive.css';
+import './opanel.css';
 import { PanelContext } from './lib/panel-context.jsx';
 import { LocaleProvider, LocaleSwitch, msg, useT, serverText } from './i18n/index.jsx';
 import { createPasskey, getPasskeyAssertion, passkeysSupported } from './lib/webauthn.js';
@@ -4890,17 +4892,18 @@ function App() {
           </button>
           <div className="page-title">
             {inSettings
-              ? <a className="eyebrow page-title-back" href={routeForPage('settings')} onClick={(event) => followInPanel(event, () => navigateToPage('settings'))}><ChevronLeft size={13} aria-hidden="true"/>{t('Settings')}</a>
-              : <p className="eyebrow">{t('Server Management Panel')}</p>}
-            <h1>{activeNavItem?.[1] || panelSettings.app_name || 'SNPanel'}</h1>
+              ? <h1 className="page-crumbs">
+                <a href={routeForPage('settings')} onClick={(event) => followInPanel(event, () => navigateToPage('settings'))}>{t('Settings')}</a>
+                <span aria-hidden="true">›</span>{activeNavItem?.[1]}
+              </h1>
+              : <h1>{activeNavItem?.[1] || panelSettings.app_name || 'SNPanel'}</h1>}
           </div>
-          <div className="login logged-in">
-            <div className="account-pill" title={accountLabel}><span>{t('Logged in as')}</span><strong>{accountLabel}</strong></div>
-            <div className="top-actions">
-              <LocaleSwitch className="theme-toggle"/>
-              <ThemeToggle theme={theme} onToggle={toggleTheme}/>
-              <button className="secondary compact-btn" onClick={logout} aria-label={t('Logout')} title={t('Logout')}><LogOut size={15}/><span className="btn-label">{t('Logout')}</span></button>
-            </div>
+          <div className="top-actions">
+            <LocaleSwitch className="secondary compact-btn top-lang"/>
+            <ThemeToggle theme={theme} onToggle={toggleTheme} className="secondary compact-btn icon-only"/>
+            <UserMenu username={currentUser?.username || username}
+              detail={currentUser?.email || accountLabel}
+              onSecurity={() => navigateToPage('security')} onLogout={logout}/>
           </div>
         </section>
         <div className="content-body">

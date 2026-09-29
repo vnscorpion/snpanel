@@ -7,6 +7,12 @@ import { API, NGINX_REWRITE_MODES, SITE_APP_KIND_LABELS, WEBSITE_MODES, WordPres
 import { usePanel } from '../lib/panel-context.jsx';
 import { useT } from '../i18n/index.jsx';
 
+// A site's kind as a badge says it: "WordPress", "PHP", "Static".
+function appTypeLabel(type) {
+  const known = { wordpress: 'WordPress', php: 'PHP', static: 'Static', laravel: 'Laravel', codeigniter: 'CodeIgniter' };
+  return known[type] || (type ? type.charAt(0).toUpperCase() + type.slice(1) : '');
+}
+
 export default function WebsitesPage() {
   const t = useT();
   const {
@@ -406,7 +412,7 @@ export default function WebsitesPage() {
             </div>
             <div className="site-meta">
               <span className={`badge site-ssl-badge ${site.ssl_enabled ? 'ok' : ''}`}>{site.ssl_enabled ? t('SSL OK') : t('No SSL')}</span>
-              <span>{t('Type {value}', { value: <strong>{site.app_type || 'wordpress'}</strong> })}</span>
+              <span>{appTypeLabel(site.app_type || 'wordpress')}</span>
               <span>PHP <strong>{site.php_version || t('account default')}</strong></span>
               {site.app_type === 'php' && site.nginx_rewrite_mode && site.nginx_rewrite_mode !== 'none' && <span>{t('Rewrite {value}', { value: <strong>{site.nginx_rewrite_mode}</strong> })}</span>}
               {site.nginx_custom && <span className="badge ok">{t('Custom Nginx')}</span>}

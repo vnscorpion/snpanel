@@ -1582,7 +1582,6 @@ export default {
   "Two-step verification is on.": "Đã bật xác minh 2 bước.",
   "Type": "Loại",
   "Type a name for the database.": "Nhập tên cho cơ sở dữ liệu.",
-  "Type {value}": "Loại {value}",
   "Unassigned databases ({count})": "Cơ sở dữ liệu chưa gán ({count})",
   "Unban": "Bỏ chặn",
   "Unban {address}": "Bỏ chặn {address}",
@@ -1958,4 +1957,6 @@ export default {
   "Your customers see your name and logo, and can sign in at a hostname of yours. The server's name is not shown to them.": "Khách hàng của bạn thấy tên và logo của bạn, và có thể đăng nhập bằng hostname của bạn. Tên của máy chủ không hiện với họ.",
   "Your customers sign in at": "Khách hàng của bạn đăng nhập tại",
   "no SSL yet": "chưa có SSL",
+  "System": "Hệ thống",
+  "Security, server and panel configuration.": "Bảo mật, máy chủ và cấu hình panel.",
 };
