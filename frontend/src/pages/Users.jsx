@@ -1,8 +1,9 @@
-import { Ban, Globe, HardDrive, LogIn, Pencil, Play, Plus, RefreshCw, Save, Trash2, Users, X } from 'lucide-react';
+import { Ban, Globe, HardDrive, KeyRound, LogIn, Pencil, Play, Plus, RefreshCw, Save, Trash2, Users, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import SftpAccess from '../components/SftpAccess.jsx';
+import ApiTokensPanel from '../components/ApiTokensPanel.jsx';
 
 export default function UsersPage() {
   const {
@@ -90,7 +91,9 @@ export default function UsersPage() {
         {userTabButton('list', Users, t('Users'))}
         {userTabButton('packages', HardDrive, t('Packages'))}
         {userTabButton('add', Plus, t('Add user'))}
+        {isReseller && userTabButton('whmcs', KeyRound, t('WHMCS'))}
       </div>
+      {isReseller && activeUserTab === 'whmcs' && <ApiTokensPanel />}
 
       {activeUserTab === 'list' && <div className="user-tab-panel" id="users-tab-list" role="tabpanel" aria-labelledby="users-tab-button-list">
         <div className="section-title user-panel-title">

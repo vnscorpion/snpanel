@@ -1615,4 +1615,6 @@ export default {
   "Not a reseller": "Không phải reseller",
   "A reseller needs a prefix for its accounts' usernames": "Reseller cần tiền tố cho tên đăng nhập của khách",
   "The prefix is 2 to 8 lower-case letters and digits, starting with a letter": "Tiền tố gồm 2 đến 8 chữ thường và số, bắt đầu bằng chữ",
+  "This token's reseller is gone": "Reseller của token này không còn",
+  "This account is not a reseller": "Tài khoản này không phải reseller",
 };

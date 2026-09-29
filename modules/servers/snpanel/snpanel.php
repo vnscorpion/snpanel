@@ -42,6 +42,68 @@ function snpanel_ConfigOptions()
             'Type' => 'yesno',
             'Description' => 'Request Let\'s Encrypt SSL after provisioning',
         ],
+        'Account Type' => [
+            'Type' => 'dropdown',
+            'Options' => 'hosting,reseller',
+            'Default' => 'hosting',
+            'Description' => 'reseller: the account sells hosting of its own (administrator token only)',
+        ],
+        'Reseller Accounts' => [
+            'Type' => 'text',
+            'Size' => '6',
+            'Default' => '0',
+            'Description' => 'Reseller only: accounts it may create (0 = no limit)',
+        ],
+        'Reseller Websites' => [
+            'Type' => 'text',
+            'Size' => '6',
+            'Default' => '0',
+            'Description' => 'Reseller only: websites across its accounts (0 = no limit)',
+        ],
+        'Reseller Databases' => [
+            'Type' => 'text',
+            'Size' => '6',
+            'Default' => '0',
+            'Description' => 'Reseller only: databases across its accounts (0 = no limit)',
+        ],
+        'Reseller Mailboxes' => [
+            'Type' => 'text',
+            'Size' => '6',
+            'Default' => '0',
+            'Description' => 'Reseller only: mailboxes across its accounts (0 = no limit)',
+        ],
+        'Reseller Disk (MB)' => [
+            'Type' => 'text',
+            'Size' => '8',
+            'Default' => '0',
+            'Description' => 'Reseller only: disk its accounts really use, in MB (0 = no limit)',
+        ],
+    ];
+}
+
+/**
+ * The reseller limits of a product whose Account Type is reseller, or null.
+ * The prefix is taken from the username: letters and digits, at most 8.
+ */
+function snpanel_reseller_limits($params, $username)
+{
+    if (snpanel_config($params, 6, 'hosting') !== 'reseller') {
+        return null;
+    }
+    $prefix = substr(preg_replace('/[^a-z0-9]/', '', strtolower($username)), 0, 8);
+    if ($prefix === '' || !ctype_alpha($prefix[0])) {
+        $prefix = 'r' . substr($prefix, 0, 7);
+    }
+    $number = function ($index) use ($params) {
+        return max(0, (int) snpanel_config($params, $index, '0'));
+    };
+    return [
+        'prefix' => $prefix,
+        'max_accounts' => $number(7),
+        'max_websites' => $number(8),
+        'max_databases' => $number(9),
+        'max_mailboxes' => $number(10),
+        'max_disk_mb' => $number(11),
     ];
 }
 
@@ -79,6 +141,10 @@ function snpanel_CreateAccount($params)
 
     if ($domain !== '') {
         $payload['domain'] = $domain;
+    }
+    $reseller = snpanel_reseller_limits($params, $username);
+    if ($reseller !== null) {
+        $payload['reseller'] = $reseller;
     }
 
     if ($payload['install_wordpress']) {
@@ -129,6 +195,11 @@ function snpanel_ChangePassword($params)
 function snpanel_ChangePackage($params)
 {
     $payload = ['package_id' => (int) snpanel_config($params, 1, '1')];
+    $reseller = snpanel_reseller_limits($params, snpanel_username($params));
+    if ($reseller !== null) {
+        unset($reseller['prefix']);
+        $payload['reseller'] = $reseller;
+    }
     $result = snpanel_request($params, 'PATCH', '/api/provisioning/v1/accounts/' . rawurlencode(snpanel_external_id($params)) . '/package', $payload);
     return $result['ok'] ? 'success' : $result['error'];
 }
