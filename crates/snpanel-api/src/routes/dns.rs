@@ -78,6 +78,22 @@ async fn own_domains(state: &AppState, user_id: i64) -> Result<BTreeSet<String>,
         .collect())
 }
 
+/// The account whose website (or alias) the zone is, if any.
+async fn zone_owner(state: &AppState, zone: &str) -> Option<String> {
+    crate::mail::domains(state).await.ok()?.into_iter().find(|d| d.name == zone).map(|d| d.linux_user)
+}
+
+/// Every zone's account, for the list.
+async fn owners_of(state: &AppState) -> Value {
+    let map: serde_json::Map<String, Value> = crate::mail::domains(state)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| (d.name, json!(d.linux_user)))
+        .collect();
+    Value::Object(map)
+}
+
 /// The zone from the path, when the caller may touch it.
 async fn zone_for(state: &AppState, current: &CurrentUser, raw: &str) -> Result<String, Response> {
     let zone = dns::zone_name(raw).map_err(|m| bad_request(&m))?;
@@ -128,6 +144,7 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
         "is_admin": admin,
         "is_reseller": reseller,
         "zones": zones,
+        "zone_owners": owners_of(&state).await,
         "nameservers": effective.nameservers,
         "default_nameservers": settings.nameservers,
         "reseller_nameservers": if reseller { json!(dns::reseller_nameservers(current.user.id)) } else { Value::Null },
@@ -287,11 +304,25 @@ async fn zone_response(state: &AppState, current: &CurrentUser, zone: &str) -> R
         };
         key(a).cmp(&key(b))
     });
+    // Whether the registrar sends the world here: what a public resolver
+    // says the zone's nameservers are, beside the ones it should have.
+    let expected = dns::settings_for(state, zone).await.nameservers;
+    // No NS answer at all (a subdomain served by its parent, a name not
+    // registered yet) says nothing about where it points: leave it unknown.
+    let public = dns::public_nameservers(zone).await.filter(|ns| !ns.is_empty());
+    let delegated_here = public
+        .as_ref()
+        .map(|ns| ns.iter().all(|n| expected.iter().any(|e| e == n)));
+    let records = rrsets.iter().map(|r| r["records"].as_array().map_or(0, Vec::len)).sum::<usize>();
     axum::Json(json!({
         "name": zone,
         "serial": found["serial"],
         "rrsets": rrsets,
-        "nameservers": dns::settings_for(state, zone).await.nameservers,
+        "records": records,
+        "nameservers": expected,
+        "public_nameservers": public,
+        "delegated_here": delegated_here,
+        "owner": zone_owner(state, zone).await,
     }))
     .into_response()
 }

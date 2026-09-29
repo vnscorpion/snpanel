@@ -63,9 +63,9 @@ export default function PanelSettingsPage() {
   }
 
   return <div className="settings-page">
-    <div className="segmented-control settings-tabs" role="tablist" aria-label={t('Panel settings')}>
+    <div className="tab-bar settings-tabs" role="tablist" aria-label={t('Panel settings')}>
       {TABS.map(([id, label, Icon]) => <button key={id} type="button" role="tab" id={`settings-tab-${id}`}
-        aria-selected={tab === id} aria-controls={`settings-panel-${id}`} className={tab === id ? 'active' : ''}
+        aria-selected={tab === id} aria-controls={`settings-panel-${id}`} className={tab === id ? 'tab active' : 'tab'}
         onClick={() => choose(id)}><Icon size={15} aria-hidden="true"/>{t(label)}</button>)}
     </div>
 

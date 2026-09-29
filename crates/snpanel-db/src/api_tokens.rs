@@ -105,18 +105,22 @@ impl<'a> ApiTokenRepo<'a> {
             .await?)
     }
 
-    /// Source: `revoke_token`.
-    ///
-    /// The row is **kept**, switched off and stamped. Deleting it would
-    /// leave no record that a token with that name ever existed, which is
-    /// the first thing anyone asks after an incident.
-    pub async fn revoke(&self, id: i64, when: &str) -> Result<bool, DbError> {
-        let result =
-            sqlx::query("UPDATE api_tokens SET is_active = 0, revoked_at = ? WHERE id = ?")
-                .bind(when)
-                .bind(id)
-                .execute(self.pool)
-                .await?;
+    /// Source: `revoke_token` - which kept the row, switched off. Not any
+    /// more: a revoked token is deleted, and the audit log is what records
+    /// that it existed. `when` is kept for the callers' shape.
+    pub async fn revoke(&self, id: i64, _when: &str) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM api_tokens WHERE id = ?")
+            .bind(id)
+            .execute(self.pool)
+            .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Tokens revoked before revoking deleted them.
+    pub async fn purge_revoked(&self) -> Result<u64, DbError> {
+        Ok(sqlx::query("DELETE FROM api_tokens WHERE is_active = 0 OR revoked_at IS NOT NULL")
+            .execute(self.pool)
+            .await?
+            .rows_affected())
     }
 }

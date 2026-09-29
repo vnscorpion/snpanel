@@ -126,12 +126,17 @@ async fn page(state: &AppState, current: &CurrentUser, parts: &Parts) -> Result<
     let service = status(state).await;
     let names: Vec<&str> = domains.iter().map(|d| d.name.as_str()).collect();
     let on = |address: &str| names.contains(&address.rsplit_once('@').map(|(_, d)| d).unwrap_or(""));
+    let owner_of = |address: &str| {
+        let domain = address.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
+        domains.iter().find(|d| d.name == domain).map(|d| d.linux_user.clone())
+    };
     let mailboxes: Vec<Value> = store
         .mailboxes
         .iter()
         .filter(|b| on(&b.address))
         .map(|b| {
             json!({
+                "owner": owner_of(&b.address),
                 "address": b.address,
                 "quota_mb": b.quota_mb,
                 "used_bytes": service["usage"][&b.address].as_u64().unwrap_or(0),
@@ -139,7 +144,12 @@ async fn page(state: &AppState, current: &CurrentUser, parts: &Parts) -> Result<
             })
         })
         .collect();
-    let forwarders: Vec<&StoredForwarder> = store.forwarders.iter().filter(|f| on(&f.source)).collect();
+    let forwarders: Vec<Value> = store
+        .forwarders
+        .iter()
+        .filter(|f| on(&f.source))
+        .map(|f| json!({ "source": f.source, "destinations": f.destinations, "owner": owner_of(&f.source) }))
+        .collect();
     let host = mail_host(state, parts);
     let mut body = json!({
         "is_admin": is_admin(current),
@@ -147,6 +157,8 @@ async fn page(state: &AppState, current: &CurrentUser, parts: &Parts) -> Result<
             "domain": d.name,
             "local": !store.remote_domains.contains(&d.name),
             "mailboxes": store.mailboxes.iter().filter(|b| b.address.ends_with(&format!("@{}", d.name))).count(),
+            "forwarders": store.forwarders.iter().filter(|f| f.source.ends_with(&format!("@{}", d.name))).count(),
+            "owner": d.linux_user,
         })).collect::<Vec<_>>(),
         "mailboxes": mailboxes,
         "forwarders": forwarders,
