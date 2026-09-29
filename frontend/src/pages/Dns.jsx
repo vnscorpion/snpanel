@@ -53,7 +53,6 @@ export default function DnsPage() {
   const [zone, setZone] = useState(null);
   const [selected, setSelected] = useState('');
   const [filter, setFilter] = useState('');
-  const [newZone, setNewZone] = useState('');
   const [form, setForm] = useState(blankRecord(3600));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const busy = !!loading;
@@ -78,24 +77,6 @@ export default function DnsPage() {
 
   const zones = overview?.zones || [];
   const visibleZones = useMemo(() => zones.filter((z) => z.includes(filter.trim().toLowerCase())), [zones, filter]);
-
-  async function createZone(event) {
-    event.preventDefault();
-    const domain = newZone.trim();
-    if (!domain) return;
-    const data = await request('/dns/zones', { method: 'POST', body: JSON.stringify({ domain }) }, t('Making the zone for {domain}...', { domain }));
-    if (!data) return;
-    setNotice(t('The zone for {domain} is ready.', { domain }));
-    setNewZone('');
-    setZone(data);
-    await load(domain);
-  }
-
-  async function deleteZone() {
-    if (!confirm(t('Delete the zone {domain}?\n\nEvery record in it is removed and this server stops answering for the domain.', { domain: selected }))) return;
-    const data = await request(`/dns/zones/${encodeURIComponent(selected)}`, { method: 'DELETE' }, t('Deleting the zone...'));
-    if (data) { setNotice(t('The zone {domain} is deleted.', { domain: selected })); await load(''); }
-  }
 
   async function resetZone() {
     if (!confirm(t('Reset {domain} from the template?\n\nEvery record is replaced by the template\'s; records you added are removed.', { domain: selected }))) return;
@@ -170,12 +151,12 @@ export default function DnsPage() {
       <section className="section dns-zones">
         <div className="dns-section-head">
           <h2>{t('Zones')}</h2>
-          <p className="hint">{overview.is_admin ? t('Every domain this server answers for.') : t('The domains of your websites this server answers for.')}</p>
+          <p className="hint">{overview.is_admin ? t('Every website and alias gets its zone by itself.') : t('Each of your websites and aliases gets its zone by itself.')}</p>
         </div>
         {zones.length > 6 && <label className="dns-search"><Search size={14} aria-hidden="true"/>
           <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={t('Find a zone')} aria-label={t('Find a zone')} /></label>}
         {zones.length === 0
-          ? <p className="empty-note">{t('No zones yet.')}</p>
+          ? <p className="empty-note">{t('No zones yet. Every website and alias gets one by itself.')}</p>
           : <ul className="dns-zone-list">
             {visibleZones.map((name) => <li key={name}>
               <button type="button" className={name === selected ? 'active' : ''} aria-current={name === selected ? 'true' : undefined} onClick={() => openZone(name)}>
@@ -183,23 +164,11 @@ export default function DnsPage() {
               </button>
             </li>)}
           </ul>}
-        <form className="dns-new-zone" onSubmit={createZone}>
-          <label><span>{t('New zone')}</span>
-            {overview.is_admin
-              ? <input list="dns-domains" value={newZone} onChange={(e) => setNewZone(e.target.value)} placeholder="example.com" spellCheck="false" autoComplete="off" />
-              : <select value={newZone} onChange={(e) => setNewZone(e.target.value)} disabled={!overview.domains_without_zone.length}>
-                <option value="">{overview.domains_without_zone.length ? t('Choose a domain') : t('Every domain has a zone')}</option>
-                {overview.domains_without_zone.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>}
-            <datalist id="dns-domains">{overview.domains_without_zone.map((d) => <option key={d} value={d} />)}</datalist>
-          </label>
-          <button type="submit" disabled={busy || !newZone.trim()}><Plus size={15} aria-hidden="true"/> {t('Make zone')}</button>
-        </form>
       </section>
 
       <section className="section dns-records">
         {!zone
-          ? <p className="empty-note">{zones.length ? t('Choose a zone.') : t('Make a zone for a domain to edit its records.')}</p>
+          ? <p className="empty-note">{zones.length ? t('Choose a zone.') : t('Zones appear here as websites are added.')}</p>
           : <>
             <div className="dns-zone-head">
               <div>
@@ -208,7 +177,6 @@ export default function DnsPage() {
               </div>
               <div className="dns-zone-actions">
                 <button type="button" className="secondary" disabled={busy} onClick={resetZone}><RotateCcw size={14} aria-hidden="true"/> {t('Reset from template')}</button>
-                <button type="button" className="secondary danger-hover" disabled={busy} onClick={deleteZone}><Trash2 size={14} aria-hidden="true"/> {t('Delete zone')}</button>
               </div>
             </div>
 
@@ -312,7 +280,6 @@ function SettingsCard({ overview, busy, request, setNotice, onSaved, t }) {
       server_ip: draft.server_ip,
       server_ipv6: draft.server_ipv6,
       default_ttl: Number(draft.default_ttl),
-      auto_zone: draft.auto_zone,
       template: draft.template.filter((row) => row.content.trim()).map((row) => ({ name: row.name || '@', type: row.type, content: row.content, ttl: row.ttl ? Number(row.ttl) : null })),
     };
     const data = await request('/dns/settings', { method: 'PUT', body: JSON.stringify(body) }, t('Saving DNS settings...'));
@@ -336,8 +303,6 @@ function SettingsCard({ overview, busy, request, setNotice, onSaved, t }) {
           <input value={draft.server_ipv6} onChange={set('server_ipv6')} placeholder={t('None: no AAAA records')} spellCheck="false" autoComplete="off" /></label>
         <label><span>{t('Default TTL (seconds)')}</span>
           <input value={draft.default_ttl} onChange={set('default_ttl')} inputMode="numeric" /></label>
-        <label className="check-line dns-auto"><input type="checkbox" checked={draft.auto_zone} onChange={set('auto_zone')} />
-          <span>{t('Make a zone from the template when a website or alias is added')}</span></label>
       </div>
 
       <div className="dns-template-head">

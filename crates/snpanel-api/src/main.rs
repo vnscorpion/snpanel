@@ -349,6 +349,7 @@ async fn run() -> anyhow::Result<()> {
     // CloudLinux's view of accounts and packages, on a Hosting Edition
     // server with CloudLinux only. Server only, like the watcher.
     cpapi_sync::start(&state);
+    dns::start(&state);
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;

@@ -27,12 +27,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/dns", get(overview).fallback(crate::fallback))
         .route("/dns/settings", put(save_settings).fallback(crate::fallback))
-        .route("/dns/zones", post(create_zone).fallback(crate::fallback))
         .route(
             "/dns/zones/{zone}",
             get(read_zone)
                 .patch(patch_zone)
-                .delete(delete_zone)
                 .fallback(crate::fallback),
         )
         .route(
@@ -79,26 +77,6 @@ async fn own_domains(state: &AppState, user_id: i64) -> Result<BTreeSet<String>,
         .collect())
 }
 
-/// Every website domain and alias on the server, for an administrator's
-/// "make a zone" list.
-async fn all_domains(state: &AppState) -> Result<BTreeSet<String>, Response> {
-    let sites = state.db.websites().all_by_id().await.map_err(|e| {
-        tracing::error!("listing websites failed: {e}");
-        crate::errors::internal_error()
-    })?;
-    let ids: Vec<i64> = sites.iter().map(|s| s.id).collect();
-    let aliases = state.db.websites().aliases_for(&ids).await.map_err(|e| {
-        tracing::error!("listing aliases failed: {e}");
-        crate::errors::internal_error()
-    })?;
-    Ok(sites
-        .into_iter()
-        .map(|s| s.domain)
-        .chain(aliases.into_iter().map(|a| a.domain))
-        .map(|d| d.to_ascii_lowercase())
-        .collect())
-}
-
 /// The zone from the path, when the caller may touch it.
 async fn zone_for(state: &AppState, current: &CurrentUser, raw: &str) -> Result<String, Response> {
     let zone = dns::zone_name(raw).map_err(|m| bad_request(&m))?;
@@ -117,27 +95,33 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
     };
     let admin = is_admin(&current);
     let settings = dns::settings();
-    let (hosted, problem) = match dns::zones().await {
-        Ok(z) => (z, None),
-        Err(e) => (Vec::new(), Some(e.0)),
-    };
-    let domains = match if admin {
-        all_domains(&state).await
+    let domains: BTreeSet<String> = match if admin {
+        dns::all_domains(&state).await.map(|d| d.into_iter().collect()).map_err(|e| {
+            tracing::error!("listing domains failed: {e}");
+            crate::errors::internal_error()
+        })
     } else {
         own_domains(&state, current.user.id).await
     } {
         Ok(d) => d,
         Err(r) => return r,
     };
+    // Zones are never made by hand: whatever is missing is made now, so the
+    // page always shows every domain.
+    if let Err(e) = dns::ensure_domains(domains.iter().cloned().collect()).await {
+        tracing::warn!("DNS zones not checked: {e}");
+    }
+    let (hosted, problem) = match dns::zones().await {
+        Ok(z) => (z, None),
+        Err(e) => (Vec::new(), Some(e.0)),
+    };
     let zones: Vec<&String> = hosted
         .iter()
         .filter(|z| admin || domains.contains(*z))
         .collect();
-    let without_zone: Vec<&String> = domains.iter().filter(|d| !hosted.contains(d)).collect();
     let mut body = json!({
         "is_admin": admin,
         "zones": zones,
-        "domains_without_zone": without_zone,
         "nameservers": settings.nameservers,
         "server_ip": dns::server_ip(&settings),
         "types": dns::TYPES,
@@ -191,56 +175,13 @@ async fn save_settings(State(state): State<AppState>, req: axum::extract::Reques
         "dns_settings",
         "dns",
         &format!(
-            "nameservers={} auto_zone={} template={}",
+            "nameservers={} template={}",
             settings.nameservers.join(","),
-            settings.auto_zone,
             settings.template.len()
         ),
     )
     .await;
     axum::Json(json!({ "settings": settings })).into_response()
-}
-
-async fn create_zone(State(state): State<AppState>, req: axum::extract::Request) -> Response {
-    let (mut parts, body) = req.into_parts();
-    let current = match admit(&state, &mut parts).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    let body = match super::auth::read_json_body(body).await {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let Some(raw) = body["domain"].as_str() else {
-        return crate::errors::missing_field("domain", body.clone());
-    };
-    let zone = match dns::zone_name(raw) {
-        Ok(z) => z,
-        Err(m) => return bad_request(&m),
-    };
-    if !is_admin(&current) {
-        match own_domains(&state, current.user.id).await {
-            Ok(d) if d.contains(&zone) => {}
-            Ok(_) => {
-                return error(
-                    StatusCode::FORBIDDEN,
-                    "You can make zones for your own websites' domains only",
-                )
-            }
-            Err(r) => return r,
-        }
-    }
-    match dns::zone(&zone).await {
-        Ok(Some(_)) => return crate::errors::conflict(&format!("{zone} already has a zone")),
-        Ok(None) => {}
-        Err(e) => return pdns_failed(e),
-    }
-    if let Err(e) = dns::create_from_template(&zone).await {
-        return bad_request(&e.0);
-    }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "dns_zone_create", &zone, "")
-        .await;
-    zone_response(&current, &zone).await
 }
 
 /// The zone as the page shows it: names relative, one RRset per row.
@@ -431,27 +372,6 @@ async fn patch_zone(
     )
     .await;
     zone_response(&current, &zone).await
-}
-
-async fn delete_zone(
-    State(state): State<AppState>,
-    Path(zone): Path<String>,
-    mut parts: Parts,
-) -> Response {
-    let current = match admit(&state, &mut parts).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    let zone = match zone_for(&state, &current, &zone).await {
-        Ok(z) => z,
-        Err(r) => return r,
-    };
-    if let Err(e) = dns::delete_zone(&zone).await {
-        return bad_request(&e.0);
-    }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "dns_zone_delete", &zone, "")
-        .await;
-    axum::Json(json!({ "deleted": zone })).into_response()
 }
 
 /// The zone made again from the template: every record in it replaced.
