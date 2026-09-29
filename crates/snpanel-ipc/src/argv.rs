@@ -648,6 +648,9 @@ impl HelperRequest {
             ("lve-usage", 1) => HelperRequest::LveUsage {
                 user: user_of(&rest[0])?,
             },
+            ("dns-install", 0) => HelperRequest::DnsInstall,
+            ("dns-stop", 0) => HelperRequest::DnsStop,
+            ("dns-status", 0) => HelperRequest::DnsStatus,
             ("web-status", 0) => HelperRequest::WebStatus,
             ("site-php-set", 4) => HelperRequest::SitePhpSet {
                 user: user_of(&rest[0])?,
@@ -1614,6 +1617,10 @@ mod tests {
         ));
         assert!(map(&["web-switch", "nginx"]).is_err());
         assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
+        assert!(matches!(map(&["dns-install"]), Ok(HelperRequest::DnsInstall)));
+        assert!(matches!(map(&["dns-stop"]), Ok(HelperRequest::DnsStop)));
+        assert!(matches!(map(&["dns-status"]), Ok(HelperRequest::DnsStatus)));
+        assert!(map(&["dns-install", "extra"]).is_err());
         // WP-CLI's prompt gets stdin; nothing else does.
         match HelperRequest::from_argv(
             &argv(&[

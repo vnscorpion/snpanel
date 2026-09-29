@@ -339,7 +339,7 @@ fn parse_ipv6_status(output: &str) -> (bool, bool, Vec<String>) {
 /// **Global addresses only.** Loopback and link-local are real addresses that
 /// nothing outside the machine can reach, and listing them on the settings
 /// page would only invite somebody to hand one to a customer.
-fn ipv4_addresses() -> Vec<String> {
+pub(crate) fn ipv4_addresses() -> Vec<String> {
     let Ok(out) = std::process::Command::new("ip")
         .args(["-o", "-4", "addr", "show", "scope", "global"])
         .output()

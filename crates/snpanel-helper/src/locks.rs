@@ -99,6 +99,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "lve-packages"
         | "lve-usage"
         | "web-status"
+        | "dns-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -129,6 +130,8 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         "clamav-install" => &[Packages, Systemd, Malware],
         "maldet-install" => &[Packages, Malware],
         "fail2ban-install" => &[Packages, Systemd, Firewall],
+        "dns-install" => &[Packages, Systemd, Firewall],
+        "dns-stop" => &[Systemd],
         "updates-panel-run" => &[Packages, Systemd],
 
         // Accounts, and a site's runtime, which is an account and a pool.

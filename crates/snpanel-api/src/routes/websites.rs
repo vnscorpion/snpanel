@@ -1451,6 +1451,7 @@ async fn create_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_created(&created.domain).await;
     axum::Json(alias_json(&created)).into_response()
 }
 
@@ -1518,6 +1519,7 @@ async fn delete_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_deleted(&alias.domain).await;
     axum::Json(json!({ "ok": true })).into_response()
 }
 
@@ -3788,6 +3790,14 @@ async fn delete_website(
         }
     }
 
+    // Their zones go with the website, below.
+    let alias_domains: Vec<String> = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+        .unwrap_or_default();
     if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
         tracing::error!("deleting the aliases of {domain} failed: {e}");
         return internal_error();
@@ -3867,6 +3877,9 @@ async fn delete_website(
         &ssl_note,
     )
     .await;
+    for name in std::iter::once(&domain).chain(&alias_domains) {
+        crate::dns::website_deleted(name).await;
+    }
     crate::fail2ban::refresh_in_background(&state);
 
     axum::Json(json!({
@@ -4269,6 +4282,7 @@ async fn create_site_from(
         &request.domain,
     )
     .await;
+    crate::dns::website_created(&request.domain).await;
     // The WordPress jail reads every site's access log, and fail2ban finds
     // log files only when it reads its settings.
     crate::fail2ban::refresh_in_background(&state);

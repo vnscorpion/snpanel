@@ -1,14 +1,14 @@
 import { Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
-import { useT } from '../i18n/index.jsx';
+import { msg, useT } from '../i18n/index.jsx';
 import WebServerPanel from '../components/WebServerPanel.jsx';
 
 // What a unit name stands for, where the name alone does not say it.
 const SERVICE_LABELS = {
-  lshttpd: 'LiteSpeed Web Server (PHP via LSPHP)',
-  httpd: 'Apache (PHP via mod_lsapi; LiteSpeed standby)',
-  db_governor: 'MySQL Governor',
-  'snpanel-webwatch': 'LiteSpeed failover watchdog',
+  lshttpd: msg('LiteSpeed Web Server (PHP via LSPHP)'),
+  httpd: msg('Apache (PHP via mod_lsapi; LiteSpeed standby)'),
+  db_governor: msg('MySQL Governor'),
+  'snpanel-webwatch': msg('LiteSpeed failover watchdog'),
 };
 
 export default function ServicesPage() {

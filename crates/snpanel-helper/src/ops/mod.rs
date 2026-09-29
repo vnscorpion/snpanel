@@ -16,6 +16,7 @@
 
 pub mod apache;
 pub mod cpapi;
+pub mod dns;
 pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
@@ -390,6 +391,9 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::LvePackages => lve::packages(),
         HelperRequest::LveUsage { user } => lve::usage(user),
         HelperRequest::WebStatus => web::status(),
+        HelperRequest::DnsStatus => dns::status(),
+        HelperRequest::DnsInstall => dns::install(ctx),
+        HelperRequest::DnsStop => dns::stop(),
         HelperRequest::SitePhpSet {
             user,
             domain,

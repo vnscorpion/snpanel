@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Gauge, Pencil, RefreshCw, RotateCcw, Save } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
-import { useT } from '../i18n/index.jsx';
+import { msg, useT } from '../i18n/index.jsx';
 
 // CloudLinux LVE limits per package (Hosting Edition). CloudLinux keeps them
 // (lvectl package-set) and gives every account the limits of the package the
 // panel says it is on; CloudLinux Manager's Packages tab edits the same ones.
 const FIELDS = [
-  ['speed_percent', 'CPU (%)', 1, 12800],
-  ['pmem_mb', 'Memory (MB)', 64, 1048576],
-  ['ep', 'Entry processes', 0, 10000],
-  ['nproc', 'Processes', 0, 100000],
-  ['io_kbps', 'IO (KB/s)', 0, 10485760],
-  ['iops', 'IOPS', 0, 1000000],
+  ['speed_percent', msg('CPU (%)'), 1, 12800],
+  ['pmem_mb', msg('Memory (MB)'), 64, 1048576],
+  ['ep', msg('Entry processes'), 0, 10000],
+  ['nproc', msg('Processes'), 0, 100000],
+  ['io_kbps', msg('IO (KB/s)'), 0, 10485760],
+  ['iops', msg('IOPS'), 0, 1000000],
 ];
 
 export default function PackageLve({ packages }) {

@@ -1276,6 +1276,14 @@ pub enum HelperRequest {
     LveUsage {
         user: PanelUsername,
     },
+    /// `dns-install` - PowerDNS Authoritative with its SQLite database, the
+    /// HTTP API on the loopback and port 53 opened (the DNS Manager addon).
+    DnsInstall,
+    /// `dns-stop` - PowerDNS stopped and off at boot; the zones are kept.
+    DnsStop,
+    /// `dns-status` - whether PowerDNS is installed, running and answering.
+    /// Read-only.
+    DnsStatus,
     /// `web-status` - which web server answers 80/443, whether each is
     /// running and answering, the last failover, LiteSpeed's version,
     /// licence and WebAdmin port. Read-only.
@@ -1535,6 +1543,9 @@ impl HelperRequest {
             Self::LveStatus => "lve-status",
             Self::LvePackages => "lve-packages",
             Self::LveUsage { .. } => "lve-usage",
+            Self::DnsInstall => "dns-install",
+            Self::DnsStop => "dns-stop",
+            Self::DnsStatus => "dns-status",
             Self::WebStatus => "web-status",
             Self::SitePhpSet { .. } => "site-php-set",
             Self::ApacheSiteWrite { .. } => "apache-site-write",
