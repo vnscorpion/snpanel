@@ -304,6 +304,17 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
         "rust_0017_package_owners_by_owner",
         "CREATE INDEX IF NOT EXISTS ix_package_owners_owner ON package_owners (owner_id)",
     ),
+    // Which reseller a provisioning token is: its billing system reaches
+    // that reseller's accounts and packages only. None is the
+    // administrator's.
+    (
+        "rust_0018_api_token_owners",
+        "CREATE TABLE IF NOT EXISTS api_token_owners (\
+            token_id INTEGER NOT NULL PRIMARY KEY, \
+            owner_id INTEGER NOT NULL, \
+            FOREIGN KEY(token_id) REFERENCES api_tokens (id) ON DELETE CASCADE, \
+            FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -857,6 +868,7 @@ mod tests {
         assert_eq!(
             added,
             vec![
+                "api_token_owners",
                 "backup_schedule_options",
                 "ix_mcp_tokens_user_id",
                 "ix_package_owners_owner",

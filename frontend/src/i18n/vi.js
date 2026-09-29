@@ -1939,4 +1939,6 @@ export default {
   "The accounts you sell, and their packages. Log in as a customer to manage their websites.": "Các tài khoản bạn bán và gói của họ. Đăng nhập thay khách để quản lý website của họ.",
   "Username prefix": "Tiền tố tên đăng nhập",
   "via {name}": "thuộc {name}",
+  "Make a token for your own WHMCS and paste it into its server’s Access Hash field. It reaches your customers and packages only.": "Tạo token cho WHMCS của bạn rồi dán vào ô Access Hash của server trong WHMCS. Token chỉ truy cập được khách hàng và gói của bạn.",
+  "WHMCS": "WHMCS",
 };

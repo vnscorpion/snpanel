@@ -202,6 +202,30 @@ impl<'a> ResellerRepo<'a> {
         Ok(())
     }
 
+    /// The reseller a provisioning token is, if any.
+    pub async fn token_owner(&self, token_id: i64) -> Result<Option<i64>, DbError> {
+        Ok(sqlx::query_scalar("SELECT owner_id FROM api_token_owners WHERE token_id = ?")
+            .bind(token_id)
+            .fetch_optional(self.pool)
+            .await?)
+    }
+
+    pub async fn all_token_owners(&self) -> Result<Vec<(i64, i64)>, DbError> {
+        let rows = sqlx::query("SELECT token_id, owner_id FROM api_token_owners")
+            .fetch_all(self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    pub async fn set_token_owner(&self, token_id: i64, owner_id: i64) -> Result<(), DbError> {
+        sqlx::query("INSERT OR IGNORE INTO api_token_owners (token_id, owner_id) VALUES (?, ?)")
+            .bind(token_id)
+            .bind(owner_id)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Websites owned by any of `users`.
     pub async fn count_websites(&self, users: &[i64]) -> Result<i64, DbError> {
         self.count_in("SELECT COUNT(*) FROM websites WHERE owner_id IN", users).await
