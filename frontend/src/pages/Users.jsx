@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Ban, Globe, HardDrive, KeyRound, LogIn, Pencil, Play, Plus, RefreshCw, Save, Terminal as TerminalIcon, Trash2, Users, X } from 'lucide-react';
+import { Ban, Globe, HardDrive, KeyRound, LogIn, Palette, Pencil, Play, Plus, RefreshCw, Save, Terminal as TerminalIcon, Trash2, Users, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import SftpAccess from '../components/SftpAccess.jsx';
 import PackageLve from '../components/PackageLve.jsx';
 import ApiTokensPanel from '../components/ApiTokensPanel.jsx';
+import ResellerBrand from '../components/ResellerBrand.jsx';
 
 export default function UsersPage() {
   const {
@@ -94,8 +95,10 @@ export default function UsersPage() {
         {userTabButton('packages', HardDrive, t('Packages'))}
         {userTabButton('add', Plus, t('Add user'))}
         {isReseller && userTabButton('whmcs', KeyRound, t('WHMCS'))}
+        {isReseller && userTabButton('brand', Palette, t('Branding'))}
       </div>
       {isReseller && activeUserTab === 'whmcs' && <ApiTokensPanel />}
+      {isReseller && activeUserTab === 'brand' && <ResellerBrand />}
 
       {activeUserTab === 'list' && <div className="user-tab-panel" id="users-tab-list" role="tabpanel" aria-labelledby="users-tab-button-list">
         <div className="section-title user-panel-title">

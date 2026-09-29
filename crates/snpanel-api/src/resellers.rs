@@ -265,6 +265,84 @@ pub fn limits_from(body: &Value, current: Option<&ResellerLimits>) -> Result<Res
     Ok(l)
 }
 
+/// Before an account goes: its provisioning tokens are revoked. Without
+/// this, deleting the row would drop the token's owner and leave a token
+/// the provisioning API reads as the administrator's.
+pub async fn revoke_tokens_of(state: &AppState, user_id: i64) -> Result<(), String> {
+    let ids = state.db.resellers().tokens_of(user_id).await.map_err(|e| e.to_string())?;
+    for id in ids {
+        state
+            .db
+            .api_tokens()
+            .revoke(id, &snpanel_db::sqlalchemy_now())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    state.db.resellers().forget_provisioning(user_id).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Brand (white label)
+// ---------------------------------------------------------------------------
+
+fn assets_dir() -> std::path::PathBuf {
+    let dir = std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into());
+    crate::spa::brand_assets_dir(std::path::Path::new(&dir))
+}
+
+/// An account's uploaded logo, removed with it (its brand row goes by the
+/// foreign key).
+pub fn forget_brand_assets(user_id: i64) {
+    let prefix = format!("reseller-{user_id}-logo.");
+    if let Ok(entries) = std::fs::read_dir(assets_dir()) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+/// The name and logo a brand shows, as the panel's settings name them.
+pub fn brand_fields(brand: &snpanel_db::ResellerBrand) -> Value {
+    let mut out = json!({});
+    if !brand.app_name.trim().is_empty() {
+        out["app_name"] = json!(brand.app_name);
+    }
+    let logo = crate::spa::asset_url(&assets_dir(), &brand.logo_filename);
+    if !logo.is_empty() {
+        out["logo_url"] = json!(logo);
+    }
+    out
+}
+
+/// The brand an account sees: its own when it is a reseller, else its
+/// reseller's. `None` for the server's own.
+pub async fn brand_for_user(state: &AppState, user: &User) -> Option<Value> {
+    let (reseller, _) = reseller_of(state, user.id).await.ok().flatten()?;
+    let brand = state.db.resellers().brand(reseller).await.ok().flatten()?;
+    let fields = brand_fields(&brand);
+    (fields.as_object().is_some_and(|o| !o.is_empty())).then_some(fields)
+}
+
+/// The brand whose panel hostname `host` is.
+pub async fn brand_for_host(state: &AppState, host: &str) -> Option<snpanel_db::ResellerBrand> {
+    let host = crate::tls::normalize_hostname(host);
+    if host.is_empty() {
+        return None;
+    }
+    state.db.resellers().brand_by_host(&host).await.ok().flatten()
+}
+
+/// The URL an account's reseller has its customers sign in at, if it set
+/// one: `https://<its host>:<panel port>`.
+pub async fn panel_url_for_user(state: &AppState, user_id: i64) -> Option<String> {
+    let (reseller, _) = reseller_of(state, user_id).await.ok().flatten()?;
+    let host = state.db.resellers().brand(reseller).await.ok().flatten()?.panel_host?;
+    Some(format!("https://{host}:{}", state.settings.panel_port.get()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

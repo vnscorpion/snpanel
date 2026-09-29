@@ -284,6 +284,8 @@ function App() {
   const t = useT();
   // Which loadPanelSettings() call is the latest. See there.
   const panelSettingsRequest = useRef(0);
+  // The brand the signed-in account sees, kept over any settings load.
+  const brandRef = useRef(null);
   // Which loadUsers() call is the latest: a storage figure fetched for an
   // older list must not land on a newer one.
   const usersRequest = useRef(0);
@@ -627,6 +629,9 @@ function App() {
         return null;
       }
       setCurrentUser(data.user);
+      // A reseller's brand, for it and its customers (white label).
+      brandRef.current = data.user.brand || null;
+      if (data.user.brand) setPanelSettings(prev => ({ ...prev, ...data.user.brand }));
       setAdminAccountForm(prev => ({ ...prev, email: data.user?.email || '' }));
       setIsAuthenticated(true);
       return data.user;
@@ -654,7 +659,7 @@ function App() {
       if (!res.ok) return null;
       const data = await res.json();
       if (request !== panelSettingsRequest.current) return data;
-      setPanelSettings(data);
+      setPanelSettings(brandRef.current ? { ...data, ...brandRef.current } : data);
       setPanelSettingsForm(formFromPanelSettings(data));
       return data;
     } catch {
@@ -4460,6 +4465,7 @@ function App() {
       loadMalwareScanStatus,
       loadPackages,
       loadPanelSettings,
+      loadCurrentUser,
       loadPasskeys,
       loadPhpConfig,
       loadPhpExtensions,

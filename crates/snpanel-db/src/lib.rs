@@ -54,7 +54,7 @@ pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use passkeys::{NewPasskey, Passkey, PasskeyRepo};
-pub use resellers::{ResellerLimits, ResellerRepo};
+pub use resellers::{ResellerBrand, ResellerLimits, ResellerRepo};
 pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
 pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};

@@ -21,6 +21,14 @@ pub struct ResellerLimits {
     pub max_disk_mb: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ResellerBrand {
+    pub user_id: i64,
+    pub app_name: String,
+    pub logo_filename: String,
+    pub panel_host: Option<String>,
+}
+
 pub struct ResellerRepo<'a> {
     pool: &'a SqlitePool,
 }
@@ -217,6 +225,25 @@ impl<'a> ResellerRepo<'a> {
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
+    /// A reseller's billing records (`r<id>:...`), forgotten with it: SQLite
+    /// gives its id to the next account, which must not inherit them.
+    pub async fn forget_provisioning(&self, owner_id: i64) -> Result<u64, DbError> {
+        let pattern = format!("r{owner_id}:%");
+        Ok(sqlx::query("DELETE FROM provisioning_accounts WHERE external_id LIKE ?")
+            .bind(pattern)
+            .execute(self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    /// The provisioning tokens a reseller made.
+    pub async fn tokens_of(&self, owner_id: i64) -> Result<Vec<i64>, DbError> {
+        Ok(sqlx::query_scalar("SELECT token_id FROM api_token_owners WHERE owner_id = ?")
+            .bind(owner_id)
+            .fetch_all(self.pool)
+            .await?)
+    }
+
     pub async fn set_token_owner(&self, token_id: i64, owner_id: i64) -> Result<(), DbError> {
         sqlx::query("INSERT OR IGNORE INTO api_token_owners (token_id, owner_id) VALUES (?, ?)")
             .bind(token_id)
@@ -249,6 +276,38 @@ impl<'a> ResellerRepo<'a> {
         )
         .bind(package_id)
         .bind(limit)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn brand(&self, user_id: i64) -> Result<Option<ResellerBrand>, DbError> {
+        let row = sqlx::query("SELECT user_id, app_name, logo_filename, panel_host FROM reseller_brands WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(self.pool)
+            .await?;
+        Ok(row.map(|r| ResellerBrand { user_id: r.get(0), app_name: r.get(1), logo_filename: r.get(2), panel_host: r.get(3) }))
+    }
+
+    /// The brand whose panel hostname is `host`.
+    pub async fn brand_by_host(&self, host: &str) -> Result<Option<ResellerBrand>, DbError> {
+        let row = sqlx::query("SELECT user_id, app_name, logo_filename, panel_host FROM reseller_brands WHERE panel_host = ?")
+            .bind(host)
+            .fetch_optional(self.pool)
+            .await?;
+        Ok(row.map(|r| ResellerBrand { user_id: r.get(0), app_name: r.get(1), logo_filename: r.get(2), panel_host: r.get(3) }))
+    }
+
+    pub async fn save_brand(&self, b: &ResellerBrand) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO reseller_brands (user_id, app_name, logo_filename, panel_host) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(user_id) DO UPDATE SET app_name = excluded.app_name, \
+             logo_filename = excluded.logo_filename, panel_host = excluded.panel_host",
+        )
+        .bind(b.user_id)
+        .bind(&b.app_name)
+        .bind(&b.logo_filename)
+        .bind(&b.panel_host)
         .execute(self.pool)
         .await?;
         Ok(())

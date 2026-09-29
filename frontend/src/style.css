@@ -999,3 +999,11 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .user-prefix-input>input{border:0;border-radius:0;min-width:0;flex:1}
 .reseller-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
 .reseller-create{margin-top:var(--space-3)}
+/* A reseller's brand: its name, hostname and logo. */
+.reseller-brand-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:var(--space-2);align-items:end}
+.reseller-brand-form label,.reseller-logo label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.reseller-brand-form label span,.reseller-logo label span{font-size:var(--text-sm)}
+.reseller-logo{display:grid;grid-template-columns:120px minmax(0,1fr) auto auto;gap:var(--space-2);align-items:end;margin-top:var(--space-3)}
+.reseller-logo .brand-preview{display:grid;place-items:center;height:64px;border:1px dashed var(--border);border-radius:var(--radius-md);background:var(--surface-sunken);overflow:hidden}
+.reseller-logo .brand-preview img{max-width:100%;max-height:56px}
+@media (max-width:760px){.reseller-brand-form,.reseller-logo{grid-template-columns:minmax(0,1fr)}}
