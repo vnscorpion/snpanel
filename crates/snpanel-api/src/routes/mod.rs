@@ -8,6 +8,7 @@ pub mod addons;
 pub mod auth;
 pub mod dashboard;
 pub mod databases;
+pub mod dns;
 pub mod fail2ban;
 pub mod firewall;
 pub mod health;
@@ -54,6 +55,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(sftp_accounts::router())
         .merge(firewall::router())
         .merge(fail2ban::router())
+        .merge(dns::router())
         .merge(databases::router())
         .merge(updates::router())
         .merge(addons::router())

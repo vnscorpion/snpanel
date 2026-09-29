@@ -1250,6 +1250,14 @@ pub enum HelperRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         php_version: Option<PhpVersion>,
     },
+    /// `dns-install` - PowerDNS Authoritative with its SQLite database, the
+    /// HTTP API on the loopback and port 53 opened (the DNS Manager addon).
+    DnsInstall,
+    /// `dns-stop` - PowerDNS stopped and off at boot; the zones are kept.
+    DnsStop,
+    /// `dns-status` - whether PowerDNS is installed, running and answering.
+    /// Read-only.
+    DnsStatus,
 }
 
 impl HelperRequest {
@@ -1427,6 +1435,9 @@ impl HelperRequest {
             Self::Fail2banStop => "fail2ban-stop",
             Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
+            Self::DnsInstall => "dns-install",
+            Self::DnsStop => "dns-stop",
+            Self::DnsStatus => "dns-status",
         }
     }
 }

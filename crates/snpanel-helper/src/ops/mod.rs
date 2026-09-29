@@ -14,6 +14,7 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod dns;
 pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
@@ -375,6 +376,9 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::PanelUserLock { user, locked } => user::lock(user, *locked),
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
         HelperRequest::MariadbRetune => mariadb::retune(),
+        HelperRequest::DnsStatus => dns::status(),
+        HelperRequest::DnsInstall => dns::install(ctx),
+        HelperRequest::DnsStop => dns::stop(),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,

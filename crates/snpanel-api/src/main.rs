@@ -45,6 +45,7 @@ mod ctl;
 mod da_import;
 mod da_jobs;
 mod errors;
+mod dns;
 mod fail2ban;
 mod file_jobs;
 mod files;
