@@ -2322,6 +2322,18 @@ async fn terminate_user(
                 return Err(crate::errors::internal_error());
             }
         }
+        // Not in the Python: the site's DNS zones and mail go with it.
+        let alias_domains: Vec<String> = state
+            .db
+            .websites()
+            .aliases(website.id)
+            .await
+            .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+            .unwrap_or_default();
+        for name in std::iter::once(&website.domain).chain(&alias_domains) {
+            crate::dns::website_deleted(name).await;
+            crate::mail::domain_deleted(state, name).await;
+        }
         super::websites::delete_website_vhost(state, &website.domain).await;
         // Terminating an account is a real deletion, not a suspension: the
         // certificate has nothing left to protect and should not outlive it.
@@ -2358,6 +2370,10 @@ async fn terminate_user(
         tracing::error!("deleting {} failed: {e}", user.username);
         return Err(crate::errors::internal_error());
     }
+    if crate::dns::reseller_nameservers(user.id).is_some() {
+        let _ = crate::dns::save_reseller_nameservers(user.id, None);
+    }
+    crate::cpapi_sync::poke();
     Ok(deleted)
 }
 

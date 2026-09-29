@@ -145,6 +145,8 @@ export default function DnsPage() {
     {overview.is_admin && <ServiceCard overview={overview} service={service} busy={busy} onRefresh={() => load()} onSettings={() => setSettingsOpen((open) => !open)} settingsOpen={settingsOpen} t={t} />}
     {overview.is_admin && settingsOpen && <SettingsCard overview={overview} busy={busy} request={request} setNotice={setNotice}
       onSaved={(settings) => setOverview((prev) => ({ ...prev, settings, nameservers: settings.nameservers }))} t={t} />}
+    {overview.is_reseller && <ResellerNameservers overview={overview} busy={busy} request={request} setNotice={setNotice}
+      onSaved={() => load()} t={t} />}
     {overview.problem && <div className="dns-banner" data-tone="bad"><OctagonAlert size={18} aria-hidden="true"/><span>{overview.problem}</span></div>}
 
     <div className="dns-layout">
@@ -331,4 +333,28 @@ function SettingsCard({ overview, busy, request, setNotice, onSaved, t }) {
 
 function toDraft(settings) {
   return { ...settings, nameserversText: settings.nameservers.join('\n'), template: settings.template.map((row) => ({ ...row })) };
+}
+
+// A reseller's own nameservers: its zones and its customers' are delegated
+// to them (empty: the server's).
+function ResellerNameservers({ overview, busy, request, setNotice, onSaved, t }) {
+  const [text, setText] = useState((overview.reseller_nameservers || []).join('\n'));
+  async function save(event) {
+    event.preventDefault();
+    const nameservers = text.split(/[\s,]+/).map((n) => n.trim()).filter(Boolean);
+    const data = await request('/dns/nameservers', { method: 'PUT', body: JSON.stringify({ nameservers }) }, t('Saving the nameservers...'));
+    if (data) { setNotice(t('Nameservers saved; {count} zone(s) updated.', { count: data.zones_changed })); onSaved(); }
+  }
+  return <section className="section dns-reseller-ns">
+    <div className="dns-section-head">
+      <h2>{t('Your nameservers')}</h2>
+      <p className="hint">{t('Your domains and your customers\' are delegated to these. Leave empty to use the server\'s: {list}.', { list: (overview.default_nameservers || []).join(', ') })}</p>
+    </div>
+    <form className="dns-ns-form" onSubmit={save}>
+      <label><span>{t('Nameservers')}</span>
+        <textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} placeholder={'ns1.example.com\nns2.example.com'} spellCheck="false" /></label>
+      <button type="submit" disabled={busy}><Save size={15} aria-hidden="true"/> {t('Save nameservers')}</button>
+    </form>
+    {overview.server_ip && <p className="hint">{t('Where the nameservers are under a domain of yours, register them at its registrar as glue (child nameservers) with this server\'s address {ip}.', { ip: overview.server_ip })}</p>}
+  </section>;
 }

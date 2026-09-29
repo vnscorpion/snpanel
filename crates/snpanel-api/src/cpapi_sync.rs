@@ -115,6 +115,10 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
     // are hosted like anyone's and CloudLinux has to know whose they are
     // (limits, CageFS isolates). Accounts without one are dropped by the
     // helper, which resolves the uids.
+    // Resellers: whose accounts and packages are whose.
+    let resellers = state.db.resellers();
+    let parents: BTreeMap<i64, i64> = resellers.all_parents().await.map_err(|e| e.to_string())?.into_iter().collect();
+    let username_of: BTreeMap<i64, &str> = users.iter().map(|u| (u.id, u.username.as_str())).collect();
     let cl_users: Vec<CpapiUser> = users
         .iter()
         .filter_map(|u| {
@@ -122,6 +126,23 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
                 username: PanelUsername::parse(&u.username).ok()?,
                 email: Some(u.email.clone()).filter(|e| !e.is_empty()),
                 package: u.package_id.and_then(|id| package_name.get(&id).cloned()),
+                owner: parents
+                    .get(&u.id)
+                    .and_then(|p| username_of.get(p))
+                    .and_then(|n| PanelUsername::parse(n).ok()),
+                reseller: snpanel_core::permissions::is_reseller_role(&u.role),
+            })
+        })
+        .collect();
+    let package_owners: Vec<snpanel_ipc::CpapiPackageOwner> = resellers
+        .all_package_owners()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter_map(|(package, owner)| {
+            Some(snpanel_ipc::CpapiPackageOwner {
+                package: package_name.get(&package)?.clone(),
+                owner: PanelUsername::parse(username_of.get(&owner)?).ok()?,
             })
         })
         .collect();
@@ -187,6 +208,7 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
         admin_email,
         packages: package_name.into_values().collect(),
         users: cl_users,
+        package_owners,
         // A site whose root the validation would refuse is left out rather
         // than failing everyone else's.
         domains: domains
@@ -199,6 +221,7 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
                     packages: Vec::new(),
                     users: Vec::new(),
                     domains: vec![d.clone()],
+                    package_owners: Vec::new(),
                 };
                 one.validate().is_ok()
             })

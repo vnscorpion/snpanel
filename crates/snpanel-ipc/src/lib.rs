@@ -21,7 +21,7 @@ mod cpapi;
 mod fail2ban;
 mod lve;
 mod mail;
-pub use cpapi::{CpapiDomain, CpapiSnapshot, CpapiUser};
+pub use cpapi::{CpapiDomain, CpapiPackageOwner, CpapiSnapshot, CpapiUser};
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
 pub use lve::{LveLimits, LvePackageName, WebServer};
 pub use mail::{MAX_DESTINATIONS as MAIL_MAX_DESTINATIONS, MAX_QUOTA_MB as MAIL_MAX_QUOTA_MB};

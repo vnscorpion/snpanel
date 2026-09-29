@@ -27,6 +27,16 @@ pub struct CpapiSnapshot {
     pub packages: Vec<LvePackageName>,
     pub users: Vec<CpapiUser>,
     pub domains: Vec<CpapiDomain>,
+    /// Packages that are a reseller's, and whose.
+    #[serde(default)]
+    pub package_owners: Vec<CpapiPackageOwner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpapiPackageOwner {
+    pub package: LvePackageName,
+    pub owner: PanelUsername,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +45,12 @@ pub struct CpapiUser {
     pub username: PanelUsername,
     pub email: Option<String>,
     pub package: Option<LvePackageName>,
+    /// The reseller the account belongs to; none is the administrator.
+    #[serde(default)]
+    pub owner: Option<PanelUsername>,
+    /// The account is a reseller (CloudLinux's reseller limits).
+    #[serde(default)]
+    pub reseller: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

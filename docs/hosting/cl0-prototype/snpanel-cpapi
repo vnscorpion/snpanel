@@ -77,7 +77,7 @@ def main():
             "supported_cl_features": {
                 "php_selector": True, "ruby_selector": False, "python_selector": False,
                 "nodejs_selector": False, "mod_lsapi": True, "mysql_governor": True,
-                "cagefs": True, "reseller_limits": False, "xray": False,
+                "cagefs": True, "reseller_limits": True, "xray": False,
                 "accelerate_wp": False, "autotracing": False,
             },
         })
@@ -125,12 +125,19 @@ def main():
             users = [{k: v for k, v in u.items() if k in keep} for u in users]
         out(users)
     if cmd == "packages":
-        out([{"name": p, "owner": "admin"} for p in snap["packages"]])
+        owners = snap.get("package_owners") or {}
+        pkgs = [{"name": p, "owner": owners.get(p, "admin")} for p in snap["packages"]]
+        if arg("--owner"):
+            pkgs = [p for p in pkgs if p["owner"] == arg("--owner")]
+        out(pkgs)
     if cmd == "admins":
         out([{"name": "admin", "unix_user": None, "locale_code": "EN_us",
               "email": snap.get("admin_email"), "is_main": True}])
     if cmd == "resellers":
-        out([])
+        res = snap.get("resellers") or []
+        if arg("--name"):
+            res = [r for r in res if r["name"] == arg("--name")]
+        out(res)
     if cmd == "php":
         out([{"identifier": f"alt-php{v}", "version": v, "modules_dir": f"/opt/alt/php{v}/usr/lib64/php/modules/",
               "dir": f"/opt/alt/php{v}/", "bin": f"/opt/alt/php{v}/usr/bin/php",

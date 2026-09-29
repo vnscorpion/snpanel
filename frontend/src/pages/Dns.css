@@ -109,3 +109,10 @@
   .dns-table .dns-value{grid-column:1/-1;grid-row:2}
   .dns-table .dns-row-actions{grid-column:4;grid-row:1}
 }
+
+/* ---- a reseller's nameservers ---- */
+.dns-reseller-ns{display:grid;gap:var(--space-3)}
+.dns-ns-form{display:grid;grid-template-columns:minmax(0,420px) auto;gap:var(--space-2);align-items:end}
+.dns-ns-form label{display:grid;gap:6px;font-weight:600;color:var(--text-secondary)}
+.dns-ns-form textarea{resize:vertical;min-height:64px}
+@media (max-width:640px){.dns-ns-form{grid-template-columns:minmax(0,1fr)}}

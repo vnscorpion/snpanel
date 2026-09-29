@@ -315,6 +315,15 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
             FOREIGN KEY(token_id) REFERENCES api_tokens (id) ON DELETE CASCADE, \
             FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE)",
     ),
+    // How many mailboxes a package allows (the Email addon); no row is no
+    // limit.
+    (
+        "rust_0019_package_mail_limits",
+        "CREATE TABLE IF NOT EXISTS package_mail_limits (\
+            package_id INTEGER NOT NULL PRIMARY KEY, \
+            mailbox_limit INTEGER DEFAULT 0 NOT NULL, \
+            FOREIGN KEY(package_id) REFERENCES user_packages (id) ON DELETE CASCADE)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -879,6 +888,7 @@ mod tests {
                 "mcp_tokens",
                 "notification_log",
                 "notification_settings",
+                "package_mail_limits",
                 "package_owners",
                 "passkeys",
                 "reseller_accounts",

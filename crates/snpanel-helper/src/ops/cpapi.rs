@@ -41,6 +41,12 @@ pub fn render(snap: &CpapiSnapshot, uid: impl Fn(&str) -> Option<u32>) -> Value 
             }),
         );
     }
+    let package_owner: BTreeMap<&str, &str> = snap
+        .package_owners
+        .iter()
+        .map(|p| (p.package.as_str(), p.owner.as_str()))
+        .collect();
+    let owner_of_package = |name: &str| package_owner.get(name).copied().unwrap_or("admin");
     let users: Vec<Value> = snap
         .users
         .iter()
@@ -49,11 +55,27 @@ pub fn render(snap: &CpapiSnapshot, uid: impl Fn(&str) -> Option<u32>) -> Value 
             Some(json!({
                 "id": id,
                 "username": u.username.as_str(),
-                "owner": "admin",
+                "owner": u.owner.as_ref().map(|o| o.as_str()).unwrap_or("admin"),
                 "domain": main_domain.get(u.username.as_str()).copied().unwrap_or(""),
-                "package": u.package.as_ref().map(|p| json!({"name": p.as_str(), "owner": "admin"})),
+                "package": u.package.as_ref().map(|p| json!({"name": p.as_str(), "owner": owner_of_package(p.as_str())})),
                 "email": u.email,
                 "locale_code": "EN_us",
+            }))
+        })
+        .collect();
+    // CloudLinux's resellers: the reseller accounts, with the UNIX id of
+    // the account they also are.
+    let resellers: Vec<Value> = snap
+        .users
+        .iter()
+        .filter(|u| u.reseller)
+        .filter_map(|u| {
+            let id = uid(u.username.as_str())?;
+            Some(json!({
+                "name": u.username.as_str(),
+                "locale_code": "EN_us",
+                "email": u.email,
+                "id": id,
             }))
         })
         .collect();
@@ -64,6 +86,8 @@ pub fn render(snap: &CpapiSnapshot, uid: impl Fn(&str) -> Option<u32>) -> Value 
         "users": users,
         "domains": domains,
         "packages": snap.packages.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        "package_owners": package_owner,
+        "resellers": resellers,
     })
 }
 

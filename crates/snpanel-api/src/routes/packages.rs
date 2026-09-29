@@ -61,6 +61,8 @@ async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
         Ok(m) => m,
         Err(r) => return r,
     };
+    let mail_limits: std::collections::HashMap<i64, i64> =
+        state.db.resellers().all_mailbox_limits().await.unwrap_or_default().into_iter().collect();
     let owners: std::collections::HashMap<i64, i64> = match state.db.resellers().all_package_owners().await {
         Ok(rows) => rows.into_iter().collect(),
         Err(e) => {
@@ -81,6 +83,7 @@ async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
                 .map(|p| {
                     let mut v = to_json(p);
                     v["owner_id"] = json!(owners.get(&p.id));
+                    v["mailbox_limit"] = json!(mail_limits.get(&p.id).copied().unwrap_or(0));
                     v
                 })
                 .collect();
@@ -133,6 +136,10 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     if let Err(r) = read_common_fields(&payload, &mut fields) {
         return r;
     }
+    let mailbox_limit = match mailbox_limit_in(&payload) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
     // A create fills in the schema defaults for anything absent; a patch
     // leaves it alone. `PackageFields` carries `None` for both, so the create
     // path resolves it here rather than in the repository.
@@ -164,6 +171,12 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
             return internal_error();
         }
     }
+    if let Some(limit) = mailbox_limit {
+        if let Err(e) = state.db.resellers().set_mailbox_limit(package.id, limit).await {
+            tracing::error!("saving a package's mailbox limit failed: {e}");
+            return internal_error();
+        }
+    }
     audit_action(
         &state,
         &parts,
@@ -173,7 +186,7 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     )
     .await;
     crate::cpapi_sync::poke();
-    axum::Json(to_json(&package)).into_response()
+    axum::Json(package_out(&state, &package).await).into_response()
 }
 
 async fn update(
@@ -218,6 +231,10 @@ async fn update(
     if let Err(r) = read_common_fields(&payload, &mut fields) {
         return r;
     }
+    let mailbox_limit = match mailbox_limit_in(&payload) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
     // `slug` is three-valued on a patch: absent leaves it, a string sets it,
     // and an explicit null... does nothing, because the Python guards with
     // `if payload.slug is not None`. Reproduced rather than improved (NT1).
@@ -267,6 +284,12 @@ async fn update(
             return internal_error();
         }
     };
+    if let Some(limit) = mailbox_limit {
+        if let Err(e) = state.db.resellers().set_mailbox_limit(package.id, limit).await {
+            tracing::error!("saving a package's mailbox limit failed: {e}");
+            return internal_error();
+        }
+    }
     // CloudLinux keys a package's LVE limits by its name.
     super::lve::package_renamed(&state, &existing.name, &package.name).await;
 
@@ -278,7 +301,7 @@ async fn update(
         &package.name,
     )
     .await;
-    axum::Json(to_json(&package)).into_response()
+    axum::Json(package_out(&state, &package).await).into_response()
 }
 
 async fn remove(
@@ -338,6 +361,28 @@ async fn remove(
     super::lve::package_deleted(&state, &name).await;
     audit_action(&state, &parts, current.user.id, "delete_package", &name).await;
     axum::Json(json!({ "ok": true })).into_response()
+}
+
+/// Not in the Python: the mailboxes a package allows (the Email addon), kept
+/// beside the package. `None` when the request does not say.
+fn mailbox_limit_in(payload: &Value) -> Result<Option<i64>, Response> {
+    match payload.get("mailbox_limit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => {
+            let Some(value) = raw.as_i64() else {
+                return Err(crate::errors::int_parsing("mailbox_limit", raw));
+            };
+            check_range("mailbox_limit", value, 0, 100_000)?;
+            Ok(Some(value))
+        }
+    }
+}
+
+/// The package as answered, with its mailbox limit.
+async fn package_out(state: &AppState, package: &snpanel_db::Package) -> Value {
+    let mut v = to_json(package);
+    v["mailbox_limit"] = json!(state.db.resellers().mailbox_limit(package.id).await.unwrap_or(0));
+    v
 }
 
 /// Every numeric and boolean field, with the bounds from the Pydantic schema.
