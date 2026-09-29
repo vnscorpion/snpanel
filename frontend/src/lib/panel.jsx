@@ -58,6 +58,7 @@ export const PAGE_ROUTES = {
   firewall: '/firewall',
   fail2ban: '/fail2ban',
   dns: '/dns',
+  mail: '/email',
   mcp: '/ai-assistants',
   notifications: '/notifications',
   waf: '/waf',

@@ -1308,6 +1308,7 @@ async fn create_alias(
     )
     .await;
     crate::dns::website_created(&created.domain).await;
+    crate::mail::refresh(&state).await;
     axum::Json(alias_json(&created)).into_response()
 }
 
@@ -1376,6 +1377,7 @@ async fn delete_alias(
     )
     .await;
     crate::dns::website_deleted(&alias.domain).await;
+    crate::mail::domain_deleted(&state, &alias.domain).await;
     axum::Json(json!({ "ok": true })).into_response()
 }
 
@@ -3662,6 +3664,7 @@ async fn delete_website(
     .await;
     for name in std::iter::once(&domain).chain(&alias_domains) {
         crate::dns::website_deleted(name).await;
+        crate::mail::domain_deleted(&state, name).await;
     }
     crate::fail2ban::refresh_in_background(&state);
 
@@ -4024,6 +4027,7 @@ async fn create_site_from(
     )
     .await;
     crate::dns::website_created(&request.domain).await;
+    crate::mail::refresh(&state).await;
     // The WordPress jail reads every site's access log, and fail2ban finds
     // log files only when it reads its settings.
     crate::fail2ban::refresh_in_background(&state);

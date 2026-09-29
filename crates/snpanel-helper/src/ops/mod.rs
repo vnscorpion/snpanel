@@ -16,6 +16,7 @@
 
 pub mod dns;
 pub mod fail2ban;
+pub mod mail;
 pub mod firewall;
 pub mod fwmigrate;
 pub mod fwrules;
@@ -379,6 +380,10 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::DnsStatus => dns::status(),
         HelperRequest::DnsInstall => dns::install(ctx),
         HelperRequest::DnsStop => dns::stop(),
+        HelperRequest::MailInstall => mail::install(ctx),
+        HelperRequest::MailStop => mail::stop(),
+        HelperRequest::MailStatus => mail::status(),
+        HelperRequest::MailSync { state } => mail::sync(state),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,

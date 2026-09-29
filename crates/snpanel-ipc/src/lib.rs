@@ -19,6 +19,9 @@ mod argv;
 pub use argv::InvocationError;
 mod fail2ban;
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
+mod mail;
+pub use mail::{MAX_DESTINATIONS as MAIL_MAX_DESTINATIONS, MAX_QUOTA_MB as MAIL_MAX_QUOTA_MB};
+pub use mail::{destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder, MailState};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -1250,6 +1253,17 @@ pub enum HelperRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         php_version: Option<PhpVersion>,
     },
+    /// `mail-install` - Exim, Dovecot and Rspamd, the webmail with its
+    /// single sign-on, the certificates and the mail ports (the Email addon).
+    MailInstall,
+    /// `mail-stop` - the mail services stopped and off at boot; mail kept.
+    MailStop,
+    /// `mail-status` - the services, and each mailbox's size. Read-only.
+    MailStatus,
+    /// `mail-sync` - every mail domain, mailbox and forwarder, on stdin.
+    MailSync {
+        state: MailState,
+    },
     /// `dns-install` - PowerDNS Authoritative with its SQLite database, the
     /// HTTP API on the loopback and port 53 opened (the DNS Manager addon).
     DnsInstall,
@@ -1435,6 +1449,10 @@ impl HelperRequest {
             Self::Fail2banStop => "fail2ban-stop",
             Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
+            Self::MailInstall => "mail-install",
+            Self::MailStop => "mail-stop",
+            Self::MailStatus => "mail-status",
+            Self::MailSync { .. } => "mail-sync",
             Self::DnsInstall => "dns-install",
             Self::DnsStop => "dns-stop",
             Self::DnsStatus => "dns-status",

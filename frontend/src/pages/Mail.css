@@ -1,0 +1,86 @@
+/* Email: the services (administrators), the domain being worked on, its
+   mailboxes and forwarders, and how to set up a mail app. The status card
+   follows the Firewall page's. See pages/Mail.jsx. */
+
+.mail-page{display:grid;gap:var(--space-4)}
+.mail-page>.section{margin-bottom:0}
+.mail-page .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.mail-page .icon-button{display:inline-grid;place-items:center;width:34px;height:34px;min-height:34px;padding:0;flex:none}
+.mail-page .danger-hover:hover:not(:disabled){color:var(--danger-text);border-color:var(--danger-border);background:var(--danger-bg)}
+.mail-page label>span{font-size:var(--text-sm)}
+.mail-section-head h2{margin:0}
+.mail-section-head .hint{margin-top:2px}
+.mail-boxes,.mail-forwarders,.mail-client{display:grid;gap:var(--space-3)}
+
+/* ---- service ---- */
+.mail-status-head{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
+.mail-status-icon{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:var(--radius-lg);background:var(--mail-tone-bg);color:var(--mail-tone-fg)}
+.mail-status-text{flex:1 1 260px;min-width:0}
+.mail-status-text h2{margin:0;font-size:var(--text-lg)}
+.mail-status-text .hint{margin-top:2px}
+.mail-status[data-state="on"]{--mail-tone-bg:var(--success-bg);--mail-tone-fg:var(--success-text)}
+.mail-status[data-state="off"]{--mail-tone-bg:var(--danger-bg);--mail-tone-fg:var(--danger-text);border-color:var(--danger-border)}
+.mail-services{display:flex;gap:6px;flex-wrap:wrap;list-style:none;margin:0;padding:0}
+.mail-services li{padding:3px 10px;border-radius:999px;font-size:var(--text-sm);font-weight:600;background:var(--success-bg);color:var(--success-text)}
+.mail-services li[data-on="no"]{background:var(--danger-bg);color:var(--danger-text)}
+
+/* ---- domain ---- */
+.mail-domain-bar{display:flex;align-items:end;gap:var(--space-2) var(--space-4);flex-wrap:wrap}
+.mail-domain-pick{display:grid;gap:6px;min-width:0;flex:0 1 360px;font-weight:600;color:var(--text-secondary)}
+.mail-local{padding-bottom:10px;font-size:var(--text-sm)}
+.mail-remote-hint{flex-basis:100%;margin:0}
+
+/* ---- forms ---- */
+.mail-box-form{display:grid;grid-template-columns:minmax(220px,1.3fr) minmax(200px,1.1fr) 120px auto;gap:var(--space-2);align-items:end}
+.mail-fwd-form{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1.4fr) auto;gap:var(--space-2);align-items:end}
+.mail-box-form label,.mail-fwd-form label,.mail-edit label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
+.mail-address-input{display:flex;align-items:stretch;min-width:0;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);overflow:hidden}
+.mail-address-input input{border:0;border-radius:0;min-width:48px;flex:1}
+.mail-suffix{display:flex;align-items:center;padding:0 8px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--surface-sunken);color:var(--text-secondary);font-weight:500;font-size:var(--text-sm)}
+.mail-password-input{display:flex;gap:6px;min-width:0}
+.mail-password-input input{flex:1;min-width:0;font-family:var(--font-mono,monospace)}
+
+/* ---- mailboxes ---- */
+.mail-table td{vertical-align:middle}
+.mail-address{font-weight:600;overflow-wrap:anywhere}
+.mail-usage{min-width:160px}
+.mail-usage>span:first-child{display:block;font-size:var(--text-sm);color:var(--text-secondary)}
+.mail-bar{display:block;height:6px;margin-top:4px;border-radius:999px;background:var(--surface-sunken);overflow:hidden}
+.mail-bar>span{display:block;height:100%;background:var(--success-text)}
+.mail-bar[data-level="mid"]>span{background:var(--warning-text)}
+.mail-bar[data-level="high"]>span{background:var(--danger-text)}
+.mail-row-actions{white-space:nowrap;text-align:right}
+.mail-row-actions button+button{margin-left:6px}
+.mail-table tr.editing td{background:var(--surface-sunken)}
+.mail-edit{display:grid;grid-template-columns:minmax(0,1fr) minmax(200px,1.2fr) 180px auto;gap:var(--space-2);align-items:end;padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-sunken)}
+.mail-edit>strong{grid-column:1/-1;overflow-wrap:anywhere}
+.mail-edit-buttons{display:flex;gap:var(--space-2)}
+
+/* ---- forwarders ---- */
+.mail-fwd-list{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius-md)}
+.mail-fwd-list li{display:flex;align-items:center;gap:var(--space-2);padding:8px 12px;border-bottom:1px solid var(--border)}
+.mail-fwd-list li:last-child{border-bottom:0}
+.mail-fwd-list li>svg{flex:none;color:var(--text-secondary)}
+.mail-destinations{flex:1;min-width:0;overflow-wrap:anywhere;color:var(--text-secondary)}
+
+/* ---- mail apps ---- */
+.mail-client-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--space-3);margin:0}
+.mail-client-grid>div{display:grid;gap:4px;min-width:0}
+.mail-client-grid dt{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
+.mail-client-grid dd{display:flex;align-items:center;gap:6px;margin:0;min-width:0;overflow-wrap:anywhere}
+.mail-client-grid .icon-button{width:28px;height:28px;min-height:28px}
+
+@media (max-width:1100px){
+  .mail-box-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .mail-fwd-form{grid-template-columns:minmax(0,1fr)}
+  .mail-edit{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+}
+@media (max-width:640px){
+  .mail-box-form,.mail-edit{grid-template-columns:minmax(0,1fr)}
+  .mail-table thead{display:none}
+  .mail-table,.mail-table tbody{display:block}
+  .mail-table tr{display:grid;grid-template-columns:1fr;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .mail-table td{display:block;padding:0;border:0}
+  .mail-row-actions{text-align:left}
+  .mail-fwd-list li{flex-wrap:wrap}
+}

@@ -635,6 +635,16 @@ impl HelperRequest {
             // called; `php-pools-retune` is the name this port gave it.
             ("php-pools-retune", 0) | ("php-fpm-retune", 0) => HelperRequest::PhpPoolsRetune,
             ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
+            ("mail-install", 0) => HelperRequest::MailInstall,
+            ("mail-stop", 0) => HelperRequest::MailStop,
+            ("mail-status", 0) => HelperRequest::MailStatus,
+            // The state is JSON on stdin: passwords never reach argv.
+            ("mail-sync", 0) => {
+                let state: crate::MailState = serde_json::from_slice(&stdin())
+                    .map_err(|e| InvocationError::invalid(format!("invalid mail state: {e}")))?;
+                state.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::MailSync { state }
+            }
             ("dns-install", 0) => HelperRequest::DnsInstall,
             ("dns-stop", 0) => HelperRequest::DnsStop,
             ("dns-status", 0) => HelperRequest::DnsStatus,
@@ -1400,6 +1410,9 @@ mod tests {
         assert!(matches!(map(&["dns-stop"]), Ok(HelperRequest::DnsStop)));
         assert!(matches!(map(&["dns-status"]), Ok(HelperRequest::DnsStatus)));
         assert!(map(&["dns-install", "extra"]).is_err());
+        assert!(matches!(map(&["mail-install"]), Ok(HelperRequest::MailInstall)));
+        assert!(matches!(map(&["mail-status"]), Ok(HelperRequest::MailStatus)));
+        assert!(matches!(map(&["mail-stop"]), Ok(HelperRequest::MailStop)));
     }
 
     #[test]

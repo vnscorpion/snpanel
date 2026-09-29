@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, Network, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
+import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, Mail, Network, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -55,6 +55,7 @@ const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
 const DnsPage = lazy(() => import('./pages/Dns.jsx'));
+const MailPage = lazy(() => import('./pages/Mail.jsx'));
 const McpPage = lazy(() => import('./pages/Mcp.jsx'));
 const NotificationsPage = lazy(() => import('./pages/Notifications.jsx'));
 const WafPage = lazy(() => import('./pages/Waf.jsx'));
@@ -290,6 +291,7 @@ function App() {
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
   const dnsAddonInstalled = !!addons.items.find(item => item.slug === 'dns')?.installed;
+  const mailAddonInstalled = !!addons.items.find(item => item.slug === 'mail')?.installed;
   const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
   const notificationsAddonInstalled = !!addons.items.find(item => item.slug === 'notifications')?.installed;
   const malwareAddonInstalled = !!addons.items.find(item => item.slug === 'malware')?.installed;
@@ -1768,6 +1770,8 @@ function App() {
       ? t('Uninstall the MCP addon?\n\nAssistants can no longer reach the panel. Their tokens are kept and work again if you reinstall; revoke them on the Addons page to remove them.')
       : slug === 'notifications'
       ? t('Uninstall the Notifications addon?\n\nNo more e-mail or Telegram messages are sent. The SMTP server, the bot and what is sent are kept, and reinstalling picks them up.')
+      : slug === 'mail'
+      ? t('Uninstall the Email addon?\n\nExim, Dovecot, Rspamd and the webmail are stopped: no mail is received or sent. Every mailbox and its mail are kept, and reinstalling brings them back.')
       : slug === 'dns'
       ? t('Uninstall the DNS Manager addon?\n\nPowerDNS is stopped and this server no longer answers for any domain. Every zone is kept, and reinstalling answers for them again.')
       : slug === 'fail2ban'
@@ -3916,6 +3920,7 @@ function App() {
     // The addons with a page of their own, while they are installed, in the
     // Addons page's order: AI assistants for every account, the others for
     // administrators.
+    ...(mailAddonInstalled ? [['mail', t('Email'), Mail]] : []),
     ...(dnsAddonInstalled ? [['dns', t('DNS Manager'), Network]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
     ...(isAdmin && malwareAddonInstalled ? [['malware', t('Malware Scanner'), ScanSearch]] : []),
@@ -3942,7 +3947,7 @@ function App() {
   // An addon's page opened by its address while the addon is not installed
   // has no entry, and still has its title.
   const unlisted = [['mcp', t('AI assistants (MCP)'), Bot], ['notifications', t('Notifications'), Bell],
-    ['fail2ban', t('Fail2ban'), ShieldBan], ['malware', t('Malware Scanner'), ScanSearch], ['dns', t('DNS Manager'), Network]]
+    ['fail2ban', t('Fail2ban'), ShieldBan], ['malware', t('Malware Scanner'), ScanSearch], ['dns', t('DNS Manager'), Network], ['mail', t('Email'), Mail]]
     .filter(([key]) => ![...mainNavItems, ...settingsNavItems].some(([listed]) => listed === key));
   const navItems = [...mainNavItems, ...settingsNavItems, ...unlisted];
   const navPage = NAV_PARENT_PAGE[page] || page;
@@ -4681,6 +4686,7 @@ function App() {
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;
     if (page === 'dns') return <DnsPage />;
+    if (page === 'mail') return <MailPage />;
     if (page === 'mcp') return <McpPage />;
     if (page === 'notifications') return <NotificationsPage />;
     if (page === 'waf') return <WafPage />;
