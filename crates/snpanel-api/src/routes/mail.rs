@@ -216,8 +216,12 @@ async fn create_mailbox(State(state): State<AppState>, req: axum::extract::Reque
         Ok(a) => a,
         Err(m) => return unprocessable(&m),
     };
-    if let Err(r) = domain_for(&state, &current, &address).await {
-        return r;
+    let domain = match domain_for(&state, &current, &address).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if let Err(m) = crate::resellers::check_room(&state, domain.owner_id, crate::resellers::Resource::Mailbox).await {
+        return error(StatusCode::FORBIDDEN, &m);
     }
     let password = body["password"].as_str().unwrap_or("");
     if let Err(m) = mail::password_valid(password) {

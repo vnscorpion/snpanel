@@ -15,7 +15,10 @@
 pub enum Role {
     /// Level 1.
     EndUser,
-    /// Level 2.
+    /// Level 2: an end user with hosting of their own who also manages the
+    /// accounts they created - never the server. Not in the Python.
+    Reseller,
+    /// Level 3.
     Admin,
 }
 
@@ -24,6 +27,7 @@ impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
             Role::EndUser => "end_user",
+            Role::Reseller => "reseller",
             Role::Admin => "admin",
         }
     }
@@ -32,7 +36,8 @@ impl Role {
     pub fn level(self) -> u8 {
         match self {
             Role::EndUser => 1,
-            Role::Admin => 2,
+            Role::Reseller => 2,
+            Role::Admin => 3,
         }
     }
 }
@@ -45,6 +50,7 @@ pub fn normalize_role(role: &str) -> Option<Role> {
         "user" | "readonly" => Some(Role::EndUser),
         "admin" => Some(Role::Admin),
         "end_user" => Some(Role::EndUser),
+        "reseller" => Some(Role::Reseller),
         _ => None,
     }
 }
@@ -52,6 +58,11 @@ pub fn normalize_role(role: &str) -> Option<Role> {
 /// Source: `is_admin_role`.
 pub fn is_admin_role(role: &str) -> bool {
     normalize_role(role) == Some(Role::Admin)
+}
+
+/// Whether `role` is a reseller's.
+pub fn is_reseller_role(role: &str) -> bool {
+    normalize_role(role) == Some(Role::Reseller)
 }
 
 /// Source: `ensure_role` - true when `role` is at least `minimum`.
@@ -101,5 +112,13 @@ mod tests {
         assert!(has_role("admin", Role::Admin));
         assert!(has_role("end_user", Role::EndUser));
         assert!(!has_role("end_user", Role::Admin));
+        // A reseller is above a customer and below the server's owner: every
+        // admin-only check stays closed to it.
+        assert!(has_role("reseller", Role::EndUser));
+        assert!(has_role("reseller", Role::Reseller));
+        assert!(!has_role("reseller", Role::Admin));
+        assert!(!is_admin_role("reseller"));
+        assert!(is_reseller_role("reseller"));
+        assert!(!has_role("end_user", Role::Reseller));
     }
 }

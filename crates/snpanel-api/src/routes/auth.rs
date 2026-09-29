@@ -34,13 +34,12 @@ use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 use snpanel_core::crypto::{fernet, password, token, totp};
-use snpanel_core::permissions::{self, Role};
 use snpanel_db::User;
 
 use crate::auth::{CurrentUser, CSRF_COOKIE, SESSION_COOKIE};
 use crate::errors::{
     check_length, error, internal_error, missing_entry, missing_field, not_a_dictionary,
-    not_enough_permissions, validation_error,
+    validation_error,
 };
 use crate::ratelimit::{Decision, RateLimiter};
 use crate::state::AppState;
@@ -528,7 +527,9 @@ async fn session(State(state): State<AppState>, req: Request) -> Response {
 
     let usage = user_storage(&state, &user).await;
 
-    axum::Json(json!({
+    // Not in the Python: a reseller's prefix and limits, for its pages.
+    let reseller = crate::resellers::describe(&state, &user).await;
+    let mut body = json!({
         "authenticated": true,
         "user": {
             "id": user.id,
@@ -544,8 +545,11 @@ async fn session(State(state): State<AppState>, req: Request) -> Response {
             "storage_limit_bytes": usage.limit_bytes,
             "storage_percent": usage.percent,
         }
-    }))
-    .into_response()
+    });
+    if let (Some(out), Value::Object(extra)) = (body["user"].as_object_mut(), reseller) {
+        out.extend(extra);
+    }
+    axum::Json(body).into_response()
 }
 
 /// Source: `storage_quota.storage_usage_summary`, called from `auth.py`
@@ -695,9 +699,12 @@ async fn impersonate(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if !permissions::has_role(&current.user.role, Role::Admin) {
-        return not_enough_permissions();
-    }
+    // An administrator signs in as anyone; a reseller as the accounts it
+    // made (checked once the target is loaded).
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
 
     let form = match read_form(body).await {
         Ok(f) => f,
@@ -726,6 +733,11 @@ async fn impersonate(
             return internal_error();
         }
     };
+    match crate::resellers::may_manage(&state, &manager, &target).await {
+        Ok(true) => {}
+        Ok(false) => return error(StatusCode::NOT_FOUND, "User not found"),
+        Err(r) => return r,
+    }
 
     // An admin with 2FA re-proves possession of it. A stolen session cookie is
     // then not enough to walk into every customer's account.

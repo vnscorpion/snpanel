@@ -37,6 +37,7 @@ pub mod notifications;
 pub mod packages;
 pub mod passkeys;
 pub mod provisioning;
+pub mod resellers;
 pub mod s3_targets;
 pub mod schema;
 pub mod sftp_accounts;
@@ -53,6 +54,7 @@ pub use cloudflare::CloudflareRepo;
 pub use databases::{DatabaseAccount, DatabaseRepo};
 pub use packages::{Package, PackageFields, PackageRepo};
 pub use passkeys::{NewPasskey, Passkey, PasskeyRepo};
+pub use resellers::{ResellerLimits, ResellerRepo};
 pub use provisioning::{ProvisioningAccount, ProvisioningAccountView, ProvisioningRepo};
 pub use site_apps::{Duplicate, NewSiteApp, SiteApp, SiteAppRepo, SiteAppRow, SiteAppTarget};
 pub use users::{AuditEntry, AuditRepo, NewUser, RevokedTokenRepo, User, UserFields, UserRepo};
@@ -202,6 +204,10 @@ impl Database {
 
     pub fn sftp_subaccounts(&self) -> sftp_subaccounts::SftpSubaccountRepo<'_> {
         sftp_subaccounts::SftpSubaccountRepo::new(self.pool())
+    }
+
+    pub fn resellers(&self) -> resellers::ResellerRepo<'_> {
+        resellers::ResellerRepo::new(&self.pool)
     }
 
     pub fn sftp_accounts(&self) -> sftp_accounts::SftpAccountRepo<'_> {

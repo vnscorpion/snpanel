@@ -192,7 +192,7 @@ function App() {
   const [selectedFilePaths, setSelectedFilePaths] = useState([]);
   const [archiveFormat, setArchiveFormat] = useState('zip');
   const [editorCursor, setEditorCursor] = useState({ line: 1, column: 1 });
-  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, parent_id: '', reseller: { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 } });
   const [editingUser, setEditingUser] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ email: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, new_password: '', confirm_password: '' });
   const [newPackage, setNewPackage] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024, terminal_enabled: true });
@@ -288,6 +288,9 @@ function App() {
   // older list must not land on a newer one.
   const usersRequest = useRef(0);
   const isAdmin = currentUser?.role === 'admin';
+  // A reseller: hosting of its own, and the accounts it made (not the server).
+  const isReseller = currentUser?.role === 'reseller';
+  const canManageUsers = isAdmin || isReseller;
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
@@ -956,19 +959,42 @@ function App() {
   }
 
   async function createUser() {
-    const payload = {
-      ...newUser,
+    // A reseller sends the account and its package; the rest is decided by
+    // the package and by the reseller's own settings.
+    const payload = isReseller ? {
+      username: newUser.username,
+      email: newUser.email,
+      password: newUser.password,
+      package_id: newUser.package_id ? Number(newUser.package_id) : null,
+    } : {
+      username: newUser.username,
+      email: newUser.email,
+      password: newUser.password,
+      role: newUser.role,
       package_id: newUser.package_id ? Number(newUser.package_id) : null,
       website_limit: Number(newUser.website_limit),
       storage_limit_mb: Number(newUser.storage_limit_mb),
+      ...(newUser.role === 'reseller' ? { reseller: resellerPayload(newUser.reseller) } : {}),
+      ...(newUser.role === 'end_user' && newUser.parent_id ? { parent_id: Number(newUser.parent_id) } : {}),
     };
     const data = await request('/users', { method: 'POST', body: JSON.stringify(payload) }, t('Creating user...'));
     if (data) {
       setNotice(t('Created user {name}', { name: data.username }));
-      setNewUser({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024 });
+      setNewUser({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, parent_id: '', reseller: { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 } });
       await loadUsers();
       setUserTab('list');
     }
+  }
+
+  function resellerPayload(r) {
+    return {
+      prefix: (r.prefix || '').trim().toLowerCase(),
+      max_accounts: Number(r.max_accounts) || 0,
+      max_websites: Number(r.max_websites) || 0,
+      max_databases: Number(r.max_databases) || 0,
+      max_mailboxes: Number(r.max_mailboxes) || 0,
+      max_disk_mb: Number(r.max_disk_mb) || 0,
+    };
   }
 
   function applyPackageToNewUser(packageId) {
@@ -1001,6 +1027,8 @@ function App() {
       storage_limit_mb: user.storage_limit_mb ?? 1024,
       new_password: '',
       confirm_password: '',
+      parent_id: user.parent_id ? String(user.parent_id) : '',
+      reseller: user.reseller ? { ...user.reseller } : { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 },
     });
   }
 
@@ -1025,13 +1053,22 @@ function App() {
       setError(t('Storage limit must be between 0 and 1048576 MB.'));
       return;
     }
-    const payload = {
+    const payload = isReseller ? {
+      email: editingUserForm.email.trim(),
+      package_id: editingUserForm.package_id ? Number(editingUserForm.package_id) : null,
+    } : {
       email: editingUserForm.email.trim(),
       package_id: editingUserForm.package_id ? Number(editingUserForm.package_id) : null,
       website_limit: websiteLimit,
       storage_limit_mb: storageLimitMb,
     };
-    if (editingUser.id !== currentUser?.id) payload.role = editingUserForm.role;
+    if (!isReseller && editingUser.id !== currentUser?.id) {
+      payload.role = editingUserForm.role;
+      if (editingUserForm.role === 'reseller') payload.reseller = resellerPayload(editingUserForm.reseller);
+      if (editingUserForm.role === 'end_user' && String(editingUserForm.parent_id || '') !== String(editingUser.parent_id || '')) {
+        payload.parent_id = editingUserForm.parent_id ? Number(editingUserForm.parent_id) : null;
+      }
+    }
     const data = await request(`/users/${editingUser.id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -1161,7 +1198,14 @@ function App() {
   async function deletePanelUser(user) {
     if (!user || user.id === currentUser?.id) return;
     if (!confirm(t('Delete panel user {name} and permanently delete all owned websites, files, databases, SSL certificates, and Linux user data?', { name: user.username }))) return;
-    const data = await request(`/users/${user.id}`, { method: 'DELETE' }, t('Deleting user {name}...', { name: user.username }));
+    // A reseller's accounts are moved to the administrator unless they are
+    // to be deleted with it.
+    let query = '';
+    if (user.role === 'reseller') {
+      const count = users.filter(u => u.parent_id === user.id).length;
+      if (count > 0 && confirm(t('Also delete the {count} account(s) of {name}, with their websites?\n\nOK deletes them. Cancel moves them to the administrator.', { count, name: user.username }))) query = '?customers=delete';
+    }
+    const data = await request(`/users/${user.id}${query}`, { method: 'DELETE' }, t('Deleting user {name}...', { name: user.username }));
     if (data) {
       const count = data.deleted_websites?.length || 0;
       setNotice(count ? t('Deleted user {name} and {count} website(s)', { name: user.username, count }) : t('Deleted user {name}', { name: user.username }));
@@ -3926,7 +3970,9 @@ function App() {
   useEffect(() => { setMobileMenuOpen(false); }, [page]);
 
   function roleLabel(role) {
-    return role === 'admin' ? t('Admin') : t('End user');
+    if (role === 'admin') return t('Admin');
+    if (role === 'reseller') return t('Reseller');
+    return t('End user');
   }
 
   const mainNavItems = [
@@ -3940,6 +3986,7 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
+    ...(isReseller ? [['users', t('Customers'), Users]] : []),
     // CloudLinux's own pages for hosting customers (the administrator has
     // all of them in CloudLinux Manager, under Settings).
     ...(cloudlinuxAvailable && !isAdmin ? [['resource-usage', t('Resource usage'), Gauge], ['php-selector', t('PHP version'), Code2]] : []),
@@ -4392,6 +4439,8 @@ function App() {
       installWordPress,
       installWordPressOnSite,
       isAdmin,
+      isReseller,
+      canManageUsers,
       isArchiveFile,
       isTextEditable,
       listCron,

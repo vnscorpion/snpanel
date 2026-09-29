@@ -4116,6 +4116,13 @@ async fn create_site_from(
     if !permissions::is_admin_role(&owner.role) && count >= owner.website_limit {
         return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Website limit reached");
     }
+    // Not in the Python: a reseller's limits, on what it and its accounts
+    // really use.
+    if let Err(message) =
+        crate::resellers::check_room(&state, owner.id, crate::resellers::Resource::Website).await
+    {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message);
+    }
 
     let install_wp = installs_wordpress(request.install_wordpress, &request.app_type);
     let estimate = if install_wp {
@@ -5769,6 +5776,22 @@ async fn apply_owner(
                 internal_error()
             })?;
         return Ok(());
+    }
+
+    // A reseller's limits cover a site moved in from elsewhere.
+    let same_reseller = match (
+        crate::resellers::reseller_of(state, owner.id).await,
+        crate::resellers::reseller_of(state, website.owner_id).await,
+    ) {
+        (Ok(a), Ok(b)) => a.map(|x| x.0) == b.map(|x| x.0),
+        _ => false,
+    };
+    if !same_reseller {
+        if let Err(message) =
+            crate::resellers::check_room(state, owner.id, crate::resellers::Resource::Website).await
+        {
+            return Err(crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message));
+        }
     }
 
     // The new owner's allowance has to cover what is about to land in it.
