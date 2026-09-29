@@ -1619,4 +1619,8 @@ export default {
   "This account is not a reseller": "Tài khoản này không phải reseller",
   "The package allows {limit} mailbox(es)": "Gói chỉ cho phép {limit} hộp thư",
   "Nameservers saved; {changed} zone(s) updated.": "Đã lưu nameserver; {changed} zone được cập nhật.",
+  "Brand saved.": "Đã lưu thương hiệu.",
+  "The panel hostname has to be one of your own website domains": "Hostname của panel phải là một tên miền website của bạn",
+  "Another reseller uses this hostname": "Hostname này đã có reseller khác dùng",
+  "The name is at most 60 characters": "Tên tối đa 60 ký tự",
 };

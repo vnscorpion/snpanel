@@ -526,12 +526,26 @@ fn to_response_model(values: &Value) -> Value {
 
 /// No authentication: this is what the login page reads before anyone has
 /// signed in.
-async fn public(State(state): State<AppState>) -> Response {
+async fn public(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
     let all = settings_with(&state, false).await;
     let mut projected = serde_json::Map::new();
     for field in PUBLIC_SETTING_FIELDS {
         if let Some(value) = all.get(*field) {
             projected.insert((*field).to_string(), value.clone());
+        }
+    }
+    // Not in the Python: on a reseller's own panel hostname the sign-in
+    // page carries the reseller's name and logo, not the server's.
+    if let Some(host) = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()) {
+        if let Some(brand) = crate::resellers::brand_for_host(&state, host).await {
+            if let Value::Object(fields) = crate::resellers::brand_fields(&brand) {
+                let has_logo = fields.contains_key("logo_url");
+                projected.extend(fields);
+                if !has_logo {
+                    // The server's logo would give the reseller away.
+                    projected.insert("logo_url".into(), json!(""));
+                }
+            }
         }
     }
     axum::Json(to_response_model(&Value::Object(projected))).into_response()

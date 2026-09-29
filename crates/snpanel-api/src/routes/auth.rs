@@ -527,8 +527,10 @@ async fn session(State(state): State<AppState>, req: Request) -> Response {
 
     let usage = user_storage(&state, &user).await;
 
-    // Not in the Python: a reseller's prefix and limits, for its pages.
+    // Not in the Python: a reseller's prefix and limits, for its pages, and
+    // the brand its customers (and it) see.
     let reseller = crate::resellers::describe(&state, &user).await;
+    let brand = crate::resellers::brand_for_user(&state, &user).await;
     let mut body = json!({
         "authenticated": true,
         "user": {
@@ -548,6 +550,9 @@ async fn session(State(state): State<AppState>, req: Request) -> Response {
     });
     if let (Some(out), Value::Object(extra)) = (body["user"].as_object_mut(), reseller) {
         out.extend(extra);
+    }
+    if let Some(brand) = brand {
+        body["user"]["brand"] = brand;
     }
     axum::Json(body).into_response()
 }

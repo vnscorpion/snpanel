@@ -324,6 +324,21 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
             mailbox_limit INTEGER DEFAULT 0 NOT NULL, \
             FOREIGN KEY(package_id) REFERENCES user_packages (id) ON DELETE CASCADE)",
     ),
+    // A reseller's own brand: the name and logo its customers see, and the
+    // hostname (one of its domains) its customers sign in at.
+    (
+        "rust_0020_reseller_brands",
+        "CREATE TABLE IF NOT EXISTS reseller_brands (\
+            user_id INTEGER NOT NULL PRIMARY KEY, \
+            app_name VARCHAR(100) DEFAULT '' NOT NULL, \
+            logo_filename VARCHAR(120) DEFAULT '' NOT NULL, \
+            panel_host VARCHAR(253), \
+            FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    (
+        "rust_0021_reseller_brand_host_unique",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_reseller_brands_host ON reseller_brands (panel_host)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -883,6 +898,7 @@ mod tests {
                 "ix_package_owners_owner",
                 "ix_passkeys_user_id",
                 "ix_reseller_accounts_prefix",
+                "ix_reseller_brands_host",
                 "ix_sftp_subaccounts_user_id",
                 "ix_user_parents_parent",
                 "mcp_tokens",
@@ -892,6 +908,7 @@ mod tests {
                 "package_owners",
                 "passkeys",
                 "reseller_accounts",
+                "reseller_brands",
                 "s3_backup_targets",
                 "sftp_accounts",
                 "sftp_subaccounts",

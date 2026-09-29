@@ -1402,7 +1402,12 @@ async fn create_login_url(
             return crate::errors::internal_error();
         }
     };
-    let (path, absolute) = login_url(&panel_base_url(&state.settings), &token);
+    // Not in the Python: a reseller's customers sign in at its hostname.
+    let base = match crate::resellers::panel_url_for_user(&state, user.id).await {
+        Some(url) => url,
+        None => panel_base_url(&state.settings),
+    };
+    let (path, absolute) = login_url(&base, &token);
     audit_provisioning(
         &state,
         &parts,
@@ -2366,10 +2371,15 @@ async fn terminate_user(
         let _ =
             shell::privileged(dry, "panel-user-delete", &[panel_user.as_str()], None, None).await;
     }
+    if let Err(e) = crate::resellers::revoke_tokens_of(state, user.id).await {
+        tracing::error!("revoking the tokens of {} failed: {e}", user.username);
+        return Err(crate::errors::internal_error());
+    }
     if let Err(e) = state.db.users().delete(user.id).await {
         tracing::error!("deleting {} failed: {e}", user.username);
         return Err(crate::errors::internal_error());
     }
+    crate::resellers::forget_brand_assets(user.id);
     if crate::dns::reseller_nameservers(user.id).is_some() {
         let _ = crate::dns::save_reseller_nameservers(user.id, None);
     }

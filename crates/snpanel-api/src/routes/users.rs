@@ -1716,12 +1716,17 @@ async fn delete_account(state: &AppState, user: &User) -> Result<Vec<String>, Re
     if let Err(e) = state.db.mcp_tokens().delete_for_user(user.id).await {
         tracing::error!("deleting the MCP tokens of {} failed: {e}", user.username);
     }
+    if let Err(e) = crate::resellers::revoke_tokens_of(state, user.id).await {
+        tracing::error!("revoking the tokens of {} failed: {e}", user.username);
+        return Err(internal_error());
+    }
     if let Err(e) = state.db.users().delete(user.id).await {
         tracing::error!("deleting {} failed: {e}", user.username);
         return Err(internal_error());
     }
     // A reseller's nameservers go with it: SQLite can give its id to the
     // next account made.
+    crate::resellers::forget_brand_assets(user.id);
     if crate::dns::reseller_nameservers(user.id).is_some() {
         if let Err(e) = crate::dns::save_reseller_nameservers(user.id, None) {
             tracing::error!("forgetting the nameservers of {} failed: {e}", user.username);
