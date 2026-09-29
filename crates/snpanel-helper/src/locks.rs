@@ -100,6 +100,7 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "lve-usage"
         | "web-status"
         | "dns-status"
+        | "mail-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -131,6 +132,10 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         "maldet-install" => &[Packages, Malware],
         "fail2ban-install" => &[Packages, Systemd, Firewall],
         "dns-install" => &[Packages, Systemd, Firewall],
+        "mail-install" => &[Packages, Systemd, Firewall, Accounts],
+        "mail-stop" => &[Systemd],
+        // Mailbox folders in the accounts' homes.
+        "mail-sync" => &[Accounts],
         "dns-stop" => &[Systemd],
         "updates-panel-run" => &[Packages, Systemd],
 

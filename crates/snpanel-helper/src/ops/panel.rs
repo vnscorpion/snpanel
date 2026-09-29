@@ -477,7 +477,7 @@ install -m 0640 -o root -g snpanel "${RENEWED_LINEAGE}/privkey.pem" /etc/snpanel
 systemctl restart snpanel-api || true
 "#;
 
-fn install_hook(name: &str, body: &str) {
+pub(crate) fn install_hook(name: &str, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     if std::fs::create_dir_all(HOOK_DIR).is_err() {
         return;
@@ -613,6 +613,7 @@ pub fn url_set(ctx: &super::Context, https: bool, host: &str, port: Port) -> Hel
 
     allow_panel_port(ctx);
     sync_webadmin();
+    crate::ops::mail::sync_certs();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;
@@ -661,6 +662,7 @@ pub fn ssl_use_domain(ctx: &super::Context, domain: &Domain, port: Port) -> Help
     let _ = crate::ops::ssl::sync_sni();
     allow_panel_port(ctx);
     sync_webadmin();
+    crate::ops::mail::sync_certs();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;
@@ -755,6 +757,7 @@ pub fn ssl_install(
     let _ = crate::ops::ssl::sync_sni();
     allow_panel_port(ctx);
     sync_webadmin();
+    crate::ops::mail::sync_certs();
     let refreshed = refresh_tools_nginx();
     if !refreshed.ok {
         return refreshed;

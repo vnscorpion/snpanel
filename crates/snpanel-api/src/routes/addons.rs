@@ -44,6 +44,9 @@ const FAIL2BAN: &str = "fail2ban";
 /// Not in the Python: PowerDNS on this server, with zones for the websites.
 const DNS: &str = "dns";
 
+/// Not in the Python: Exim, Dovecot, Rspamd and the webmail.
+const MAIL: &str = "mail";
+
 /// Not in the Python as an addon: the malware scanner - ClamAV and Linux
 /// Malware Detect, their schedules, the real-time monitor, upload scanning
 /// and the quarantine - was part of every panel. Installing it turns the
@@ -103,6 +106,25 @@ fn catalogue() -> Vec<(&'static str, Value)> {
                 "notes": [
                     "The domains answer from here only once the registrar points them at the nameservers on the DNS page, and those nameservers have glue records with this server's address.",
                     "Uninstalling stops PowerDNS and keeps every zone for when it is installed again.",
+                ],
+                "keeps_data_on_uninstall": true,
+            }),
+        ),
+        (
+            MAIL,
+            json!({
+                "name": "Email",
+                "version": "1.0.0",
+                "summary": "Mailboxes and forwarders on the websites' domains, with Exim, Dovecot, Rspamd spam filtering and a webmail each mailbox opens from the panel without its password.",
+                "details": [
+                    "Installs Exim, Dovecot and Rspamd, and BNIX Webmail on port 2096; mail clients use IMAP 993, POP3 995 and SMTP 465 or 587 with the panel's certificate.",
+                    "Every account makes mailboxes and forwarders on its own domains; the mail is kept in the account's home and counts against its disk.",
+                    "Each domain gets a DKIM key; with the DNS Manager addon its DKIM, DMARC and MX records are published by themselves.",
+                ],
+                "notes": [
+                    "Many providers block outgoing port 25: ask yours to open it, or mail sent from here to other servers stays in the queue.",
+                    "Set the server's reverse DNS (PTR) to the panel's hostname, or large providers will treat its mail as spam.",
+                    "Uninstalling stops the mail services and keeps every mailbox and its mail.",
                 ],
                 "keeps_data_on_uninstall": true,
             }),
@@ -218,6 +240,11 @@ pub(super) fn require_application() -> Result<(), axum::response::Response> {
 /// small read.
 pub fn application_installed() -> bool {
     is_installed(APPLICATION)
+}
+
+/// Whether the Email addon is installed.
+pub fn mail_installed() -> bool {
+    is_installed(MAIL)
 }
 
 /// Whether the DNS Manager addon is installed.
@@ -457,6 +484,15 @@ async fn install(
             return crate::errors::internal_error();
         }
     }
+    if slug == MAIL {
+        let dry = state.settings.command_dry_run;
+        let result = crate::shell::privileged(dry, "mail-install", &[], None, None).await;
+        if !result.ok() {
+            return crate::errors::bad_request(
+                result.failure_detail("The mail server could not be installed").trim(),
+            );
+        }
+    }
     if slug == FAIL2BAN {
         // The settings from last time, if it was installed before; otherwise
         // the defaults, with the installing administrator's address exempt.
@@ -484,6 +520,10 @@ async fn install(
     if slug == DNS {
         crate::dns::ensure_all(&state).await;
     }
+    // The mail domains, and the mailboxes kept from an earlier install.
+    if slug == MAIL {
+        crate::mail::refresh(&state).await;
+    }
 
     let _ = state
         .db
@@ -503,6 +543,7 @@ async fn install(
             APPLICATION => "Open the Application page to install Docker or the Node.js version you need.",
             FAIL2BAN => "Open the Fail2ban page to choose the jails and the addresses that are never banned.",
             DNS => "Open DNS Manager to check the nameservers. Every website already has its zone.",
+            MAIL => "Open Email to make the first mailboxes.",
             MALWARE => "Open Malware Scanner to scan the websites, set the weekly scans and see the quarantine.",
             MCP => "Open AI assistants (MCP) to make a token for your assistant.",
             NOTIFICATIONS => "Open Notifications to set up e-mail, or a Telegram bot and its chat.",
@@ -569,6 +610,15 @@ async fn uninstall(
         }
     }
 
+    if slug == MAIL {
+        let dry = state.settings.command_dry_run;
+        let result = crate::shell::privileged(dry, "mail-stop", &[], None, None).await;
+        if !result.ok() {
+            return crate::errors::bad_request(
+                result.failure_detail("The mail server could not be stopped").trim(),
+            );
+        }
+    }
     if slug == DNS {
         let dry = state.settings.command_dry_run;
         let result = crate::shell::privileged(dry, "dns-stop", &[], None, None).await;
@@ -605,6 +655,8 @@ async fn uninstall(
         "could_not_stop": failed,
         "kept": if slug == FAIL2BAN {
             "Fail2ban's settings are kept; installing the addon again puts them back."
+        } else if slug == MAIL {
+            "The mail services are stopped. Every mailbox and its mail are kept for when the addon is installed again."
         } else if slug == DNS {
             "PowerDNS is stopped. Every zone is kept and answers again when the addon is installed again."
         } else if slug == MCP {
@@ -837,7 +889,7 @@ mod tests {
         let items = addon_state();
         // Sorted by slug, as the Python sorts them.
         let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, [APPLICATION, DNS, FAIL2BAN, MALWARE, MCP, NOTIFICATIONS]);
+        assert_eq!(slugs, [APPLICATION, DNS, FAIL2BAN, MAIL, MALWARE, MCP, NOTIFICATIONS]);
         for addon in &items {
             for key in [
                 "name",

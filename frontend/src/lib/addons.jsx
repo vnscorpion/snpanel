@@ -1,10 +1,11 @@
-import { Bell, Bot, Boxes, Network, Puzzle, ScanSearch, ShieldBan } from 'lucide-react';
+import { Bell, Bot, Boxes, Mail, Network, Puzzle, ScanSearch, ShieldBan } from 'lucide-react';
 
 // The page and icon of each addon that has a page of its own. An addon not
 // listed here opens the Addons page, under the generic puzzle piece.
 export const ADDON_META = {
   application: { page: 'applications', icon: Boxes },
   dns: { page: 'dns', icon: Network },
+  mail: { page: 'mail', icon: Mail },
   fail2ban: { page: 'fail2ban', icon: ShieldBan },
   malware: { page: 'malware', icon: ScanSearch },
   mcp: { page: 'mcp', icon: Bot },

@@ -10,6 +10,7 @@ pub mod cloudlinux;
 pub mod dashboard;
 pub mod databases;
 pub mod dns;
+pub mod mail;
 pub mod fail2ban;
 pub mod firewall;
 pub mod health;
@@ -59,6 +60,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(firewall::router())
         .merge(fail2ban::router())
         .merge(dns::router())
+        .merge(mail::router())
         .merge(lve::router())
         .merge(web::router())
         .merge(cloudlinux::router())
