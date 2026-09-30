@@ -1307,6 +1307,8 @@ async fn create_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_created(&state, &created.domain).await;
+    crate::mail::refresh(&state).await;
     axum::Json(alias_json(&created)).into_response()
 }
 
@@ -1374,6 +1376,8 @@ async fn delete_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_deleted(&alias.domain).await;
+    crate::mail::domain_deleted(&state, &alias.domain).await;
     axum::Json(json!({ "ok": true })).into_response()
 }
 
@@ -3577,6 +3581,14 @@ async fn delete_website(
         }
     }
 
+    // Their zones go with the website, below.
+    let alias_domains: Vec<String> = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+        .unwrap_or_default();
     if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
         tracing::error!("deleting the aliases of {domain} failed: {e}");
         return internal_error();
@@ -3650,6 +3662,10 @@ async fn delete_website(
         &ssl_note,
     )
     .await;
+    for name in std::iter::once(&domain).chain(&alias_domains) {
+        crate::dns::website_deleted(name).await;
+        crate::mail::domain_deleted(&state, name).await;
+    }
     crate::fail2ban::refresh_in_background(&state);
 
     axum::Json(json!({
@@ -3882,6 +3898,13 @@ async fn create_site_from(
     if !permissions::is_admin_role(&owner.role) && count >= owner.website_limit {
         return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Website limit reached");
     }
+    // Not in the Python: a reseller's limits, on what it and its accounts
+    // really use.
+    if let Err(message) =
+        crate::resellers::check_room(&state, owner.id, crate::resellers::Resource::Website).await
+    {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message);
+    }
 
     let install_wp = installs_wordpress(request.install_wordpress, &request.app_type);
     let estimate = if install_wp {
@@ -4010,6 +4033,8 @@ async fn create_site_from(
         &request.domain,
     )
     .await;
+    crate::dns::website_created(&state, &request.domain).await;
+    crate::mail::refresh(&state).await;
     // The WordPress jail reads every site's access log, and fail2ban finds
     // log files only when it reads its settings.
     crate::fail2ban::refresh_in_background(&state);
@@ -5369,6 +5394,25 @@ async fn apply_owner(
                 internal_error()
             })?;
         return Ok(());
+    }
+
+    // A reseller's limits cover a site moved in from elsewhere.
+    let same_reseller = match (
+        crate::resellers::reseller_of(state, owner.id).await,
+        crate::resellers::reseller_of(state, website.owner_id).await,
+    ) {
+        (Ok(a), Ok(b)) => a.map(|x| x.0) == b.map(|x| x.0),
+        _ => false,
+    };
+    if !same_reseller {
+        if let Err(message) =
+            crate::resellers::check_room(state, owner.id, crate::resellers::Resource::Website).await
+        {
+            return Err(crate::errors::error(
+                axum::http::StatusCode::FORBIDDEN,
+                &message,
+            ));
+        }
     }
 
     // The new owner's allowance has to cover what is about to land in it.

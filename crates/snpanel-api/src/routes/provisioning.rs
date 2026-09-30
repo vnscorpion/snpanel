@@ -19,7 +19,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use serde_json::{json, Value};
-use snpanel_core::permissions;
 
 use crate::auth::CurrentUser;
 use crate::errors::{bad_request, error, not_found};
@@ -204,14 +203,79 @@ async fn authorised(
     Ok(token)
 }
 
+/// Not in the Python: the reseller a token is, with its limits. `None` is
+/// the administrator's token.
+async fn token_reseller(
+    state: &AppState,
+    token: &snpanel_db::ApiToken,
+) -> Result<Option<(i64, snpanel_db::ResellerLimits)>, Response> {
+    let repo = state.db.resellers();
+    let owner = repo.token_owner(token.id).await.map_err(|e| {
+        tracing::error!("api token owner lookup failed: {e}");
+        crate::errors::internal_error()
+    })?;
+    let Some(owner) = owner else { return Ok(None) };
+    let limits = repo.limits(owner).await.map_err(|e| {
+        tracing::error!("reseller limits lookup failed: {e}");
+        crate::errors::internal_error()
+    })?;
+    // A token whose reseller is no longer one opens nothing.
+    match limits {
+        Some(l) => Ok(Some((owner, l))),
+        None => Err(error(
+            axum::http::StatusCode::FORBIDDEN,
+            "This token's reseller is gone",
+        )),
+    }
+}
+
+/// A reseller's billing system names services as any other does
+/// (`whmcs:12`), so its ids are kept apart inside: `r<reseller>:whmcs:12`.
+pub fn scope_id(owner: Option<i64>, external_id: &str) -> String {
+    match owner {
+        Some(o) => format!("r{o}:{external_id}"),
+        None => external_id.to_string(),
+    }
+}
+
+/// The id as the billing system knows it.
+pub fn public_id(stored: &str) -> &str {
+    if let Some(rest) = stored.strip_prefix('r') {
+        if let Some((digits, tail)) = rest.split_once(':') {
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                return tail;
+            }
+        }
+    }
+    stored
+}
+
 /// `GET /api/provisioning/v1/plans`.
 async fn list_plans(State(state): State<AppState>, req: axum::extract::Request) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:read").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r.map(|(id, _)| id),
+        Err(r) => return r,
+    };
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_package_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let packages = match state.db.packages().list().await {
-        Ok(p) => p,
+        // A reseller's token sees its packages; the administrator's the
+        // administrator's own.
+        Ok(p) => p
+            .into_iter()
+            .filter(|p| owners.get(&p.id).copied() == reseller)
+            .collect::<Vec<_>>(),
         Err(e) => {
             tracing::error!("package listing failed: {e}");
             return crate::errors::internal_error();
@@ -253,12 +317,12 @@ pub fn account_payload(view: &snpanel_db::ProvisioningAccountView, panel_url: &s
     let service_label = package_name
         .clone()
         .unwrap_or_else(|| "SNPanel Hosting".to_string());
-    let external_label = match view.external_id.strip_prefix("whmcs:") {
+    let external_label = match public_id(&view.external_id).strip_prefix("whmcs:") {
         Some(rest) => format!("#{rest}"),
-        None => view.external_id.clone(),
+        None => public_id(&view.external_id).to_string(),
     };
     json!({
-        "external_id": view.external_id,
+        "external_id": public_id(&view.external_id),
         "username": view.username.clone().unwrap_or_default(),
         "email": view.email.clone().unwrap_or_default(),
         "domain": view.domain,
@@ -640,17 +704,81 @@ fn account_create_fields(payload: &Value) -> Result<AccountCreate, Response> {
 /// saying `failed` with the reason, rather than nothing at all.
 async fn create_account(State(state): State<AppState>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
-    let payload = match super::auth::read_json_body(body).await {
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let mut payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    let fields = match account_create_fields(&payload) {
+    // Not in the Python: a reseller's billing system makes customer
+    // accounts named with its prefix, on its own packages, inside its
+    // limits. The administrator's may sell a reseller account instead
+    // (`reseller` in the body: its prefix and limits).
+    if let Some((_, limits)) = &reseller {
+        if payload.get("reseller").is_some_and(|v| !v.is_null()) {
+            return crate::errors::not_enough_permissions();
+        }
+        if let Some(name) = payload.get("username").and_then(Value::as_str) {
+            let name = crate::resellers::prefixed(&limits.prefix, name.trim());
+            payload["username"] = json!(name);
+        }
+    }
+    let mut fields = match account_create_fields(&payload) {
         Ok(f) => f,
         Err(r) => return r,
     };
+    let reseller_id = reseller.as_ref().map(|(id, _)| *id);
+    fields.external_id = scope_id(reseller_id, &fields.external_id);
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_package_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    if owners.get(&fields.package_id).copied() != reseller_id {
+        return not_found("Package not found");
+    }
+    let sells_reseller = match payload.get("reseller").filter(|v| !v.is_null()) {
+        Some(body) => match crate::resellers::limits_from(body, None) {
+            Ok(l) => {
+                if state
+                    .db
+                    .resellers()
+                    .prefix_taken(&l.prefix, None)
+                    .await
+                    .unwrap_or(true)
+                {
+                    return error(
+                        axum::http::StatusCode::CONFLICT,
+                        "Another reseller has this prefix",
+                    );
+                }
+                Some(l)
+            }
+            Err(m) => return error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &m),
+        },
+        None => None,
+    };
+    if let Some(id) = reseller_id {
+        for resource in [crate::resellers::Resource::Account].into_iter().chain(
+            fields
+                .domain
+                .is_some()
+                .then_some(crate::resellers::Resource::Website),
+        ) {
+            if let Err(m) = crate::resellers::check_room(&state, id, resource).await {
+                return bad_request(&m);
+            }
+        }
+    }
 
     // `existing = db.query(...).first()`.
     match state
@@ -788,7 +916,11 @@ async fn create_account(State(state): State<AppState>, req: axum::extract::Reque
             username: &fields.username,
             email: &account_email,
             hashed_password: &hashed,
-            role: "end_user",
+            role: if sells_reseller.is_some() {
+                "reseller"
+            } else {
+                "end_user"
+            },
             package_id: Some(package.id),
             website_limit: package.website_limit,
             storage_limit_mb: package.storage_limit_mb,
@@ -816,6 +948,15 @@ async fn create_account(State(state): State<AppState>, req: axum::extract::Reque
         .await
     {
         tracing::error!("linking the provisioning row failed: {e}");
+        return crate::errors::internal_error();
+    }
+    let recorded = match (&sells_reseller, reseller_id) {
+        (Some(limits), _) => state.db.resellers().set_limits(user_id, limits).await,
+        (None, Some(parent)) => state.db.resellers().set_parent(user_id, Some(parent)).await,
+        (None, None) => Ok(()),
+    };
+    if let Err(e) = recorded {
+        tracing::error!("recording the account's reseller failed: {e}");
         return crate::errors::internal_error();
     }
 
@@ -1151,9 +1292,15 @@ async fn get_account(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:read").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     match state.db.provisioning().view(&external_id).await {
         Ok(Some(view)) => {
             let panel_url = panel_base_url(&state.settings);
@@ -1178,9 +1325,15 @@ async fn get_usage(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:read").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:read").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let account = match state.db.provisioning().by_external_id(&external_id).await {
         Ok(Some(a)) => a,
         Ok(None) => return not_found("Account not found"),
@@ -1221,7 +1374,7 @@ async fn get_usage(
         }
     };
     axum::Json(json!({
-        "external_id": account.external_id,
+        "external_id": public_id(&account.external_id),
         "storage_used_bytes": usage.used_bytes,
         "storage_limit_bytes": usage.limit_bytes,
         "storage_percent": usage.percent,
@@ -1247,9 +1400,15 @@ async fn create_login_url(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let account = match account_or_404(&state, &external_id).await {
         Ok(a) => a,
         Err(r) => return r,
@@ -1276,7 +1435,12 @@ async fn create_login_url(
             return crate::errors::internal_error();
         }
     };
-    let (path, absolute) = login_url(&panel_base_url(&state.settings), &token);
+    // Not in the Python: a reseller's customers sign in at its hostname.
+    let base = match crate::resellers::panel_url_for_user(&state, user.id).await {
+        Some(url) => url,
+        None => panel_base_url(&state.settings),
+    };
+    let (path, absolute) = login_url(&base, &token);
     audit_provisioning(
         &state,
         &parts,
@@ -1331,9 +1495,15 @@ async fn suspend(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1456,9 +1626,15 @@ async fn unsuspend(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let account = match account_or_404(&state, &external_id).await {
         Ok(a) => a,
         Err(r) => return r,
@@ -1629,9 +1805,15 @@ async fn change_password(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1720,9 +1902,15 @@ async fn change_package(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1747,6 +1935,39 @@ async fn change_package(
             return crate::errors::internal_error();
         }
     };
+    // Not in the Python: a token puts accounts on its own packages only.
+    let reseller_id = reseller.as_ref().map(|(id, _)| *id);
+    if state
+        .db
+        .resellers()
+        .package_owner(package.id)
+        .await
+        .unwrap_or(None)
+        != reseller_id
+    {
+        return not_found("Package not found");
+    }
+    // A reseller account sold by the administrator: its limits change with
+    // its product.
+    if let Some(body) = payload.get("reseller").filter(|v| !v.is_null()) {
+        if reseller_id.is_some() {
+            return crate::errors::not_enough_permissions();
+        }
+        let current = state.db.resellers().limits(user_id).await.unwrap_or(None);
+        let Some(current) = current else {
+            return bad_request("This account is not a reseller");
+        };
+        match crate::resellers::limits_from(body, Some(&current)) {
+            Ok(mut l) => {
+                l.prefix = current.prefix.clone();
+                if let Err(e) = state.db.resellers().set_limits(user_id, &l).await {
+                    tracing::error!("saving reseller limits failed: {e}");
+                    return crate::errors::internal_error();
+                }
+            }
+            Err(m) => return error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &m),
+        }
+    }
 
     if let Err(e) = state
         .db
@@ -1842,12 +2063,37 @@ fn token_payload(token: &snpanel_db::ApiToken) -> Value {
 
 /// `GET /api/provisioning/v1/tokens` — the panel's own session, admin only.
 async fn list_tokens(State(state): State<AppState>, current: CurrentUser) -> Response {
-    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
-        return crate::errors::not_enough_permissions();
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_token_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    // Revoked tokens left from before revoking deleted them go now.
+    if let Err(e) = state.db.api_tokens().purge_revoked().await {
+        tracing::warn!("purging revoked API tokens failed: {e}");
     }
     match state.db.api_tokens().all().await {
         Ok(tokens) => {
-            let rows: Vec<Value> = tokens.iter().map(token_payload).collect();
+            // A reseller sees its own tokens; the administrator every one.
+            let rows: Vec<Value> = tokens
+                .iter()
+                .filter(|t| match manager.reseller_id() {
+                    Some(id) => owners.get(&t.id) == Some(&id),
+                    None => true,
+                })
+                .map(|t| {
+                    let mut v = token_payload(t);
+                    v["owner_id"] = json!(owners.get(&t.id));
+                    v
+                })
+                .collect();
             axum::Json(rows).into_response()
         }
         Err(e) => {
@@ -1868,9 +2114,10 @@ async fn create_token(State(state): State<AppState>, req: axum::extract::Request
         Ok(c) => c,
         Err(r) => return r,
     };
-    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
-        return crate::errors::not_enough_permissions();
-    }
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -1913,6 +2160,17 @@ async fn create_token(State(state): State<AppState>, req: axum::extract::Request
             return crate::errors::internal_error();
         }
     };
+    if let Some(owner) = manager.reseller_id() {
+        if let Err(e) = state.db.resellers().set_token_owner(token.id, owner).await {
+            tracing::error!("recording the token's reseller failed: {e}");
+            let _ = state
+                .db
+                .api_tokens()
+                .revoke(token.id, &snpanel_db::sqlalchemy_now())
+                .await;
+            return crate::errors::internal_error();
+        }
+    }
     super::packages::audit_action(&state, &parts, current.user.id, "create_api_token", &name).await;
     axum::Json(json!({ "token": raw, "info": token_payload(&token) })).into_response()
 }
@@ -1928,8 +2186,21 @@ async fn revoke_token(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if !permissions::has_role(&current.user.role, permissions::Role::Admin) {
-        return crate::errors::not_enough_permissions();
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    if let Some(owner) = manager.reseller_id() {
+        if state
+            .db
+            .resellers()
+            .token_owner(token_id)
+            .await
+            .unwrap_or(None)
+            != Some(owner)
+        {
+            return not_found("Token not found");
+        }
     }
     let token = match state.db.api_tokens().by_id(token_id).await {
         Ok(Some(t)) => t,
@@ -1975,9 +2246,15 @@ async fn terminate(
     req: axum::extract::Request,
 ) -> Response {
     let (parts, _) = req.into_parts();
-    if let Err(r) = authorised(&state, &parts, "provisioning:write").await {
-        return r;
-    }
+    let token = match authorised(&state, &parts, "provisioning:write").await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let reseller = match token_reseller(&state, &token).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let external_id = scope_id(reseller.as_ref().map(|(id, _)| *id), &external_id);
     // `backup: bool = Query(default=False)` — FastAPI's boolean query
     // parsing, which is the same set of words a body field takes.
     let backup = query_flag(&parts, "backup");
@@ -2111,6 +2388,18 @@ async fn terminate_user(
                 return Err(crate::errors::internal_error());
             }
         }
+        // Not in the Python: the site's DNS zones and mail go with it.
+        let alias_domains: Vec<String> = state
+            .db
+            .websites()
+            .aliases(website.id)
+            .await
+            .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+            .unwrap_or_default();
+        for name in std::iter::once(&website.domain).chain(&alias_domains) {
+            crate::dns::website_deleted(name).await;
+            crate::mail::domain_deleted(state, name).await;
+        }
         super::websites::delete_website_vhost(state, &website.domain).await;
         // Terminating an account is a real deletion, not a suspension: the
         // certificate has nothing left to protect and should not outlive it.
@@ -2143,15 +2432,35 @@ async fn terminate_user(
         let _ =
             shell::privileged(dry, "panel-user-delete", &[panel_user.as_str()], None, None).await;
     }
+    if let Err(e) = crate::resellers::revoke_tokens_of(state, user.id).await {
+        tracing::error!("revoking the tokens of {} failed: {e}", user.username);
+        return Err(crate::errors::internal_error());
+    }
     if let Err(e) = state.db.users().delete(user.id).await {
         tracing::error!("deleting {} failed: {e}", user.username);
         return Err(crate::errors::internal_error());
+    }
+    crate::resellers::forget_brand_assets(user.id);
+    if crate::dns::reseller_nameservers(user.id).is_some() {
+        let _ = crate::dns::save_reseller_nameservers(user.id, None);
     }
     Ok(deleted)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_resellers_service_ids_are_kept_apart_and_given_back_as_sent() {
+        let stored = super::scope_id(Some(7), "whmcs:12");
+        assert_eq!(stored, "r7:whmcs:12");
+        assert_eq!(super::public_id(&stored), "whmcs:12");
+        assert_eq!(super::scope_id(None, "whmcs:12"), "whmcs:12");
+        assert_eq!(super::public_id("whmcs:12"), "whmcs:12");
+        // Only the panel's own tag is taken off.
+        assert_eq!(super::public_id("rx:whmcs:1"), "rx:whmcs:1");
+        assert_eq!(super::public_id("r:1"), "r:1");
+    }
+
     use super::*;
 
     fn corpus() -> Value {

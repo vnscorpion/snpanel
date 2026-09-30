@@ -46,6 +46,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/users/audit/log", get(audit_log).fallback(crate::fallback))
         .route(
+            "/users/{user_id}/reseller-usage",
+            get(reseller_usage).fallback(crate::fallback),
+        )
+        .route(
             "/users/{user_id}",
             patch(update).delete(delete).fallback(crate::fallback),
         )
@@ -158,7 +162,7 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
         .map(|rows| rows.len())
         .unwrap_or(0);
 
-    json!({
+    let mut out = json!({
         "id": user.id,
         "username": user.username,
         "email": user.email,
@@ -174,7 +178,38 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
         "totp_enabled": user.totp_enabled,
         "passkeys": passkeys,
         "sftp": { "enabled": sftp.enabled, "own_password": sftp.own_password },
-    })
+    });
+    // Not in the Python: a reseller's limits, and an account's reseller.
+    if let (Some(out), Value::Object(extra)) = (
+        out.as_object_mut(),
+        crate::resellers::describe(state, user).await,
+    ) {
+        out.extend(extra);
+    }
+    out
+}
+
+/// The caller as a manager of `user_id`: the manager, and the account.
+async fn managed(
+    state: &AppState,
+    current: &CurrentUser,
+    user_id: i64,
+) -> Result<(crate::resellers::Manager, User), Response> {
+    let manager = crate::resellers::manager(state, current).await?;
+    let user = match state.db.users().by_id(user_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return Err(not_found("User not found")),
+        Err(e) => {
+            tracing::error!("user lookup failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    // A reseller is told "not found" about an account that is not its own,
+    // as about one that does not exist.
+    if !crate::resellers::may_manage(state, &manager, &user).await? {
+        return Err(not_found("User not found"));
+    }
+    Ok((manager, user))
 }
 
 async fn list(
@@ -182,9 +217,10 @@ async fn list(
     current: CurrentUser,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
     // Not in the Python. `?usage=0` leaves out the one column that walks
     // every account's files, so the page can show the users at once and ask
     // `/users/{id}/usage` for each figure after. Without it, the list is the
@@ -200,8 +236,22 @@ async fn list(
             return internal_error();
         }
     };
+    // A reseller sees the accounts it made; the administrator everyone.
+    let mine: Option<Vec<i64>> = match manager.reseller_id() {
+        Some(id) => match state.db.resellers().children(id).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::error!("listing a reseller's accounts failed: {e}");
+                return internal_error();
+            }
+        },
+        None => None,
+    };
     let mut out = Vec::with_capacity(users.len());
-    for user in &users {
+    for user in users
+        .iter()
+        .filter(|u| mine.as_ref().is_none_or(|m| m.contains(&u.id)))
+    {
         out.push(user_out(&state, user, figure).await);
     }
     axum::Json(out).into_response()
@@ -220,16 +270,9 @@ async fn usage(
     current: CurrentUser,
     Path(user_id): Path<i64>,
 ) -> Response {
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
-    let user = match state.db.users().by_id(user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return not_found("User not found"),
-        Err(e) => {
-            tracing::error!("user lookup failed: {e}");
-            return internal_error();
-        }
+    let user = match managed(&state, &current, user_id).await {
+        Ok((_, u)) => u,
+        Err(r) => return r,
     };
     let used = crate::storage_quota::user_storage_used_bytes_cached(
         state.settings.command_dry_run,
@@ -247,6 +290,34 @@ async fn usage(
         "storage_percent": percent,
     }))
     .into_response()
+}
+
+/// `GET /users/{user_id}/reseller-usage` - not in the Python: a reseller's
+/// limits beside what it and its accounts really use. For the administrator,
+/// and for the reseller itself.
+async fn reseller_usage(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path(user_id): Path<i64>,
+) -> Response {
+    if user_id != current.user.id && !permissions::has_role(&current.user.role, Role::Admin) {
+        return not_enough_permissions();
+    }
+    let limits = match state.db.resellers().limits(user_id).await {
+        Ok(Some(l)) => l,
+        Ok(None) => return not_found("Not a reseller"),
+        Err(e) => {
+            tracing::error!("reading reseller limits failed: {e}");
+            return internal_error();
+        }
+    };
+    match crate::resellers::usage(&state, user_id).await {
+        Ok(used) => axum::Json(json!({ "limits": limits, "usage": used })).into_response(),
+        Err(e) => {
+            tracing::error!("measuring a reseller's usage failed: {e}");
+            internal_error()
+        }
+    }
 }
 
 /// What a user's limits end up as, given a package and the request's own
@@ -290,22 +361,30 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
     let payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-
-    let user = match state.db.users().by_id(user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return not_found("User not found"),
-        Err(e) => {
-            tracing::error!("user lookup failed: {e}");
-            return internal_error();
-        }
+    let (manager, user) = match managed(&state, &current, user_id).await {
+        Ok(v) => v,
+        Err(r) => return r,
     };
+    // A reseller changes an account's contact, its access and its package
+    // (one of its own); the limits come from the package, and the role and
+    // the reseller are the administrator's.
+    if !manager.is_admin() {
+        for key in [
+            "role",
+            "website_limit",
+            "storage_limit_mb",
+            "reseller",
+            "parent_id",
+        ] {
+            if payload.get(key).is_some_and(|v| !v.is_null()) {
+                return not_enough_permissions();
+            }
+        }
+    }
 
     let mut fields = UserFields::default();
     // The package, kept because its limits are applied **twice** - see
@@ -320,7 +399,7 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         let Some(role) = raw.as_str() else {
             return crate::errors::string_type("role", raw);
         };
-        if !matches!(role, "admin" | "end_user") {
+        if !matches!(role, "admin" | "reseller" | "end_user") {
             return literal_error("role", raw);
         }
         if role != user.role {
@@ -376,6 +455,9 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
             if let Err(r) = check_range("package_id", id, 1, i64::MAX) {
                 return r;
             }
+            if let Err(r) = package_for_manager(&state, &manager, id).await {
+                return r;
+            }
             match state.db.packages().by_id(id).await {
                 Ok(Some(package)) => {
                     fields.package_id = Some(Some(package.id));
@@ -426,6 +508,12 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         fields.terminal_enabled = terminal_enabled;
     }
 
+    let reseller_change =
+        match reseller_change(&state, &user, fields.role.as_deref(), &payload).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+
     let updated = match state.db.users().update(user_id, &fields, bump).await {
         Ok(Some(u)) => u,
         Ok(None) => return not_found("User not found"),
@@ -434,6 +522,9 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
             return internal_error();
         }
     };
+    if let Err(r) = apply_reseller_change(&state, updated.id, reseller_change).await {
+        return r;
+    }
 
     super::packages::audit_action(
         &state,
@@ -456,6 +547,133 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     axum::Json(user_out(&state, &updated, StorageFigure::Fresh).await).into_response()
 }
 
+/// A package the manager may put an account on: a reseller's own, or for
+/// the administrator any.
+async fn package_for_manager(
+    state: &AppState,
+    manager: &crate::resellers::Manager,
+    package_id: i64,
+) -> Result<(), Response> {
+    let Some(reseller) = manager.reseller_id() else {
+        return Ok(());
+    };
+    match state.db.resellers().package_owner(package_id).await {
+        Ok(Some(owner)) if owner == reseller => Ok(()),
+        Ok(_) => Err(not_found("Package not found")),
+        Err(e) => {
+            tracing::error!("package owner lookup failed: {e}");
+            Err(internal_error())
+        }
+    }
+}
+
+/// What an update does to an account's reseller standing.
+#[derive(Debug, Default)]
+struct ResellerChange {
+    /// Limits to set: the account is, or becomes, a reseller.
+    limits: Option<snpanel_db::ResellerLimits>,
+    /// The account stops being a reseller.
+    revoke: bool,
+    /// The account's reseller: `Some(None)` takes it away.
+    parent: Option<Option<i64>>,
+}
+
+/// Checked before anything is written: a new role, the limits in
+/// `reseller`, and `parent_id` (administrators only - see `update`).
+async fn reseller_change(
+    state: &AppState,
+    user: &User,
+    new_role: Option<&str>,
+    payload: &Value,
+) -> Result<ResellerChange, Response> {
+    let repo = state.db.resellers();
+    let db = |e: snpanel_db::DbError| {
+        tracing::error!("reseller lookup failed: {e}");
+        internal_error()
+    };
+    let was = permissions::is_reseller_role(&user.role);
+    let role = new_role.unwrap_or(&user.role);
+    let will = permissions::is_reseller_role(role);
+    let mut change = ResellerChange::default();
+    if will {
+        let current = repo.limits(user.id).await.map_err(db)?;
+        let body = payload.get("reseller").cloned().unwrap_or(Value::Null);
+        if !was || !body.is_null() {
+            let limits = crate::resellers::limits_from(&body, current.as_ref()).map_err(|m| {
+                crate::errors::error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &m)
+            })?;
+            if repo
+                .prefix_taken(&limits.prefix, Some(user.id))
+                .await
+                .map_err(db)?
+            {
+                return Err(conflict_text("Another reseller has this prefix"));
+            }
+            change.limits = Some(limits);
+        }
+        // A reseller belongs to nobody.
+        if repo.parent_of(user.id).await.map_err(db)?.is_some() {
+            change.parent = Some(None);
+        }
+    } else if was {
+        if !repo.children(user.id).await.map_err(db)?.is_empty() {
+            return Err(bad_request(
+                "This reseller still has accounts: move them or delete them first",
+            ));
+        }
+        change.revoke = true;
+    }
+    if let Some(raw) = payload.get("parent_id") {
+        if raw.is_null() {
+            change.parent = Some(None);
+        } else {
+            let Some(parent) = raw.as_i64() else {
+                return Err(crate::errors::int_parsing("parent_id", raw));
+            };
+            if will || permissions::has_role(role, Role::Admin) {
+                return Err(bad_request(
+                    "Only a customer account can belong to a reseller",
+                ));
+            }
+            match state.db.users().by_id(parent).await {
+                Ok(Some(p)) if permissions::is_reseller_role(&p.role) && p.id != user.id => {
+                    change.parent = Some(Some(p.id));
+                }
+                Ok(_) => return Err(not_found("Reseller not found")),
+                Err(e) => return Err(db(e)),
+            }
+        }
+    }
+    Ok(change)
+}
+
+async fn apply_reseller_change(
+    state: &AppState,
+    user_id: i64,
+    change: ResellerChange,
+) -> Result<(), Response> {
+    let repo = state.db.resellers();
+    let db = |e: snpanel_db::DbError| {
+        tracing::error!("saving reseller settings failed: {e}");
+        internal_error()
+    };
+    if let Some(limits) = &change.limits {
+        repo.set_limits(user_id, limits).await.map_err(db)?;
+    }
+    if change.revoke {
+        repo.remove_limits(user_id).await.map_err(db)?;
+        repo.release_packages(user_id).await.map_err(db)?;
+    }
+    if let Some(parent) = change.parent {
+        repo.set_parent(user_id, parent).await.map_err(db)?;
+    }
+    Ok(())
+}
+
+fn conflict_text(message: &str) -> Response {
+    crate::errors::error(axum::http::StatusCode::CONFLICT, message)
+}
+
 async fn reset_two_factor(
     State(state): State<AppState>,
     Path(user_id): Path<i64>,
@@ -466,17 +684,9 @@ async fn reset_two_factor(
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
-
-    let user = match state.db.users().by_id(user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return not_found("User not found"),
-        Err(e) => {
-            tracing::error!("user lookup failed: {e}");
-            return internal_error();
-        }
+    let user = match managed(&state, &current, user_id).await {
+        Ok((_, u)) => u,
+        Err(r) => return r,
     };
     // An admin resetting their *own* second factor through this endpoint would
     // be a way to shed 2FA without proving anything; the Security page asks
@@ -759,7 +969,7 @@ async fn set_password(
     let password = password.to_string();
 
     if user_id != current.user.id {
-        if let Err(r) = require_admin(&current) {
+        if let Err(r) = managed(&state, &current, user_id).await {
             return r;
         }
     } else if let Err(r) = require_step_up(&state, &current, &payload) {
@@ -913,35 +1123,23 @@ pub(super) fn vhost_overrides(suspending: bool) -> super::websites::RewriteOverr
     }
 }
 
-async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: bool) -> Response {
-    let (mut parts, _body) = req.into_parts();
-    let current = match CurrentUser::from_parts(&mut parts, &state).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
-    let user = match state.db.users().by_id(user_id).await {
-        Ok(Some(user)) => user,
-        Ok(None) => return not_found("User not found"),
-        Err(e) => {
-            tracing::error!("loading user {user_id} failed: {e}");
-            return internal_error();
-        }
-    };
-    // Only on the way in: the Python guards `suspend` alone, and an
-    // administrator may un-suspend themselves. Suspending yourself locks you
-    // out of the panel you would need in order to undo it.
-    if suspending && user_id == current.user.id {
-        return bad_request("Cannot suspend yourself");
-    }
-
+/// The account deactivated (or back), its sessions ended, its sites turned
+/// to the suspended page (or back) and its Linux accounts locked. The number
+/// of websites it touched.
+async fn suspend_account(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    actor_id: i64,
+    user: &User,
+    suspending: bool,
+) -> Result<usize, Response> {
+    let state = state.clone();
+    let user_id = user.id;
     let websites = match state.db.websites().list(Some(user.id), "").await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("listing websites for user {user_id} failed: {e}");
-            return internal_error();
+            return Err(internal_error());
         }
     };
 
@@ -954,14 +1152,14 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
     };
     if let Err(e) = state.db.users().update(user.id, &fields, suspending).await {
         tracing::error!("updating user {user_id} failed: {e}");
-        return internal_error();
+        return Err(internal_error());
     }
 
     for website in &websites {
         let status = if suspending { "suspended" } else { "active" };
         if let Err(e) = state.db.websites().set_status(website.id, status).await {
             tracing::error!("setting the status of website {} failed: {e}", website.id);
-            return internal_error();
+            return Err(internal_error());
         }
 
         let overrides = vhost_overrides(suspending);
@@ -992,7 +1190,55 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
     } else {
         "unsuspend_user"
     };
-    super::packages::audit_action(&state, &parts, current.user.id, action, &user.username).await;
+    super::packages::audit_action(&state, parts, actor_id, action, &user.username).await;
+    Ok(websites.len())
+}
+
+async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: bool) -> Response {
+    let (mut parts, _body) = req.into_parts();
+    let current = match CurrentUser::from_parts(&mut parts, &state).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let user = match managed(&state, &current, user_id).await {
+        Ok((_, u)) => u,
+        Err(r) => return r,
+    };
+    // Only on the way in: the Python guards `suspend` alone, and an
+    // administrator may un-suspend themselves. Suspending yourself locks you
+    // out of the panel you would need in order to undo it.
+    if suspending && user_id == current.user.id {
+        return bad_request("Cannot suspend yourself");
+    }
+
+    let affected = match suspend_account(&state, &parts, current.user.id, &user, suspending).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    // Not in the Python: a reseller's accounts go with it, and come back
+    // with it - only those that were suspended because it was.
+    if permissions::is_reseller_role(&user.role) {
+        let repo = state.db.resellers();
+        let children = if suspending {
+            repo.children(user.id).await
+        } else {
+            repo.suspended_with_parent(user.id).await
+        };
+        for child_id in children.unwrap_or_default() {
+            let Ok(Some(child)) = state.db.users().by_id(child_id).await else {
+                continue;
+            };
+            if suspending && !child.is_active {
+                continue;
+            }
+            if suspend_account(&state, &parts, current.user.id, &child, suspending)
+                .await
+                .is_ok()
+            {
+                let _ = repo.mark_suspended_by_parent(child.id, suspending).await;
+            }
+        }
+    }
 
     // Two sentences, not a verb put into one: the panel shows this in
     // Vietnamese, which has no word to drop into "{verb} user".
@@ -1003,7 +1249,7 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
     };
     axum::Json(json!({
         "message": message,
-        "affected_websites": websites.len(),
+        "affected_websites": affected,
     }))
     .into_response()
 }
@@ -1117,7 +1363,7 @@ fn user_create_fields(payload: &Value) -> Result<UserCreateFields, Response> {
 
     let role = match text("role") {
         Some(v) => {
-            if !matches!(v, "admin" | "end_user") {
+            if !matches!(v, "admin" | "reseller" | "end_user") {
                 return Err(literal_error(
                     "role",
                     payload.get("role").unwrap_or(&Value::Null),
@@ -1181,17 +1427,81 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
-    let payload = match super::auth::read_json_body(body).await {
+    let manager = match crate::resellers::manager(&state, &current).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let mut payload = match super::auth::read_json_body(body).await {
         Ok(v) => v,
         Err(r) => return r,
     };
+    // Not in the Python: a reseller makes customer accounts only, named with
+    // its prefix, on one of its own packages, while its limits have room.
+    if let crate::resellers::Manager::Reseller { id, limits } = &manager {
+        if payload
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r != "end_user")
+            || ["reseller", "parent_id", "website_limit", "storage_limit_mb"]
+                .iter()
+                .any(|k| payload.get(*k).is_some_and(|v| !v.is_null()))
+        {
+            return not_enough_permissions();
+        }
+        if let Some(name) = payload.get("username").and_then(Value::as_str) {
+            let name = crate::resellers::prefixed(&limits.prefix, name.trim());
+            payload["username"] = json!(name);
+        }
+        let Some(package_id) = payload.get("package_id").and_then(Value::as_i64) else {
+            return bad_request("Choose one of your packages for the account");
+        };
+        if let Err(r) = package_for_manager(&state, &manager, package_id).await {
+            return r;
+        }
+        if let Err(message) =
+            crate::resellers::check_room(&state, *id, crate::resellers::Resource::Account).await
+        {
+            return bad_request(&message);
+        }
+    }
     let fields = match user_create_fields(&payload) {
         Ok(f) => f,
         Err(r) => return r,
     };
+    // The administrator makes a reseller with its limits, or puts a customer
+    // under one; checked before the Linux account is made.
+    let stub = User {
+        role: "end_user".to_string(),
+        ..current.user.clone()
+    };
+    let mut change = if manager.is_admin() {
+        match reseller_change(
+            &state,
+            &User { id: -1, ..stub },
+            Some(&fields.role),
+            &payload,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(r) => return r,
+        }
+    } else {
+        ResellerChange::default()
+    };
+    if let Some(id) = manager.reseller_id() {
+        change.parent = Some(Some(id));
+    }
+    if let Some(Some(parent)) = change.parent {
+        if manager.is_admin() {
+            if let Err(message) =
+                crate::resellers::check_room(&state, parent, crate::resellers::Resource::Account)
+                    .await
+            {
+                return bad_request(&message);
+            }
+        }
+    }
 
     // A customer's SFTP account is a Linux account of that name, with that
     // customer's UID: a panel user made over it would be handed their files.
@@ -1302,6 +1612,9 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
             return internal_error();
         }
     };
+    if let Err(r) = apply_reseller_change(&state, user_id, change).await {
+        return r;
+    }
 
     super::packages::audit_action(
         &state,
@@ -1341,29 +1654,75 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(r) = require_admin(&current) {
-        return r;
-    }
-    let user = match state.db.users().by_id(user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => return not_found("User not found"),
-        Err(e) => {
-            tracing::error!("user lookup failed: {e}");
-            return internal_error();
-        }
-    };
-    if user.id == current.user.id {
+    if user_id == current.user.id {
         return bad_request("Cannot delete yourself");
     }
+    let user = match managed(&state, &current, user_id).await {
+        Ok((_, u)) => u,
+        Err(r) => return r,
+    };
 
+    // Not in the Python: a reseller's accounts are handed to the
+    // administrator (the default), or deleted with it (`?customers=delete`).
+    let mut deleted_accounts: Vec<String> = Vec::new();
+    if permissions::is_reseller_role(&user.role) {
+        let delete_them = parts
+            .uri
+            .query()
+            .is_some_and(|q| q.split('&').any(|kv| kv == "customers=delete"));
+        if delete_them {
+            let children = match state.db.resellers().children(user.id).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("listing a reseller's accounts failed: {e}");
+                    return internal_error();
+                }
+            };
+            for child_id in children {
+                let Ok(Some(child)) = state.db.users().by_id(child_id).await else {
+                    continue;
+                };
+                match delete_account(&state, &child).await {
+                    Ok(_) => deleted_accounts.push(child.username.clone()),
+                    Err(r) => return r,
+                }
+            }
+        }
+    }
+
+    let deleted_domains = match delete_account(&state, &user).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "delete_user",
+        &user.username,
+        &deleted_domains.join(","),
+    )
+    .await;
+
+    axum::Json(json!({
+        "ok": true,
+        "deleted_websites": deleted_domains,
+        "deleted_accounts": deleted_accounts,
+    }))
+    .into_response()
+}
+
+/// An account's websites, its Linux account and its row. The domains it had.
+async fn delete_account(state: &AppState, user: &User) -> Result<Vec<String>, Response> {
     let Ok(panel_user) = snpanel_core::types::PanelUsername::parse(&user.username) else {
-        return bad_request("Invalid panel Linux user");
+        return Err(bad_request("Invalid panel Linux user"));
     };
     let websites = match state.db.websites().list(Some(user.id), "").await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("listing the websites of {} failed: {e}", user.username);
-            return internal_error();
+            return Err(internal_error());
         }
     };
     // The whole check first, then the whole deletion. The Python has two
@@ -1371,26 +1730,22 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     for website in &websites {
         if let Some(linux_user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) {
             if linux_user != panel_user.as_str() {
-                return bad_request(&format!(
+                return Err(bad_request(&format!(
                     "Website {} is not owned by Linux user {}",
                     website.domain,
                     panel_user.as_str()
-                ));
+                )));
             }
         }
     }
 
     let mut deleted_domains: Vec<String> = Vec::new();
     for website in &websites {
-        if let Err(r) = delete_owned_website(&state, website).await {
-            return r;
-        }
+        delete_owned_website(state, website).await?;
         deleted_domains.push(website.domain.clone());
     }
 
-    if let Err(r) = forget_user_in_schedules(&state, user.id).await {
-        return r;
-    }
+    forget_user_in_schedules(state, user.id).await?;
     // `check=False` in the Python: an account that is already gone is not a
     // reason to refuse a deletion that has already removed the websites.
     let _ = crate::shell::privileged(
@@ -1407,26 +1762,26 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     if let Err(e) = state.db.mcp_tokens().delete_for_user(user.id).await {
         tracing::error!("deleting the MCP tokens of {} failed: {e}", user.username);
     }
+    if let Err(e) = crate::resellers::revoke_tokens_of(state, user.id).await {
+        tracing::error!("revoking the tokens of {} failed: {e}", user.username);
+        return Err(internal_error());
+    }
     if let Err(e) = state.db.users().delete(user.id).await {
         tracing::error!("deleting {} failed: {e}", user.username);
-        return internal_error();
+        return Err(internal_error());
     }
-
-    super::packages::audit_action_detail(
-        &state,
-        &parts,
-        current.user.id,
-        "delete_user",
-        &user.username,
-        &deleted_domains.join(","),
-    )
-    .await;
-
-    axum::Json(json!({
-        "ok": true,
-        "deleted_websites": deleted_domains,
-    }))
-    .into_response()
+    // A reseller's nameservers go with it: SQLite can give its id to the
+    // next account made.
+    crate::resellers::forget_brand_assets(user.id);
+    if crate::dns::reseller_nameservers(user.id).is_some() {
+        if let Err(e) = crate::dns::save_reseller_nameservers(user.id, None) {
+            tracing::error!(
+                "forgetting the nameservers of {} failed: {e}",
+                user.username
+            );
+        }
+    }
+    Ok(deleted_domains)
 }
 
 /// Source: `_delete_owned_website`.
@@ -1454,9 +1809,21 @@ async fn delete_owned_website(
             return Err(bad_request(&e.to_string()));
         }
     }
+    // Not in the Python: their DNS zones and mail go with them.
+    let alias_domains: Vec<String> = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+        .unwrap_or_default();
     if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
         tracing::error!("deleting the aliases of {} failed: {e}", website.domain);
         return Err(internal_error());
+    }
+    for name in std::iter::once(&website.domain).chain(&alias_domains) {
+        crate::dns::website_deleted(name).await;
+        crate::mail::domain_deleted(state, name).await;
     }
     super::websites::delete_website_vhost(state, &website.domain).await;
     let _ = super::websites::release_site_certificates(state, &website.domain, website.id).await;

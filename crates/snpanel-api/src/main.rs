@@ -44,6 +44,7 @@ mod cron_due;
 mod ctl;
 mod da_import;
 mod da_jobs;
+mod dns;
 mod errors;
 mod fail2ban;
 mod file_jobs;
@@ -52,6 +53,7 @@ mod ftp;
 mod helper_socket;
 mod initdb;
 mod listen;
+mod mail;
 mod malware;
 mod malware_jobs;
 mod malware_quarantine;
@@ -67,6 +69,7 @@ mod php;
 mod php_tune;
 mod qr;
 mod ratelimit;
+mod resellers;
 mod restore;
 mod routes;
 mod s3;
@@ -341,6 +344,8 @@ async fn run() -> anyhow::Result<()> {
     // the Notifications addon is installed. Only the server runs it: a
     // one-shot process above has returned already.
     notify::watcher::start(state.clone());
+    // Every website and alias with a DNS zone, while the addon is installed.
+    dns::start(&state);
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;

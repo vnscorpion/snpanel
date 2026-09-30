@@ -256,6 +256,89 @@ pub const RUST_MIGRATIONS: &[(&str, &str)] = &[
             status VARCHAR(16) NOT NULL, \
             detail VARCHAR(500) DEFAULT '' NOT NULL)",
     ),
+    // Resellers: an account that manages the accounts it made, inside the
+    // limits the administrator gave it. The limits are on what is really
+    // used, not on what its packages promise (it may oversell).
+    (
+        "rust_0012_reseller_accounts",
+        "CREATE TABLE IF NOT EXISTS reseller_accounts (\
+            user_id INTEGER NOT NULL PRIMARY KEY, \
+            prefix VARCHAR(16) NOT NULL, \
+            max_accounts INTEGER DEFAULT 0 NOT NULL, \
+            max_websites INTEGER DEFAULT 0 NOT NULL, \
+            max_databases INTEGER DEFAULT 0 NOT NULL, \
+            max_mailboxes INTEGER DEFAULT 0 NOT NULL, \
+            max_disk_mb INTEGER DEFAULT 0 NOT NULL, \
+            created_at DATETIME, \
+            FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    (
+        "rust_0013_reseller_prefix_unique",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_reseller_accounts_prefix ON reseller_accounts (prefix)",
+    ),
+    // Which reseller an account belongs to. Deleting the reseller drops the
+    // row, which leaves the account the administrator's.
+    (
+        "rust_0014_user_parents",
+        "CREATE TABLE IF NOT EXISTS user_parents (\
+            user_id INTEGER NOT NULL PRIMARY KEY, \
+            parent_id INTEGER NOT NULL, \
+            suspended_by_parent BOOLEAN DEFAULT 0 NOT NULL, \
+            FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, \
+            FOREIGN KEY(parent_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    (
+        "rust_0015_user_parents_by_parent",
+        "CREATE INDEX IF NOT EXISTS ix_user_parents_parent ON user_parents (parent_id)",
+    ),
+    // Which reseller a package is; none is the administrator's.
+    (
+        "rust_0016_package_owners",
+        "CREATE TABLE IF NOT EXISTS package_owners (\
+            package_id INTEGER NOT NULL PRIMARY KEY, \
+            owner_id INTEGER NOT NULL, \
+            FOREIGN KEY(package_id) REFERENCES user_packages (id) ON DELETE CASCADE, \
+            FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    (
+        "rust_0017_package_owners_by_owner",
+        "CREATE INDEX IF NOT EXISTS ix_package_owners_owner ON package_owners (owner_id)",
+    ),
+    // Which reseller a provisioning token is: its billing system reaches
+    // that reseller's accounts and packages only. None is the
+    // administrator's.
+    (
+        "rust_0018_api_token_owners",
+        "CREATE TABLE IF NOT EXISTS api_token_owners (\
+            token_id INTEGER NOT NULL PRIMARY KEY, \
+            owner_id INTEGER NOT NULL, \
+            FOREIGN KEY(token_id) REFERENCES api_tokens (id) ON DELETE CASCADE, \
+            FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    // How many mailboxes a package allows (the Email addon); no row is no
+    // limit.
+    (
+        "rust_0019_package_mail_limits",
+        "CREATE TABLE IF NOT EXISTS package_mail_limits (\
+            package_id INTEGER NOT NULL PRIMARY KEY, \
+            mailbox_limit INTEGER DEFAULT 0 NOT NULL, \
+            FOREIGN KEY(package_id) REFERENCES user_packages (id) ON DELETE CASCADE)",
+    ),
+    // A reseller's own brand: the name and logo its customers see, and the
+    // hostname (one of its domains) its customers sign in at.
+    (
+        "rust_0020_reseller_brands",
+        "CREATE TABLE IF NOT EXISTS reseller_brands (\
+            user_id INTEGER NOT NULL PRIMARY KEY, \
+            app_name VARCHAR(100) DEFAULT '' NOT NULL, \
+            logo_filename VARCHAR(120) DEFAULT '' NOT NULL, \
+            panel_host VARCHAR(253), \
+            FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE)",
+    ),
+    (
+        "rust_0021_reseller_brand_host_unique",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_reseller_brands_host ON reseller_brands (panel_host)",
+    ),
 ];
 
 /// Where applied Rust migrations are recorded.
@@ -809,18 +892,28 @@ mod tests {
         assert_eq!(
             added,
             vec![
+                "api_token_owners",
                 "backup_schedule_options",
                 "ix_mcp_tokens_user_id",
+                "ix_package_owners_owner",
                 "ix_passkeys_user_id",
+                "ix_reseller_accounts_prefix",
+                "ix_reseller_brands_host",
                 "ix_sftp_subaccounts_user_id",
+                "ix_user_parents_parent",
                 "mcp_tokens",
                 "notification_log",
                 "notification_settings",
+                "package_mail_limits",
+                "package_owners",
                 "passkeys",
+                "reseller_accounts",
+                "reseller_brands",
                 "s3_backup_targets",
                 "sftp_accounts",
                 "sftp_subaccounts",
-                MIGRATIONS_TABLE
+                MIGRATIONS_TABLE,
+                "user_parents"
             ],
             "only what the Rust migrations name, and the bookkeeping table, are new"
         );

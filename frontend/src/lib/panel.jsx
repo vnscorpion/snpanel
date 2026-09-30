@@ -57,6 +57,8 @@ export const PAGE_ROUTES = {
   php: '/php',
   firewall: '/firewall',
   fail2ban: '/fail2ban',
+  dns: '/dns',
+  mail: '/email',
   mcp: '/ai-assistants',
   notifications: '/notifications',
   waf: '/waf',

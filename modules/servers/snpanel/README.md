@@ -78,3 +78,17 @@ After replacing the module files, save the WHMCS product Module Settings once so
 - LoginLink
 - ClientArea
 - TestConnection
+
+## Resellers
+
+A reseller makes its own API token on its **Customers → WHMCS** tab and
+puts it in the Access Hash of its own WHMCS server. That token sees only the
+reseller's packages (Package loader) and creates accounts under the
+reseller: their usernames get the reseller's prefix, and an account,
+website, database or mailbox past the reseller's limits is refused. Its
+service ids are kept apart from every other WHMCS's.
+
+The administrator can sell reseller accounts: set **Account Type** to
+`reseller` on the product and fill the Reseller limits (0 = no limit). The
+reseller's prefix is taken from the account's username. Changing the
+product later updates the limits. This needs the administrator's token.

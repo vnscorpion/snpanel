@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
+import { Activity, AlertCircle, Archive, Bell, Bot, Boxes, BrickWall, Mail, Network, ChevronLeft, Clock, Code2, Database, Download, FolderKey, FolderOpen, Globe, Home, KeyRound, Lock, LogOut, Menu, RefreshCw, ScanSearch, ScrollText, Search, Server, Settings as SettingsIcon, ShieldBan, ShieldCheck, SlidersHorizontal, Users, X } from 'lucide-react';
 import {
   API,
   DEFAULT_SERVICE_NAMES,
@@ -54,6 +54,8 @@ const ServicesPage = lazy(() => import('./pages/Services.jsx'));
 const PhpConfigPage = lazy(() => import('./pages/PhpConfig.jsx'));
 const FirewallPage = lazy(() => import('./pages/Firewall.jsx'));
 const Fail2banPage = lazy(() => import('./pages/Fail2ban.jsx'));
+const DnsPage = lazy(() => import('./pages/Dns.jsx'));
+const MailPage = lazy(() => import('./pages/Mail.jsx'));
 const McpPage = lazy(() => import('./pages/Mcp.jsx'));
 const NotificationsPage = lazy(() => import('./pages/Notifications.jsx'));
 const WafPage = lazy(() => import('./pages/Waf.jsx'));
@@ -189,12 +191,12 @@ function App() {
   const [selectedFilePaths, setSelectedFilePaths] = useState([]);
   const [archiveFormat, setArchiveFormat] = useState('zip');
   const [editorCursor, setEditorCursor] = useState({ line: 1, column: 1 });
-  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, parent_id: '', reseller: { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 } });
   const [editingUser, setEditingUser] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ email: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, new_password: '', confirm_password: '' });
-  const [newPackage, setNewPackage] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [newPackage, setNewPackage] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   const [editingPackageId, setEditingPackageId] = useState('');
-  const [editingPackageForm, setEditingPackageForm] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [editingPackageForm, setEditingPackageForm] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   const [phpConfig, setPhpConfig] = useState({ php_version: '8.4', display_errors: 'Off', max_execution_time: 300, max_input_time: 600, max_input_vars: 10000, memory_limit: '1024M', post_max_size: '1024M', upload_max_filesize: '1024M' });
   const [phpVersions, setPhpVersions] = useState({ installed: ['8.4'], supported: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'] });
   // One PHP version's extensions: the panel's catalogue, each installed or
@@ -281,13 +283,20 @@ function App() {
   const t = useT();
   // Which loadPanelSettings() call is the latest. See there.
   const panelSettingsRequest = useRef(0);
+  // The brand the signed-in account sees, kept over any settings load.
+  const brandRef = useRef(null);
   // Which loadUsers() call is the latest: a storage figure fetched for an
   // older list must not land on a newer one.
   const usersRequest = useRef(0);
   const isAdmin = currentUser?.role === 'admin';
+  // A reseller: hosting of its own, and the accounts it made (not the server).
+  const isReseller = currentUser?.role === 'reseller';
+  const canManageUsers = isAdmin || isReseller;
   const applicationAddon = addons.items.find(item => item.slug === 'application');
   const applicationAddonInstalled = !!applicationAddon?.installed;
   const fail2banAddonInstalled = !!addons.items.find(item => item.slug === 'fail2ban')?.installed;
+  const dnsAddonInstalled = !!addons.items.find(item => item.slug === 'dns')?.installed;
+  const mailAddonInstalled = !!addons.items.find(item => item.slug === 'mail')?.installed;
   const mcpAddonInstalled = !!addons.items.find(item => item.slug === 'mcp')?.installed;
   const notificationsAddonInstalled = !!addons.items.find(item => item.slug === 'notifications')?.installed;
   const malwareAddonInstalled = !!addons.items.find(item => item.slug === 'malware')?.installed;
@@ -619,6 +628,9 @@ function App() {
         return null;
       }
       setCurrentUser(data.user);
+      // A reseller's brand, for it and its customers (white label).
+      brandRef.current = data.user.brand || null;
+      if (data.user.brand) setPanelSettings(prev => ({ ...prev, ...data.user.brand }));
       setAdminAccountForm(prev => ({ ...prev, email: data.user?.email || '' }));
       setIsAuthenticated(true);
       return data.user;
@@ -646,7 +658,7 @@ function App() {
       if (!res.ok) return null;
       const data = await res.json();
       if (request !== panelSettingsRequest.current) return data;
-      setPanelSettings(data);
+      setPanelSettings(brandRef.current ? { ...data, ...brandRef.current } : data);
       setPanelSettingsForm(formFromPanelSettings(data));
       return data;
     } catch {
@@ -951,19 +963,42 @@ function App() {
   }
 
   async function createUser() {
-    const payload = {
-      ...newUser,
+    // A reseller sends the account and its package; the rest is decided by
+    // the package and by the reseller's own settings.
+    const payload = isReseller ? {
+      username: newUser.username,
+      email: newUser.email,
+      password: newUser.password,
+      package_id: newUser.package_id ? Number(newUser.package_id) : null,
+    } : {
+      username: newUser.username,
+      email: newUser.email,
+      password: newUser.password,
+      role: newUser.role,
       package_id: newUser.package_id ? Number(newUser.package_id) : null,
       website_limit: Number(newUser.website_limit),
       storage_limit_mb: Number(newUser.storage_limit_mb),
+      ...(newUser.role === 'reseller' ? { reseller: resellerPayload(newUser.reseller) } : {}),
+      ...(newUser.role === 'end_user' && newUser.parent_id ? { parent_id: Number(newUser.parent_id) } : {}),
     };
     const data = await request('/users', { method: 'POST', body: JSON.stringify(payload) }, t('Creating user...'));
     if (data) {
       setNotice(t('Created user {name}', { name: data.username }));
-      setNewUser({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024 });
+      setNewUser({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, parent_id: '', reseller: { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 } });
       await loadUsers();
       setUserTab('list');
     }
+  }
+
+  function resellerPayload(r) {
+    return {
+      prefix: (r.prefix || '').trim().toLowerCase(),
+      max_accounts: Number(r.max_accounts) || 0,
+      max_websites: Number(r.max_websites) || 0,
+      max_databases: Number(r.max_databases) || 0,
+      max_mailboxes: Number(r.max_mailboxes) || 0,
+      max_disk_mb: Number(r.max_disk_mb) || 0,
+    };
   }
 
   function applyPackageToNewUser(packageId) {
@@ -996,15 +1031,17 @@ function App() {
       storage_limit_mb: user.storage_limit_mb ?? 1024,
       new_password: '',
       confirm_password: '',
+      parent_id: user.parent_id ? String(user.parent_id) : '',
+      reseller: user.reseller ? { ...user.reseller } : { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 },
     });
   }
 
   function cancelEditingUser() {
     setEditingUser(null);
     setEditingUserForm({ email: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, new_password: '', confirm_password: '' });
-    setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
     setEditingPackageId('');
-    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   }
 
   async function updatePanelUser() {
@@ -1020,13 +1057,22 @@ function App() {
       setError(t('Storage limit must be between 0 and 1048576 MB.'));
       return;
     }
-    const payload = {
+    const payload = isReseller ? {
+      email: editingUserForm.email.trim(),
+      package_id: editingUserForm.package_id ? Number(editingUserForm.package_id) : null,
+    } : {
       email: editingUserForm.email.trim(),
       package_id: editingUserForm.package_id ? Number(editingUserForm.package_id) : null,
       website_limit: websiteLimit,
       storage_limit_mb: storageLimitMb,
     };
-    if (editingUser.id !== currentUser?.id) payload.role = editingUserForm.role;
+    if (!isReseller && editingUser.id !== currentUser?.id) {
+      payload.role = editingUserForm.role;
+      if (editingUserForm.role === 'reseller') payload.reseller = resellerPayload(editingUserForm.reseller);
+      if (editingUserForm.role === 'end_user' && String(editingUserForm.parent_id || '') !== String(editingUser.parent_id || '')) {
+        payload.parent_id = editingUserForm.parent_id ? Number(editingUserForm.parent_id) : null;
+      }
+    }
     const data = await request(`/users/${editingUser.id}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
@@ -1076,11 +1122,11 @@ function App() {
     }
     const data = await request('/packages', {
       method: 'POST',
-      body: JSON.stringify({ name: newPackage.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
+      body: JSON.stringify({ name: newPackage.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb, mailbox_limit: Math.max(0, Number(newPackage.mailbox_limit) || 0) }),
     }, t('Creating package...'));
     if (data) {
       setNotice(t('Created package {name}.', { name: data.name }));
-      setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+      setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
       await loadPackages();
     }
   }
@@ -1091,12 +1137,13 @@ function App() {
       name: item.name || '',
       website_limit: item.website_limit ?? 5,
       storage_limit_mb: item.storage_limit_mb ?? 1024,
+      mailbox_limit: item.mailbox_limit ?? 0,
     });
   }
 
   function cancelEditingPackage() {
     setEditingPackageId('');
-    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   }
 
   async function updatePackage(packageId) {
@@ -1113,7 +1160,7 @@ function App() {
     }
     const data = await request(`/packages/${packageId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: editingPackageForm.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
+      body: JSON.stringify({ name: editingPackageForm.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb, mailbox_limit: Math.max(0, Number(editingPackageForm.mailbox_limit) || 0) }),
     }, t('Updating package...'));
     if (data) {
       setNotice(t('Updated package {name}.', { name: data.name }));
@@ -1155,7 +1202,14 @@ function App() {
   async function deletePanelUser(user) {
     if (!user || user.id === currentUser?.id) return;
     if (!confirm(t('Delete panel user {name} and permanently delete all owned websites, files, databases, SSL certificates, and Linux user data?', { name: user.username }))) return;
-    const data = await request(`/users/${user.id}`, { method: 'DELETE' }, t('Deleting user {name}...', { name: user.username }));
+    // A reseller's accounts are moved to the administrator unless they are
+    // to be deleted with it.
+    let query = '';
+    if (user.role === 'reseller') {
+      const count = users.filter(u => u.parent_id === user.id).length;
+      if (count > 0 && confirm(t('Also delete the {count} account(s) of {name}, with their websites?\n\nOK deletes them. Cancel moves them to the administrator.', { count, name: user.username }))) query = '?customers=delete';
+    }
+    const data = await request(`/users/${user.id}${query}`, { method: 'DELETE' }, t('Deleting user {name}...', { name: user.username }));
     if (data) {
       const count = data.deleted_websites?.length || 0;
       setNotice(count ? t('Deleted user {name} and {count} website(s)', { name: user.username, count }) : t('Deleted user {name}', { name: user.username }));
@@ -1766,6 +1820,10 @@ function App() {
       ? t('Uninstall the MCP addon?\n\nAssistants can no longer reach the panel. Their tokens are kept and work again if you reinstall; revoke them on the Addons page to remove them.')
       : slug === 'notifications'
       ? t('Uninstall the Notifications addon?\n\nNo more e-mail or Telegram messages are sent. The SMTP server, the bot and what is sent are kept, and reinstalling picks them up.')
+      : slug === 'mail'
+      ? t('Uninstall the Email addon?\n\nExim, Dovecot, Rspamd and the webmail are stopped: no mail is received or sent. Every mailbox and its mail are kept, and reinstalling brings them back.')
+      : slug === 'dns'
+      ? t('Uninstall the DNS Manager addon?\n\nPowerDNS is stopped and this server no longer answers for any domain. Every zone is kept, and reinstalling answers for them again.')
       : slug === 'fail2ban'
       ? t('Uninstall the Fail2ban addon?\n\nFail2ban is stopped, and every address it banned can connect again. Its settings are kept, and reinstalling puts them back.')
       : slug === 'malware'
@@ -3895,7 +3953,9 @@ function App() {
   useEffect(() => { setMobileMenuOpen(false); }, [page]);
 
   function roleLabel(role) {
-    return role === 'admin' ? t('Admin') : t('End user');
+    if (role === 'admin') return t('Admin');
+    if (role === 'reseller') return t('Reseller');
+    return t('End user');
   }
 
   const mainNavItems = [
@@ -3909,9 +3969,12 @@ function App() {
     ['sftp', 'SFTP', FolderKey],
     ['backups', t('Backups'), Archive],
     ...(isAdmin ? [['users', t('Panel users'), Users]] : []),
+    ...(isReseller ? [['users', t('Customers'), Users]] : []),
     // The addons with a page of their own, while they are installed, in the
     // Addons page's order: AI assistants for every account, the others for
     // administrators.
+    ...(mailAddonInstalled ? [['mail', t('Email'), Mail]] : []),
+    ...(dnsAddonInstalled ? [['dns', t('DNS Manager'), Network]] : []),
     ...(isAdmin && fail2banAddonInstalled ? [['fail2ban', t('Fail2ban'), ShieldBan]] : []),
     ...(isAdmin && malwareAddonInstalled ? [['malware', t('Malware Scanner'), ScanSearch]] : []),
     ...(mcpAddonInstalled ? [['mcp', t('AI assistants (MCP)'), Bot]] : []),
@@ -3937,7 +4000,7 @@ function App() {
   // An addon's page opened by its address while the addon is not installed
   // has no entry, and still has its title.
   const unlisted = [['mcp', t('AI assistants (MCP)'), Bot], ['notifications', t('Notifications'), Bell],
-    ['fail2ban', t('Fail2ban'), ShieldBan], ['malware', t('Malware Scanner'), ScanSearch]]
+    ['fail2ban', t('Fail2ban'), ShieldBan], ['malware', t('Malware Scanner'), ScanSearch], ['dns', t('DNS Manager'), Network], ['mail', t('Email'), Mail]]
     .filter(([key]) => ![...mainNavItems, ...settingsNavItems].some(([listed]) => listed === key));
   const navItems = [...mainNavItems, ...settingsNavItems, ...unlisted];
   const navPage = NAV_PARENT_PAGE[page] || page;
@@ -4352,6 +4415,8 @@ function App() {
       installWordPress,
       installWordPressOnSite,
       isAdmin,
+      isReseller,
+      canManageUsers,
       isArchiveFile,
       isTextEditable,
       listCron,
@@ -4370,6 +4435,7 @@ function App() {
       loadMalwareScanStatus,
       loadPackages,
       loadPanelSettings,
+      loadCurrentUser,
       loadPasskeys,
       loadPhpConfig,
       loadPhpExtensions,
@@ -4524,6 +4590,7 @@ function App() {
       setEditingPackageForm,
       setEditingUserForm,
       setError,
+      setNotice,
       setFirewallBlocklistUrl,
       setFirewallRule,
       setGlobalBotFilter,
@@ -4674,6 +4741,8 @@ function App() {
     if (page === 'php') return <PhpConfigPage />;
     if (page === 'firewall') return <FirewallPage />;
     if (page === 'fail2ban') return <Fail2banPage />;
+    if (page === 'dns') return <DnsPage />;
+    if (page === 'mail') return <MailPage />;
     if (page === 'mcp') return <McpPage />;
     if (page === 'notifications') return <NotificationsPage />;
     if (page === 'waf') return <WafPage />;
