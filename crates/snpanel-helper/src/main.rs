@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 /// Printed by `--help`. Checked against the mapping by
 /// `the_help_text_count_is_the_measured_one`, because the previous figure was
 /// hardcoded and went twenty-four verbs stale without anything noticing.
-const ANSWERED_VERBS: usize = 167;
+const ANSWERED_VERBS: usize = 189;
 
 fn print_help(sink: audit::Sink) {
     println!("snpanel-helper - privileged operations for SNPanel\n");
@@ -97,6 +97,8 @@ fn print_help(sink: audit::Sink) {
         "  *-install       clamav, certbot-dns-cloudflare;  maldet-update-sigs",
         "  fail2ban-*      install, configure (settings on stdin), status, ban,",
         "                  unban, stop",
+        "  dns-*           install, stop, status (PowerDNS, the DNS Manager addon)",
+        "  mail-*          install, stop, status, sync (state on stdin; the Email addon)",
         "  ssh-ports       the ports sshd listens on, as JSON",
         "  updates-panel-run, nginx-upgrade-map-ensure",
         "  site-app-*      write (node, docker), control, logs, delete, dir-ensure,",
@@ -116,6 +118,14 @@ fn print_help(sink: audit::Sink) {
         "  clamav-*        status, start, stop;   maldet-status",
         "  systemctl, daemon-reload, service-status, fastcgi-cache-clear",
         "  selinux-*       restore-site, port-add (no-op off the RHEL family)",
+        "  lve-*           status, packages, usage, set, reset, package-set,",
+        "                  package-reset, package-rename (CloudLinux only)",
+        "  cpapi-sync      CloudLinux integration snapshot (JSON on stdin)",
+        "  web-*           status, switch <lsws|apache> (who answers 80/443)",
+        "  waf-site-enable <domain> on|off, waf-site-part-save <domain> bots|flood",
+        "  apache-site-write <domain> (vhost on stdin), apache-site-delete <domain>",
+        "  site-php-set <user> <domain> <docroot> <version|inherit> (MultiPHP)",
+        "  lsws-*          restart, admin-password (LiteSpeed WebAdmin)",
     ] {
         println!("{line}");
     }

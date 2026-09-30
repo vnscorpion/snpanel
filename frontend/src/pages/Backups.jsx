@@ -143,13 +143,13 @@ export default function BackupsPage() {
 
   return <section className="section backups-page">
     <h2>{t('Backups')}</h2>
-    <div className="segmented-control backup-tabs" role="tablist" aria-label={t('Backup sections')}>
+    <div className="tab-bar backup-tabs" role="tablist" aria-label={t('Backup sections')}>
       {backupTabs.map(([id, label, Icon]) => <button
         key={id}
         type="button"
         role="tab"
         aria-selected={activeBackupTab === id}
-        className={activeBackupTab === id ? 'active' : ''}
+        className={activeBackupTab === id ? 'tab active' : 'tab'}
         onClick={() => setBackupTab(id)}
       ><Icon size={14}/>{label}</button>)}
     </div>

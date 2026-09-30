@@ -26,6 +26,8 @@
 
 /* A password change, or a new account: a small form in place. */
 .sftp-inline{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3);align-items:start;padding:12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-alt)}
+/* A new account: name, folder, password and the proof on one row. */
+.sftp-add-form{grid-template-columns:repeat(4,minmax(0,1fr))}
 .sftp-field{display:grid;gap:6px;min-width:0}
 .sftp-field>label{font-size:var(--text-sm);font-weight:600;color:var(--text-secondary)}
 .sftp-field>.hint{margin:0;font-size:var(--text-xs)}
@@ -36,8 +38,11 @@
 .sftp-add{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap}
 .sftp-add .hint{margin:0}
 
+@media (max-width:1200px){
+  .sftp-add-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 @media (max-width:900px){
-  .sftp-inline{grid-template-columns:1fr}
+  .sftp-inline,.sftp-add-form{grid-template-columns:1fr}
 }
 @media (max-width:640px){
   .sftp-list li{grid-template-columns:auto minmax(0,1fr)}

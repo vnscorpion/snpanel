@@ -25,6 +25,7 @@
 #![allow(clippy::result_large_err)]
 
 mod access_log;
+mod apache_vhost;
 mod archive;
 mod auth;
 mod auth_log;
@@ -40,11 +41,13 @@ mod client;
 mod cloudflare;
 mod cloudlinux_ui;
 mod compose;
+mod cpapi_sync;
 mod cron;
 mod cron_due;
 mod ctl;
 mod da_import;
 mod da_jobs;
+mod dns;
 mod errors;
 mod fail2ban;
 mod file_jobs;
@@ -53,6 +56,7 @@ mod ftp;
 mod helper_socket;
 mod initdb;
 mod listen;
+mod mail;
 mod malware;
 mod malware_jobs;
 mod malware_quarantine;
@@ -68,6 +72,7 @@ mod php;
 mod php_tune;
 mod qr;
 mod ratelimit;
+mod resellers;
 mod restore;
 mod routes;
 mod s3;
@@ -342,6 +347,11 @@ async fn run() -> anyhow::Result<()> {
     // the Notifications addon is installed. Only the server runs it: a
     // one-shot process above has returned already.
     notify::watcher::start(state.clone());
+
+    // CloudLinux's view of accounts and packages, on a Hosting Edition
+    // server with CloudLinux only. Server only, like the watcher.
+    cpapi_sync::start(&state);
+    dns::start(&state);
 
     let app = build_router(state);
     let addr: SocketAddr = listen.parse()?;

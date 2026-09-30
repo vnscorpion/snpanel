@@ -1,0 +1,38 @@
+#!/bin/bash
+# snpanel-webwatch
+#
+# While LiteSpeed is live: probe it directly on its own port (not through 80,
+# which would stop telling us anything once we have failed over). Three
+# failures in a row -> switch 80/443 to the Apache standby. Also switch
+# pre-emptively when LiteSpeed reports its licence as expired.
+# Never switches back: an administrator runs `snpanel-webswitch lsws`.
+INTERVAL="${INTERVAL:-1}"
+LIMIT="${LIMIT:-3}"
+PROBE_HOST="${PROBE_HOST:-snpanel-default.invalid}"
+fails=0
+tick=0
+seen_ok=0   # do not count failures until LiteSpeed has answered once (boot, restart)
+while true; do
+  live=$(cat /var/lib/snpanel/webserver 2>/dev/null || echo apache)
+  if [ "$live" = lsws ]; then
+    # a static file: the probe must not depend on PHP being warm
+    code=$(curl -s -o /dev/null -m 2 -w '%{http_code}' -H "Host: $PROBE_HOST" http://127.0.0.1:9080/.well-known/acme-challenge/snpanel-health || true)
+    if [ "$code" = 200 ]; then fails=0; seen_ok=1
+    # grace ends at the first success, or after 120 ticks whatever happens:
+    # a LiteSpeed that never comes up (expired licence at boot) must still fail over
+    elif [ "$seen_ok" = 1 ] || [ "$tick" -ge 120 ]; then fails=$((fails + 1)); fi
+    reason=""
+    [ "$fails" -ge "$LIMIT" ] && reason="lsws not answering ($fails x, last=$code)"
+    # licence: checked every 60 ticks (the real service would do this hourly)
+    if [ $((tick % 60)) -eq 0 ] && /usr/local/lsws/bin/lshttpd -V 2>&1 | grep -qiE 'expired|invalid|not valid'; then
+      reason="lsws licence expired"
+    fi
+    if [ -n "$reason" ]; then
+      /usr/local/sbin/snpanel-webswitch apache >/dev/null
+      echo "$(date '+%F %T.%3N') FAILOVER to apache: $reason" | tee -a /var/log/snpanel-webswitch.log
+      fails=0
+    fi
+  fi
+  tick=$((tick + 1))
+  sleep "$INTERVAL"
+done

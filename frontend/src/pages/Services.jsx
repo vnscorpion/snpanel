@@ -1,13 +1,14 @@
 import { Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
-import { useT } from '../i18n/index.jsx';
+import { msg, useT } from '../i18n/index.jsx';
+import WebServerPanel from '../components/WebServerPanel.jsx';
 
 // What a unit name stands for, where the name alone does not say it.
 const SERVICE_LABELS = {
-  lshttpd: 'LiteSpeed Web Server (PHP via LSPHP)',
-  httpd: 'Apache (PHP via mod_lsapi; LiteSpeed standby)',
-  db_governor: 'MySQL Governor',
-  'snpanel-webwatch': 'LiteSpeed failover watchdog',
+  lshttpd: msg('LiteSpeed Web Server (PHP via LSPHP)'),
+  httpd: msg('Apache (PHP via mod_lsapi; LiteSpeed standby)'),
+  db_governor: msg('MySQL Governor'),
+  'snpanel-webwatch': msg('LiteSpeed failover watchdog'),
 };
 
 export default function ServicesPage() {
@@ -34,7 +35,10 @@ export default function ServicesPage() {
           const active = text.includes('active (running)');
           const inactive = text.includes('inactive') || text.includes('failed');
           return <div className="service-card" key={name}>
-            <div><strong>{name}</strong>{SERVICE_LABELS[name] && <span className="hint"> {t(SERVICE_LABELS[name])}</span>}<span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span></div>
+            <div>
+              <div className="service-name"><strong>{name}</strong>{SERVICE_LABELS[name] && <small>{t(SERVICE_LABELS[name])}</small>}</div>
+              <span className={active ? 'badge ok' : inactive ? 'badge bad' : 'badge'}>{active ? t('Running') : inactive ? t('Stopped') : '...'}</span>
+            </div>
             {/* Only what applies: a running service restarts or stops, a
                 stopped one starts; while its state is unknown, both. */}
             {isAdmin && <div className="service-actions">
@@ -48,5 +52,8 @@ export default function ServicesPage() {
     </section>;
   }
 
-  return renderServices();
+  return <>
+    {isAdmin && <WebServerPanel/>}
+    {renderServices()}
+  </>;
 }

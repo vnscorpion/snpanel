@@ -435,6 +435,24 @@ async fn update_bot_block(state: &AppState, domain: &str, bots: &[String]) -> Re
     if state.settings.command_dry_run {
         return Ok(());
     }
+    // Hosting Edition: a ModSecurity rule in the site's WAF directory, read
+    // by Apache and LiteSpeed alike.
+    if crate::system::is_hosting_edition() {
+        let content = crate::waf::render_bot_rules(bots).map_err(|e| e.0)?;
+        let result = crate::shell::privileged(
+            false,
+            "waf-site-part-save",
+            &[domain, "bots"],
+            Some(&content),
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(result.failure_detail("Could not save the blocked bots"))
+        };
+    }
     let Some(path) = super::websites::vhost_path_for(state, domain) else {
         return Err("Invalid domain".to_string());
     };
@@ -821,6 +839,9 @@ async fn save_custom_rules(State(state): State<AppState>, req: Request) -> Respo
 
 /// Source: `install_waf`.
 async fn install_engine(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -847,6 +868,9 @@ async fn install_engine(State(state): State<AppState>, current: CurrentUser) -> 
 
 /// Source: `update_waf_rules`.
 async fn update_rules(State(state): State<AppState>, current: CurrentUser) -> Response {
+    if let Some(r) = crate::system::hosting_waf_refusal() {
+        return r;
+    }
     if !permissions::has_role(&current.user.role, Role::Admin) {
         return not_enough_permissions();
     }
@@ -1072,6 +1096,10 @@ async fn set_website_crs(
              so nothing is loaded yet.",
             website.domain
         )
+    } else if crate::system::is_hosting_edition() {
+        // Apache and LiteSpeed load CRS once for the whole server, and the
+        // change is live already: there is no per-site memory to wait for.
+        format!("OWASP CRS is {mode} on {}.", website.domain)
     } else {
         format!(
             "OWASP CRS is {mode} on {}. Restart nginx to see the memory change; \
@@ -1205,6 +1233,11 @@ pub(super) async fn switch_crs_mode(
         let state = state.clone();
         async move {
             let mut problems: Vec<Value> = Vec::new();
+            // Hosting Edition: CRS is one server-wide include; there are no
+            // per-site rule files (and no nginx to test them with).
+            if crate::system::is_hosting_edition() {
+                return problems;
+            }
             for site in sites {
                 match crate::waf::sync_website_rules(
                     state.settings.command_dry_run,
@@ -1585,7 +1618,7 @@ async fn clear_access_logs(
         let Ok(domain) = crate::waf::validate_domain(&site.domain) else {
             return bad_request("Invalid domain");
         };
-        let path = format!("/var/log/nginx/{domain}.access.log");
+        let path = format!("{}/{domain}.access.log", crate::system::site_log_dir());
         let result = shell::privileged(
             state.settings.command_dry_run,
             "site-log-clear",
@@ -1746,7 +1779,7 @@ async fn read_site_logs(
 
     let Some(result) = batch else {
         for domain in domains {
-            let path = format!("/var/log/nginx/{domain}.access.log");
+            let path = format!("{}/{domain}.access.log", crate::system::site_log_dir());
             let result = shell::privileged(
                 state.settings.command_dry_run,
                 "site-log-read",

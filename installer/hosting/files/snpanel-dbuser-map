@@ -1,0 +1,61 @@
+#!/usr/bin/python3 -s
+"""snpanel-dbuser-map - MySQL Governor's /etc/container/dbuser-map from the panel.
+
+Governor counts a database user's load against a Linux account through this
+file ("db_user linux_user uid" per line). Without it every panel database user
+(u_<db>) is lumped into one account "u". The panel's database says which
+account owns which database user; this rewrites the map from it and restarts
+db_governor only when the map changed. Run by snpanel-dbuser-map.timer.
+"""
+import os
+import pwd
+import sqlite3
+import subprocess
+import sys
+
+DB = os.environ.get("SNPANEL_DB", "/opt/snpanel/backend/snpanel.db")
+MAP = "/etc/container/dbuser-map"
+
+
+def wanted():
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
+    try:
+        rows = con.execute(
+            "SELECT d.db_user, u.username FROM database_accounts d "
+            "JOIN users u ON u.id = d.owner_id ORDER BY d.db_user"
+        ).fetchall()
+    finally:
+        con.close()
+    lines = []
+    for db_user, username in rows:
+        try:
+            uid = pwd.getpwnam(username).pw_uid
+        except KeyError:
+            continue
+        lines.append(f"{db_user} {username} {uid}\n")
+    return "".join(lines)
+
+
+def main():
+    if not os.path.isdir("/etc/container"):
+        return 0
+    text = wanted()
+    try:
+        with open(MAP) as f:
+            if f.read() == text:
+                return 0
+    except FileNotFoundError:
+        pass
+    tmp = MAP + ".snpanel-tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, MAP)
+    if subprocess.run(["systemctl", "is-active", "--quiet", "db_governor"]).returncode == 0:
+        subprocess.run(["systemctl", "restart", "db_governor"], check=False)
+    print(f"dbuser-map: {text.count(chr(10))} database user(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

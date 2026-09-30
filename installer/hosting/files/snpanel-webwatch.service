@@ -1,0 +1,11 @@
+[Unit]
+Description=SNPanel: LiteSpeed watchdog, fails over to Apache
+After=snpanel-webswitch-restore.service
+
+[Service]
+ExecStart=/usr/local/sbin/snpanel-webwatch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

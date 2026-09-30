@@ -1,0 +1,11 @@
+[Unit]
+Description=SNPanel: restore which web server answers 80/443
+After=network-online.target snpanel-firewall.service httpd.service lshttpd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/snpanel-webswitch-restore
+
+[Install]
+WantedBy=multi-user.target

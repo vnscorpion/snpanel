@@ -1,0 +1,7 @@
+[Unit]
+Description=SNPanel: MySQL Governor's database-user map from the panel
+After=mariadb.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/snpanel-dbuser-map

@@ -52,6 +52,27 @@ a.dash-card:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
 .dash-action-icon{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:var(--radius-md);background:var(--primary-light);color:var(--primary-text,var(--primary))}
 .dash-first-hint{display:flex;align-items:center;gap:6px;margin:var(--space-3) 0 0}
 
+/* ---- CloudLinux statistics column (customers, Hosting Edition) ---- */
+.dash-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--space-4);align-items:start}
+.lve-stats{margin-bottom:0;position:sticky;top:var(--space-4)}
+.lve-stats .dash-section-head h2{display:flex;align-items:center;gap:8px}
+.lve-stats-package{margin:-6px 0 var(--space-3)}
+.lve-stats-list{list-style:none;margin:0 0 var(--space-3);padding:0;display:grid;gap:14px}
+.lve-stats-list li{--tone:var(--success);display:grid;gap:6px}
+.lve-stats-list li[data-tone="warn"]{--tone:var(--warning)}
+.lve-stats-list li[data-tone="bad"]{--tone:var(--danger)}
+.lve-stats-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:var(--text-sm)}
+.lve-stats-label{font-weight:600;color:var(--text-secondary)}
+.lve-stats-value{font-weight:700;color:var(--text);white-space:nowrap}
+.lve-stats-bar{height:8px;border-radius:999px;background:var(--surface-sunken);overflow:hidden}
+.lve-stats-bar span{display:block;height:100%;min-width:2px;border-radius:inherit;background:var(--tone);transition:width .4s ease}
+.lve-stats-faults{display:flex;align-items:center;gap:4px;color:var(--danger-text,var(--danger));font-weight:600}
+.lve-stats-more{width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+@media (max-width:1200px){
+  .dash-layout{grid-template-columns:1fr}
+  .lve-stats{position:static}
+}
+
 @container dash (max-width:1100px){
   .dash-lower{grid-template-columns:1fr}
 }

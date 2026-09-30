@@ -280,6 +280,27 @@ mod tests {
         assert_eq!(checked, 2);
     }
 
+    /// **An update puts back every binary the install put there.** The
+    /// helper was once left out: every updated box then ran an API asking
+    /// the old helper for verbs it did not have, and a new addon's install
+    /// failed with "unknown verb".
+    #[test]
+    fn the_update_refreshes_the_helper_and_extract() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../installer");
+        let text = std::fs::read_to_string(root.join("update.sh")).expect("update.sh");
+        for name in [
+            "snpanel-helper",
+            "snpanel-extract",
+            "snpanel-install",
+            "snpanel-api",
+        ] {
+            assert!(
+                text.contains(&format!("\"${{RUST_BIN_DIR}}/{name}\"")),
+                "update.sh does not install {name} from the release"
+            );
+        }
+    }
+
     /// Without the Rust binaries there is nothing to install.
     ///
     /// This used to assert the opposite: the rescue menu was a bash script,

@@ -204,7 +204,18 @@ async fn update_custom_block(
     domain: &str,
     validated: &snpanel_nginx::CustomDirectives,
 ) -> Result<(), Response> {
+    // Before the dry-run shortcut: saying "saved" for directives no web
+    // server here will ever read is worse than refusing them.
+    if crate::system::is_hosting_edition() && !validated.as_str().trim().is_empty() {
+        return Err(crate::errors::conflict(
+            "This server runs LiteSpeed and Apache, which do not read nginx directives. \
+             Use the site's .htaccess for per-site rules.",
+        ));
+    }
     if state.settings.command_dry_run {
+        return Ok(());
+    }
+    if crate::system::is_hosting_edition() {
         return Ok(());
     }
     let Some(existing) = read_vhost(state, domain).await else {
@@ -697,7 +708,11 @@ async fn logs(
         return not_enough_permissions();
     }
 
-    let path = format!("/var/log/nginx/{}.{kind}.log", website.domain);
+    let path = format!(
+        "{}/{}.{kind}.log",
+        crate::system::site_log_dir(),
+        website.domain
+    );
     let lines_arg = lines.to_string();
     let result = shell::privileged(
         state.settings.command_dry_run,
@@ -1012,11 +1027,140 @@ pub(super) async fn rewrite_owned_vhost(
 /// The overrides matter because the caller often knows something the database
 /// does not yet: an alias that has been added inside this transaction and is
 /// not committed, for instance.
+/// The certificate a Hosting Edition vhost serves, by the site's SSL mode.
+///
+/// Let's Encrypt's lineage is named without being checked: the live
+/// directory is root-only, and the flag on the row was set by the helper
+/// after it issued the certificate. The other modes keep the nginx paths
+/// (`rewrite_ssl_paths`), which Apache and LiteSpeed read just as well.
+fn apache_ssl_files(
+    website: &snpanel_db::Website,
+    overrides: &RewriteOverrides,
+) -> Option<crate::apache_vhost::SslFiles> {
+    if overrides.include_ssl == Some(false) || !website.ssl_enabled {
+        return None;
+    }
+    if website.ssl_mode == "letsencrypt" {
+        let live = format!("/etc/letsencrypt/live/{}", website.domain);
+        return Some(crate::apache_vhost::SslFiles {
+            cert: format!("{live}/fullchain.pem"),
+            key: format!("{live}/privkey.pem"),
+            chain: None,
+        });
+    }
+    let (cert, key, ca) = rewrite_ssl_paths(website);
+    Some(crate::apache_vhost::SslFiles {
+        cert: cert?,
+        key: key?,
+        chain: ca,
+    })
+}
+
+/// Write one site's vhost on the Hosting Edition, through the helper.
+pub(super) async fn write_apache_site(
+    state: &AppState,
+    site: &crate::apache_vhost::ApacheSite,
+) -> Result<String, String> {
+    let content = crate::apache_vhost::render(site).map_err(|e| e.0)?;
+    let path = format!("{}/{}.conf", APACHE_SITES_DIR, site.domain);
+    if state.settings.command_dry_run {
+        return Ok(path);
+    }
+    let result = shell::privileged(
+        false,
+        "apache-site-write",
+        &[&site.domain],
+        Some(&content),
+        None,
+    )
+    .await;
+    if result.ok() {
+        Ok(path)
+    } else {
+        Err(result
+            .failure_detail("Cannot write the vhost")
+            .trim()
+            .to_string())
+    }
+}
+
+const APACHE_SITES_DIR: &str = "/etc/httpd/snpanel/sites";
+
+/// `rewrite_website_vhost` on the Hosting Edition: the same inputs and
+/// overrides, rendered for Apache and LiteSpeed. A customer's nginx
+/// directives have no meaning here and are not carried over; suspension is
+/// the `# SUSPENDED` marker the suspend paths put in their overrides.
+async fn rewrite_apache_vhost(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    overrides: RewriteOverrides,
+) -> Result<String, Response> {
+    let ssl = apache_ssl_files(website, &overrides);
+    let aliases_rows = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .unwrap_or_default();
+    let suspended = overrides.custom_directives.as_deref().map(str::trim) == Some("# SUSPENDED");
+    let app_type = match overrides.app_type {
+        Some(forced) => forced.to_string(),
+        None if website.app_type.is_empty() => "wordpress".to_string(),
+        None => website.app_type.clone(),
+    };
+    let rewrite_mode = match overrides.rewrite_mode {
+        Some(forced) => forced.to_string(),
+        None if website.nginx_rewrite_mode.is_empty() => "none".to_string(),
+        None => website.nginx_rewrite_mode.clone(),
+    };
+    let app_port = match overrides.app_port {
+        Some(port) => Some(port),
+        None => match website.app_id {
+            Some(app_id) => state
+                .db
+                .site_apps()
+                .by_id(app_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|app| app.port),
+            None => None,
+        },
+    };
+    let site = crate::apache_vhost::ApacheSite {
+        domain: website.domain.clone(),
+        aliases: overrides
+            .aliases
+            .unwrap_or_else(|| domains_by_mode(&aliases_rows, "alias")),
+        redirects: overrides
+            .redirects
+            .unwrap_or_else(|| domains_by_mode(&aliases_rows, "redirect")),
+        root_path: website.root_path.clone(),
+        document_root: if website.document_root.is_empty() {
+            "public_html".to_string()
+        } else {
+            website.document_root.clone()
+        },
+        rewrite_mode,
+        linux_user: website.linux_user.clone().unwrap_or_default(),
+        app_type,
+        app_port: app_port.and_then(|p| u16::try_from(p).ok()),
+        suspended,
+        ssl,
+    };
+    write_apache_site(state, &site)
+        .await
+        .map_err(|e| bad_request(&e))
+}
+
 pub(super) async fn rewrite_website_vhost(
     state: &AppState,
     website: &snpanel_db::Website,
     overrides: RewriteOverrides,
 ) -> Result<String, Response> {
+    if crate::system::is_hosting_edition() {
+        return rewrite_apache_vhost(state, website, overrides).await;
+    }
     // Read before anything moves a field out of `overrides`.
     let (cert, key, ca) = vhost_ssl_paths(website, &overrides);
     let aliases_rows = state
@@ -1307,6 +1451,8 @@ async fn create_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_created(&state, &created.domain).await;
+    crate::mail::refresh(&state).await;
     axum::Json(alias_json(&created)).into_response()
 }
 
@@ -1374,6 +1520,8 @@ async fn delete_alias(
         &website.domain,
     )
     .await;
+    crate::dns::website_deleted(&alias.domain).await;
+    crate::mail::domain_deleted(&state, &alias.domain).await;
     axum::Json(json!({ "ok": true })).into_response()
 }
 
@@ -1431,6 +1579,25 @@ pub(super) async fn update_waf_block(
 ) -> Result<(), Response> {
     if state.settings.command_dry_run {
         return Ok(());
+    }
+    // Hosting Edition: the site's rule file is parked or put back, and the
+    // server-wide CRS taken off the site while its WAF is off.
+    if crate::system::is_hosting_edition() {
+        let result = shell::privileged(
+            false,
+            "waf-site-enable",
+            &[domain, if enabled { "on" } else { "off" }],
+            None,
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(bad_request(
+                &result.failure_detail("Could not switch the WAF"),
+            ))
+        };
     }
     let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
@@ -1619,6 +1786,11 @@ async fn sync_http_flood_zones(state: &AppState) -> Result<(), Response> {
 /// go through [`sync_http_flood_zones`], which turns this into the response
 /// they always made.
 pub(super) async fn sync_flood_zones(state: &AppState) -> Result<(), String> {
+    // The Hosting Edition keeps each site's limit in its own rules; there is
+    // no shared zone file.
+    if crate::system::is_hosting_edition() {
+        return Ok(());
+    }
     let websites = state.db.websites().list(None, "").await.map_err(|e| {
         tracing::error!("listing websites for the flood zones failed: {e}");
         format!("could not list the websites for the flood zones: {e}")
@@ -1832,6 +2004,26 @@ async fn update_http_flood_block(
 ) -> Result<(), Response> {
     if state.settings.command_dry_run {
         return Ok(());
+    }
+    // Hosting Edition: ModSecurity counters in the site's WAF directory.
+    if crate::system::is_hosting_edition() {
+        let content = crate::waf::render_flood_rules(domain, enabled, config)
+            .map_err(|e| bad_request(&e.0))?;
+        let result = shell::privileged(
+            false,
+            "waf-site-part-save",
+            &[domain, "flood"],
+            Some(&content),
+            None,
+        )
+        .await;
+        return if result.ok() {
+            Ok(())
+        } else {
+            Err(bad_request(
+                &result.failure_detail("Could not save the flood limit"),
+            ))
+        };
     }
     let Some(path) = vhost_path_for(state, domain) else {
         return Err(bad_request("Invalid domain"));
@@ -3369,7 +3561,19 @@ async fn enable_ssl(
     // nginx plugin. That plugin only ever touches `$domain`, for exactly this
     // reason: it has no way to build a new, correctly confined block for an
     // alias and falls back to cloning whichever server block it finds first.
-    if !domains_by_mode(&aliases_rows, "redirect").is_empty() {
+    if crate::system::is_hosting_edition() {
+        // Nothing edited the vhost: the panel writes it, with the
+        // certificate and the redirect from http, here.
+        if let Err(r) = rewrite_owned_vhost(&state, &updated, RewriteOverrides::default()).await {
+            tracing::error!("writing the HTTPS vhost of {} failed: {r}", website.domain);
+            return crate::errors::error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!(
+                    "The certificate was issued, but the vhost could not be switched to HTTPS: {r}"
+                ),
+            );
+        }
+    } else if !domains_by_mode(&aliases_rows, "redirect").is_empty() {
         let _ = rewrite_owned_vhost(&state, &updated, RewriteOverrides::default()).await;
     }
     sync_alias_ssl_flags(&state, &updated).await;
@@ -3490,6 +3694,17 @@ pub(super) async fn delete_website_vhost(state: &AppState, domain: &str) {
     if state.settings.command_dry_run {
         return;
     }
+    if crate::system::is_hosting_edition() {
+        let result = shell::privileged(false, "apache-site-delete", &[domain], None, None).await;
+        if !result.ok() {
+            tracing::error!(
+                "removing the vhost of {domain} failed: {}",
+                result.stderr.trim()
+            );
+        }
+        let _ = shell::privileged(false, "site-logs-delete", &[domain], None, None).await;
+        return;
+    }
     let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
         .join(format!("{domain}.conf"));
     if let Err(e) = tokio::fs::remove_file(&path).await {
@@ -3577,6 +3792,14 @@ async fn delete_website(
         }
     }
 
+    // Their zones go with the website, below.
+    let alias_domains: Vec<String> = state
+        .db
+        .websites()
+        .aliases(website.id)
+        .await
+        .map(|rows| rows.into_iter().map(|a| a.domain).collect())
+        .unwrap_or_default();
     if let Err(e) = state.db.websites().alias_delete_all(website.id).await {
         tracing::error!("deleting the aliases of {domain} failed: {e}");
         return internal_error();
@@ -3584,6 +3807,12 @@ async fn delete_website(
     // The owner's SFTP accounts shut into this site's folder go with it:
     // their mount would be of a folder no longer there.
     super::sftp_accounts::drop_for_site(&state, website.owner_id, &website.root_path).await;
+    // Hosting Edition: the site's isolate (its own PHP version) goes with it.
+    if crate::system::is_hosting_edition() && !website.php_version.is_empty() {
+        if let Err(e) = set_hosting_site_php(&state, &website, "").await {
+            tracing::warn!("undoing the PHP version of {domain}: {e}");
+        }
+    }
     delete_website_vhost(&state, &domain).await;
 
     // The vhost is gone, so nothing reads the certificate or the rule file any
@@ -3650,6 +3879,10 @@ async fn delete_website(
         &ssl_note,
     )
     .await;
+    for name in std::iter::once(&domain).chain(&alias_domains) {
+        crate::dns::website_deleted(name).await;
+        crate::mail::domain_deleted(&state, name).await;
+    }
     crate::fail2ban::refresh_in_background(&state);
 
     axum::Json(json!({
@@ -3789,6 +4022,7 @@ fn create_request(payload: &Value, force_wordpress: Option<bool>) -> Result<Crea
         return Err("domain is required".to_string());
     }
     let php_version = match payload.get("php_version").and_then(Value::as_str) {
+        Some(v) if v.trim() == "inherit" => String::new(),
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         // `WebsiteCreate.php_version` has no default of its own; the column's
         // is what a row gets, and the vhost renderer needs a value now.
@@ -3882,6 +4116,13 @@ async fn create_site_from(
     if !permissions::is_admin_role(&owner.role) && count >= owner.website_limit {
         return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Website limit reached");
     }
+    // Not in the Python: a reseller's limits, on what it and its accounts
+    // really use.
+    if let Err(message) =
+        crate::resellers::check_room(&state, owner.id, crate::resellers::Resource::Website).await
+    {
+        return crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message);
+    }
 
     let install_wp = installs_wordpress(request.install_wordpress, &request.app_type);
     let estimate = if install_wp {
@@ -3974,6 +4215,47 @@ async fn create_site_from(
         }
     };
 
+    // Hosting Edition: CRS is loaded once for the whole server, so a site's
+    // opt-in costs nothing and a new site starts with it, as the sites
+    // already there do. (On nginx each site's CRS is ~50 MB and stays off
+    // until chosen.)
+    if crate::system::is_hosting_edition() {
+        // A version chosen at creation is the site's own (MultiPHP); none,
+        // or "inherit", follows the owner's PHP Selector version.
+        if let Ok(Some(row)) = state.db.websites().by_id(website_id).await {
+            if !row.php_version.is_empty() {
+                // CloudLinux finds a domain's owner through the CPAPI
+                // snapshot; the new domain has to be in it before an isolate
+                // can be made for it.
+                if let Err(e) = crate::cpapi_sync::sync_now(&state).await {
+                    tracing::warn!("CPAPI snapshot before the new {}: {e}", request.domain);
+                }
+                if let Err(e) = set_hosting_site_php(&state, &row, &row.php_version).await {
+                    tracing::warn!(
+                        "PHP {} for the new {}: {e}",
+                        row.php_version,
+                        request.domain
+                    );
+                }
+            }
+        }
+        if let Err(e) = state.db.websites().set_crs_enabled(website_id, true).await {
+            tracing::warn!("turning CRS on for the new {} failed: {e}", request.domain);
+        } else if let Ok(Some(row)) = state.db.websites().by_id(website_id).await {
+            let mode = super::waf::server_crs_mode();
+            match crate::waf::sync_website_rules(state.settings.command_dry_run, &row, &mode).await
+            {
+                Ok(r) if r.ok() => {}
+                Ok(r) => tracing::warn!(
+                    "CRS rules for the new {}: {}",
+                    request.domain,
+                    r.stderr.trim()
+                ),
+                Err(e) => tracing::warn!("CRS rules for the new {}: {}", request.domain, e.0),
+            }
+        }
+    }
+
     if let Some(info) = &db_info {
         // C3: the column holds Fernet ciphertext, never the password.
         let encrypted =
@@ -4010,6 +4292,8 @@ async fn create_site_from(
         &request.domain,
     )
     .await;
+    crate::dns::website_created(&state, &request.domain).await;
+    crate::mail::refresh(&state).await;
     // The WordPress jail reads every site's access log, and fail2ban finds
     // log files only when it reads its settings.
     crate::fail2ban::refresh_in_background(&state);
@@ -4139,6 +4423,22 @@ pub(super) async fn ensure_new_site_waf(state: &AppState, domain: &str) -> Resul
 
 /// Source: `nginx.write_vhost` for a site that has no row yet.
 pub(super) async fn write_site_vhost(state: &AppState, site: &NewSite<'_>) -> Result<(), String> {
+    if crate::system::is_hosting_edition() {
+        let apache = crate::apache_vhost::ApacheSite {
+            domain: site.domain.to_string(),
+            aliases: Vec::new(),
+            redirects: Vec::new(),
+            root_path: site.root_path.to_string(),
+            document_root: "public_html".to_string(),
+            rewrite_mode: site.rewrite_mode.to_string(),
+            linux_user: site.linux_user.to_string(),
+            app_type: site.app_type.to_string(),
+            app_port: site.app_port.and_then(|p| u16::try_from(p).ok()),
+            suspended: false,
+            ssl: None,
+        };
+        return write_apache_site(state, &apache).await.map(drop);
+    }
     let custom = snpanel_nginx::CustomDirectives::validate("").map_err(|e| e.to_string())?;
     let root = std::path::PathBuf::from(site.root_path);
     let socket = new_site_fpm_socket(site);
@@ -4226,6 +4526,12 @@ async fn cleanup_failed_site(state: &AppState, site: &NewSite<'_>) {
 /// silently overwritten by a fresh create - taking whatever that file was
 /// serving down with it.
 pub(super) async fn vhost_exists(state: &AppState, domain: &str) -> bool {
+    if crate::system::is_hosting_edition() {
+        return tokio::fs::metadata(format!("{APACHE_SITES_DIR}/{domain}.conf"))
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+    }
     let path = std::path::PathBuf::from(&state.settings.nginx_sites_available)
         .join(format!("{domain}.conf"));
     tokio::fs::metadata(&path)
@@ -4754,6 +5060,10 @@ fn website_update_fields(payload: &Value) -> Result<WebsiteUpdateFields, Respons
     };
 
     let php_version = match text("php_version") {
+        // Hosting Edition: the site follows its owner's PHP Selector version.
+        Some(v) if (v == "inherit" || v.is_empty()) && crate::system::is_hosting_edition() => {
+            Some(String::new())
+        }
         Some(v) => {
             if !snpanel_nginx::ALLOWED_PHP_VERSIONS.contains(&v) {
                 let mut allowed: Vec<&str> = snpanel_nginx::ALLOWED_PHP_VERSIONS.to_vec();
@@ -5092,6 +5402,9 @@ async fn apply_php_version(
     website: &mut snpanel_db::Website,
     php_version: &str,
 ) -> Result<(), Response> {
+    if crate::system::is_hosting_edition() {
+        return apply_hosting_php_version(state, website, php_version).await;
+    }
     let app_type = current_app_type(website).to_string();
     let runtime_php = matches!(app_type.as_str(), "wordpress" | "php").then_some(php_version);
     if let (Some(linux_user), Some(runtime)) = (
@@ -5140,6 +5453,87 @@ async fn apply_php_version(
     // on a version it no longer has. A failure here is not worth undoing the
     // version change for.
     retarget_website_cron(state, website).await;
+    Ok(())
+}
+
+/// The document root `.htaccess` lives in, relative to the site's root, as
+/// the site serves it (Laravel and CodeIgniter from `public`).
+fn served_document_root(website: &snpanel_db::Website) -> String {
+    let base = if website.document_root.is_empty() {
+        "public_html"
+    } else {
+        website.document_root.trim_matches('/')
+    };
+    if matches!(
+        website.nginx_rewrite_mode.as_str(),
+        "laravel" | "codeigniter"
+    ) && !base.ends_with("/public")
+    {
+        format!("{base}/public")
+    } else {
+        base.to_string()
+    }
+}
+
+/// Give a site its own PHP version on the Hosting Edition (MultiPHP), or
+/// hand it back to its owner's PHP Selector version (`""`).
+pub(super) async fn set_hosting_site_php(
+    state: &AppState,
+    website: &snpanel_db::Website,
+    php_version: &str,
+) -> Result<(), String> {
+    let app_type = current_app_type(website);
+    let Some(user) = website.linux_user.as_deref().filter(|u| !u.is_empty()) else {
+        return Ok(());
+    };
+    if !matches!(app_type, "wordpress" | "php") || state.settings.command_dry_run {
+        return Ok(());
+    }
+    let docroot = served_document_root(website);
+    let version = if php_version.is_empty() {
+        "inherit"
+    } else {
+        php_version
+    };
+    let result = shell::privileged(
+        false,
+        "site-php-set",
+        &[user, &website.domain, &docroot, version],
+        None,
+        None,
+    )
+    .await;
+    if result.ok() {
+        Ok(())
+    } else {
+        Err(result
+            .failure_detail("Could not set the PHP version")
+            .trim()
+            .to_string())
+    }
+}
+
+/// `apply_php_version` on the Hosting Edition: no pool and no vhost to
+/// rewrite - the version is the site's `.htaccess` handler (LiteSpeed) and
+/// its CloudLinux isolate (Apache).
+async fn apply_hosting_php_version(
+    state: &AppState,
+    website: &mut snpanel_db::Website,
+    php_version: &str,
+) -> Result<(), Response> {
+    set_hosting_site_php(state, website, php_version)
+        .await
+        .map_err(|m| bad_request(&m))?;
+    state
+        .db
+        .websites()
+        .set_php_version(website.id, php_version)
+        .await
+        .map_err(|e| {
+            tracing::error!("setting the PHP version of {} failed: {e}", website.domain);
+            internal_error()
+        })?;
+    website.php_version = php_version.to_string();
     Ok(())
 }
 
@@ -5382,6 +5776,25 @@ async fn apply_owner(
                 internal_error()
             })?;
         return Ok(());
+    }
+
+    // A reseller's limits cover a site moved in from elsewhere.
+    let same_reseller = match (
+        crate::resellers::reseller_of(state, owner.id).await,
+        crate::resellers::reseller_of(state, website.owner_id).await,
+    ) {
+        (Ok(a), Ok(b)) => a.map(|x| x.0) == b.map(|x| x.0),
+        _ => false,
+    };
+    if !same_reseller {
+        if let Err(message) =
+            crate::resellers::check_room(state, owner.id, crate::resellers::Resource::Website).await
+        {
+            return Err(crate::errors::error(
+                axum::http::StatusCode::FORBIDDEN,
+                &message,
+            ));
+        }
     }
 
     // The new owner's allowance has to cover what is about to land in it.

@@ -192,12 +192,33 @@ fn ensure_own_log(own: &OwnLog) -> std::io::Result<()> {
     }
 }
 
+/// Which web server's logs the site jails read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebLogs {
+    /// The Standard edition: nginx, `/var/log/nginx`.
+    Nginx,
+    /// The Hosting Edition: Apache and LiteSpeed write the same per-site
+    /// files, `/var/log/httpd/<domain>.access.log` / `.error.log`.
+    Apache,
+}
+
+impl WebLogs {
+    fn here() -> Self {
+        if !crate::ops::runtime::have("nginx") && Path::new("/var/log/httpd").is_dir() {
+            Self::Apache
+        } else {
+            Self::Nginx
+        }
+    }
+}
+
 /// The jail file, from the settings and the ports this machine listens on.
 fn render_jail_file(
     config: &Fail2banConfig,
     ssh_ports: &[u16],
     panel_port: u16,
     own_log: &OwnLog,
+    web: WebLogs,
 ) -> String {
     // Normalized like every entry after them, so an entry that repeats
     // loopback is recognised as a repeat.
@@ -256,15 +277,33 @@ fn render_jail_file(
             // `*access.log` and not `*.access.log`: nginx's own access.log is
             // there on every machine with nginx, and a glob that matches
             // nothing - a server with no sites yet - stops fail2ban starting.
+            //
+            // Apache's are `<domain>.access.log` beside its own `access_log`,
+            // so `*access*log`, which the latter always satisfies. Same
+            // combined format, so the same filter.
             Fail2banJail::Wordpress => {
                 let _ = writeln!(out, "port = http,https");
                 let _ = writeln!(out, "filter = snpanel-wordpress");
-                let _ = writeln!(out, "logpath = /var/log/nginx/*access.log");
+                let logpath = match web {
+                    WebLogs::Nginx => "/var/log/nginx/*access.log",
+                    WebLogs::Apache => "/var/log/httpd/*access*log",
+                };
+                let _ = writeln!(out, "logpath = {logpath}");
                 let _ = writeln!(out, "ignoreip = {}", web_exempt.join(" "));
             }
+            // The page names this jail after nginx; on the Hosting Edition it
+            // watches the same thing - HTTP basic auth - in Apache's format.
             Fail2banJail::NginxHttpAuth => {
                 let _ = writeln!(out, "port = http,https");
-                let _ = writeln!(out, "logpath = /var/log/nginx/*error.log");
+                match web {
+                    WebLogs::Nginx => {
+                        let _ = writeln!(out, "logpath = /var/log/nginx/*error.log");
+                    }
+                    WebLogs::Apache => {
+                        let _ = writeln!(out, "filter = apache-auth");
+                        let _ = writeln!(out, "logpath = /var/log/httpd/*error*log");
+                    }
+                }
                 let _ = writeln!(out, "ignoreip = {}", web_exempt.join(" "));
             }
             // fail2ban's own: a week, on every port, for an address banned
@@ -331,7 +370,13 @@ fn write_files(config: &Fail2banConfig, ctx: &Context) -> Result<(), HelperRespo
         (WORDPRESS_FILTER, WORDPRESS_FILTER_TEXT.to_string()),
         (
             JAIL_FILE,
-            render_jail_file(config, &ctx.ssh_ports, ctx.panel_port, &own_log),
+            render_jail_file(
+                config,
+                &ctx.ssh_ports,
+                ctx.panel_port,
+                &own_log,
+                WebLogs::here(),
+            ),
         ),
     ] {
         super::nginx::write_atomic(Path::new(path), text.as_bytes(), 0o644).map_err(|e| {
@@ -655,7 +700,7 @@ mod tests {
 
     #[test]
     fn the_jail_file_says_what_the_page_decided() {
-        let file = render_jail_file(&config(), &[22, 2200], 2222, &default_log());
+        let file = render_jail_file(&config(), &[22, 2200], 2222, &default_log(), WebLogs::Nginx);
         let default = section(&file, "DEFAULT");
         // Loopback always, each entry once and masked, in the order given.
         assert!(
@@ -679,9 +724,12 @@ mod tests {
         // own, and silence here would leave that in charge.
         assert!(section(&file, "nginx-http-auth").contains("enabled = false\n"));
         assert!(section(&file, "recidive").contains("enabled = false\n"));
-        assert!(!render_jail_file(&config(), &[], 2222, &default_log()).contains("port = ,"));
+        assert!(
+            !render_jail_file(&config(), &[], 2222, &default_log(), WebLogs::Nginx)
+                .contains("port = ,")
+        );
         assert!(section(
-            &render_jail_file(&config(), &[], 2222, &default_log()),
+            &render_jail_file(&config(), &[], 2222, &default_log(), WebLogs::Nginx),
             "sshd"
         )
         .contains("port = ssh\n"));
@@ -744,7 +792,7 @@ mod tests {
     fn the_recidive_jail_reads_the_servers_own_log() {
         let mut every = config();
         every.jails.push(Fail2banJail::Recidive);
-        let shipped = render_jail_file(&every, &[22], 2222, &default_log());
+        let shipped = render_jail_file(&every, &[22], 2222, &default_log(), WebLogs::Nginx);
         let recidive = section(&shipped, "recidive");
         assert!(recidive.contains("enabled = true\n"), "{recidive}");
         // jail.conf's own logpath is right as shipped: nothing is repeated.
@@ -753,9 +801,15 @@ mod tests {
             "{recidive}"
         );
 
-        let moved = render_jail_file(&every, &[22], 2222, &OwnLog::File("/srv/f2b.log".into()));
+        let moved = render_jail_file(
+            &every,
+            &[22],
+            2222,
+            &OwnLog::File("/srv/f2b.log".into()),
+            WebLogs::Nginx,
+        );
         assert!(section(&moved, "recidive").contains("logpath = /srv/f2b.log\n"));
-        let journal = render_jail_file(&every, &[22], 2222, &OwnLog::Journal);
+        let journal = render_jail_file(&every, &[22], 2222, &OwnLog::Journal, WebLogs::Nginx);
         let recidive = section(&journal, "recidive");
         assert!(recidive.contains("backend = systemd\n") && !recidive.contains("logpath"));
     }
@@ -781,11 +835,28 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// On the Hosting Edition the site jails read Apache's (and LiteSpeed's)
+    /// per-site logs, with globs that match even before the first site.
+    #[test]
+    fn hosting_site_jails_read_the_httpd_logs() {
+        let file = render_jail_file(&config(), &[22], 2222, &default_log(), WebLogs::Apache);
+        let wp = section(&file, "snpanel-wordpress");
+        assert!(
+            wp.contains("logpath = /var/log/httpd/*access*log\n"),
+            "{wp}"
+        );
+        assert!(wp.contains("filter = snpanel-wordpress\n"));
+        let auth = section(&file, "nginx-http-auth");
+        assert!(auth.contains("filter = apache-auth\n"), "{auth}");
+        assert!(auth.contains("logpath = /var/log/httpd/*error*log\n"));
+        assert!(!file.contains("/var/log/nginx"));
+    }
+
     /// Cloudflare is exempt where the address comes from a site's log, and
     /// only there: an SSH or panel attacker's address is their own.
     #[test]
     fn cloudflare_is_never_banned_from_a_site_log() {
-        let file = render_jail_file(&config(), &[22], 2222, &default_log());
+        let file = render_jail_file(&config(), &[22], 2222, &default_log(), WebLogs::Nginx);
         for web in ["snpanel-wordpress", "nginx-http-auth"] {
             let jail = section(&file, web);
             for range in CLOUDFLARE {
@@ -807,7 +878,7 @@ mod tests {
     /// number or a parsed address, and nothing can start a line of its own.
     #[test]
     fn a_setting_cannot_add_a_line() {
-        let file = render_jail_file(&config(), &[22], 2222, &default_log());
+        let file = render_jail_file(&config(), &[22], 2222, &default_log(), WebLogs::Nginx);
         for line in file.lines() {
             let key = line.split(" = ").next().unwrap_or_default();
             assert!(

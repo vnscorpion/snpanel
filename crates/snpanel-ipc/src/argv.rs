@@ -149,6 +149,14 @@ fn user_of(raw: &str) -> Result<PanelUsername, InvocationError> {
     PanelUsername::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
 
+fn domain_of(raw: &str) -> Result<snpanel_core::Domain, InvocationError> {
+    snpanel_core::Domain::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
+}
+
+fn package_of(raw: &str) -> Result<crate::LvePackageName, InvocationError> {
+    crate::LvePackageName::parse(raw).map_err(InvocationError::invalid)
+}
+
 fn app_of(raw: &str) -> Result<AppName, InvocationError> {
     AppName::parse(raw).map_err(|e| InvocationError::invalid(e.to_string()))
 }
@@ -636,6 +644,81 @@ impl HelperRequest {
             ("php-pools-retune", 0) | ("php-fpm-retune", 0) => HelperRequest::PhpPoolsRetune,
             ("mariadb-retune", 0) => HelperRequest::MariadbRetune,
             ("lve-status", 0) => HelperRequest::LveStatus,
+            ("lve-packages", 0) => HelperRequest::LvePackages,
+            ("lve-usage", 1) => HelperRequest::LveUsage {
+                user: user_of(&rest[0])?,
+            },
+            ("mail-install", 0) => HelperRequest::MailInstall,
+            ("mail-stop", 0) => HelperRequest::MailStop,
+            ("mail-status", 0) => HelperRequest::MailStatus,
+            // The state is JSON on stdin: passwords never reach argv.
+            ("mail-sync", 0) => {
+                let state: crate::MailState = serde_json::from_slice(&stdin())
+                    .map_err(|e| InvocationError::invalid(format!("invalid mail state: {e}")))?;
+                state.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::MailSync { state }
+            }
+            ("dns-install", 0) => HelperRequest::DnsInstall,
+            ("dns-stop", 0) => HelperRequest::DnsStop,
+            ("dns-status", 0) => HelperRequest::DnsStatus,
+            ("web-status", 0) => HelperRequest::WebStatus,
+            ("site-php-set", 4) => HelperRequest::SitePhpSet {
+                user: user_of(&rest[0])?,
+                domain: domain_of(&rest[1])?,
+                document_root: snpanel_core::DocumentRoot::parse(&rest[2])
+                    .map_err(|e| InvocationError::invalid(e.to_string()))?
+                    .as_str()
+                    .to_string(),
+                version: match rest[3].as_str() {
+                    "inherit" => None,
+                    v => Some(
+                        snpanel_core::PhpVersion::parse(v)
+                            .map_err(|e| InvocationError::invalid(e.to_string()))?,
+                    ),
+                },
+            },
+            ("apache-site-write", 1) => HelperRequest::ApacheSiteWrite {
+                domain: domain_of(&rest[0])?,
+                content: String::from_utf8_lossy(&stdin()).into_owned(),
+            },
+            ("apache-site-delete", 1) => HelperRequest::ApacheSiteDelete {
+                domain: domain_of(&rest[0])?,
+            },
+            ("waf-site-enable", 2) => HelperRequest::WafSiteEnable {
+                domain: domain_of(&rest[0])?,
+                on: match rest[1].as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "waf-site-enable takes on or off, not {other}"
+                        )))
+                    }
+                },
+            },
+            ("waf-site-part-save", 2) => HelperRequest::WafSitePartSave {
+                domain: domain_of(&rest[0])?,
+                part: match rest[1].as_str() {
+                    p @ ("bots" | "flood") => p.to_string(),
+                    other => {
+                        return Err(InvocationError::invalid(format!(
+                            "unknown WAF part {other}"
+                        )))
+                    }
+                },
+                content: {
+                    let text = String::from_utf8_lossy(&stdin()).into_owned();
+                    if text.len() > 256 * 1024 || text.contains('\0') {
+                        return Err(InvocationError::invalid("WAF part too large or not text"));
+                    }
+                    text
+                },
+            },
+            ("web-switch", 1) => HelperRequest::WebSwitch {
+                to: crate::WebServer::parse(&rest[0]).map_err(InvocationError::invalid)?,
+            },
+            ("lsws-restart", 0) => HelperRequest::LswsRestart,
+            ("lsws-admin-password", 0) => HelperRequest::LswsAdminPassword,
             // lve-set <default|user> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
             ("lve-set", 7) => {
                 let user = match rest[0].as_str() {
@@ -661,6 +744,39 @@ impl HelperRequest {
             ("lve-reset", 1) => HelperRequest::LveReset {
                 user: user_of(&rest[0])?,
             },
+            // lve-package-set <package> <speed%> <pmem MB> <ep> <nproc> <io KB/s> <iops>
+            ("lve-package-set", 7) => {
+                let package = package_of(&rest[0])?;
+                let n = |i: usize, what: &str| {
+                    rest[i].parse::<u32>().map_err(|_| {
+                        InvocationError::invalid(format!("invalid {what}: {}", rest[i]))
+                    })
+                };
+                let limits = crate::LveLimits {
+                    speed_percent: n(1, "speed")?,
+                    pmem_mb: n(2, "pmem")?,
+                    ep: n(3, "entry processes")?,
+                    nproc: n(4, "nproc")?,
+                    io_kbps: n(5, "io")?,
+                    iops: n(6, "iops")?,
+                };
+                limits.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::LvePackageSet { package, limits }
+            }
+            ("lve-package-reset", 1) => HelperRequest::LvePackageReset {
+                package: package_of(&rest[0])?,
+            },
+            ("lve-package-rename", 2) => HelperRequest::LvePackageRename {
+                from: package_of(&rest[0])?,
+                to: package_of(&rest[1])?,
+            },
+            // The snapshot is JSON on stdin.
+            ("cpapi-sync", 0) => {
+                let snapshot: crate::CpapiSnapshot = serde_json::from_slice(&stdin())
+                    .map_err(|e| InvocationError::invalid(format!("invalid snapshot: {e}")))?;
+                snapshot.validate().map_err(InvocationError::invalid)?;
+                HelperRequest::CpapiSync { snapshot }
+            }
             ("php-tune-write", 1) => HelperRequest::PhpTuneWrite {
                 version: php_or_none(&rest[0])?
                     .ok_or_else(|| InvocationError::invalid("php-tune-write needs a version"))?,
@@ -1224,10 +1340,18 @@ impl HelperRequest {
                         "usage: wp-site <site-user> [--php-version=<version>] <args...>",
                     ));
                 }
+                // Read only when WP-CLI will prompt for it: every other call
+                // carries nothing on stdin.
+                let prompts = args.iter().any(|a| a.starts_with("--prompt="));
                 HelperRequest::WpSite {
                     user,
                     php,
                     args: args.to_vec(),
+                    stdin: prompts.then(|| {
+                        snpanel_core::SecretString::new(
+                            String::from_utf8_lossy(&stdin()).into_owned(),
+                        )
+                    }),
                 }
             }
 
@@ -1450,6 +1574,149 @@ mod tests {
         ));
         assert!(map(&["lve-reset", "root"]).is_err());
         assert!(map(&["lve-reset"]).is_err());
+        assert!(matches!(
+            map(&[
+                "lve-package-set",
+                "Gói Pro",
+                "50",
+                "512",
+                "10",
+                "50",
+                "512",
+                "512"
+            ]),
+            Ok(HelperRequest::LvePackageSet { .. })
+        ));
+        assert!(map(&[
+            "lve-package-set",
+            "-x",
+            "50",
+            "512",
+            "10",
+            "50",
+            "512",
+            "512"
+        ])
+        .is_err());
+        assert!(map(&[
+            "lve-package-set",
+            "Pro",
+            "0",
+            "512",
+            "10",
+            "50",
+            "512",
+            "512"
+        ])
+        .is_err());
+        assert!(matches!(
+            map(&["lve-package-rename", "Starter", "Basic"]),
+            Ok(HelperRequest::LvePackageRename { .. })
+        ));
+        assert!(map(&["lve-package-reset", ""]).is_err());
+        assert!(matches!(
+            map(&["lve-usage", "alice"]),
+            Ok(HelperRequest::LveUsage { .. })
+        ));
+        assert!(map(&["lve-usage", "root"]).is_err());
+        assert!(matches!(
+            map(&["web-switch", "lsws"]),
+            Ok(HelperRequest::WebSwitch {
+                to: crate::WebServer::Lsws
+            })
+        ));
+        assert!(map(&["web-switch", "nginx"]).is_err());
+        assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
+        assert!(matches!(
+            map(&["dns-install"]),
+            Ok(HelperRequest::DnsInstall)
+        ));
+        assert!(matches!(map(&["dns-stop"]), Ok(HelperRequest::DnsStop)));
+        assert!(matches!(map(&["dns-status"]), Ok(HelperRequest::DnsStatus)));
+        assert!(map(&["dns-install", "extra"]).is_err());
+        assert!(matches!(
+            map(&["mail-install"]),
+            Ok(HelperRequest::MailInstall)
+        ));
+        assert!(matches!(
+            map(&["mail-status"]),
+            Ok(HelperRequest::MailStatus)
+        ));
+        assert!(matches!(map(&["mail-stop"]), Ok(HelperRequest::MailStop)));
+        // WP-CLI's prompt gets stdin; nothing else does.
+        match HelperRequest::from_argv(
+            &argv(&[
+                "wp-site",
+                "alice",
+                "core",
+                "install",
+                "--prompt=admin_password",
+            ]),
+            || b"s3cret/*\n".to_vec(),
+        ) {
+            Ok(HelperRequest::WpSite { stdin: Some(s), .. }) => {
+                assert_eq!(s.expose(), "s3cret/*\n")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            map(&["wp-site", "alice", "plugin", "list"]),
+            Ok(HelperRequest::WpSite { stdin: None, .. })
+        ));
+        assert!(matches!(
+            map(&[
+                "site-php-set",
+                "alice",
+                "a.example.com",
+                "public_html",
+                "8.3"
+            ]),
+            Ok(HelperRequest::SitePhpSet {
+                version: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            map(&[
+                "site-php-set",
+                "alice",
+                "a.example.com",
+                "public_html",
+                "inherit"
+            ]),
+            Ok(HelperRequest::SitePhpSet { version: None, .. })
+        ));
+        assert!(map(&["site-php-set", "alice", "a.example.com", "/etc", "8.3"]).is_err());
+        assert!(map(&[
+            "site-php-set",
+            "alice",
+            "a.example.com",
+            "public_html",
+            "9.9"
+        ])
+        .is_err());
+        assert!(map(&[
+            "site-php-set",
+            "root",
+            "a.example.com",
+            "public_html",
+            "8.3"
+        ])
+        .is_err());
+        assert!(matches!(
+            map(&["waf-site-enable", "a.example.com", "off"]),
+            Ok(HelperRequest::WafSiteEnable { on: false, .. })
+        ));
+        assert!(map(&["waf-site-enable", "a.example.com", "maybe"]).is_err());
+        assert!(map(&["waf-site-enable", "../etc", "on"]).is_err());
+        assert!(matches!(
+            HelperRequest::from_argv(
+                &argv(&["waf-site-part-save", "a.example.com", "bots"]),
+                Vec::new
+            ),
+            Ok(HelperRequest::WafSitePartSave { .. })
+        ));
+        assert!(map(&["waf-site-part-save", "a.example.com", "rules"]).is_err());
     }
 
     #[test]

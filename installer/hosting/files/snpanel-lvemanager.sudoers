@@ -1,0 +1,8 @@
+# SNPANEL MANAGED - /etc/sudoers.d/snpanel-lvemanager (mode 0440)
+# snpanel-lvem runs CloudLinux Manager's UI (snpanel-cloudlinux-ui.service).
+# Admin views: the admin CLI as root (it refuses owner=user requests itself).
+# End-user views: the user CLI as the customer the panel vouched for through
+# ui_user_info; only panel accounts (snpanel-sftp), never root.
+Defaults:snpanel-lvem !requiretty
+snpanel-lvem ALL=(root) NOPASSWD: /usr/share/l.v.e-manager/utils/cloudlinux-cli.py
+snpanel-lvem ALL=(%snpanel-sftp, !root) NOPASSWD: /usr/share/l.v.e-manager/utils/cloudlinux-cli-user.py

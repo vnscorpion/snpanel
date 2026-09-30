@@ -17,10 +17,18 @@
 
 mod argv;
 pub use argv::InvocationError;
+mod cpapi;
 mod fail2ban;
 mod lve;
+mod mail;
+pub use cpapi::{CpapiDomain, CpapiPackageOwner, CpapiSnapshot, CpapiUser};
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
-pub use lve::LveLimits;
+pub use lve::{LveLimits, LvePackageName, WebServer};
+pub use mail::{
+    destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder,
+    MailState,
+};
+pub use mail::{MAX_DESTINATIONS as MAIL_MAX_DESTINATIONS, MAX_QUOTA_MB as MAIL_MAX_QUOTA_MB};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{
@@ -850,6 +858,10 @@ pub enum HelperRequest {
         user: PanelUsername,
         php: Option<PhpVersion>,
         args: Vec<String>,
+        /// What WP-CLI's `--prompt=` reads (the admin password of
+        /// `core install`): on stdin, so it is never in argv or `ps`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<SecretString>,
     },
     /// Replace a site's tree from a panel-staged directory.
     ///
@@ -1262,6 +1274,81 @@ pub enum HelperRequest {
     /// user's, with which of a user's limits are their own rather than the
     /// default. Read-only.
     LveStatus,
+    /// `lve-packages` - the default LVE and every package's limits, without
+    /// the per-account listing (which is the slow part of `lve-status`).
+    LvePackages,
+    /// `lve-usage` - one account's LVE limits, what it uses now, and how
+    /// often it hit a limit in the last day. Read-only.
+    LveUsage {
+        user: PanelUsername,
+    },
+    /// `mail-install` - Exim, Dovecot and Rspamd, the webmail with its
+    /// single sign-on, the certificates and the mail ports (the Email addon).
+    MailInstall,
+    /// `mail-stop` - the mail services stopped and off at boot; mail kept.
+    MailStop,
+    /// `mail-status` - the services, and each mailbox's size. Read-only.
+    MailStatus,
+    /// `mail-sync` - every mail domain, mailbox and forwarder, on stdin.
+    MailSync {
+        state: MailState,
+    },
+    /// `dns-install` - PowerDNS Authoritative with its SQLite database, the
+    /// HTTP API on the loopback and port 53 opened (the DNS Manager addon).
+    DnsInstall,
+    /// `dns-stop` - PowerDNS stopped and off at boot; the zones are kept.
+    DnsStop,
+    /// `dns-status` - whether PowerDNS is installed, running and answering.
+    /// Read-only.
+    DnsStatus,
+    /// `web-status` - which web server answers 80/443, whether each is
+    /// running and answering, the last failover, LiteSpeed's version,
+    /// licence and WebAdmin port. Read-only.
+    WebStatus,
+    /// `site-php-set` - a website's own PHP version on the Hosting Edition
+    /// (MultiPHP: an `.htaccess` handler for LiteSpeed, a CloudLinux isolate
+    /// with the Selector's per-domain version for Apache). `None` follows
+    /// the owner's PHP Selector version.
+    SitePhpSet {
+        user: PanelUsername,
+        domain: Domain,
+        document_root: String,
+        version: Option<snpanel_core::PhpVersion>,
+    },
+    /// `apache-site-write` - a website's vhost on the Hosting Edition,
+    /// rendered by the API, on stdin.
+    ApacheSiteWrite {
+        domain: Domain,
+        content: String,
+    },
+    /// `apache-site-delete` - remove a website's vhost (Hosting Edition).
+    ApacheSiteDelete {
+        domain: Domain,
+    },
+    /// `waf-site-enable` - a site's WAF on or off, on the Hosting Edition
+    /// (nginx does this with a block in the vhost, written by the API).
+    WafSiteEnable {
+        domain: Domain,
+        on: bool,
+    },
+    /// `waf-site-part-save` - a site's bot block or flood limit, as
+    /// ModSecurity rules, on the Hosting Edition. Empty removes it.
+    WafSitePartSave {
+        domain: Domain,
+        part: String,
+        content: String,
+    },
+    /// `web-switch` - move 80/443 to one web server. Refused when that
+    /// server is not answering on its own port.
+    WebSwitch {
+        to: WebServer,
+    },
+    /// `lsws-restart` - LiteSpeed's graceful restart through systemd, or a
+    /// start when it is down.
+    LswsRestart,
+    /// `lsws-admin-password` - a new random password for LiteSpeed
+    /// WebAdmin's `admin`, printed once.
+    LswsAdminPassword,
     /// `lve-set` - set LVE limits for the default LVE (`user: None`) or for
     /// one user. The limits are range-checked when the request is built.
     LveSet {
@@ -1271,6 +1358,27 @@ pub enum HelperRequest {
     /// `lve-reset` - return one user to the default LVE's limits.
     LveReset {
         user: PanelUsername,
+    },
+    /// `lve-package-set` - a hosting package's LVE limits. CloudLinux applies
+    /// them to every account the CPAPI snapshot puts on that package.
+    LvePackageSet {
+        package: LvePackageName,
+        limits: LveLimits,
+    },
+    /// `lve-package-reset` - drop a package's own limits; its accounts fall
+    /// back to the default LVE.
+    LvePackageReset {
+        package: LvePackageName,
+    },
+    /// `lve-package-rename` - carry a package's limits over to its new name.
+    LvePackageRename {
+        from: LvePackageName,
+        to: LvePackageName,
+    },
+    /// `cpapi-sync` - write the snapshot CloudLinux's integration scripts
+    /// read, then re-apply LVE limits so package changes take effect.
+    CpapiSync {
+        snapshot: CpapiSnapshot,
     },
 }
 
@@ -1450,8 +1558,30 @@ impl HelperRequest {
             Self::SshPorts => "ssh-ports",
             Self::TerminalExec { .. } => "terminal-exec",
             Self::LveStatus => "lve-status",
+            Self::LvePackages => "lve-packages",
+            Self::LveUsage { .. } => "lve-usage",
+            Self::MailInstall => "mail-install",
+            Self::MailStop => "mail-stop",
+            Self::MailStatus => "mail-status",
+            Self::MailSync { .. } => "mail-sync",
+            Self::DnsInstall => "dns-install",
+            Self::DnsStop => "dns-stop",
+            Self::DnsStatus => "dns-status",
+            Self::WebStatus => "web-status",
+            Self::SitePhpSet { .. } => "site-php-set",
+            Self::ApacheSiteWrite { .. } => "apache-site-write",
+            Self::ApacheSiteDelete { .. } => "apache-site-delete",
+            Self::WafSiteEnable { .. } => "waf-site-enable",
+            Self::WafSitePartSave { .. } => "waf-site-part-save",
+            Self::WebSwitch { .. } => "web-switch",
+            Self::LswsRestart => "lsws-restart",
+            Self::LswsAdminPassword => "lsws-admin-password",
             Self::LveSet { .. } => "lve-set",
             Self::LveReset { .. } => "lve-reset",
+            Self::LvePackageSet { .. } => "lve-package-set",
+            Self::LvePackageReset { .. } => "lve-package-reset",
+            Self::LvePackageRename { .. } => "lve-package-rename",
+            Self::CpapiSync { .. } => "cpapi-sync",
         }
     }
 }

@@ -551,20 +551,63 @@ async fn session(
         return crate::errors::error(axum::http::StatusCode::FORBIDDEN, "Origin not allowed");
     }
 
+    // Past the origin check, a refusal is told over the socket: refused
+    // before the upgrade, the browser only ever sees "code 1006" - which is
+    // all a customer whose package has no terminal was shown. Nothing runs
+    // on such a socket; it carries the reason and closes.
     let website = match terminal_website(&state, &current, website_id).await {
         Ok(w) => w,
-        Err(response) => return response,
+        Err(response) => return refuse_over_socket(ws, detail_of(response).await),
     };
     if website.linux_user.as_deref().unwrap_or("").is_empty() {
-        return crate::errors::not_found("Website runtime user is missing");
+        return refuse_over_socket(ws, "Website runtime user is missing".to_string());
     }
     let root = std::path::Path::new(&website.root_path);
     if !root.is_dir() {
-        return crate::errors::not_found("Website root path does not exist or is not accessible");
+        return refuse_over_socket(
+            ws,
+            "Website root path does not exist or is not accessible".to_string(),
+        );
     }
 
     let dry_run = state.settings.command_dry_run;
     ws.on_upgrade(move |socket| run_session(socket, website, dry_run))
+}
+
+/// The `detail` of an error response, as the REST endpoints put it.
+async fn detail_of(response: Response) -> String {
+    let fallback = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("Refused")
+        .to_string();
+    match axum::body::to_bytes(response.into_body(), 64 * 1024).await {
+        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_string))
+            .unwrap_or(fallback),
+        Err(_) => fallback,
+    }
+}
+
+/// Accept the socket only to say why the terminal will not open, then close
+/// it: 4403 with the reason, which `Terminal.jsx` shows as it is.
+fn refuse_over_socket(ws: axum::extract::ws::WebSocketUpgrade, reason: String) -> Response {
+    ws.on_upgrade(move |mut socket| async move {
+        use axum::extract::ws::{CloseFrame, Message};
+        let _ = send(&mut socket, json!({"type": "error", "data": reason})).await;
+        // A close reason is at most 123 bytes.
+        let mut short = reason.clone();
+        while short.len() > 120 {
+            short.pop();
+        }
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: 4403,
+                reason: short.into(),
+            })))
+            .await;
+    })
 }
 
 /// One message, as the frontend sends them.

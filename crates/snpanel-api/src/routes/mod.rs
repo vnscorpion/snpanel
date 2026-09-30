@@ -9,10 +9,12 @@ pub mod auth;
 pub mod cloudlinux;
 pub mod dashboard;
 pub mod databases;
+pub mod dns;
 pub mod fail2ban;
 pub mod firewall;
 pub mod health;
 pub mod lve;
+pub mod mail;
 pub mod maintenance;
 pub mod malware;
 pub mod malware_quarantine;
@@ -24,6 +26,7 @@ pub mod passkeys;
 pub mod php_extensions;
 pub mod provisioning;
 pub mod refresh;
+pub mod reseller_brand;
 pub mod s3_targets;
 pub mod services;
 pub mod sftp;
@@ -34,6 +37,7 @@ pub mod updates;
 pub mod user_restore;
 pub mod users;
 pub mod waf;
+pub mod web;
 pub mod websites;
 
 use axum::Router;
@@ -56,7 +60,11 @@ pub fn api_router() -> Router<AppState> {
         .merge(sftp_accounts::router())
         .merge(firewall::router())
         .merge(fail2ban::router())
+        .merge(dns::router())
+        .merge(mail::router())
+        .merge(reseller_brand::router())
         .merge(lve::router())
+        .merge(web::router())
         .merge(cloudlinux::router())
         .merge(databases::router())
         .merge(updates::router())

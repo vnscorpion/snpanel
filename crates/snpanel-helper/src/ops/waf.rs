@@ -61,6 +61,9 @@ impl CrsMode {
 /// a refresh. Pretty JSON and a newline is what the CLI printed from `data`,
 /// so the sudo path shows what it always showed.
 pub fn status() -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::status();
+    }
     let module_loaded = exec::run(&["nginx", "-V"])
         .map(|o| {
             // nginx -V writes its configure line to stderr.
@@ -138,6 +141,9 @@ const STRAY_MODE_MARKER: &str = "/etc/nginx/modsec/crs-mode";
 /// a file that did not exist: nginx refused it, and the rollback left the
 /// vhost naming a rules file that was gone.
 pub fn crs_mode_set(mode: CrsMode) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::crs_mode_set(mode);
+    }
     if let Err(e) = std::fs::create_dir_all(WAF_DIR) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -356,6 +362,21 @@ fn web_account() -> String {
 /// with every memory figure zero, on servers that had it installed and
 /// blocking.
 pub fn crs_status() -> HelperResponse {
+    if super::waf_apache::active() {
+        let (available_mb, total_mb) = memory_mb();
+        return HelperResponse::with_stdout(crs_status_lines(CrsStatusFacts {
+            mode: super::waf_apache::read_mode().as_str(),
+            // No nginx here; CRS runs inside Apache/LiteSpeed.
+            nginx_pss_mb: 0,
+            ram_available_mb: available_mb,
+            ram_total_mb: total_mb,
+            installed: super::waf_apache::crs_installed(),
+            conf: Path::new(super::waf_apache::CRS_CONF).is_file(),
+            rule_files: super::waf_apache::rule_files(),
+            // Server-wide: every site is covered while CRS is on.
+            sites_including: 0,
+        }));
+    }
     let rules_dir = crs_rules_dir();
     let (available_mb, total_mb) = memory_mb();
     HelperResponse::with_stdout(crs_status_lines(CrsStatusFacts {
@@ -529,6 +550,9 @@ fn nginx_memory_pss_mb() -> u64 {
 
 /// `waf-site-save`: per-site rule file.
 pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::site_rules_save(domain.as_str(), content);
+    }
     if let Err(e) = std::fs::create_dir_all(WAF_SITE_DIR) {
         return HelperResponse::failed(
             HelperErrorKind::Internal,
@@ -580,6 +604,9 @@ pub fn site_rules_save(domain: &Domain, content: &str) -> HelperResponse {
 
 /// `waf-site-delete`.
 pub fn site_rules_delete(domain: &Domain) -> HelperResponse {
+    if super::waf_apache::active() {
+        return super::waf_apache::site_delete(domain.as_str());
+    }
     let path = Path::new(WAF_SITE_DIR).join(format!("{domain}.conf"));
     match std::fs::remove_file(&path) {
         Ok(()) => HelperResponse::ok(),
@@ -1566,6 +1593,11 @@ fn write_main_conf() -> Result<(), HelperResponse> {
 /// WAF page uses this to show what is actually loaded, and a file edited by
 /// hand would otherwise be reported as SNPanel's own.
 pub fn default_rules() -> HelperResponse {
+    // Hosting Edition: shown, not loaded from here - each site's rules.conf
+    // carries the ones it selected.
+    if super::waf_apache::active() {
+        return HelperResponse::with_stdout(DEFAULT_RULES.to_string());
+    }
     if let Err(resp) = write_default_rules() {
         return resp;
     }
@@ -1580,6 +1612,11 @@ pub fn default_rules() -> HelperResponse {
 
 /// `waf-custom-rules` - what an administrator has added, if anything.
 pub fn custom_rules() -> HelperResponse {
+    if super::waf_apache::active() {
+        return HelperResponse::with_stdout(
+            std::fs::read_to_string(super::waf_apache::CUSTOM_CONF).unwrap_or_default(),
+        );
+    }
     if let Err(resp) = ensure_modsec_dir() {
         return resp;
     }
@@ -1626,6 +1663,9 @@ pub fn custom_rules_save(content: &str) -> HelperResponse {
             HelperErrorKind::BadRequest,
             "WAF custom rules must be 64 KB or smaller".to_string(),
         );
+    }
+    if super::waf_apache::active() {
+        return super::waf_apache::custom_rules_save(content);
     }
     if let Err(resp) = write_default_rules() {
         return resp;

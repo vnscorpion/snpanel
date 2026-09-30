@@ -95,7 +95,12 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "clamav-status"
         | "maldet-status"
         | "fail2ban-status"
-            | "lve-status"
+        | "lve-status"
+        | "lve-packages"
+        | "lve-usage"
+        | "web-status"
+        | "dns-status"
+        | "mail-status"
         | "ipv6-status"
         | "time-status"
         | "time-sync"
@@ -126,12 +131,26 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         "clamav-install" => &[Packages, Systemd, Malware],
         "maldet-install" => &[Packages, Malware],
         "fail2ban-install" => &[Packages, Systemd, Firewall],
+        "dns-install" => &[Packages, Systemd, Firewall],
+        "mail-install" => &[Packages, Systemd, Firewall, Accounts],
+        "mail-stop" => &[Systemd],
+        // Mailbox folders in the accounts' homes.
+        "mail-sync" => &[Accounts],
+        "dns-stop" => &[Systemd],
         "updates-panel-run" => &[Packages, Systemd],
 
         // Accounts, and a site's runtime, which is an account and a pool.
         "panel-user-ensure" | "panel-user-delete" | "panel-user-password" => &[Accounts],
         // LVE limits are per account; the default LVE is every account's.
         "lve-set" | "lve-reset" => &[Accounts],
+        // A package's limits reach every account on it; the snapshot says
+        // which accounts those are.
+        // Who answers 80/443 is an nftables table; LiteSpeed is a unit.
+        "web-switch" => &[Firewall],
+        "lsws-restart" | "lsws-admin-password" => &[Systemd],
+        "lve-package-set" | "lve-package-reset" | "lve-package-rename" | "cpapi-sync" => {
+            &[Accounts]
+        }
         "sftp-sub-create" | "sftp-sub-password" | "sftp-sub-delete" => &[Accounts],
         "site-runtime-ensure" | "site-runtime-move" | "site-runtime-delete" | "rm-site" => {
             &[Accounts, Systemd, Php]
@@ -170,6 +189,11 @@ pub fn placed(op: &str) -> Option<&'static [Resource]> {
         | "panel-sni-sync"
         | "panel-url-set"
         | "waf-site-save"
+        | "waf-site-enable"
+        | "apache-site-write"
+        | "site-php-set"
+        | "apache-site-delete"
+        | "waf-site-part-save"
         | "waf-site-delete"
         | "waf-crs-mode"
         | "waf-custom-save"

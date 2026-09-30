@@ -83,6 +83,13 @@ fn web_user() -> String {
 }
 
 /// `panel-user-ensure`. Idempotent: safe to run against an existing account.
+/// Directories tools create in a customer's home as the customer, which a
+/// root-owned home (the SFTP chroot needs it) would refuse them: WP-CLI's
+/// cache everywhere, and CloudLinux's own state there.
+const HOME_DIRS: &[&str] = &[".wp-cli"];
+const CAGEFSCTL: &str = "/usr/sbin/cagefsctl";
+const CLOUDLINUX_HOME_DIRS: &[&str] = &[".lve", ".lvestats"];
+
 pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperResponse {
     ensure_system_group(SITES_GROUP);
     ensure_system_group(SFTP_GROUP);
@@ -160,6 +167,49 @@ pub fn ensure(user: &PanelUsername, password: Option<&SecretString>) -> HelperRe
     let _ = exec::run(&["chmod", "-t", &home_str]);
     // Any inherited ACL would silently widen access past the mode bits.
     let _ = exec::run(&["setfacl", "-b", &home_str]);
+
+    // Tools write a few things into the customer's home as the customer -
+    // WP-CLI's cache (~/.wp-cli), and on CloudLinux isolatectl's log (~/.lve)
+    // and lve-stats' notification marker (~/.lvestats) - and the home is
+    // root's (the SFTP chroot needs that).
+    // Made here, the customer's own, private. The home being root's is also
+    // what keeps these from being a symlink the customer planted.
+    {
+        let owner = format!("{0}:{0}", user.as_str());
+        let cloudlinux = snpanel_osabi::hosting::cloudlinux().is_some();
+        let dirs = HOME_DIRS.iter().chain(if cloudlinux {
+            CLOUDLINUX_HOME_DIRS
+        } else {
+            &[]
+        });
+        for dir in dirs {
+            let path = home.join(dir);
+            if path.is_symlink() {
+                let _ = std::fs::remove_file(&path);
+            }
+            if std::fs::create_dir_all(&path).is_ok() {
+                let p = path.to_string_lossy();
+                let _ = exec::run(&["chown", &owner, &p]);
+                let _ = exec::run(&["chmod", "0700", &p]);
+            }
+        }
+    }
+
+    // CloudLinux: every panel account in CageFS. The mode is "disable all"
+    // (CageFS is opt-in per account), so an account nothing enabled - any
+    // created after the conversion, and the administrator's own - had its
+    // sites run outside it: its PHP could see the rest of the server.
+    if snpanel_osabi::hosting::cloudlinux().is_some() && Path::new(CAGEFSCTL).exists() {
+        let enabled = exec::run(&[CAGEFSCTL, "--user-status", user.as_str()])
+            .map(|o| o.stdout.trim().ends_with("Enabled"))
+            .unwrap_or(false);
+        if !enabled {
+            let out = exec::run(&[CAGEFSCTL, "--enable", user.as_str()]);
+            if !matches!(&out, Ok(o) if o.ok()) {
+                return exec::respond("cagefsctl --enable", out);
+            }
+        }
+    }
 
     if let Some(pw) = password {
         let resp = set_password(user, pw);

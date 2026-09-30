@@ -1146,11 +1146,14 @@ fi
 # installed binary, so an updated box went on serving the code it was
 # installed with, indefinitely, with nothing saying so.
 #
-# Only the API binary and the CLI are refreshed here. The Rust *helper* is
-# deliberately left alone: which path it occupies depends on
-# whether that cutover has been done, and the arrangement below already
-# threads that needle for the bash fallback. Replacing the privileged binary
-# on the same pass is a separate change with its own failure modes.
+# The helper is refreshed with the others. It used to be left alone while
+# the bash helper could still be the one installed; that cutover is long
+# done (install.sh places the one Rust helper), and leaving it meant an
+# update brought an API that asks for verbs the old helper does not have -
+# a new addon's install failed with "unknown verb" on every updated box.
+# `install` replaces the file, so a helper already running keeps its old
+# binary; the service is stopped further down and the next call starts the
+# new one.
 # The binaries were fetched much earlier, so the phases between here and
 # there could run. This is where they are put on the box, which for the panel
 # is a restart.
@@ -1163,6 +1166,15 @@ if [[ -n "${RUST_BIN_DIR:-}" ]]; then
   if [[ -x "${RUST_BIN_DIR}/snpanel-install" ]]; then
     install -m 0750 -o root -g root "${RUST_BIN_DIR}/snpanel-install" \
       /usr/local/sbin/snpanel-install
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel-helper" ]] && getent group snpanel >/dev/null; then
+    log "Refreshing /usr/local/sbin/snpanel-helper"
+    install -m 0750 -o root -g snpanel "${RUST_BIN_DIR}/snpanel-helper" \
+      /usr/local/sbin/snpanel-helper
+  fi
+  if [[ -x "${RUST_BIN_DIR}/snpanel-extract" ]]; then
+    install -m 0755 -o root -g root "${RUST_BIN_DIR}/snpanel-extract" \
+      /usr/local/sbin/snpanel-extract
   fi
   if [[ -x "${RUST_BIN_DIR}/snpanel" ]]; then
     # The binary takes the `snpanel` name; the two older names follow it.

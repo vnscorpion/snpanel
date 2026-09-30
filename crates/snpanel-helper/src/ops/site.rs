@@ -732,6 +732,9 @@ pub fn runtime_ensure(
 
     match php {
         None => HelperResponse::ok(),
+        // Hosting Edition: PHP runs through mod_lsapi as the site's owner,
+        // at the owner's PHP Selector version; there is no pool to make.
+        Some(_) if super::apache::active() => HelperResponse::ok(),
         Some(version) => {
             // The pool name hashes the resolved path, as the shell does.
             let resolved = std::fs::canonicalize(root)
@@ -830,6 +833,10 @@ const WP_CLI: &str = "/usr/local/bin/wp";
 /// to the panel exactly like a command that produced nothing.
 const PCRE_JIT_OFF: &str = "-d";
 const PCRE_JIT_OFF_VALUE: &str = "pcre.jit=0";
+/// WP-CLI unpacks WordPress in memory: the CLI's own 128M (CloudLinux's
+/// alt-php, or any distribution's default) runs out half way through
+/// `core download`. The panel's own default limit, for the CLI too.
+const WP_MEMORY: &str = "memory_limit=1024M";
 
 /// `wp`: WP-CLI as the web user.
 pub fn wp(args: &[String]) -> HelperResponse {
@@ -848,6 +855,7 @@ pub fn wp_site(
     user: &PanelUsername,
     php: Option<snpanel_core::PhpVersion>,
     args: &[String],
+    stdin: Option<&snpanel_core::SecretString>,
 ) -> HelperResponse {
     if args.is_empty() {
         return HelperResponse::failed(
@@ -856,6 +864,9 @@ pub fn wp_site(
         );
     }
     let binary = match php {
+        // CloudLinux's versions are alt-php, under /opt/alt; `php8.3` is a
+        // name only the Standard edition's packages provide.
+        Some(v) if super::apache::active() => format!("/opt/alt/php{}/usr/bin/php", v.compact()),
         // The version is a parsed `PhpVersion`, so `require_php_version` has
         // already happened in the type.
         Some(v) => format!("php{v}"),
@@ -868,13 +879,31 @@ pub fn wp_site(
         );
     }
     let home = format!("/home/{}", user.as_str());
-    run_wp(user.as_str(), &home, &binary, args)
+    run_wp_with_stdin(user.as_str(), &home, &binary, args, stdin)
 }
 
 fn run_wp(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> HelperResponse {
+    run_wp_with_stdin(as_user, home, php_binary, args, None)
+}
+
+/// WP-CLI with what its `--prompt=` reads on stdin. Without it the prompt
+/// read nothing and `core install` made up the admin password itself: the
+/// one the customer typed never reached WordPress, and the one it had was
+/// printed nowhere.
+fn run_wp_with_stdin(
+    as_user: &str,
+    home: &str,
+    php_binary: &str,
+    args: &[String],
+    stdin: Option<&snpanel_core::SecretString>,
+) -> HelperResponse {
     let argv = wp_argv(as_user, home, php_binary, args);
     let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
-    exec::respond(&format!("wp (as {as_user})"), exec::run(&borrowed))
+    let input = stdin.map(|s| s.expose().as_bytes());
+    exec::respond(
+        &format!("wp (as {as_user})"),
+        exec::run_with_stdin(&borrowed, input),
+    )
 }
 
 /// The argument vector, built separately so it can be read without being run.
@@ -891,10 +920,12 @@ fn wp_argv(as_user: &str, home: &str, php_binary: &str, args: &[String]) -> Vec<
         "--".into(),
         "env".into(),
         format!("HOME={home}"),
-        "WP_CLI_PHP_ARGS=-d pcre.jit=0".into(),
+        format!("WP_CLI_PHP_ARGS=-d pcre.jit=0 -d {WP_MEMORY}"),
         php_binary.into(),
         PCRE_JIT_OFF.into(),
         PCRE_JIT_OFF_VALUE.into(),
+        "-d".into(),
+        WP_MEMORY.into(),
         WP_CLI.into(),
     ];
     argv.extend(args.iter().cloned());
@@ -1439,7 +1470,7 @@ fn harden_dir_path(root: &Path, target: &Path, user: &PanelUsername) -> HelperRe
 /// site disappears from the page rather than showing as empty.
 pub fn logs_read_many(domains: &[Domain], kind: LogKind, lines: u32) -> HelperResponse {
     HelperResponse::with_stdout(logs_read_many_in(
-        std::path::Path::new(LOG_DIR),
+        std::path::Path::new(log_dir()),
         domains,
         kind,
         lines,
@@ -1523,7 +1554,7 @@ pub fn log_clear(domain: &Domain, kind: LogKind) -> HelperResponse {
 /// alone, they would not age out either: logrotate stops rotating a log once
 /// it is empty, and the copies behind it stay where they are.
 pub fn logs_delete(domain: &Domain) -> HelperResponse {
-    logs_delete_in(Path::new(LOG_DIR), domain)
+    logs_delete_in(Path::new(log_dir()), domain)
 }
 
 fn logs_delete_in(dir: &Path, domain: &Domain) -> HelperResponse {
@@ -1602,12 +1633,19 @@ impl LogKind {
     }
 }
 
-/// Where nginx writes a site's logs. Named once so the batch read and the
-/// single read cannot drift apart.
-const LOG_DIR: &str = "/var/log/nginx";
+/// Where the web server writes a site's logs: nginx's directory, or on the
+/// Hosting Edition Apache's, which LiteSpeed writes the same files in. Named
+/// once so the batch read and the single read cannot drift apart.
+fn log_dir() -> &'static str {
+    if super::apache::active() {
+        "/var/log/httpd"
+    } else {
+        "/var/log/nginx"
+    }
+}
 
 fn log_path(domain: &Domain, kind: LogKind) -> std::path::PathBuf {
-    std::path::Path::new(LOG_DIR).join(format!("{domain}.{}.log", kind.suffix()))
+    std::path::Path::new(log_dir()).join(format!("{domain}.{}.log", kind.suffix()))
 }
 
 #[cfg(test)]
@@ -1617,7 +1655,7 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
 
 /// [`write_atomic`], with the temporary given to `owner` (`user:group`)
 /// before it takes the file's place.
-fn write_atomic_owned(
+pub(crate) fn write_atomic_owned(
     path: &Path,
     bytes: &[u8],
     mode: u32,
@@ -1820,6 +1858,14 @@ mod tests {
 
         let plain = wp_argv("bp_site", "/home/bp_site", "php", &args);
         assert!(plain.contains(&"php".to_string()), "{plain:?}");
+        // Enough memory to unpack WordPress, for wp and for what it runs.
+        assert!(
+            plain.contains(&"memory_limit=1024M".to_string()),
+            "{plain:?}"
+        );
+        assert!(plain
+            .iter()
+            .any(|a| a.starts_with("WP_CLI_PHP_ARGS=") && a.contains("memory_limit=1024M")));
         assert!(
             !plain.iter().any(|a| a.starts_with("php8")),
             "no version should be invented: {plain:?}"

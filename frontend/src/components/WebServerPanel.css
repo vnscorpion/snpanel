@@ -1,0 +1,22 @@
+/* LiteSpeed and its Apache standby - components/WebServerPanel.jsx */
+.web-server-panel .web-banner{--tone:var(--success);display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:14px 16px;border:1px solid var(--border);border-left:4px solid var(--tone);border-radius:var(--radius-lg);background:var(--surface);margin-bottom:var(--space-3)}
+.web-server-panel .web-banner[data-tone="bad"]{--tone:var(--danger);background:var(--danger-bg)}
+.web-server-panel .web-banner>svg{color:var(--tone)}
+.web-server-panel .web-banner p{margin:4px 0 0}
+.web-banner-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.web-warning{display:flex;align-items:center;gap:6px;margin:0 0 var(--space-3);color:var(--warning-text,var(--warning));font-weight:600}
+.web-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-3)}
+.web-card{display:grid;gap:10px;align-content:start;padding:14px 16px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);min-width:0}
+.web-card h3{margin:0;font-size:var(--text-base);display:flex;align-items:baseline;gap:8px}
+.web-card h3 small{color:var(--text-muted);font-weight:600}
+.web-card dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;margin:0;align-items:center}
+.web-card dt{color:var(--text-muted);font-size:var(--text-sm);font-weight:600}
+.web-card dd{margin:0;min-width:0;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.web-card .row-actions{justify-content:flex-start}
+.web-card .button-link.mini{display:inline-flex;align-items:center;gap:6px}
+.web-licence{display:block;width:100%;color:var(--text-muted)}
+.web-secret{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--warning-border,var(--border));border-radius:var(--radius-md);background:var(--warning-bg,var(--surface-alt))}
+.web-secret p{margin:0;width:100%;font-weight:600}
+.web-secret code{font-size:var(--text-base);user-select:all}
+@media (max-width:1100px){.web-grid{grid-template-columns:1fr}}
+@media (max-width:640px){.web-server-panel .web-banner{grid-template-columns:auto minmax(0,1fr)}.web-banner-actions{grid-column:1/-1;justify-content:stretch}}

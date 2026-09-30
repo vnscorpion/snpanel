@@ -1,0 +1,98 @@
+/* Email, as OPanel lays it out: one card with the tabs, then what a mail
+   app needs. See pages/Mail.jsx. */
+
+.mail-page{display:grid;gap:16px}
+.mail-page>.section{margin-bottom:0}
+.mail-page .icon-button{display:inline-grid;place-items:center;width:36px;height:36px;min-height:36px;padding:0;flex:none}
+.mail-page .danger-hover:hover:not(:disabled),.mail-page .mail-delete:hover:not(:disabled){color:var(--danger-text);border-color:var(--danger);background:var(--danger-bg)}
+.mail-page .mail-delete{color:var(--danger);border-color:var(--danger-border)}
+.mail-page label>span{font-size:13px;font-weight:600;color:var(--text-secondary)}
+.mail-page label>span em{font-weight:500;color:var(--text-muted)}
+.mail-main .section-title{align-items:flex-start}
+.mail-main .section-title h2{margin:0;font-size:17px;font-weight:600}
+.mail-main .section-title .hint{margin:2px 0 0}
+.mail-head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.mail-head-actions a.button{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-weight:600;font-size:13px;text-decoration:none}
+.mail-head-actions a.button:hover{background:var(--surface-hover)}
+.mail-main .tab-bar{margin-top:14px}
+.mail-tab{display:grid;gap:12px}
+
+/* ---- the row of filters over each list ---- */
+.mail-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mail-toolbar>select{flex:0 1 260px;min-width:0}
+.mail-search{display:flex;gap:6px;flex:0 1 300px;min-width:0}
+.mail-search input{flex:1;min-width:0}
+.mail-new{margin-left:auto}
+
+/* ---- the new-item panel ---- */
+.mail-create{display:grid;gap:10px;padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface-alt)}
+.mail-create-head{display:flex;align-items:center;justify-content:space-between}
+.mail-create-head strong{font-size:14px}
+.mail-create-grid{display:grid;grid-template-columns:minmax(260px,1.6fr) minmax(200px,1fr) 170px auto;gap:10px;align-items:end}
+.mail-fwd-grid{grid-template-columns:minmax(260px,1.3fr) minmax(220px,1.4fr) auto}
+.mail-create label,.mail-edit label{display:grid;gap:6px;min-width:0}
+.mail-create .hint{margin:0}
+.mail-address-pick{display:grid;grid-template-columns:minmax(80px,1fr) auto minmax(120px,1.2fr);align-items:center;gap:6px}
+.mail-address-pick>span{color:var(--text-muted);font-weight:600}
+.mail-password-input{display:flex;gap:6px;min-width:0}
+.mail-password-input input{flex:1;min-width:0;font-family:var(--font-mono,monospace)}
+
+/* ---- the rows ---- */
+.mail-list{display:grid;gap:8px}
+.mail-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(200px,1fr) auto;align-items:center;gap:8px 16px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.mail-row:hover{border-color:var(--border-hover)}
+.mail-row-main{display:grid;gap:2px;min-width:0}
+.mail-row-main strong{font-size:14px;overflow-wrap:anywhere}
+.mail-row-main small{color:var(--text-muted);font-size:12.5px}
+.mail-usage{display:grid;gap:5px;min-width:0}
+.mail-usage>span:first-child{font-size:12.5px;color:var(--text-secondary)}
+.mail-bar{display:block;height:6px;border-radius:999px;background:var(--surface-alt);overflow:hidden}
+.mail-bar>span{display:block;height:100%;background:var(--primary)}
+.mail-bar[data-level="mid"]>span{background:var(--warning)}
+.mail-bar[data-level="high"]>span{background:var(--danger)}
+.mail-row-actions{display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.mail-row-actions button{height:34px;min-height:34px;padding:0 12px;font-size:13px}
+.mail-row-actions .icon-button{width:34px;padding:0}
+.mail-destinations{display:flex;align-items:center;gap:8px;min-width:0;color:var(--text-secondary);font-size:13px}
+.mail-destinations svg{flex:none;color:var(--text-muted)}
+.mail-destinations span{overflow-wrap:anywhere}
+.mail-domain-row{grid-template-columns:minmax(0,1.3fr) minmax(220px,1fr) auto}
+.mail-local{font-size:13px;font-weight:500}
+.mail-edit{grid-column:1/-1;display:grid;grid-template-columns:minmax(220px,1.2fr) 190px auto;gap:10px;align-items:end;padding:12px;border-top:1px solid var(--border);margin:4px -14px -12px;background:var(--surface-alt);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
+.mail-edit-buttons{display:flex;gap:8px}
+
+/* ---- server ---- */
+.mail-server{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.mail-server>div{display:grid;gap:2px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg)}
+.mail-services{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.mail-services li{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--success-border);border-left:4px solid var(--success);border-radius:var(--radius-md);background:var(--surface)}
+.mail-services li[data-on="no"]{border-color:var(--danger-border);border-left-color:var(--danger)}
+.mail-services li span{font-size:12.5px;color:var(--text-secondary);font-weight:600}
+.mail-services li strong{font-size:14px}
+
+/* ---- mail apps ---- */
+.mail-client{display:grid;gap:12px}
+.mail-client-head h2{margin:0;font-size:17px;font-weight:600}
+.mail-client-head .hint{margin:2px 0 0}
+.mail-server-name{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-weight:600;color:var(--text-secondary)}
+.mail-server-name button{height:32px;min-height:32px;padding:0 10px;font-size:13px}
+.mail-host{margin:0;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-alt);font-family:var(--font-mono,monospace);font-size:13px;overflow-x:auto}
+.mail-ports{margin:0;padding-left:18px;display:grid;gap:6px;font-size:13px}
+.mail-ports li strong{display:inline-block;min-width:52px}
+.mail-ports li span{color:var(--text-secondary)}
+
+@media (max-width:1100px){
+  .mail-create-grid,.mail-fwd-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .mail-create-address{grid-column:1/-1}
+  .mail-row,.mail-domain-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .mail-row-actions{grid-column:1/-1;justify-content:flex-start}
+  .mail-services{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .mail-toolbar>select,.mail-search{flex:1 1 100%}
+  .mail-new{margin-left:0;width:100%}
+  .mail-create-grid,.mail-fwd-grid,.mail-edit{grid-template-columns:minmax(0,1fr)}
+  .mail-address-pick{grid-template-columns:minmax(0,1fr) auto minmax(0,1.2fr)}
+  .mail-row,.mail-domain-row{grid-template-columns:minmax(0,1fr)}
+  .mail-server{grid-template-columns:minmax(0,1fr)}
+}

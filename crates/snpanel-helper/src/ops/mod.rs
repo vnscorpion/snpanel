@@ -14,13 +14,18 @@
 //! distinguish "nginx said the config is bad" from "nginx is not installed"
 //! without parsing English out of stderr.
 
+pub mod apache;
+pub mod cpapi;
+pub mod dns;
 pub mod fail2ban;
 pub mod firewall;
 pub mod fwmigrate;
 pub mod fwrules;
 pub mod lve;
+pub mod mail;
 pub mod mariadb;
 pub mod misc;
+pub mod multiphp;
 pub mod nginx;
 pub mod orphans;
 pub mod packages;
@@ -38,6 +43,8 @@ pub mod system;
 pub mod terminal;
 pub mod user;
 pub mod waf;
+pub mod waf_apache;
+pub mod web;
 
 use snpanel_ipc::{HelperErrorKind, HelperRequest, HelperResponse};
 use snpanel_osabi::firewall::rules::{Action, FirewallState};
@@ -306,7 +313,12 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         }
         HelperRequest::SiteRuntimeDelete { user: u, path } => site::runtime_delete(u, path),
         HelperRequest::Wp { args } => site::wp(args),
-        HelperRequest::WpSite { user: u, php, args } => site::wp_site(u, *php, args),
+        HelperRequest::WpSite {
+            user: u,
+            php,
+            args,
+            stdin,
+        } => site::wp_site(u, *php, args, stdin.as_ref()),
         HelperRequest::SitePopulate {
             user: u,
             root,
@@ -377,8 +389,59 @@ pub fn dispatch(request: &HelperRequest, ctx: &Context) -> HelperResponse {
         HelperRequest::PhpPoolsRetune => php::pools_retune(),
         HelperRequest::MariadbRetune => mariadb::retune(),
         HelperRequest::LveStatus => lve::status(),
+        HelperRequest::LvePackages => lve::packages(),
+        HelperRequest::LveUsage { user } => lve::usage(user),
+        HelperRequest::WebStatus => web::status(),
+        HelperRequest::DnsStatus => dns::status(),
+        HelperRequest::DnsInstall => dns::install(ctx),
+        HelperRequest::DnsStop => dns::stop(),
+        HelperRequest::MailInstall => mail::install(ctx),
+        HelperRequest::MailStop => mail::stop(),
+        HelperRequest::MailStatus => mail::status(),
+        HelperRequest::MailSync { state } => mail::sync(state),
+        HelperRequest::SitePhpSet {
+            user,
+            domain,
+            document_root,
+            version,
+        } => multiphp::site_php_set(user, domain, document_root, *version),
+        HelperRequest::ApacheSiteWrite { domain, content } => {
+            apache::site_write(domain.as_str(), content)
+        }
+        HelperRequest::ApacheSiteDelete { domain } => apache::site_delete(domain.as_str()),
+        HelperRequest::WafSiteEnable { domain, on } => {
+            if waf_apache::active() {
+                waf_apache::site_enable(domain.as_str(), *on)
+            } else {
+                HelperResponse::failed(
+                    HelperErrorKind::BadRequest,
+                    "waf-site-enable is for the Hosting Edition; nginx sites use their vhost block"
+                        .to_string(),
+                )
+            }
+        }
+        HelperRequest::WafSitePartSave {
+            domain,
+            part,
+            content,
+        } => match waf_apache::SitePart::parse(part) {
+            Some(part) if waf_apache::active() => {
+                waf_apache::site_part_save(domain.as_str(), part, content)
+            }
+            _ => HelperResponse::failed(
+                HelperErrorKind::BadRequest,
+                "waf-site-part-save is for the Hosting Edition".to_string(),
+            ),
+        },
+        HelperRequest::WebSwitch { to } => web::switch(*to),
+        HelperRequest::LswsRestart => web::lsws_restart(),
+        HelperRequest::LswsAdminPassword => web::lsws_admin_password(),
         HelperRequest::LveSet { user, limits } => lve::set(user.as_ref(), limits),
         HelperRequest::LveReset { user } => lve::reset(user),
+        HelperRequest::LvePackageSet { package, limits } => lve::package_set(package, limits),
+        HelperRequest::LvePackageReset { package } => lve::package_reset(package),
+        HelperRequest::LvePackageRename { from, to } => lve::package_rename(from, to),
+        HelperRequest::CpapiSync { snapshot } => cpapi::sync(snapshot),
         HelperRequest::CertbotDnsCloudflareInstall => packages::certbot_dns_cloudflare_install(),
         HelperRequest::MaldetScan {
             job,

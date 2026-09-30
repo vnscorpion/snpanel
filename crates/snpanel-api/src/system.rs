@@ -91,7 +91,17 @@ fn php_sort_key(service: &str) -> (usize, Vec<u32>) {
 /// A machine taken to CloudLinux by `snpanel upgrade cloudlinux` - Apache
 /// and/or LiteSpeed installed and nginx gone. The upgrade is one-way and
 /// removes nginx and PHP-FPM, so on such a machine they are not listed at all.
-fn is_hosting_edition() -> bool {
+/// Where a website's access and error logs are: nginx's directory, or on the
+/// Hosting Edition Apache's (LiteSpeed writes the same files).
+pub(crate) fn site_log_dir() -> &'static str {
+    if is_hosting_edition() {
+        "/var/log/httpd"
+    } else {
+        "/var/log/nginx"
+    }
+}
+
+pub(crate) fn is_hosting_edition() -> bool {
     let unit = |name: &str| {
         ["/usr/lib/systemd/system", "/etc/systemd/system"]
             .iter()
@@ -453,6 +463,11 @@ pub fn ipv6_enabled() -> bool {
 /// anything when it cannot open the error log - which the panel's account
 /// cannot.
 pub fn waf_engine_available() -> bool {
+    // Hosting Edition: ModSecurity 2 in Apache, and in LiteSpeed through the
+    // Apache configuration. There is no nginx to ask.
+    if is_hosting_edition() {
+        return std::path::Path::new("/usr/lib64/httpd/modules/mod_security2.so").exists();
+    }
     const MODULE_CONF: &str = "/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf";
     if std::path::Path::new(MODULE_CONF).exists() {
         return true;
@@ -513,6 +528,21 @@ pub fn install_command_for(rhel: bool, package: &str) -> String {
              && apt-get install -y {package}"
         )
     }
+}
+
+/// On a Hosting Edition server the WAF runs server-wide (OWASP CRS in
+/// LiteSpeed and the Apache standby). Per-site WAF rules, bot blocking and
+/// flood limits are written into a site's web server configuration, which the
+/// panel does not write for Apache/LiteSpeed yet - so those requests are
+/// refused plainly instead of editing nginx files that are not there.
+pub fn hosting_waf_refusal() -> Option<axum::response::Response> {
+    is_hosting_edition().then(|| {
+        crate::errors::conflict(
+            "On this server the WAF runs server-wide: OWASP CRS protects every website on \
+             LiteSpeed and on the Apache standby (Settings > WAF > OWASP CRS). Per-website WAF \
+             rules, bot blocking and flood limits are not available here yet.",
+        )
+    })
 }
 
 #[cfg(test)]
