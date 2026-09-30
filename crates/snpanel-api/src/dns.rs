@@ -69,6 +69,17 @@ fn t(name: &str, rtype: &str, content: &str) -> TemplateRecord {
     }
 }
 
+/// The server's own address is named: `a` and `mx` only cover mail sent
+/// from the domain's web or mail host, and many receivers want the IP.
+pub const DEFAULT_SPF: &str = "\"v=spf1 a mx ip4:{ip} ~all\"";
+/// What the template held before; a zone or saved template still holding
+/// exactly this is brought up to [`DEFAULT_SPF`].
+const OLD_SPF: &str = "v=spf1 a mx ~all";
+
+fn is_old_spf(content: &str) -> bool {
+    content.trim().trim_matches('"') == OLD_SPF
+}
+
 pub fn default_template() -> Vec<TemplateRecord> {
     vec![
         t("@", "A", "{ip}"),
@@ -76,7 +87,7 @@ pub fn default_template() -> Vec<TemplateRecord> {
         t("www", "CNAME", "{domain}."),
         t("mail", "A", "{ip}"),
         t("@", "MX", "10 mail.{domain}."),
-        t("@", "TXT", "\"v=spf1 a mx ~all\""),
+        t("@", "TXT", DEFAULT_SPF),
         t("@", "CAA", "0 issue \"letsencrypt.org\""),
     ]
 }
@@ -184,10 +195,74 @@ fn settings_file() -> PathBuf {
 }
 
 pub fn settings() -> DnsSettings {
-    std::fs::read_to_string(settings_file())
+    let mut s = std::fs::read_to_string(settings_file())
         .ok()
         .and_then(|t| serde_json::from_str::<DnsSettings>(&t).ok())
-        .unwrap_or_else(DnsSettings::defaults)
+        .unwrap_or_else(DnsSettings::defaults);
+    upgrade_template(&mut s);
+    s
+}
+
+/// A saved template still holding the old default SPF gets the new one.
+fn upgrade_template(settings: &mut DnsSettings) {
+    for record in &mut settings.template {
+        if record.rtype == "TXT" && is_old_spf(&record.content) {
+            record.content = DEFAULT_SPF.to_string();
+        }
+    }
+}
+
+/// `set` (an RRset as PowerDNS lists it) with the old default SPF swapped
+/// for the one naming `ip`; `None` when it has no such record.
+fn spf_upgraded(set: &Value, ip: &str) -> Option<Value> {
+    if set["type"] != "TXT" {
+        return None;
+    }
+    let records = set["records"].as_array()?;
+    if !records.iter().any(|r| r["content"].as_str().is_some_and(is_old_spf)) {
+        return None;
+    }
+    let new = format!("\"v=spf1 a mx ip4:{ip} ~all\"");
+    let records: Vec<Value> = records
+        .iter()
+        .map(|r| match r["content"].as_str() {
+            Some(c) if is_old_spf(c) => json!({"content": new, "disabled": r["disabled"].as_bool().unwrap_or(false)}),
+            _ => json!({"content": r["content"], "disabled": r["disabled"].as_bool().unwrap_or(false)}),
+        })
+        .collect();
+    Some(json!({
+        "name": set["name"], "type": "TXT", "ttl": set["ttl"], "changetype": "REPLACE",
+        "records": records,
+    }))
+}
+
+/// Every hosted zone whose SPF is still the old default, given the server's
+/// IPv4 in it. Records anyone has changed are left alone. Returns how many
+/// zones changed.
+pub async fn upgrade_spf() -> usize {
+    let Some(ip) = server_ip(&settings()) else { return 0 };
+    let Ok(hosted) = zones().await else { return 0 };
+    let mut changed = 0;
+    for name in hosted {
+        let Ok(Some(z)) = zone(&name).await else { continue };
+        let sets: Vec<Value> = z["rrsets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|set| spf_upgraded(set, &ip))
+            .collect();
+        if sets.is_empty() {
+            continue;
+        }
+        match patch_zone(&name, sets).await {
+            Ok(()) => changed += 1,
+            Err(e) => tracing::warn!("SPF of {name}: {e}"),
+        }
+    }
+    if changed > 0 {
+        tracing::info!("DNS: SPF given the server's IPv4 in {changed} zone(s)");
+    }
+    changed
 }
 
 pub fn save_settings(settings: &DnsSettings) -> std::io::Result<()> {
@@ -1044,6 +1119,9 @@ pub fn start(state: &crate::state::AppState) {
     let state = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
+        if crate::routes::addons::dns_installed() {
+            upgrade_spf().await;
+        }
         loop {
             ensure_all(&state).await;
             tokio::time::sleep(Duration::from_secs(600)).await;
@@ -1219,6 +1297,39 @@ mod tests {
         assert_eq!(soa_mailbox("first.last@example.com").unwrap(), "first\\.last.example.com.");
         assert!(soa_mailbox("nobody").is_none());
         assert!(soa_mailbox("a b@example.com").is_none());
+    }
+
+    #[test]
+    fn the_default_spf_names_the_server_ip() {
+        let settings = DnsSettings::defaults();
+        let sets = zone_rrsets("example.com", &settings, "192.0.2.1").unwrap();
+        let txt = sets.iter().find(|s| s["type"] == "TXT").unwrap();
+        assert_eq!(txt["records"][0]["content"], "\"v=spf1 a mx ip4:192.0.2.1 ~all\"");
+        // No address: no SPF rather than one without it.
+        let sets = zone_rrsets("example.com", &settings, "").unwrap();
+        assert!(!sets.iter().any(|s| s["type"] == "TXT"));
+    }
+
+    #[test]
+    fn the_old_default_spf_is_upgraded() {
+        let mut s = DnsSettings::defaults();
+        s.template = vec![t("@", "TXT", "\"v=spf1 a mx ~all\""), t("x", "TXT", "\"v=spf1 -all\"")];
+        upgrade_template(&mut s);
+        assert_eq!(s.template[0].content, DEFAULT_SPF);
+        assert_eq!(s.template[1].content, "\"v=spf1 -all\"");
+
+        let set = json!({"name": "a.test.", "type": "TXT", "ttl": 3600, "records": [
+            {"content": "\"v=spf1 a mx ~all\"", "disabled": false},
+            {"content": "\"google-site-verification=x\"", "disabled": false},
+        ]});
+        let up = spf_upgraded(&set, "192.0.2.1").unwrap();
+        assert_eq!(up["records"][0]["content"], "\"v=spf1 a mx ip4:192.0.2.1 ~all\"");
+        assert_eq!(up["records"][1]["content"], "\"google-site-verification=x\"");
+        assert_eq!(up["changetype"], "REPLACE");
+        let custom = json!({"name": "a.test.", "type": "TXT", "ttl": 3600, "records": [
+            {"content": "\"v=spf1 include:_spf.google.com ~all\"", "disabled": false},
+        ]});
+        assert!(spf_upgraded(&custom, "192.0.2.1").is_none());
     }
 
     #[test]
