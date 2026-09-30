@@ -16,10 +16,10 @@
 
 pub mod dns;
 pub mod fail2ban;
-pub mod mail;
 pub mod firewall;
 pub mod fwmigrate;
 pub mod fwrules;
+pub mod mail;
 pub mod mariadb;
 pub mod misc;
 pub mod nginx;

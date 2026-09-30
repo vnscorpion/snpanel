@@ -20,8 +20,11 @@ pub use argv::InvocationError;
 mod fail2ban;
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
 mod mail;
+pub use mail::{
+    destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder,
+    MailState,
+};
 pub use mail::{MAX_DESTINATIONS as MAIL_MAX_DESTINATIONS, MAX_QUOTA_MB as MAIL_MAX_QUOTA_MB};
-pub use mail::{destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder, MailState};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{

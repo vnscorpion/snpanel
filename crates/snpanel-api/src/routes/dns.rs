@@ -26,13 +26,17 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/dns", get(overview).fallback(crate::fallback))
-        .route("/dns/settings", put(save_settings).fallback(crate::fallback))
-        .route("/dns/nameservers", put(save_nameservers).fallback(crate::fallback))
+        .route(
+            "/dns/settings",
+            put(save_settings).fallback(crate::fallback),
+        )
+        .route(
+            "/dns/nameservers",
+            put(save_nameservers).fallback(crate::fallback),
+        )
         .route(
             "/dns/zones/{zone}",
-            get(read_zone)
-                .patch(patch_zone)
-                .fallback(crate::fallback),
+            get(read_zone).patch(patch_zone).fallback(crate::fallback),
         )
         .route(
             "/dns/zones/{zone}/reset",
@@ -61,10 +65,15 @@ fn pdns_failed(e: PdnsError) -> Response {
 
 /// The domains of the caller's websites and their aliases.
 async fn own_domains(state: &AppState, user_id: i64) -> Result<BTreeSet<String>, Response> {
-    let sites = state.db.websites().list(Some(user_id), "").await.map_err(|e| {
-        tracing::error!("listing websites failed: {e}");
-        crate::errors::internal_error()
-    })?;
+    let sites = state
+        .db
+        .websites()
+        .list(Some(user_id), "")
+        .await
+        .map_err(|e| {
+            tracing::error!("listing websites failed: {e}");
+            crate::errors::internal_error()
+        })?;
     let ids: Vec<i64> = sites.iter().map(|s| s.id).collect();
     let aliases = state.db.websites().aliases_for(&ids).await.map_err(|e| {
         tracing::error!("listing aliases failed: {e}");
@@ -80,7 +89,12 @@ async fn own_domains(state: &AppState, user_id: i64) -> Result<BTreeSet<String>,
 
 /// The account whose website (or alias) the zone is, if any.
 async fn zone_owner(state: &AppState, zone: &str) -> Option<String> {
-    crate::mail::domains(state).await.ok()?.into_iter().find(|d| d.name == zone).map(|d| d.linux_user)
+    crate::mail::domains(state)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|d| d.name == zone)
+        .map(|d| d.linux_user)
 }
 
 /// Every zone's account, for the list.
@@ -113,10 +127,13 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
     let admin = is_admin(&current);
     let settings = dns::settings();
     let domains: BTreeSet<String> = match if admin {
-        dns::all_domains(&state).await.map(|d| d.into_iter().collect()).map_err(|e| {
-            tracing::error!("listing domains failed: {e}");
-            crate::errors::internal_error()
-        })
+        dns::all_domains(&state)
+            .await
+            .map(|d| d.into_iter().collect())
+            .map_err(|e| {
+                tracing::error!("listing domains failed: {e}");
+                crate::errors::internal_error()
+            })
     } else {
         own_domains(&state, current.user.id).await
     } {
@@ -161,7 +178,8 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
             None,
         )
         .await;
-        body["service"] = serde_json::from_str::<Value>(status.stdout.trim()).unwrap_or(Value::Null);
+        body["service"] =
+            serde_json::from_str::<Value>(status.stdout.trim()).unwrap_or(Value::Null);
         body["settings"] = serde_json::to_value(&settings).unwrap_or(Value::Null);
         body["default_template"] =
             serde_json::to_value(dns::default_template()).unwrap_or(Value::Null);
@@ -187,7 +205,11 @@ async fn save_nameservers(State(state): State<AppState>, req: axum::extract::Req
     };
     let raw: Vec<String> = body["nameservers"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let names = if raw.iter().all(|n| n.trim().is_empty()) {
         None
@@ -275,7 +297,8 @@ async fn zone_response(state: &AppState, current: &CurrentUser, zone: &str) -> R
         .map(|set| {
             let rtype = set["type"].as_str().unwrap_or("");
             let name = set["name"].as_str().unwrap_or("");
-            let editable = dns::TYPES.contains(&rtype) && (admin || !(rtype == "NS" && name == apex));
+            let editable =
+                dns::TYPES.contains(&rtype) && (admin || !(rtype == "NS" && name == apex));
             json!({
                 "name": dns::relative_name(name, zone),
                 "fqdn": name.trim_end_matches('.'),
@@ -309,11 +332,16 @@ async fn zone_response(state: &AppState, current: &CurrentUser, zone: &str) -> R
     let expected = dns::settings_for(state, zone).await.nameservers;
     // No NS answer at all (a subdomain served by its parent, a name not
     // registered yet) says nothing about where it points: leave it unknown.
-    let public = dns::public_nameservers(zone).await.filter(|ns| !ns.is_empty());
+    let public = dns::public_nameservers(zone)
+        .await
+        .filter(|ns| !ns.is_empty());
     let delegated_here = public
         .as_ref()
         .map(|ns| ns.iter().all(|n| expected.iter().any(|e| e == n)));
-    let records = rrsets.iter().map(|r| r["records"].as_array().map_or(0, Vec::len)).sum::<usize>();
+    let records = rrsets
+        .iter()
+        .map(|r| r["records"].as_array().map_or(0, Vec::len))
+        .sum::<usize>();
     axum::Json(json!({
         "name": zone,
         "serial": found["serial"],
@@ -345,8 +373,17 @@ async fn read_zone(
 
 /// One change from the page: the RRset `name`/`type` becomes `records`
 /// (none: removed). Checked here, in PowerDNS's form.
-fn rrset_change(change: &Value, zone: &str, admin: bool, default_ttl: u32) -> Result<Value, String> {
-    let rtype = change["type"].as_str().unwrap_or("").trim().to_ascii_uppercase();
+fn rrset_change(
+    change: &Value,
+    zone: &str,
+    admin: bool,
+    default_ttl: u32,
+) -> Result<Value, String> {
+    let rtype = change["type"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
     if !dns::TYPES.contains(&rtype.as_str()) {
         return Err(format!("{rtype} records cannot be edited here"));
     }
@@ -358,7 +395,11 @@ fn rrset_change(change: &Value, zone: &str, admin: bool, default_ttl: u32) -> Re
     let records: Vec<String> = match &change["records"] {
         Value::Array(items) => items
             .iter()
-            .map(|r| r.as_str().map(str::to_string).ok_or("A record must be text".to_string()))
+            .map(|r| {
+                r.as_str()
+                    .map(str::to_string)
+                    .ok_or("A record must be text".to_string())
+            })
             .collect::<Result<_, _>>()?,
         Value::Null => Vec::new(),
         _ => return Err("records must be a list".into()),
@@ -385,7 +426,11 @@ fn rrset_change(change: &Value, zone: &str, admin: bool, default_ttl: u32) -> Re
             .as_u64()
             .filter(|t| (u64::from(dns::MIN_TTL)..=u64::from(dns::MAX_TTL)).contains(t))
             .ok_or_else(|| {
-                format!("The TTL must be from {} to {} seconds", dns::MIN_TTL, dns::MAX_TTL)
+                format!(
+                    "The TTL must be from {} to {} seconds",
+                    dns::MIN_TTL,
+                    dns::MAX_TTL
+                )
             })? as u32,
     };
     let mut contents: Vec<String> = Vec::new();
@@ -422,7 +467,10 @@ async fn patch_zone(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let Some(changes) = body["rrsets"].as_array().filter(|c| !c.is_empty() && c.len() <= 50) else {
+    let Some(changes) = body["rrsets"]
+        .as_array()
+        .filter(|c| !c.is_empty() && c.len() <= 50)
+    else {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "rrsets must be a list of one to fifty changes",
@@ -506,8 +554,15 @@ async fn reset_zone(
     if let Err(e) = dns::patch_zone(&zone, changes).await {
         return bad_request(&e.0);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "dns_zone_reset", &zone, "")
-        .await;
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "dns_zone_reset",
+        &zone,
+        "",
+    )
+    .await;
     zone_response(&state, &current, &zone).await
 }
 
@@ -517,7 +572,8 @@ mod tests {
 
     #[test]
     fn a_change_is_checked_and_put_in_powerdns_form() {
-        let change = json!({"name": "www", "type": "a", "ttl": 300, "records": ["192.0.2.1", "192.0.2.1"]});
+        let change =
+            json!({"name": "www", "type": "a", "ttl": 300, "records": ["192.0.2.1", "192.0.2.1"]});
         let out = rrset_change(&change, "example.com", false, 3600).unwrap();
         assert_eq!(out["name"], "www.example.com.");
         assert_eq!(out["type"], "A");
@@ -526,7 +582,10 @@ mod tests {
         assert_eq!(out["records"].as_array().unwrap().len(), 1);
 
         let delete = json!({"name": "old", "type": "TXT", "records": []});
-        assert_eq!(rrset_change(&delete, "example.com", false, 3600).unwrap()["changetype"], "DELETE");
+        assert_eq!(
+            rrset_change(&delete, "example.com", false, 3600).unwrap()["changetype"],
+            "DELETE"
+        );
     }
 
     #[test]
@@ -547,11 +606,15 @@ mod tests {
     fn cname_rules_and_ttl_bounds_hold() {
         let apex = json!({"name": "@", "type": "CNAME", "records": ["x.example.net"]});
         assert!(rrset_change(&apex, "example.com", true, 3600).is_err());
-        let two = json!({"name": "w", "type": "CNAME", "records": ["a.example.net", "b.example.net"]});
+        let two =
+            json!({"name": "w", "type": "CNAME", "records": ["a.example.net", "b.example.net"]});
         assert!(rrset_change(&two, "example.com", true, 3600).is_err());
         let low = json!({"name": "w", "type": "A", "ttl": 5, "records": ["192.0.2.1"]});
         assert!(rrset_change(&low, "example.com", true, 3600).is_err());
         let default = json!({"name": "w", "type": "A", "records": ["192.0.2.1"]});
-        assert_eq!(rrset_change(&default, "example.com", true, 1800).unwrap()["ttl"], 1800);
+        assert_eq!(
+            rrset_change(&default, "example.com", true, 1800).unwrap()["ttl"],
+            1800
+        );
     }
 }

@@ -1406,12 +1406,21 @@ mod tests {
     /// are refusals now, and the arity is still what this pins.
     #[test]
     fn the_dns_verbs_map() {
-        assert!(matches!(map(&["dns-install"]), Ok(HelperRequest::DnsInstall)));
+        assert!(matches!(
+            map(&["dns-install"]),
+            Ok(HelperRequest::DnsInstall)
+        ));
         assert!(matches!(map(&["dns-stop"]), Ok(HelperRequest::DnsStop)));
         assert!(matches!(map(&["dns-status"]), Ok(HelperRequest::DnsStatus)));
         assert!(map(&["dns-install", "extra"]).is_err());
-        assert!(matches!(map(&["mail-install"]), Ok(HelperRequest::MailInstall)));
-        assert!(matches!(map(&["mail-status"]), Ok(HelperRequest::MailStatus)));
+        assert!(matches!(
+            map(&["mail-install"]),
+            Ok(HelperRequest::MailInstall)
+        ));
+        assert!(matches!(
+            map(&["mail-status"]),
+            Ok(HelperRequest::MailStatus)
+        ));
         assert!(matches!(map(&["mail-stop"]), Ok(HelperRequest::MailStop)));
     }
 

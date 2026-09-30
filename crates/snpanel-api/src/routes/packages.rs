@@ -61,15 +61,22 @@ async fn list(State(state): State<AppState>, current: CurrentUser) -> Response {
         Ok(m) => m,
         Err(r) => return r,
     };
-    let mail_limits: std::collections::HashMap<i64, i64> =
-        state.db.resellers().all_mailbox_limits().await.unwrap_or_default().into_iter().collect();
-    let owners: std::collections::HashMap<i64, i64> = match state.db.resellers().all_package_owners().await {
-        Ok(rows) => rows.into_iter().collect(),
-        Err(e) => {
-            tracing::error!("listing package owners failed: {e}");
-            return internal_error();
-        }
-    };
+    let mail_limits: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_mailbox_limits()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let owners: std::collections::HashMap<i64, i64> =
+        match state.db.resellers().all_package_owners().await {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                tracing::error!("listing package owners failed: {e}");
+                return internal_error();
+            }
+        };
     match state.db.packages().list().await {
         Ok(rows) => {
             // A reseller sees its own packages; the administrator every one,
@@ -122,7 +129,9 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     // A reseller's package names start with its prefix: they share one list
     // (and CloudLinux's) with every other reseller's.
     let name = match &manager {
-        crate::resellers::Manager::Reseller { limits, .. } => crate::resellers::prefixed(&limits.prefix, &name),
+        crate::resellers::Manager::Reseller { limits, .. } => {
+            crate::resellers::prefixed(&limits.prefix, &name)
+        }
         crate::resellers::Manager::Admin => name,
     };
     if let Err(r) = check_length("name", &name, 1, 100) {
@@ -166,13 +175,23 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     };
 
     if let Some(owner) = manager.reseller_id() {
-        if let Err(e) = state.db.resellers().set_package_owner(package.id, Some(owner)).await {
+        if let Err(e) = state
+            .db
+            .resellers()
+            .set_package_owner(package.id, Some(owner))
+            .await
+        {
             tracing::error!("recording a package's reseller failed: {e}");
             return internal_error();
         }
     }
     if let Some(limit) = mailbox_limit {
-        if let Err(e) = state.db.resellers().set_mailbox_limit(package.id, limit).await {
+        if let Err(e) = state
+            .db
+            .resellers()
+            .set_mailbox_limit(package.id, limit)
+            .await
+        {
             tracing::error!("saving a package's mailbox limit failed: {e}");
             return internal_error();
         }
@@ -250,7 +269,9 @@ async fn update(
             Err(r) => return r,
         };
         let name = match &manager {
-            crate::resellers::Manager::Reseller { limits, .. } => crate::resellers::prefixed(&limits.prefix, &name),
+            crate::resellers::Manager::Reseller { limits, .. } => {
+                crate::resellers::prefixed(&limits.prefix, &name)
+            }
             crate::resellers::Manager::Admin => name,
         };
         if let Err(r) = check_length("name", &name, 1, 100) {
@@ -284,7 +305,12 @@ async fn update(
         }
     };
     if let Some(limit) = mailbox_limit {
-        if let Err(e) = state.db.resellers().set_mailbox_limit(package.id, limit).await {
+        if let Err(e) = state
+            .db
+            .resellers()
+            .set_mailbox_limit(package.id, limit)
+            .await
+        {
             tracing::error!("saving a package's mailbox limit failed: {e}");
             return internal_error();
         }
@@ -377,7 +403,12 @@ fn mailbox_limit_in(payload: &Value) -> Result<Option<i64>, Response> {
 /// The package as answered, with its mailbox limit.
 async fn package_out(state: &AppState, package: &snpanel_db::Package) -> Value {
     let mut v = to_json(package);
-    v["mailbox_limit"] = json!(state.db.resellers().mailbox_limit(package.id).await.unwrap_or(0));
+    v["mailbox_limit"] = json!(state
+        .db
+        .resellers()
+        .mailbox_limit(package.id)
+        .await
+        .unwrap_or(0));
     v
 }
 

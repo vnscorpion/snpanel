@@ -66,7 +66,10 @@ pub fn load() -> Store {
 
 fn save(store: &Store) -> std::io::Result<()> {
     let path = store_file();
-    let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| ".".into());
+    let dir = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| ".".into());
     std::fs::create_dir_all(&dir)?;
     let mut text = serde_json::to_string_pretty(store)?;
     text.push('\n');
@@ -88,24 +91,43 @@ pub struct Domain {
 
 /// Every website domain and alias with an account to keep mail in.
 pub async fn domains(state: &AppState) -> Result<Vec<Domain>, String> {
-    let sites = state.db.websites().all_by_id().await.map_err(|e| e.to_string())?;
+    let sites = state
+        .db
+        .websites()
+        .all_by_id()
+        .await
+        .map_err(|e| e.to_string())?;
     let ids: Vec<i64> = sites.iter().map(|s| s.id).collect();
-    let aliases = state.db.websites().aliases_for(&ids).await.map_err(|e| e.to_string())?;
+    let aliases = state
+        .db
+        .websites()
+        .aliases_for(&ids)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut out: BTreeMap<String, Domain> = BTreeMap::new();
     for site in &sites {
-        let Some(user) = site.linux_user.clone().filter(|u| snpanel_core::PanelUsername::parse(u).is_ok()) else {
+        let Some(user) = site
+            .linux_user
+            .clone()
+            .filter(|u| snpanel_core::PanelUsername::parse(u).is_ok())
+        else {
             continue;
         };
         out.insert(
             site.domain.to_ascii_lowercase(),
-            Domain { name: site.domain.to_ascii_lowercase(), owner_id: site.owner_id, linux_user: user.clone() },
-        );
-        for alias in aliases.iter().filter(|a| a.website_id == site.id) {
-            out.entry(alias.domain.to_ascii_lowercase()).or_insert(Domain {
-                name: alias.domain.to_ascii_lowercase(),
+            Domain {
+                name: site.domain.to_ascii_lowercase(),
                 owner_id: site.owner_id,
                 linux_user: user.clone(),
-            });
+            },
+        );
+        for alias in aliases.iter().filter(|a| a.website_id == site.id) {
+            out.entry(alias.domain.to_ascii_lowercase())
+                .or_insert(Domain {
+                    name: alias.domain.to_ascii_lowercase(),
+                    owner_id: site.owner_id,
+                    linux_user: user.clone(),
+                });
         }
     }
     Ok(out.into_values().collect())
@@ -130,7 +152,8 @@ pub fn build(
             .map(|d| {
                 Ok(MailDomain {
                     domain: snpanel_core::Domain::parse(&d.name).map_err(|e| e.to_string())?,
-                    owner: snpanel_core::PanelUsername::parse(&d.linux_user).map_err(|e| e.to_string())?,
+                    owner: snpanel_core::PanelUsername::parse(&d.linux_user)
+                        .map_err(|e| e.to_string())?,
                     local: !store.remote_domains.contains(&d.name),
                 })
             })
@@ -145,22 +168,37 @@ pub fn build(
         .filter(|b| known.contains_key(domain_of(&b.address)))
         .map(|b| b.address.as_str())
         .collect();
-    for b in store.mailboxes.iter().filter(|b| boxes.contains(b.address.as_str())) {
+    for b in store
+        .mailboxes
+        .iter()
+        .filter(|b| boxes.contains(b.address.as_str()))
+    {
         state.mailboxes.push(MailBox {
             address: b.address.clone(),
             quota_mb: b.quota_mb,
             password: passwords.get(&b.address).cloned(),
         });
     }
-    for f in store.forwarders.iter().filter(|f| known.contains_key(domain_of(&f.source))) {
+    for f in store
+        .forwarders
+        .iter()
+        .filter(|f| known.contains_key(domain_of(&f.source)))
+    {
         let mut destinations = f.destinations.clone();
         // A forwarder on a mailbox keeps a copy there.
         if boxes.contains(f.source.as_str()) && !destinations.contains(&f.source) {
             destinations.insert(0, f.source.clone());
         }
-        state.forwarders.push(MailForwarder { source: f.source.clone(), destinations });
+        state.forwarders.push(MailForwarder {
+            source: f.source.clone(),
+            destinations,
+        });
     }
-    state.purge = purge.iter().filter(|p| !boxes.contains(p.as_str())).cloned().collect();
+    state.purge = purge
+        .iter()
+        .filter(|p| !boxes.contains(p.as_str()))
+        .cloned()
+        .collect();
     state.validate()?;
     Ok(state)
 }
@@ -177,10 +215,19 @@ async fn apply(
     let domains = domains(state).await?;
     let mail = build(store, &domains, passwords, purge)?;
     let payload = serde_json::to_string(&mail).map_err(|e| e.to_string())?;
-    let result =
-        crate::shell::privileged(state.settings.command_dry_run, "mail-sync", &[], Some(&payload), None).await;
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "mail-sync",
+        &[],
+        Some(&payload),
+        None,
+    )
+    .await;
     if !result.ok() {
-        return Err(result.failure_detail("the mail server refused the change").trim().to_string());
+        return Err(result
+            .failure_detail("the mail server refused the change")
+            .trim()
+            .to_string());
     }
     let answer: Value = serde_json::from_str(result.stdout.trim()).unwrap_or(Value::Null);
     if let Some(dkim) = answer["dkim"].as_object() {
@@ -279,21 +326,28 @@ async fn publish_dns(dkim: &BTreeMap<String, String>, store: &Store) {
         }
         let existing = &zone_cache[&zone];
         let current = |name: &str, rtype: &str| -> Option<Vec<String>> {
-            existing["rrsets"].as_array()?.iter().find(|s| s["name"] == name && s["type"] == rtype).map(|s| {
-                s["records"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|r| r["content"].as_str().map(str::to_string))
-                    .collect()
-            })
+            existing["rrsets"]
+                .as_array()?
+                .iter()
+                .find(|s| s["name"] == name && s["type"] == rtype)
+                .map(|s| {
+                    s["records"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| r["content"].as_str().map(str::to_string))
+                        .collect()
+                })
         };
         let Ok(content) = crate::dns::normalize_content("TXT", record, &zone) else {
             continue;
         };
         let dkim_name = format!("default._domainkey.{domain}.");
         if current(&dkim_name, "TXT").as_deref() != Some(std::slice::from_ref(&content)) {
-            changes.entry(zone.clone()).or_default().push(txt_set(&dkim_name, &content));
+            changes
+                .entry(zone.clone())
+                .or_default()
+                .push(txt_set(&dkim_name, &content));
         }
         let dmarc_name = format!("_dmarc.{domain}.");
         if current(&dmarc_name, "TXT").is_none() {
@@ -303,7 +357,8 @@ async fn publish_dns(dkim: &BTreeMap<String, String>, store: &Store) {
                 .push(txt_set(&dmarc_name, "\"v=DMARC1; p=none\""));
         }
         // A domain whose mail is here has an MX here.
-        if !store.remote_domains.contains(domain) && current(&format!("{domain}."), "MX").is_none() {
+        if !store.remote_domains.contains(domain) && current(&format!("{domain}."), "MX").is_none()
+        {
             changes.entry(zone.clone()).or_default().push(json!({
                 "name": format!("{domain}."), "type": "MX", "ttl": 3600, "changetype": "REPLACE",
                 "records": [{"content": format!("10 {domain}."), "disabled": false}],
@@ -337,7 +392,8 @@ pub fn sso_token(email: &str, key: &str, now: i64, nonce: &str) -> String {
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let payload = json!({ "email": email, "exp": now + 60, "nonce": nonce }).to_string();
     let body = b64.encode(payload.as_bytes());
-    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).expect("any key length");
+    let mut mac =
+        hmac::Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes()).expect("any key length");
     mac.update(body.as_bytes());
     let sig = b64.encode(mac.finalize().into_bytes());
     format!("{body}.{sig}")
@@ -348,7 +404,9 @@ pub fn sso_key() -> Result<String, String> {
         .map(|k| k.trim().to_string())
         .ok()
         .filter(|k| k.len() >= 32)
-        .ok_or_else(|| "The webmail's sign-on key is missing: install the Email addon again".to_string())
+        .ok_or_else(|| {
+            "The webmail's sign-on key is missing: install the Email addon again".to_string()
+        })
 }
 
 /// Where the webmail opens `email`, signed in.
@@ -359,7 +417,9 @@ pub fn webmail_link(host: &str, email: &str) -> Result<String, String> {
     rand::thread_rng().fill_bytes(&mut nonce);
     let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
     let token = sso_token(email, &key, chrono::Utc::now().timestamp(), &nonce);
-    Ok(format!("https://{host}:{WEBMAIL_PORT}/api/auth/sso?token={token}"))
+    Ok(format!(
+        "https://{host}:{WEBMAIL_PORT}/api/auth/sso?token={token}"
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +429,9 @@ pub fn webmail_link(host: &str, email: &str) -> Result<String, String> {
 pub fn password_valid(password: &str) -> Result<(), String> {
     let n = password.chars().count();
     if !(MIN_PASSWORD..=MAX_PASSWORD).contains(&n) {
-        return Err(format!("The password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters"));
+        return Err(format!(
+            "The password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters"
+        ));
     }
     if password.chars().any(char::is_control) {
         return Err("The password cannot hold control characters".into());
@@ -382,7 +444,9 @@ pub fn address(raw: &str) -> Result<String, String> {
     let address = raw.trim().to_ascii_lowercase();
     snpanel_ipc::split_address(&address)
         .map(|_| address.clone())
-        .ok_or_else(|| format!("{raw} is not a valid address: letters, digits and . _ + - before the @"))
+        .ok_or_else(|| {
+            format!("{raw} is not a valid address: letters, digits and . _ + - before the @")
+        })
 }
 
 #[cfg(test)]
@@ -390,27 +454,61 @@ mod tests {
     use super::*;
 
     fn domain(name: &str) -> Domain {
-        Domain { name: name.into(), owner_id: 2, linux_user: "alice".into() }
+        Domain {
+            name: name.into(),
+            owner_id: 2,
+            linux_user: "alice".into(),
+        }
     }
 
     #[test]
     fn the_state_follows_the_domains_there_are() {
         let store = Store {
             mailboxes: vec![
-                StoredMailbox { address: "info@a.test".into(), quota_mb: 100, created_at: String::new() },
-                StoredMailbox { address: "x@gone.test".into(), quota_mb: 100, created_at: String::new() },
+                StoredMailbox {
+                    address: "info@a.test".into(),
+                    quota_mb: 100,
+                    created_at: String::new(),
+                },
+                StoredMailbox {
+                    address: "x@gone.test".into(),
+                    quota_mb: 100,
+                    created_at: String::new(),
+                },
             ],
             forwarders: vec![
-                StoredForwarder { source: "info@a.test".into(), destinations: vec!["me@gmail.com".into()] },
-                StoredForwarder { source: "sales@a.test".into(), destinations: vec!["me@gmail.com".into()] },
+                StoredForwarder {
+                    source: "info@a.test".into(),
+                    destinations: vec!["me@gmail.com".into()],
+                },
+                StoredForwarder {
+                    source: "sales@a.test".into(),
+                    destinations: vec!["me@gmail.com".into()],
+                },
             ],
             remote_domains: ["b.test".to_string()].into(),
         };
-        let state = build(&store, &[domain("a.test"), domain("b.test")], &BTreeMap::new(), &["x@gone.test".into()]).unwrap();
-        assert_eq!(state.mailboxes.len(), 1, "the mailbox on a domain that is gone is left out");
-        assert!(state.domains.iter().any(|d| d.domain.as_str() == "b.test" && !d.local));
+        let state = build(
+            &store,
+            &[domain("a.test"), domain("b.test")],
+            &BTreeMap::new(),
+            &["x@gone.test".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            state.mailboxes.len(),
+            1,
+            "the mailbox on a domain that is gone is left out"
+        );
+        assert!(state
+            .domains
+            .iter()
+            .any(|d| d.domain.as_str() == "b.test" && !d.local));
         // A forwarder on a mailbox keeps a copy in it; one on a bare address does not.
-        assert_eq!(state.forwarders[0].destinations, ["info@a.test", "me@gmail.com"]);
+        assert_eq!(
+            state.forwarders[0].destinations,
+            ["info@a.test", "me@gmail.com"]
+        );
         assert_eq!(state.forwarders[1].destinations, ["me@gmail.com"]);
         assert_eq!(state.purge, ["x@gone.test"]);
     }
@@ -426,9 +524,13 @@ mod tests {
         assert_eq!(payload["email"], "a@example.com");
         assert_eq!(payload["exp"], 1_060);
         assert_eq!(payload["nonce"], "n1");
-        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice("k".repeat(64).as_bytes()).unwrap();
+        let mut mac =
+            hmac::Hmac::<sha2::Sha256>::new_from_slice("k".repeat(64).as_bytes()).unwrap();
         mac.update(body.as_bytes());
-        assert_eq!(b64.decode(sig).unwrap(), mac.finalize().into_bytes().to_vec());
+        assert_eq!(
+            b64.decode(sig).unwrap(),
+            mac.finalize().into_bytes().to_vec()
+        );
     }
 
     #[test]

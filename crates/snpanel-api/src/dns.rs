@@ -151,7 +151,9 @@ impl DnsSettings {
             return Err("The server IPv6 must be an IPv6 address".into());
         }
         if !(MIN_TTL..=MAX_TTL).contains(&self.default_ttl) {
-            return Err(format!("The TTL must be from {MIN_TTL} to {MAX_TTL} seconds"));
+            return Err(format!(
+                "The TTL must be from {MIN_TTL} to {MAX_TTL} seconds"
+            ));
         }
         if self.template.len() > 50 {
             return Err("The template holds at most 50 records".into());
@@ -161,11 +163,15 @@ impl DnsSettings {
             record.rtype = record.rtype.trim().to_ascii_uppercase();
             record.content = record.content.trim().to_string();
             if record.rtype == "NS" {
-                return Err("The nameservers are added from the list above, not the template".into());
+                return Err(
+                    "The nameservers are added from the list above, not the template".into(),
+                );
             }
             if let Some(ttl) = record.ttl {
                 if !(MIN_TTL..=MAX_TTL).contains(&ttl) {
-                    return Err(format!("The TTL must be from {MIN_TTL} to {MAX_TTL} seconds"));
+                    return Err(format!(
+                        "The TTL must be from {MIN_TTL} to {MAX_TTL} seconds"
+                    ));
                 }
             }
             let sample = Placeholders {
@@ -219,7 +225,10 @@ fn spf_upgraded(set: &Value, ip: &str) -> Option<Value> {
         return None;
     }
     let records = set["records"].as_array()?;
-    if !records.iter().any(|r| r["content"].as_str().is_some_and(is_old_spf)) {
+    if !records
+        .iter()
+        .any(|r| r["content"].as_str().is_some_and(is_old_spf))
+    {
         return None;
     }
     let new = format!("\"v=spf1 a mx ip4:{ip} ~all\"");
@@ -240,11 +249,15 @@ fn spf_upgraded(set: &Value, ip: &str) -> Option<Value> {
 /// IPv4 in it. Records anyone has changed are left alone. Returns how many
 /// zones changed.
 pub async fn upgrade_spf() -> usize {
-    let Some(ip) = server_ip(&settings()) else { return 0 };
+    let Some(ip) = server_ip(&settings()) else {
+        return 0;
+    };
     let Ok(hosted) = zones().await else { return 0 };
     let mut changed = 0;
     for name in hosted {
-        let Ok(Some(z)) = zone(&name).await else { continue };
+        let Ok(Some(z)) = zone(&name).await else {
+            continue;
+        };
         let sets: Vec<Value> = z["rrsets"]
             .as_array()
             .into_iter()
@@ -267,7 +280,10 @@ pub async fn upgrade_spf() -> usize {
 
 pub fn save_settings(settings: &DnsSettings) -> std::io::Result<()> {
     let path = settings_file();
-    let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| ".".into());
+    let dir = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| ".".into());
     std::fs::create_dir_all(&dir)?;
     let mut text = serde_json::to_string_pretty(settings)?;
     text.push('\n');
@@ -283,8 +299,11 @@ pub fn server_ip(settings: &DnsSettings) -> Option<String> {
     }
     let found = crate::routes::panel_settings::ipv4_addresses();
     let public = found.iter().find(|a| {
-        a.parse::<Ipv4Addr>()
-            .is_ok_and(|ip| !ip.is_private() && !ip.is_loopback() && !(ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64))
+        a.parse::<Ipv4Addr>().is_ok_and(|ip| {
+            !ip.is_private()
+                && !ip.is_loopback()
+                && !(ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64)
+        })
     });
     public.or(found.first()).cloned()
 }
@@ -348,7 +367,9 @@ pub fn relative_name(fqdn: &str, zone: &str) -> String {
     if fqdn == zone {
         "@".to_string()
     } else {
-        fqdn.strip_suffix(&format!(".{zone}")).unwrap_or(fqdn).to_string()
+        fqdn.strip_suffix(&format!(".{zone}"))
+            .unwrap_or(fqdn)
+            .to_string()
     }
 }
 
@@ -468,7 +489,9 @@ pub fn normalize_content(rtype: &str, raw: &str, zone: &str) -> Result<String, S
         "CNAME" | "NS" => target(raw, zone),
         "MX" => {
             let priority: u16 = number(fields.next(), "The priority")?;
-            let host = fields.next().ok_or("An MX record is a priority and a host")?;
+            let host = fields
+                .next()
+                .ok_or("An MX record is a priority and a host")?;
             if fields.next().is_some() {
                 return Err("An MX record is a priority and a host".into());
             }
@@ -484,11 +507,16 @@ pub fn normalize_content(rtype: &str, raw: &str, zone: &str) -> Result<String, S
             if fields.next().is_some() {
                 return Err("An SRV record is a priority, a weight, a port and a host".into());
             }
-            Ok(format!("{priority} {weight} {port} {}", target(host, zone)?))
+            Ok(format!(
+                "{priority} {weight} {port} {}",
+                target(host, zone)?
+            ))
         }
         "CAA" => {
             let flags: u8 = number(fields.next(), "The flag")?;
-            let tag = fields.next().ok_or("A CAA record is a flag, a tag and a value")?;
+            let tag = fields
+                .next()
+                .ok_or("A CAA record is a flag, a tag and a value")?;
             if !["issue", "issuewild", "iodef"].contains(&tag) {
                 return Err("The CAA tag must be issue, issuewild or iodef".into());
             }
@@ -549,34 +577,50 @@ pub fn zone_rrsets(zone: &str, settings: &DnsSettings, ip: &str) -> Result<Vec<V
         ip,
         ipv6: &settings.server_ipv6,
     };
-    let mailbox = soa_mailbox(&settings.hostmaster).ok_or("The hostmaster is not an e-mail address")?;
-    let primary = settings.nameservers.first().ok_or("No nameservers are set")?;
+    let mailbox =
+        soa_mailbox(&settings.hostmaster).ok_or("The hostmaster is not an e-mail address")?;
+    let primary = settings
+        .nameservers
+        .first()
+        .ok_or("No nameservers are set")?;
     let serial = format!("{}01", chrono::Utc::now().format("%Y%m%d"));
     let mut sets: Vec<(String, String, u32, Vec<String>)> = vec![
         (
             format!("{zone}."),
             "SOA".into(),
             settings.default_ttl,
-            vec![format!("{primary}. {mailbox} {serial} 10800 3600 604800 3600")],
+            vec![format!(
+                "{primary}. {mailbox} {serial} 10800 3600 604800 3600"
+            )],
         ),
         (
             format!("{zone}."),
             "NS".into(),
             settings.default_ttl,
-            settings.nameservers.iter().map(|n| format!("{n}.")).collect(),
+            settings
+                .nameservers
+                .iter()
+                .map(|n| format!("{n}."))
+                .collect(),
         ),
     ];
-    let mut add = |name: String, rtype: String, ttl: u32, content: String| {
-        match sets.iter_mut().find(|(n, t, _, _)| *n == name && *t == rtype) {
-            Some(set) if !set.3.contains(&content) => set.3.push(content),
-            Some(_) => {}
-            None => sets.push((name, rtype, ttl, vec![content])),
-        }
+    let mut add = |name: String, rtype: String, ttl: u32, content: String| match sets
+        .iter_mut()
+        .find(|(n, t, _, _)| *n == name && *t == rtype)
+    {
+        Some(set) if !set.3.contains(&content) => set.3.push(content),
+        Some(_) => {}
+        None => sets.push((name, rtype, ttl, vec![content])),
     };
     if !ip.is_empty() {
         for ns in &settings.nameservers {
             if ns.ends_with(&format!(".{zone}")) {
-                add(format!("{ns}."), "A".into(), settings.default_ttl, ip.to_string());
+                add(
+                    format!("{ns}."),
+                    "A".into(),
+                    settings.default_ttl,
+                    ip.to_string(),
+                );
             }
         }
     }
@@ -586,7 +630,12 @@ pub fn zone_rrsets(zone: &str, settings: &DnsSettings, ip: &str) -> Result<Vec<V
         };
         let name = record_name(&record.name, zone)?;
         let content = normalize_content(&record.rtype, &content, zone)?;
-        add(name, record.rtype.clone(), record.ttl.unwrap_or(settings.default_ttl), content);
+        add(
+            name,
+            record.rtype.clone(),
+            record.ttl.unwrap_or(settings.default_ttl),
+            content,
+        );
     }
     Ok(sets
         .into_iter()
@@ -618,7 +667,9 @@ impl std::fmt::Display for PdnsError {
 fn api_key() -> Result<String, PdnsError> {
     std::fs::read_to_string(API_KEY_FILE)
         .map(|k| k.trim().to_string())
-        .map_err(|_| PdnsError("PowerDNS is not set up: install the DNS Manager addon again".into()))
+        .map_err(|_| {
+            PdnsError("PowerDNS is not set up: install the DNS Manager addon again".into())
+        })
 }
 
 /// One request; the status and the body as JSON (`null` when empty).
@@ -639,7 +690,9 @@ async fn call(method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Va
         .map_err(|_| PdnsError("PowerDNS API key is not a usable header".into()))?;
     let unreachable = |_| PdnsError("PowerDNS does not answer; start it from Services".into());
     let exchange = async {
-        let tcp = tokio::net::TcpStream::connect(API_ADDR).await.map_err(unreachable)?;
+        let tcp = tokio::net::TcpStream::connect(API_ADDR)
+            .await
+            .map_err(unreachable)?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tcp))
             .await
             .map_err(|e| PdnsError(format!("PowerDNS: {e}")))?;
@@ -732,9 +785,13 @@ pub async fn create_zone(zone: &str, rrsets: Vec<Value>) -> Result<(), PdnsError
 }
 
 pub async fn patch_zone(zone: &str, rrsets: Vec<Value>) -> Result<(), PdnsError> {
-    checked("PATCH", &zone_path(zone), Some(&json!({ "rrsets": rrsets })))
-        .await
-        .map(drop)
+    checked(
+        "PATCH",
+        &zone_path(zone),
+        Some(&json!({ "rrsets": rrsets })),
+    )
+    .await
+    .map(drop)
 }
 
 pub async fn delete_zone(zone: &str) -> Result<(), PdnsError> {
@@ -832,7 +889,10 @@ async fn ns_query(resolver: &str, zone: &str) -> Option<Vec<String>> {
     let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
     socket.send_to(&ns_packet(zone, id), resolver).await.ok()?;
     let mut buf = [0u8; 1500];
-    let (n, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut buf)).await.ok()?.ok()?;
+    let (n, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
     parse_ns_answer(&buf[..n], id)
 }
 
@@ -853,11 +913,16 @@ fn reseller_ns_all() -> std::collections::BTreeMap<String, Vec<String>> {
 
 /// A reseller's own nameservers, when it set them.
 pub fn reseller_nameservers(reseller_id: i64) -> Option<Vec<String>> {
-    reseller_ns_all().remove(&reseller_id.to_string()).filter(|n| !n.is_empty())
+    reseller_ns_all()
+        .remove(&reseller_id.to_string())
+        .filter(|n| !n.is_empty())
 }
 
 /// Checked names, or `None` for the server's defaults.
-pub fn save_reseller_nameservers(reseller_id: i64, names: Option<Vec<String>>) -> Result<(), String> {
+pub fn save_reseller_nameservers(
+    reseller_id: i64,
+    names: Option<Vec<String>>,
+) -> Result<(), String> {
     let mut all = reseller_ns_all();
     match names {
         Some(names) => {
@@ -868,12 +933,18 @@ pub fn save_reseller_nameservers(reseller_id: i64, names: Option<Vec<String>>) -
         }
     }
     let path = reseller_ns_file();
-    let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| ".".into());
+    let dir = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| ".".into());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let temp = dir.join(format!(".dns-resellers.json.{}", std::process::id()));
-    std::fs::write(&temp, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())? + "\n")
-        .and_then(|()| std::fs::rename(&temp, &path))
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &temp,
+        serde_json::to_string_pretty(&all).map_err(|e| e.to_string())? + "\n",
+    )
+    .and_then(|()| std::fs::rename(&temp, &path))
+    .map_err(|e| e.to_string())
 }
 
 /// One to six host names, lower case, without the final dot.
@@ -894,12 +965,19 @@ pub fn nameservers_valid(raw: &[String]) -> Result<Vec<String>, String> {
 
 /// The reseller whose nameservers an account's zones get, if any.
 pub async fn reseller_for_owner(state: &crate::state::AppState, owner_id: i64) -> Option<i64> {
-    crate::resellers::reseller_of(state, owner_id).await.ok().flatten().map(|(id, _)| id)
+    crate::resellers::reseller_of(state, owner_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|(id, _)| id)
 }
 
 /// The settings a zone of `owner_id`'s is made with: the server's, with its
 /// reseller's nameservers when it has set them.
-pub async fn settings_for_owner(state: &crate::state::AppState, owner_id: Option<i64>) -> DnsSettings {
+pub async fn settings_for_owner(
+    state: &crate::state::AppState,
+    owner_id: Option<i64>,
+) -> DnsSettings {
     let mut s = settings();
     if let Some(owner) = owner_id {
         if let Some(reseller) = reseller_for_owner(state, owner).await {
@@ -941,7 +1019,10 @@ pub async fn apply_nameservers(zone: &str, settings: &DnsSettings) -> Result<(),
         .find(|s| s["name"] == apex.as_str() && s["type"] == "SOA")
         .and_then(|s| s["records"][0]["content"].as_str())
         .map(str::to_string);
-    let primary = settings.nameservers.first().ok_or_else(|| PdnsError("No nameservers are set".into()))?;
+    let primary = settings
+        .nameservers
+        .first()
+        .ok_or_else(|| PdnsError("No nameservers are set".into()))?;
     let mut rrsets = vec![json!({
         "name": apex, "type": "NS", "ttl": settings.default_ttl, "changetype": "REPLACE",
         "records": settings.nameservers.iter().map(|n| json!({"content": format!("{n}."), "disabled": false})).collect::<Vec<_>>(),
@@ -951,13 +1032,25 @@ pub async fn apply_nameservers(zone: &str, settings: &DnsSettings) -> Result<(),
         let mname = format!("{primary}.");
         if fields.len() == 7 && fields[0] != mname {
             fields[0] = &mname;
-            rrsets.push(single(&apex, "SOA", settings.default_ttl, &fields.join(" ")));
+            rrsets.push(single(
+                &apex,
+                "SOA",
+                settings.default_ttl,
+                &fields.join(" "),
+            ));
         }
     }
     if let Some(ip) = server_ip(settings) {
-        for ns in settings.nameservers.iter().filter(|n| n.ends_with(&format!(".{zone}"))) {
+        for ns in settings
+            .nameservers
+            .iter()
+            .filter(|n| n.ends_with(&format!(".{zone}")))
+        {
             let fqdn = format!("{ns}.");
-            let has = existing["rrsets"].as_array().is_some_and(|sets| sets.iter().any(|s| s["name"] == fqdn.as_str() && s["type"] == "A"));
+            let has = existing["rrsets"].as_array().is_some_and(|sets| {
+                sets.iter()
+                    .any(|s| s["name"] == fqdn.as_str() && s["type"] == "A")
+            });
             if !has {
                 rrsets.push(single(&fqdn, "A", settings.default_ttl, &ip));
             }
@@ -971,7 +1064,12 @@ pub async fn apply_nameservers(zone: &str, settings: &DnsSettings) -> Result<(),
 pub async fn apply_reseller_nameservers(state: &crate::state::AppState, reseller_id: i64) -> usize {
     let settings = settings_for_owner(state, Some(reseller_id)).await;
     let Ok(hosted) = zones().await else { return 0 };
-    let mut members = state.db.resellers().children(reseller_id).await.unwrap_or_default();
+    let mut members = state
+        .db
+        .resellers()
+        .children(reseller_id)
+        .await
+        .unwrap_or_default();
     members.push(reseller_id);
     let mut changed = 0;
     for (domain, owner) in owners(state).await {
@@ -1016,9 +1114,19 @@ pub async fn website_created(state: &crate::state::AppState, domain: &str) {
 
 /// Every website domain and alias on the server, lower case.
 pub async fn all_domains(state: &crate::state::AppState) -> Result<Vec<String>, String> {
-    let sites = state.db.websites().all_by_id().await.map_err(|e| e.to_string())?;
+    let sites = state
+        .db
+        .websites()
+        .all_by_id()
+        .await
+        .map_err(|e| e.to_string())?;
     let ids: Vec<i64> = sites.iter().map(|s| s.id).collect();
-    let aliases = state.db.websites().aliases_for(&ids).await.map_err(|e| e.to_string())?;
+    let aliases = state
+        .db
+        .websites()
+        .aliases_for(&ids)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut domains: Vec<String> = sites
         .into_iter()
         .map(|s| s.domain)
@@ -1045,7 +1153,10 @@ fn covered(domain: &str, hosted: &[String], parents_with_name: &[String]) -> boo
 
 /// A zone (or parent-zone records) for every domain that has none. Returns
 /// how many were made. Cheap when there is nothing to do: one listing.
-pub async fn ensure_domains(state: &crate::state::AppState, domains: Vec<String>) -> Result<usize, PdnsError> {
+pub async fn ensure_domains(
+    state: &crate::state::AppState,
+    domains: Vec<String>,
+) -> Result<usize, PdnsError> {
     let hosted = zones().await?;
     let missing: Vec<String> = domains
         .into_iter()
@@ -1151,7 +1262,12 @@ async fn website_created_inner(domain: &str, settings: &DnsSettings) -> Result<(
         rrsets.push(single(&fqdn, "A", settings.default_ttl, &ip));
     }
     if !settings.server_ipv6.is_empty() {
-        rrsets.push(single(&fqdn, "AAAA", settings.default_ttl, &settings.server_ipv6));
+        rrsets.push(single(
+            &fqdn,
+            "AAAA",
+            settings.default_ttl,
+            &settings.server_ipv6,
+        ));
     }
     if rrsets.is_empty() {
         return Ok(());
@@ -1200,9 +1316,11 @@ async fn website_deleted_inner(domain: &str) -> Result<(), PdnsError> {
             continue;
         }
         let all_ours = set["records"].as_array().is_some_and(|records| {
-            records
-                .iter()
-                .all(|r| r["content"].as_str().is_some_and(|c| ours.iter().any(|o| o == c)))
+            records.iter().all(|r| {
+                r["content"]
+                    .as_str()
+                    .is_some_and(|c| ours.iter().any(|o| o == c))
+            })
         });
         if all_ours {
             deletes.push(json!({"name": fqdn, "type": rtype, "changetype": "DELETE"}));
@@ -1225,23 +1343,64 @@ mod tests {
         m.extend_from_slice(&ns_packet("example.com", 0)[12..]);
         // answer 1: name pointer to 12, type NS, class IN, ttl, rdata ns1.example.net
         let rdata1: Vec<u8> = [&[3u8][..], b"ns1", &[7], b"example", &[3], b"net", &[0]].concat();
-        m.extend_from_slice(&[0xc0, 12, 0, 2, 0, 1, 0, 0, 0x0e, 0x10, 0, rdata1.len() as u8]);
+        m.extend_from_slice(&[
+            0xc0,
+            12,
+            0,
+            2,
+            0,
+            1,
+            0,
+            0,
+            0x0e,
+            0x10,
+            0,
+            rdata1.len() as u8,
+        ]);
         m.extend_from_slice(&rdata1);
         // answer 2: rdata "ns2" + pointer to example.com at 12
         let rdata2: Vec<u8> = [&[3u8][..], b"ns2", &[0xc0, 12]].concat();
-        m.extend_from_slice(&[0xc0, 12, 0, 2, 0, 1, 0, 0, 0x0e, 0x10, 0, rdata2.len() as u8]);
+        m.extend_from_slice(&[
+            0xc0,
+            12,
+            0,
+            2,
+            0,
+            1,
+            0,
+            0,
+            0x0e,
+            0x10,
+            0,
+            rdata2.len() as u8,
+        ]);
         m.extend_from_slice(&rdata2);
-        assert_eq!(parse_ns_answer(&m, 0x1234).unwrap(), ["ns1.example.net", "ns2.example.com"]);
-        assert!(parse_ns_answer(&m, 0x9999).is_none(), "another query's answer is not ours");
+        assert_eq!(
+            parse_ns_answer(&m, 0x1234).unwrap(),
+            ["ns1.example.net", "ns2.example.com"]
+        );
+        assert!(
+            parse_ns_answer(&m, 0x9999).is_none(),
+            "another query's answer is not ours"
+        );
     }
 
     #[test]
     fn record_names_are_made_absolute_in_the_zone() {
         assert_eq!(record_name("@", "example.com").unwrap(), "example.com.");
         assert_eq!(record_name("", "example.com").unwrap(), "example.com.");
-        assert_eq!(record_name("www", "example.com").unwrap(), "www.example.com.");
-        assert_eq!(record_name("WWW.example.com.", "example.com").unwrap(), "www.example.com.");
-        assert_eq!(record_name("*.dev", "example.com").unwrap(), "*.dev.example.com.");
+        assert_eq!(
+            record_name("www", "example.com").unwrap(),
+            "www.example.com."
+        );
+        assert_eq!(
+            record_name("WWW.example.com.", "example.com").unwrap(),
+            "www.example.com."
+        );
+        assert_eq!(
+            record_name("*.dev", "example.com").unwrap(),
+            "*.dev.example.com."
+        );
         assert_eq!(
             record_name("_dmarc", "example.com").unwrap(),
             "_dmarc.example.com."
@@ -1256,14 +1415,29 @@ mod tests {
     #[test]
     fn contents_are_checked_for_their_type() {
         let z = "example.com";
-        assert_eq!(normalize_content("A", " 192.0.2.1 ", z).unwrap(), "192.0.2.1");
+        assert_eq!(
+            normalize_content("A", " 192.0.2.1 ", z).unwrap(),
+            "192.0.2.1"
+        );
         assert!(normalize_content("A", "192.0.2", z).is_err());
         assert!(normalize_content("A", "2001:db8::1", z).is_err());
-        assert_eq!(normalize_content("AAAA", "2001:DB8::1", z).unwrap(), "2001:db8::1");
+        assert_eq!(
+            normalize_content("AAAA", "2001:DB8::1", z).unwrap(),
+            "2001:db8::1"
+        );
         assert_eq!(normalize_content("CNAME", "@", z).unwrap(), "example.com.");
-        assert_eq!(normalize_content("CNAME", "host", z).unwrap(), "host.example.com.");
-        assert_eq!(normalize_content("CNAME", "cdn.example.net", z).unwrap(), "cdn.example.net.");
-        assert_eq!(normalize_content("MX", "10 mail", z).unwrap(), "10 mail.example.com.");
+        assert_eq!(
+            normalize_content("CNAME", "host", z).unwrap(),
+            "host.example.com."
+        );
+        assert_eq!(
+            normalize_content("CNAME", "cdn.example.net", z).unwrap(),
+            "cdn.example.net."
+        );
+        assert_eq!(
+            normalize_content("MX", "10 mail", z).unwrap(),
+            "10 mail.example.com."
+        );
         assert!(normalize_content("MX", "mail.example.com", z).is_err());
         assert!(normalize_content("MX", "70000 mail", z).is_err());
         assert_eq!(
@@ -1287,14 +1461,23 @@ mod tests {
         assert!(txt("\"a\"b").is_err());
         let long = "k".repeat(300);
         let quoted = txt(&long).unwrap();
-        assert_eq!(quoted, format!("\"{}\" \"{}\"", "k".repeat(255), "k".repeat(45)));
+        assert_eq!(
+            quoted,
+            format!("\"{}\" \"{}\"", "k".repeat(255), "k".repeat(45))
+        );
         assert!(txt("line\nbreak").is_err());
     }
 
     #[test]
     fn the_hostmaster_is_written_the_soa_way() {
-        assert_eq!(soa_mailbox("hostmaster@example.com").unwrap(), "hostmaster.example.com.");
-        assert_eq!(soa_mailbox("first.last@example.com").unwrap(), "first\\.last.example.com.");
+        assert_eq!(
+            soa_mailbox("hostmaster@example.com").unwrap(),
+            "hostmaster.example.com."
+        );
+        assert_eq!(
+            soa_mailbox("first.last@example.com").unwrap(),
+            "first\\.last.example.com."
+        );
         assert!(soa_mailbox("nobody").is_none());
         assert!(soa_mailbox("a b@example.com").is_none());
     }
@@ -1304,7 +1487,10 @@ mod tests {
         let settings = DnsSettings::defaults();
         let sets = zone_rrsets("example.com", &settings, "192.0.2.1").unwrap();
         let txt = sets.iter().find(|s| s["type"] == "TXT").unwrap();
-        assert_eq!(txt["records"][0]["content"], "\"v=spf1 a mx ip4:192.0.2.1 ~all\"");
+        assert_eq!(
+            txt["records"][0]["content"],
+            "\"v=spf1 a mx ip4:192.0.2.1 ~all\""
+        );
         // No address: no SPF rather than one without it.
         let sets = zone_rrsets("example.com", &settings, "").unwrap();
         assert!(!sets.iter().any(|s| s["type"] == "TXT"));
@@ -1313,7 +1499,10 @@ mod tests {
     #[test]
     fn the_old_default_spf_is_upgraded() {
         let mut s = DnsSettings::defaults();
-        s.template = vec![t("@", "TXT", "\"v=spf1 a mx ~all\""), t("x", "TXT", "\"v=spf1 -all\"")];
+        s.template = vec![
+            t("@", "TXT", "\"v=spf1 a mx ~all\""),
+            t("x", "TXT", "\"v=spf1 -all\""),
+        ];
         upgrade_template(&mut s);
         assert_eq!(s.template[0].content, DEFAULT_SPF);
         assert_eq!(s.template[1].content, "\"v=spf1 -all\"");
@@ -1323,8 +1512,14 @@ mod tests {
             {"content": "\"google-site-verification=x\"", "disabled": false},
         ]});
         let up = spf_upgraded(&set, "192.0.2.1").unwrap();
-        assert_eq!(up["records"][0]["content"], "\"v=spf1 a mx ip4:192.0.2.1 ~all\"");
-        assert_eq!(up["records"][1]["content"], "\"google-site-verification=x\"");
+        assert_eq!(
+            up["records"][0]["content"],
+            "\"v=spf1 a mx ip4:192.0.2.1 ~all\""
+        );
+        assert_eq!(
+            up["records"][1]["content"],
+            "\"google-site-verification=x\""
+        );
         assert_eq!(up["changetype"], "REPLACE");
         let custom = json!({"name": "a.test.", "type": "TXT", "ttl": 3600, "records": [
             {"content": "\"v=spf1 include:_spf.google.com ~all\"", "disabled": false},
@@ -1361,8 +1556,14 @@ mod tests {
         assert!(find("ns2.example.net.", "A").is_none());
         assert_eq!(find("example.com.", "A").unwrap(), ["192.0.2.1"]);
         assert_eq!(find("www.example.com.", "CNAME").unwrap(), ["example.com."]);
-        assert_eq!(find("example.com.", "MX").unwrap(), ["10 mail.example.com."]);
-        assert_eq!(find("example.com.", "CAA").unwrap(), ["0 issue \"letsencrypt.org\""]);
+        assert_eq!(
+            find("example.com.", "MX").unwrap(),
+            ["10 mail.example.com."]
+        );
+        assert_eq!(
+            find("example.com.", "CAA").unwrap(),
+            ["0 issue \"letsencrypt.org\""]
+        );
         // No IPv6 set: the AAAA line is left out.
         assert!(find("example.com.", "AAAA").is_none());
         settings.server_ipv6 = "2001:db8::1".into();
@@ -1399,18 +1600,40 @@ mod tests {
             "example.com".into(),
             "example.org".into(),
         ]);
-        assert_eq!(order, ["example.com", "example.org", "blog.example.com", "a.b.example.org"]);
+        assert_eq!(
+            order,
+            [
+                "example.com",
+                "example.org",
+                "blog.example.com",
+                "a.b.example.org"
+            ]
+        );
         let hosted = vec!["example.com".to_string()];
         assert!(covered("example.com", &hosted, &[]));
-        assert!(covered("blog.example.com", &hosted, &["blog.example.com".into()]));
-        assert!(!covered("shop.example.com", &hosted, &["blog.example.com".into()]));
+        assert!(covered(
+            "blog.example.com",
+            &hosted,
+            &["blog.example.com".into()]
+        ));
+        assert!(!covered(
+            "shop.example.com",
+            &hosted,
+            &["blog.example.com".into()]
+        ));
     }
 
     #[test]
     fn the_parent_zone_is_the_longest_one_above() {
         let zones = vec!["example.com".to_string(), "shop.example.com".to_string()];
-        assert_eq!(parent_zone("a.shop.example.com", &zones).unwrap(), "shop.example.com");
-        assert_eq!(parent_zone("blog.example.com", &zones).unwrap(), "example.com");
+        assert_eq!(
+            parent_zone("a.shop.example.com", &zones).unwrap(),
+            "shop.example.com"
+        );
+        assert_eq!(
+            parent_zone("blog.example.com", &zones).unwrap(),
+            "example.com"
+        );
         assert!(parent_zone("example.com", &zones).is_none());
         assert!(parent_zone("badexample.com", &zones).is_none());
     }

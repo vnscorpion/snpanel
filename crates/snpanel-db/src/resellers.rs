@@ -100,10 +100,12 @@ impl<'a> ResellerRepo<'a> {
 
     /// The reseller an account belongs to, if any.
     pub async fn parent_of(&self, user_id: i64) -> Result<Option<i64>, DbError> {
-        Ok(sqlx::query_scalar("SELECT parent_id FROM user_parents WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT parent_id FROM user_parents WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(self.pool)
+                .await?,
+        )
     }
 
     /// Every account's reseller, for the administrator's list.
@@ -116,10 +118,12 @@ impl<'a> ResellerRepo<'a> {
 
     /// The accounts a reseller made.
     pub async fn children(&self, parent_id: i64) -> Result<Vec<i64>, DbError> {
-        Ok(sqlx::query_scalar("SELECT user_id FROM user_parents WHERE parent_id = ? ORDER BY user_id")
-            .bind(parent_id)
-            .fetch_all(self.pool)
-            .await?)
+        Ok(sqlx::query_scalar(
+            "SELECT user_id FROM user_parents WHERE parent_id = ? ORDER BY user_id",
+        )
+        .bind(parent_id)
+        .fetch_all(self.pool)
+        .await?)
     }
 
     pub async fn set_parent(&self, user_id: i64, parent_id: Option<i64>) -> Result<(), DbError> {
@@ -165,10 +169,12 @@ impl<'a> ResellerRepo<'a> {
 
     /// The reseller a package is, if any.
     pub async fn package_owner(&self, package_id: i64) -> Result<Option<i64>, DbError> {
-        Ok(sqlx::query_scalar("SELECT owner_id FROM package_owners WHERE package_id = ?")
-            .bind(package_id)
-            .fetch_optional(self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT owner_id FROM package_owners WHERE package_id = ?")
+                .bind(package_id)
+                .fetch_optional(self.pool)
+                .await?,
+        )
     }
 
     pub async fn all_package_owners(&self) -> Result<Vec<(i64, i64)>, DbError> {
@@ -178,7 +184,11 @@ impl<'a> ResellerRepo<'a> {
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
-    pub async fn set_package_owner(&self, package_id: i64, owner_id: Option<i64>) -> Result<(), DbError> {
+    pub async fn set_package_owner(
+        &self,
+        package_id: i64,
+        owner_id: Option<i64>,
+    ) -> Result<(), DbError> {
         match owner_id {
             Some(owner) => {
                 sqlx::query(
@@ -212,10 +222,12 @@ impl<'a> ResellerRepo<'a> {
 
     /// The reseller a provisioning token is, if any.
     pub async fn token_owner(&self, token_id: i64) -> Result<Option<i64>, DbError> {
-        Ok(sqlx::query_scalar("SELECT owner_id FROM api_token_owners WHERE token_id = ?")
-            .bind(token_id)
-            .fetch_optional(self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT owner_id FROM api_token_owners WHERE token_id = ?")
+                .bind(token_id)
+                .fetch_optional(self.pool)
+                .await?,
+        )
     }
 
     pub async fn all_token_owners(&self) -> Result<Vec<(i64, i64)>, DbError> {
@@ -229,19 +241,23 @@ impl<'a> ResellerRepo<'a> {
     /// gives its id to the next account, which must not inherit them.
     pub async fn forget_provisioning(&self, owner_id: i64) -> Result<u64, DbError> {
         let pattern = format!("r{owner_id}:%");
-        Ok(sqlx::query("DELETE FROM provisioning_accounts WHERE external_id LIKE ?")
-            .bind(pattern)
-            .execute(self.pool)
-            .await?
-            .rows_affected())
+        Ok(
+            sqlx::query("DELETE FROM provisioning_accounts WHERE external_id LIKE ?")
+                .bind(pattern)
+                .execute(self.pool)
+                .await?
+                .rows_affected(),
+        )
     }
 
     /// The provisioning tokens a reseller made.
     pub async fn tokens_of(&self, owner_id: i64) -> Result<Vec<i64>, DbError> {
-        Ok(sqlx::query_scalar("SELECT token_id FROM api_token_owners WHERE owner_id = ?")
-            .bind(owner_id)
-            .fetch_all(self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT token_id FROM api_token_owners WHERE owner_id = ?")
+                .bind(owner_id)
+                .fetch_all(self.pool)
+                .await?,
+        )
     }
 
     pub async fn set_token_owner(&self, token_id: i64, owner_id: i64) -> Result<(), DbError> {
@@ -255,11 +271,15 @@ impl<'a> ResellerRepo<'a> {
 
     /// The mailboxes a package allows; zero is no limit.
     pub async fn mailbox_limit(&self, package_id: i64) -> Result<i64, DbError> {
-        Ok(sqlx::query_scalar("SELECT mailbox_limit FROM package_mail_limits WHERE package_id = ?")
+        Ok(
+            sqlx::query_scalar(
+                "SELECT mailbox_limit FROM package_mail_limits WHERE package_id = ?",
+            )
             .bind(package_id)
             .fetch_optional(self.pool)
             .await?
-            .unwrap_or(0))
+            .unwrap_or(0),
+        )
     }
 
     pub async fn all_mailbox_limits(&self) -> Result<Vec<(i64, i64)>, DbError> {
@@ -286,7 +306,12 @@ impl<'a> ResellerRepo<'a> {
             .bind(user_id)
             .fetch_optional(self.pool)
             .await?;
-        Ok(row.map(|r| ResellerBrand { user_id: r.get(0), app_name: r.get(1), logo_filename: r.get(2), panel_host: r.get(3) }))
+        Ok(row.map(|r| ResellerBrand {
+            user_id: r.get(0),
+            app_name: r.get(1),
+            logo_filename: r.get(2),
+            panel_host: r.get(3),
+        }))
     }
 
     /// The brand whose panel hostname is `host`.
@@ -295,7 +320,12 @@ impl<'a> ResellerRepo<'a> {
             .bind(host)
             .fetch_optional(self.pool)
             .await?;
-        Ok(row.map(|r| ResellerBrand { user_id: r.get(0), app_name: r.get(1), logo_filename: r.get(2), panel_host: r.get(3) }))
+        Ok(row.map(|r| ResellerBrand {
+            user_id: r.get(0),
+            app_name: r.get(1),
+            logo_filename: r.get(2),
+            panel_host: r.get(3),
+        }))
     }
 
     pub async fn save_brand(&self, b: &ResellerBrand) -> Result<(), DbError> {
@@ -315,12 +345,17 @@ impl<'a> ResellerRepo<'a> {
 
     /// Websites owned by any of `users`.
     pub async fn count_websites(&self, users: &[i64]) -> Result<i64, DbError> {
-        self.count_in("SELECT COUNT(*) FROM websites WHERE owner_id IN", users).await
+        self.count_in("SELECT COUNT(*) FROM websites WHERE owner_id IN", users)
+            .await
     }
 
     /// Databases owned by any of `users`.
     pub async fn count_databases(&self, users: &[i64]) -> Result<i64, DbError> {
-        self.count_in("SELECT COUNT(*) FROM database_accounts WHERE owner_id IN", users).await
+        self.count_in(
+            "SELECT COUNT(*) FROM database_accounts WHERE owner_id IN",
+            users,
+        )
+        .await
     }
 
     async fn count_in(&self, head: &str, users: &[i64]) -> Result<i64, DbError> {

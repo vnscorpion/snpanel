@@ -118,9 +118,11 @@ impl<'a> ApiTokenRepo<'a> {
 
     /// Tokens revoked before revoking deleted them.
     pub async fn purge_revoked(&self) -> Result<u64, DbError> {
-        Ok(sqlx::query("DELETE FROM api_tokens WHERE is_active = 0 OR revoked_at IS NOT NULL")
-            .execute(self.pool)
-            .await?
-            .rows_affected())
+        Ok(
+            sqlx::query("DELETE FROM api_tokens WHERE is_active = 0 OR revoked_at IS NOT NULL")
+                .execute(self.pool)
+                .await?
+                .rows_affected(),
+        )
     }
 }

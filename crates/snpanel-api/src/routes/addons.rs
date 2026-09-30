@@ -476,7 +476,9 @@ async fn install(
         let result = crate::shell::privileged(dry, "dns-install", &[], None, None).await;
         if !result.ok() {
             return crate::errors::bad_request(
-                result.failure_detail("PowerDNS could not be installed").trim(),
+                result
+                    .failure_detail("PowerDNS could not be installed")
+                    .trim(),
             );
         }
         if let Err(e) = crate::dns::save_settings(&crate::dns::settings()) {
@@ -489,7 +491,9 @@ async fn install(
         let result = crate::shell::privileged(dry, "mail-install", &[], None, None).await;
         if !result.ok() {
             return crate::errors::bad_request(
-                result.failure_detail("The mail server could not be installed").trim(),
+                result
+                    .failure_detail("The mail server could not be installed")
+                    .trim(),
             );
         }
     }
@@ -615,7 +619,9 @@ async fn uninstall(
         let result = crate::shell::privileged(dry, "mail-stop", &[], None, None).await;
         if !result.ok() {
             return crate::errors::bad_request(
-                result.failure_detail("The mail server could not be stopped").trim(),
+                result
+                    .failure_detail("The mail server could not be stopped")
+                    .trim(),
             );
         }
     }
@@ -624,7 +630,9 @@ async fn uninstall(
         let result = crate::shell::privileged(dry, "dns-stop", &[], None, None).await;
         if !result.ok() {
             return crate::errors::bad_request(
-                result.failure_detail("PowerDNS could not be stopped").trim(),
+                result
+                    .failure_detail("PowerDNS could not be stopped")
+                    .trim(),
             );
         }
     }
@@ -889,7 +897,18 @@ mod tests {
         let items = addon_state();
         // Sorted by slug, as the Python sorts them.
         let slugs: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
-        assert_eq!(slugs, [APPLICATION, DNS, FAIL2BAN, MAIL, MALWARE, MCP, NOTIFICATIONS]);
+        assert_eq!(
+            slugs,
+            [
+                APPLICATION,
+                DNS,
+                FAIL2BAN,
+                MAIL,
+                MALWARE,
+                MCP,
+                NOTIFICATIONS
+            ]
+        );
         for addon in &items {
             for key in [
                 "name",

@@ -180,7 +180,10 @@ async fn user_out(state: &AppState, user: &User, figure: StorageFigure) -> Value
         "sftp": { "enabled": sftp.enabled, "own_password": sftp.own_password },
     });
     // Not in the Python: a reseller's limits, and an account's reseller.
-    if let (Some(out), Value::Object(extra)) = (out.as_object_mut(), crate::resellers::describe(state, user).await) {
+    if let (Some(out), Value::Object(extra)) = (
+        out.as_object_mut(),
+        crate::resellers::describe(state, user).await,
+    ) {
         out.extend(extra);
     }
     out
@@ -245,7 +248,10 @@ async fn list(
         None => None,
     };
     let mut out = Vec::with_capacity(users.len());
-    for user in users.iter().filter(|u| mine.as_ref().is_none_or(|m| m.contains(&u.id))) {
+    for user in users
+        .iter()
+        .filter(|u| mine.as_ref().is_none_or(|m| m.contains(&u.id)))
+    {
         out.push(user_out(&state, user, figure).await);
     }
     axum::Json(out).into_response()
@@ -367,7 +373,13 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
     // (one of its own); the limits come from the package, and the role and
     // the reseller are the administrator's.
     if !manager.is_admin() {
-        for key in ["role", "website_limit", "storage_limit_mb", "reseller", "parent_id"] {
+        for key in [
+            "role",
+            "website_limit",
+            "storage_limit_mb",
+            "reseller",
+            "parent_id",
+        ] {
             if payload.get(key).is_some_and(|v| !v.is_null()) {
                 return not_enough_permissions();
             }
@@ -496,10 +508,11 @@ async fn update(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
         fields.terminal_enabled = terminal_enabled;
     }
 
-    let reseller_change = match reseller_change(&state, &user, fields.role.as_deref(), &payload).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
+    let reseller_change =
+        match reseller_change(&state, &user, fields.role.as_deref(), &payload).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
 
     let updated = match state.db.users().update(user_id, &fields, bump).await {
         Ok(Some(u)) => u,
@@ -586,9 +599,14 @@ async fn reseller_change(
         let current = repo.limits(user.id).await.map_err(db)?;
         let body = payload.get("reseller").cloned().unwrap_or(Value::Null);
         if !was || !body.is_null() {
-            let limits = crate::resellers::limits_from(&body, current.as_ref())
-                .map_err(|m| crate::errors::error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &m))?;
-            if repo.prefix_taken(&limits.prefix, Some(user.id)).await.map_err(db)? {
+            let limits = crate::resellers::limits_from(&body, current.as_ref()).map_err(|m| {
+                crate::errors::error(axum::http::StatusCode::UNPROCESSABLE_ENTITY, &m)
+            })?;
+            if repo
+                .prefix_taken(&limits.prefix, Some(user.id))
+                .await
+                .map_err(db)?
+            {
                 return Err(conflict_text("Another reseller has this prefix"));
             }
             change.limits = Some(limits);
@@ -613,7 +631,9 @@ async fn reseller_change(
                 return Err(crate::errors::int_parsing("parent_id", raw));
             };
             if will || permissions::has_role(role, Role::Admin) {
-                return Err(bad_request("Only a customer account can belong to a reseller"));
+                return Err(bad_request(
+                    "Only a customer account can belong to a reseller",
+                ));
             }
             match state.db.users().by_id(parent).await {
                 Ok(Some(p)) if permissions::is_reseller_role(&p.role) && p.id != user.id => {
@@ -627,7 +647,11 @@ async fn reseller_change(
     Ok(change)
 }
 
-async fn apply_reseller_change(state: &AppState, user_id: i64, change: ResellerChange) -> Result<(), Response> {
+async fn apply_reseller_change(
+    state: &AppState,
+    user_id: i64,
+    change: ResellerChange,
+) -> Result<(), Response> {
     let repo = state.db.resellers();
     let db = |e: snpanel_db::DbError| {
         tracing::error!("saving reseller settings failed: {e}");
@@ -1201,11 +1225,16 @@ async fn set_suspended(state: AppState, user_id: i64, req: Request, suspending: 
             repo.suspended_with_parent(user.id).await
         };
         for child_id in children.unwrap_or_default() {
-            let Ok(Some(child)) = state.db.users().by_id(child_id).await else { continue };
+            let Ok(Some(child)) = state.db.users().by_id(child_id).await else {
+                continue;
+            };
             if suspending && !child.is_active {
                 continue;
             }
-            if suspend_account(&state, &parts, current.user.id, &child, suspending).await.is_ok() {
+            if suspend_account(&state, &parts, current.user.id, &child, suspending)
+                .await
+                .is_ok()
+            {
                 let _ = repo.mark_suspended_by_parent(child.id, suspending).await;
             }
         }
@@ -1409,7 +1438,10 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     // Not in the Python: a reseller makes customer accounts only, named with
     // its prefix, on one of its own packages, while its limits have room.
     if let crate::resellers::Manager::Reseller { id, limits } = &manager {
-        if payload.get("role").and_then(Value::as_str).is_some_and(|r| r != "end_user")
+        if payload
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r != "end_user")
             || ["reseller", "parent_id", "website_limit", "storage_limit_mb"]
                 .iter()
                 .any(|k| payload.get(*k).is_some_and(|v| !v.is_null()))
@@ -1426,7 +1458,9 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         if let Err(r) = package_for_manager(&state, &manager, package_id).await {
             return r;
         }
-        if let Err(message) = crate::resellers::check_room(&state, *id, crate::resellers::Resource::Account).await {
+        if let Err(message) =
+            crate::resellers::check_room(&state, *id, crate::resellers::Resource::Account).await
+        {
             return bad_request(&message);
         }
     }
@@ -1441,7 +1475,14 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
         ..current.user.clone()
     };
     let mut change = if manager.is_admin() {
-        match reseller_change(&state, &User { id: -1, ..stub }, Some(&fields.role), &payload).await {
+        match reseller_change(
+            &state,
+            &User { id: -1, ..stub },
+            Some(&fields.role),
+            &payload,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(r) => return r,
         }
@@ -1453,7 +1494,10 @@ async fn create(State(state): State<AppState>, req: Request) -> Response {
     }
     if let Some(Some(parent)) = change.parent {
         if manager.is_admin() {
-            if let Err(message) = crate::resellers::check_room(&state, parent, crate::resellers::Resource::Account).await {
+            if let Err(message) =
+                crate::resellers::check_room(&state, parent, crate::resellers::Resource::Account)
+                    .await
+            {
                 return bad_request(&message);
             }
         }
@@ -1635,7 +1679,9 @@ async fn delete(State(state): State<AppState>, Path(user_id): Path<i64>, req: Re
                 }
             };
             for child_id in children {
-                let Ok(Some(child)) = state.db.users().by_id(child_id).await else { continue };
+                let Ok(Some(child)) = state.db.users().by_id(child_id).await else {
+                    continue;
+                };
                 match delete_account(&state, &child).await {
                     Ok(_) => deleted_accounts.push(child.username.clone()),
                     Err(r) => return r,
@@ -1729,7 +1775,10 @@ async fn delete_account(state: &AppState, user: &User) -> Result<Vec<String>, Re
     crate::resellers::forget_brand_assets(user.id);
     if crate::dns::reseller_nameservers(user.id).is_some() {
         if let Err(e) = crate::dns::save_reseller_nameservers(user.id, None) {
-            tracing::error!("forgetting the nameservers of {} failed: {e}", user.username);
+            tracing::error!(
+                "forgetting the nameservers of {} failed: {e}",
+                user.username
+            );
         }
     }
     Ok(deleted_domains)

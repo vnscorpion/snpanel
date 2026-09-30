@@ -5408,7 +5408,10 @@ async fn apply_owner(
         if let Err(message) =
             crate::resellers::check_room(state, owner.id, crate::resellers::Resource::Website).await
         {
-            return Err(crate::errors::error(axum::http::StatusCode::FORBIDDEN, &message));
+            return Err(crate::errors::error(
+                axum::http::StatusCode::FORBIDDEN,
+                &message,
+            ));
         }
     }
 

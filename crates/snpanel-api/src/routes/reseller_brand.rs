@@ -20,10 +20,15 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/reseller/brand", get(read).put(save).fallback(crate::fallback))
+        .route(
+            "/reseller/brand",
+            get(read).put(save).fallback(crate::fallback),
+        )
         .route(
             "/reseller/brand/logo",
-            post(upload_logo).delete(remove_logo).fallback(crate::fallback),
+            post(upload_logo)
+                .delete(remove_logo)
+                .fallback(crate::fallback),
         )
 }
 
@@ -52,12 +57,22 @@ async fn own_domains(state: &AppState, user_id: i64) -> Vec<String> {
 }
 
 async fn page(state: &AppState, user_id: i64) -> Result<Value, Response> {
-    let brand = state.db.resellers().brand(user_id).await.map_err(db_failed)?.unwrap_or_default();
+    let brand = state
+        .db
+        .resellers()
+        .brand(user_id)
+        .await
+        .map_err(db_failed)?
+        .unwrap_or_default();
     let fields = crate::resellers::brand_fields(&brand);
     let domains = own_domains(state, user_id).await;
     let certified: Vec<&String> = domains
         .iter()
-        .filter(|d| std::path::Path::new(crate::tls::DEFAULT_SNI_DIR).join(d.as_str()).is_dir())
+        .filter(|d| {
+            std::path::Path::new(crate::tls::DEFAULT_SNI_DIR)
+                .join(d.as_str())
+                .is_dir()
+        })
         .collect();
     Ok(json!({
         "app_name": brand.app_name,
@@ -94,7 +109,10 @@ async fn save(State(state): State<AppState>, req: Request) -> Response {
     };
     let repo = state.db.resellers();
     let mut brand = match repo.brand(current.user.id).await {
-        Ok(b) => b.unwrap_or(snpanel_db::ResellerBrand { user_id: current.user.id, ..Default::default() }),
+        Ok(b) => b.unwrap_or(snpanel_db::ResellerBrand {
+            user_id: current.user.id,
+            ..Default::default()
+        }),
         Err(e) => return db_failed(e),
     };
     if let Some(raw) = body.get("app_name").filter(|v| !v.is_null()) {
@@ -103,12 +121,18 @@ async fn save(State(state): State<AppState>, req: Request) -> Response {
         };
         let name = name.trim();
         if name.chars().count() > 60 || name.chars().any(char::is_control) {
-            return error(StatusCode::UNPROCESSABLE_ENTITY, "The name is at most 60 characters");
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "The name is at most 60 characters",
+            );
         }
         brand.app_name = name.to_string();
     }
     if let Some(raw) = body.get("panel_host") {
-        let host = raw.as_str().map(crate::tls::normalize_hostname).filter(|h| !h.is_empty());
+        let host = raw
+            .as_str()
+            .map(crate::tls::normalize_hostname)
+            .filter(|h| !h.is_empty());
         if let Some(host) = &host {
             if !own_domains(&state, current.user.id).await.contains(host) {
                 return bad_request("The panel hostname has to be one of your own website domains");
@@ -186,14 +210,19 @@ async fn upload_logo(State(state): State<AppState>, req: Request) -> Response {
         Ok(e) => e,
         Err(m) => return bad_request(&m),
     };
-    let dir = std::path::PathBuf::from(std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()))
-        .join("assets");
+    let dir = std::path::PathBuf::from(
+        std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()),
+    )
+    .join("assets");
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         return db_failed(e);
     }
     let repo = state.db.resellers();
     let mut brand = match repo.brand(current.user.id).await {
-        Ok(b) => b.unwrap_or(snpanel_db::ResellerBrand { user_id: current.user.id, ..Default::default() }),
+        Ok(b) => b.unwrap_or(snpanel_db::ResellerBrand {
+            user_id: current.user.id,
+            ..Default::default()
+        }),
         Err(e) => return db_failed(e),
     };
     let name = format!("reseller-{}-logo.{ext}", current.user.id);
@@ -207,7 +236,14 @@ async fn upload_logo(State(state): State<AppState>, req: Request) -> Response {
     if let Err(e) = repo.save_brand(&brand).await {
         return db_failed(e);
     }
-    super::packages::audit_action(&state, &parts, current.user.id, "reseller_brand_logo", &current.user.username).await;
+    super::packages::audit_action(
+        &state,
+        &parts,
+        current.user.id,
+        "reseller_brand_logo",
+        &current.user.username,
+    )
+    .await;
     match page(&state, current.user.id).await {
         Ok(v) => axum::Json(v).into_response(),
         Err(r) => r,
@@ -226,8 +262,10 @@ async fn remove_logo(State(state): State<AppState>, current: CurrentUser) -> Res
         };
     };
     if !brand.logo_filename.is_empty() {
-        let dir = std::path::PathBuf::from(std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()))
-            .join("assets");
+        let dir = std::path::PathBuf::from(
+            std::env::var("SNPANEL_DATA_DIR").unwrap_or_else(|_| "/var/lib/snpanel".into()),
+        )
+        .join("assets");
         let _ = tokio::fs::remove_file(dir.join(&brand.logo_filename)).await;
         brand.logo_filename.clear();
         if let Err(e) = repo.save_brand(&brand).await {

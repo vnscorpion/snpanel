@@ -66,7 +66,15 @@ struct Layout {
 fn layout() -> Layout {
     match packages::family() {
         Family::Rhel => Layout {
-            packages: &["exim", "dovecot", "dovecot-pigeonhole", "rspamd", "python3", "git", "openssl"],
+            packages: &[
+                "exim",
+                "dovecot",
+                "dovecot-pigeonhole",
+                "rspamd",
+                "python3",
+                "git",
+                "openssl",
+            ],
             exim_conf: "/etc/exim/exim.conf",
             exim_bin: "/usr/sbin/exim",
             exim_service: "exim",
@@ -124,14 +132,22 @@ fn random_hex(bytes: usize) -> Result<String, HelperResponse> {
     let mut buf = vec![0u8; bytes];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
-        .map_err(|e| failed(HelperErrorKind::Internal, format!("reading /dev/urandom: {e}")))?;
+        .map_err(|e| {
+            failed(
+                HelperErrorKind::Internal,
+                format!("reading /dev/urandom: {e}"),
+            )
+        })?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// `openssl passwd -6`: the password on stdin, a SHA512-CRYPT hash out.
 fn sha512_crypt(password: &str) -> Result<String, HelperResponse> {
     let input = format!("{password}\n");
-    let result = exec::run_with_stdin(&["openssl", "passwd", "-6", "-stdin"], Some(input.as_bytes()));
+    let result = exec::run_with_stdin(
+        &["openssl", "passwd", "-6", "-stdin"],
+        Some(input.as_bytes()),
+    );
     match result {
         Ok(o) if o.ok() && o.stdout.trim().starts_with("$6$") => Ok(o.stdout.trim().to_string()),
         other => Err(exec::respond("hashing a mailbox password", other)),
@@ -478,11 +494,12 @@ if header :contains "X-Spam" "Yes" {
 "#;
 
 fn fill(template: &str, l: &Layout, host: &str) -> String {
-    let listen = if std::fs::read_to_string("/proc/net/if_inet6").is_ok_and(|t| !t.trim().is_empty()) {
-        "*, ::"
-    } else {
-        "*"
-    };
+    let listen =
+        if std::fs::read_to_string("/proc/net/if_inet6").is_ok_and(|t| !t.trim().is_empty()) {
+            "*, ::"
+        } else {
+            "*"
+        };
     template
         .replace("@@MARKER@@", MARKER)
         .replace("@@DIR@@", DIR)
@@ -549,17 +566,32 @@ fn render_webmail_unit(host: &str) -> String {
 /// (Bayes and greylisting need it), and no signing - Exim signs.
 fn rspamd_files() -> Vec<(&'static str, String)> {
     let mut files = vec![
-        ("/etc/rspamd/local.d/worker-normal.inc", "bind_socket = \"127.0.0.1:11333\";\n".to_string()),
-        ("/etc/rspamd/local.d/worker-controller.inc", "bind_socket = \"127.0.0.1:11334\";\n".to_string()),
-        ("/etc/rspamd/local.d/worker-proxy.inc", "bind_socket = \"127.0.0.1:11332\";\n".to_string()),
-        ("/etc/rspamd/local.d/dkim_signing.conf", "enabled = false;\n".to_string()),
+        (
+            "/etc/rspamd/local.d/worker-normal.inc",
+            "bind_socket = \"127.0.0.1:11333\";\n".to_string(),
+        ),
+        (
+            "/etc/rspamd/local.d/worker-controller.inc",
+            "bind_socket = \"127.0.0.1:11334\";\n".to_string(),
+        ),
+        (
+            "/etc/rspamd/local.d/worker-proxy.inc",
+            "bind_socket = \"127.0.0.1:11332\";\n".to_string(),
+        ),
+        (
+            "/etc/rspamd/local.d/dkim_signing.conf",
+            "enabled = false;\n".to_string(),
+        ),
     ];
     let redis = matches!(
         exec::run(&["ss", "-Hlnt", "sport = :6379"]),
         Ok(o) if o.ok() && o.stdout.contains("127.0.0.1")
     );
     if redis {
-        files.push(("/etc/rspamd/local.d/redis.conf", "servers = \"127.0.0.1:6379\";\n".to_string()));
+        files.push((
+            "/etc/rspamd/local.d/redis.conf",
+            "servers = \"127.0.0.1:6379\";\n".to_string(),
+        ));
     }
     files
 }
@@ -577,7 +609,8 @@ fn master_line(hash: &str) -> String {
 /// the self-signed one it starts with.
 fn panel_cert() -> Option<(String, String)> {
     let env = std::fs::read_to_string("/opt/snpanel/backend/.env").unwrap_or_default();
-    let get = |k: &str| super::panel::env_get(&env, k).map(|v| v.trim().trim_matches('"').to_string());
+    let get =
+        |k: &str| super::panel::env_get(&env, k).map(|v| v.trim().trim_matches('"').to_string());
     let pair = match (get("PANEL_SSL_CERT"), get("PANEL_SSL_KEY")) {
         (Some(c), Some(k)) if Path::new(&c).is_file() && Path::new(&k).is_file() => (c, k),
         _ => (
@@ -604,7 +637,10 @@ pub(crate) fn sync_certs() {
     };
     let current = std::fs::read(format!("{DIR}/tls.crt")).ok();
     if current.as_deref() == Some(chain.as_slice())
-        && std::fs::read(format!("{WEBMAIL_DATA}/tls.crt")).ok().as_deref() == Some(chain.as_slice())
+        && std::fs::read(format!("{WEBMAIL_DATA}/tls.crt"))
+            .ok()
+            .as_deref()
+            == Some(chain.as_slice())
     {
         return;
     }
@@ -612,14 +648,29 @@ pub(crate) fn sync_certs() {
     let exim_owner = format!("root:{}", l.exim_user);
     let webmail_owner = format!("{WEBMAIL_USER}:{WEBMAIL_USER}");
     let wrote = super::nginx::write_atomic(Path::new(&format!("{DIR}/tls.key")), &private, 0o640)
-        .and_then(|_| super::nginx::write_atomic(Path::new(&format!("{DIR}/tls.crt")), &chain, 0o644))
-        .and_then(|_| super::nginx::write_atomic(Path::new(&format!("{WEBMAIL_DATA}/tls.key")), &private, 0o600))
-        .and_then(|_| super::nginx::write_atomic(Path::new(&format!("{WEBMAIL_DATA}/tls.crt")), &chain, 0o644));
+        .and_then(|_| {
+            super::nginx::write_atomic(Path::new(&format!("{DIR}/tls.crt")), &chain, 0o644)
+        })
+        .and_then(|_| {
+            super::nginx::write_atomic(
+                Path::new(&format!("{WEBMAIL_DATA}/tls.key")),
+                &private,
+                0o600,
+            )
+        })
+        .and_then(|_| {
+            super::nginx::write_atomic(Path::new(&format!("{WEBMAIL_DATA}/tls.crt")), &chain, 0o644)
+        });
     if wrote.is_err() {
         return;
     }
     let _ = exec::run(&["chown", &exim_owner, &format!("{DIR}/tls.key")]);
-    let _ = exec::run(&["chown", &webmail_owner, &format!("{WEBMAIL_DATA}/tls.key"), &format!("{WEBMAIL_DATA}/tls.crt")]);
+    let _ = exec::run(&[
+        "chown",
+        &webmail_owner,
+        &format!("{WEBMAIL_DATA}/tls.key"),
+        &format!("{WEBMAIL_DATA}/tls.crt"),
+    ]);
     for unit in [l.exim_service, "dovecot"] {
         let _ = exec::run(&["systemctl", "try-reload-or-restart", unit]);
     }
@@ -655,7 +706,13 @@ fn add_rspamd_repo() -> Result<(), HelperResponse> {
                 .unwrap_or_default()
                 .lines()
                 .find_map(|l| l.strip_prefix("VERSION_ID="))
-                .map(|v| v.trim_matches('"').split('.').next().unwrap_or("").to_string())
+                .map(|v| {
+                    v.trim_matches('"')
+                        .split('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
                 .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
                 .unwrap_or_else(|| "9".into());
             let repo = format!(
@@ -673,14 +730,31 @@ fn add_rspamd_repo() -> Result<(), HelperResponse> {
                 .find_map(|l| l.strip_prefix("VERSION_CODENAME="))
                 .map(|v| v.trim_matches('"').to_string())
                 .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_lowercase()))
-                .ok_or_else(|| failed(HelperErrorKind::Internal, "cannot tell the Debian release"))?;
+                .ok_or_else(|| {
+                    failed(HelperErrorKind::Internal, "cannot tell the Debian release")
+                })?;
             let _ = std::fs::create_dir_all("/etc/apt/keyrings");
             let key = exec::run(&["curl", "-fsSL", "https://rspamd.com/apt-stable/gpg.key"]);
-            let Ok(key) = key.and_then(|o| if o.ok() { Ok(o) } else { Err(std::io::Error::other(o.stderr)) }) else {
-                return Err(failed(HelperErrorKind::CommandFailed, "downloading Rspamd's signing key failed"));
+            let Ok(key) = key.and_then(|o| {
+                if o.ok() {
+                    Ok(o)
+                } else {
+                    Err(std::io::Error::other(o.stderr))
+                }
+            }) else {
+                return Err(failed(
+                    HelperErrorKind::CommandFailed,
+                    "downloading Rspamd's signing key failed",
+                ));
             };
             let armored = exec::run_with_stdin(
-                &["gpg", "--dearmor", "--yes", "-o", "/etc/apt/keyrings/rspamd.gpg"],
+                &[
+                    "gpg",
+                    "--dearmor",
+                    "--yes",
+                    "-o",
+                    "/etc/apt/keyrings/rspamd.gpg",
+                ],
                 Some(key.stdout.as_bytes()),
             );
             if !matches!(&armored, Ok(o) if o.ok()) {
@@ -704,13 +778,33 @@ fn user_exists(name: &str) -> bool {
 /// data folder, its settings and its unit.
 fn install_webmail(l: &Layout) -> Result<(), HelperResponse> {
     if !user_exists(WEBMAIL_USER) {
-        step(&["useradd", "--system", "--home-dir", WEBMAIL_DATA, "--shell", l.nologin, WEBMAIL_USER])?;
+        step(&[
+            "useradd",
+            "--system",
+            "--home-dir",
+            WEBMAIL_DATA,
+            "--shell",
+            l.nologin,
+            WEBMAIL_USER,
+        ])?;
     }
-    std::fs::create_dir_all(WEBMAIL_ROOT)
-        .map_err(|e| failed(HelperErrorKind::Internal, format!("creating {WEBMAIL_ROOT}: {e}")))?;
-    std::fs::create_dir_all(WEBMAIL_DATA)
-        .map_err(|e| failed(HelperErrorKind::Internal, format!("creating {WEBMAIL_DATA}: {e}")))?;
-    step(&["chown", &format!("{WEBMAIL_USER}:{WEBMAIL_USER}"), WEBMAIL_DATA])?;
+    std::fs::create_dir_all(WEBMAIL_ROOT).map_err(|e| {
+        failed(
+            HelperErrorKind::Internal,
+            format!("creating {WEBMAIL_ROOT}: {e}"),
+        )
+    })?;
+    std::fs::create_dir_all(WEBMAIL_DATA).map_err(|e| {
+        failed(
+            HelperErrorKind::Internal,
+            format!("creating {WEBMAIL_DATA}: {e}"),
+        )
+    })?;
+    step(&[
+        "chown",
+        &format!("{WEBMAIL_USER}:{WEBMAIL_USER}"),
+        WEBMAIL_DATA,
+    ])?;
     step(&["chmod", "0700", WEBMAIL_DATA])?;
     if !Path::new(WEBMAIL_SRC).join(".git").is_dir() {
         let _ = std::fs::remove_dir_all(WEBMAIL_SRC);
@@ -718,13 +812,28 @@ fn install_webmail(l: &Layout) -> Result<(), HelperResponse> {
     } else {
         step(&["git", "-C", WEBMAIL_SRC, "fetch", "--quiet", "origin"])?;
     }
-    step(&["git", "-C", WEBMAIL_SRC, "checkout", "--quiet", "--force", WEBMAIL_COMMIT])?;
+    step(&[
+        "git",
+        "-C",
+        WEBMAIL_SRC,
+        "checkout",
+        "--quiet",
+        "--force",
+        WEBMAIL_COMMIT,
+    ])?;
     if !Path::new(WEBMAIL_VENV).join("bin/python").exists() {
         step(&["python3", "-m", "venv", WEBMAIL_VENV])?;
     }
     let pip = format!("{WEBMAIL_VENV}/bin/pip");
     let requirements = format!("{WEBMAIL_SRC}/backend/requirements.txt");
-    step(&[&pip, "install", "--quiet", "--disable-pip-version-check", "-r", &requirements])?;
+    step(&[
+        &pip,
+        "install",
+        "--quiet",
+        "--disable-pip-version-check",
+        "-r",
+        &requirements,
+    ])?;
 
     // The secrets stay from one install to the next: the webmail's sessions
     // and the panel's sign-on keep working.
@@ -745,8 +854,18 @@ fn install_webmail(l: &Layout) -> Result<(), HelperResponse> {
         Some(v) => v,
         None => random_hex(24)?,
     };
-    write(WEBMAIL_ENV, &render_webmail_env(&auth, &sso, &master), 0o640, &format!("root:{WEBMAIL_USER}"))?;
-    write(SSO_KEY_FILE, &format!("{sso}\n"), 0o640, &format!("root:{}", crate::peercred::PANEL_USER))?;
+    write(
+        WEBMAIL_ENV,
+        &render_webmail_env(&auth, &sso, &master),
+        0o640,
+        &format!("root:{WEBMAIL_USER}"),
+    )?;
+    write(
+        SSO_KEY_FILE,
+        &format!("{sso}\n"),
+        0o640,
+        &format!("root:{}", crate::peercred::PANEL_USER),
+    )?;
     let hash = sha512_crypt(&master)?;
     write(MASTER_USERS, &master_line(&hash), 0o640, "root:dovecot")?;
     // IPv4: asyncio makes a "::" socket IPv6-only.
@@ -801,7 +920,12 @@ fn install_inner(ctx: &Context) -> Result<String, HelperResponse> {
     }
     match packages::install_packages(l.packages) {
         Ok(o) if o.ok() => {}
-        other => return Err(exec::respond(&format!("installing {}", l.packages.join(" ")), other)),
+        other => {
+            return Err(exec::respond(
+                &format!("installing {}", l.packages.join(" ")),
+                other,
+            ))
+        }
     }
     // The package's own owners on its spool and logs: on CloudLinux they
     // have been seen left to root, and Exim then cannot queue a message.
@@ -820,7 +944,10 @@ fn install_inner(ctx: &Context) -> Result<String, HelperResponse> {
     let _ = std::fs::remove_file(format!("{DIR}/tls.crt"));
     sync_certs();
     if !Path::new(&format!("{DIR}/tls.crt")).exists() {
-        return Err(failed(HelperErrorKind::Internal, "the panel has no certificate to give the mail servers"));
+        return Err(failed(
+            HelperErrorKind::Internal,
+            "the panel has no certificate to give the mail servers",
+        ));
     }
 
     // Exim: checked before it replaces the distribution's file.
@@ -857,7 +984,11 @@ fn install_inner(ctx: &Context) -> Result<String, HelperResponse> {
 
     // PHP in CageFS sends through sendmail, which is Exim's.
     if Path::new("/usr/sbin/cagefsctl").exists() {
-        let pkg = if packages::family() == Family::Rhel { "exim" } else { "exim4-daemon-heavy" };
+        let pkg = if packages::family() == Family::Rhel {
+            "exim"
+        } else {
+            "exim4-daemon-heavy"
+        };
         let _ = exec::run(&["cagefsctl", "--addrpm", pkg]);
         let _ = exec::run(&["cagefsctl", "--force-update"]);
     }
@@ -916,7 +1047,13 @@ fn account(name: &str) -> Option<Account> {
         return None;
     }
     // SAFETY: non-null, the fields are plain values and a C string.
-    let (uid, gid, dir) = unsafe { ((*pw).pw_uid, (*pw).pw_gid, std::ffi::CStr::from_ptr((*pw).pw_dir)) };
+    let (uid, gid, dir) = unsafe {
+        (
+            (*pw).pw_uid,
+            (*pw).pw_gid,
+            std::ffi::CStr::from_ptr((*pw).pw_dir),
+        )
+    };
     let home = dir.to_str().ok()?.to_string();
     (uid >= 1000 && home.starts_with("/home/")).then_some(Account { uid, gid, home })
 }
@@ -927,7 +1064,12 @@ fn account(name: &str) -> Option<Account> {
 fn ensure_mail_root(acc: &Account) -> Result<String, String> {
     let home = CString::new(acc.home.clone()).map_err(|e| e.to_string())?;
     // SAFETY: a valid path; the descriptor is owned below.
-    let raw = unsafe { libc::open(home.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    let raw = unsafe {
+        libc::open(
+            home.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
     if raw < 0 {
         return Err(format!("{}: {}", acc.home, std::io::Error::last_os_error()));
     }
@@ -944,7 +1086,11 @@ fn ensure_mail_root(acc: &Account) -> Result<String, String> {
     }
     // SAFETY: valid descriptor and name.
     let raw = unsafe {
-        libc::openat(home_fd.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        libc::openat(
+            home_fd.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
     };
     if raw < 0 {
         return Err(format!("{}/mail is not a folder", acc.home));
@@ -952,8 +1098,14 @@ fn ensure_mail_root(acc: &Account) -> Result<String, String> {
     // SAFETY: just opened, owned from here.
     let mail_fd = unsafe { OwnedFd::from_raw_fd(raw) };
     // SAFETY: valid descriptor.
-    if unsafe { libc::fchown(mail_fd.as_raw_fd(), acc.uid, acc.gid) } < 0 || unsafe { libc::fchmod(mail_fd.as_raw_fd(), 0o700) } < 0 {
-        return Err(format!("{}/mail: {}", acc.home, std::io::Error::last_os_error()));
+    if unsafe { libc::fchown(mail_fd.as_raw_fd(), acc.uid, acc.gid) } < 0
+        || unsafe { libc::fchmod(mail_fd.as_raw_fd(), 0o700) } < 0
+    {
+        return Err(format!(
+            "{}/mail: {}",
+            acc.home,
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(format!("{}/mail", acc.home))
 }
@@ -962,7 +1114,15 @@ fn ensure_mail_root(acc: &Account) -> Result<String, String> {
 fn as_account(acc: &Account, argv: &[&str]) -> std::io::Result<exec::Output> {
     let uid = acc.uid.to_string();
     let gid = acc.gid.to_string();
-    let mut full: Vec<&str> = vec!["setpriv", "--reuid", &uid, "--regid", &gid, "--clear-groups", "--"];
+    let mut full: Vec<&str> = vec![
+        "setpriv",
+        "--reuid",
+        &uid,
+        "--regid",
+        &gid,
+        "--clear-groups",
+        "--",
+    ];
     full.extend_from_slice(argv);
     exec::run(&full)
 }
@@ -979,10 +1139,23 @@ fn dkim_record(domain: &str, exim_owner: &str) -> Result<String, HelperResponse>
             .map_err(|e| failed(HelperErrorKind::Internal, format!("{key}: {e}")))?;
     }
     let public = exec::run(&["openssl", "rsa", "-in", &key, "-pubout", "-outform", "PEM"]);
-    let Ok(public) = public.and_then(|o| if o.ok() { Ok(o) } else { Err(std::io::Error::other(o.stderr)) }) else {
-        return Err(failed(HelperErrorKind::CommandFailed, format!("reading the DKIM key of {domain}")));
+    let Ok(public) = public.and_then(|o| {
+        if o.ok() {
+            Ok(o)
+        } else {
+            Err(std::io::Error::other(o.stderr))
+        }
+    }) else {
+        return Err(failed(
+            HelperErrorKind::CommandFailed,
+            format!("reading the DKIM key of {domain}"),
+        ));
     };
-    let body: String = public.stdout.lines().filter(|l| !l.starts_with("-----")).collect();
+    let body: String = public
+        .stdout
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect();
     Ok(format!("v=DKIM1; k=rsa; p={body}"))
 }
 
@@ -1001,7 +1174,10 @@ fn existing_hashes() -> BTreeMap<String, String> {
 /// `mail-sync`.
 pub fn sync(state: &MailState) -> HelperResponse {
     if !installed() {
-        return failed(HelperErrorKind::NotFound, "the Email addon is not installed");
+        return failed(
+            HelperErrorKind::NotFound,
+            "the Email addon is not installed",
+        );
     }
     match sync_inner(state) {
         Ok(dkim) => HelperResponse::with_stdout(json!({ "dkim": dkim }).to_string()),
@@ -1017,8 +1193,12 @@ fn sync_inner(state: &MailState) -> Result<BTreeMap<String, String>, HelperRespo
     for d in &state.domains {
         let owner = d.owner.as_str();
         if !accounts.contains_key(owner) {
-            let acc = account(owner)
-                .ok_or_else(|| failed(HelperErrorKind::NotFound, format!("no such account: {owner}")))?;
+            let acc = account(owner).ok_or_else(|| {
+                failed(
+                    HelperErrorKind::NotFound,
+                    format!("no such account: {owner}"),
+                )
+            })?;
             accounts.insert(owner.to_string(), acc);
         }
         owner_of.insert(d.domain.as_str(), owner);
@@ -1034,20 +1214,29 @@ fn sync_inner(state: &MailState) -> Result<BTreeMap<String, String>, HelperRespo
         let hash = match &b.password {
             Some(p) => format!("{{SHA512-CRYPT}}{}", sha512_crypt(p.expose())?),
             // A mailbox with no password yet cannot sign in.
-            None => hashes.get(&b.address).cloned().unwrap_or_else(|| "!".into()),
+            None => hashes
+                .get(&b.address)
+                .cloned()
+                .unwrap_or_else(|| "!".into()),
         };
         let mail_root = ensure_mail_root(acc).map_err(|e| failed(HelperErrorKind::Internal, e))?;
         let home = format!("{mail_root}/{domain}/{local}");
         let made = as_account(acc, &["mkdir", "-p", "-m", "0700", &home]);
         if !matches!(&made, Ok(o) if o.ok()) {
-            return Err(exec::respond(&format!("making the folder of {}", b.address), made));
+            return Err(exec::respond(
+                &format!("making the folder of {}", b.address),
+                made,
+            ));
         }
         let quota = if b.quota_mb == 0 {
             String::new()
         } else {
             format!("userdb_quota_rule=*:storage={}M", b.quota_mb)
         };
-        users.push_str(&format!("{}:{hash}:{}:{}::{home}::{quota}\n", b.address, acc.uid, acc.gid));
+        users.push_str(&format!(
+            "{}:{hash}:{}:{}::{home}::{quota}\n",
+            b.address, acc.uid, acc.gid
+        ));
         mailboxes.push_str(&format!("{}: yes\n", b.address));
     }
 
@@ -1077,13 +1266,20 @@ fn sync_inner(state: &MailState) -> Result<BTreeMap<String, String>, HelperRespo
     write(USERS, &users, 0o640, "root:dovecot")?;
     write(&format!("{DIR}/mailboxes"), &mailboxes, 0o640, &exim_owner)?;
     write(&format!("{DIR}/aliases"), &aliases, 0o640, &exim_owner)?;
-    write(&format!("{DIR}/dkim_domains"), &dkim_domains, 0o640, &exim_owner)?;
+    write(
+        &format!("{DIR}/dkim_domains"),
+        &dkim_domains,
+        0o640,
+        &exim_owner,
+    )?;
     write(&format!("{DIR}/domains"), &domains, 0o640, &exim_owner)?;
 
     // A removed mailbox's mail, deleted as its account.
     for address in &state.purge {
         let (local, domain) = snpanel_ipc::split_address(address).expect("validated");
-        let Some(owner) = owner_of.get(domain) else { continue };
+        let Some(owner) = owner_of.get(domain) else {
+            continue;
+        };
         let acc = &accounts[*owner];
         let path = format!("{}/mail/{domain}/{local}", acc.home);
         if Path::new(&path).exists() {
@@ -1106,7 +1302,9 @@ fn size_of(dir: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             let Ok(meta) = e.metadata() else { continue };
             if meta.is_dir() {
@@ -1126,7 +1324,10 @@ pub fn status() -> HelperResponse {
     for line in std::fs::read_to_string(USERS).unwrap_or_default().lines() {
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() >= 6 {
-            usage.insert(fields[0].to_string(), json!(size_of(&Path::new(fields[5]).join("Maildir"))));
+            usage.insert(
+                fields[0].to_string(),
+                json!(size_of(&Path::new(fields[5]).join("Maildir"))),
+            );
         }
     }
     let services = json!({
@@ -1173,7 +1374,11 @@ mod tests {
     fn every_placeholder_is_filled() {
         for template in [EXIM_CONF, DOVECOT_CONF] {
             let text = fill(template, &rhel(), "mail.example.com");
-            assert!(!text.contains("@@"), "{}", text.lines().find(|l| l.contains("@@")).unwrap_or(""));
+            assert!(
+                !text.contains("@@"),
+                "{}",
+                text.lines().find(|l| l.contains("@@")).unwrap_or("")
+            );
             assert!(text.starts_with(MARKER));
         }
         let dovecot = fill(DOVECOT_CONF, &rhel(), "mail.example.com");
@@ -1184,7 +1389,8 @@ mod tests {
     #[test]
     fn exim_is_not_an_open_relay() {
         let text = fill(EXIM_CONF, &rhel(), "mail.example.com");
-        let rcpt = &text[text.find("acl_check_rcpt:").unwrap()..text.find("acl_check_data:").unwrap()];
+        let rcpt =
+            &text[text.find("acl_check_rcpt:").unwrap()..text.find("acl_check_data:").unwrap()];
         // Relaying is for the signed-in and this machine; the rest may only
         // send to the domains here, and to addresses that exist.
         let relay = rcpt.find("require message = Relay not permitted").unwrap();
@@ -1194,20 +1400,29 @@ mod tests {
         assert!(rcpt[relay..].contains("require verify = recipient"));
         assert!(text.contains("hostlist relay_from_hosts = <; 127.0.0.1 ; ::1\n"));
         // Forwarders can never run a program or write a file.
-        let fwd = &text[text.find("snpanel_forwarders:").unwrap()..text.find("snpanel_mailboxes:").unwrap()];
+        let fwd = &text
+            [text.find("snpanel_forwarders:").unwrap()..text.find("snpanel_mailboxes:").unwrap()];
         assert!(fwd.contains("forbid_file") && fwd.contains("forbid_pipe"));
     }
 
     #[test]
     fn the_master_user_works_from_the_loopback_only() {
         let line = master_line("$6$salt$hash");
-        assert_eq!(line, "snpanel-webmail:{SHA512-CRYPT}$6$salt$hash::::::allow_nets=127.0.0.1/32,::1/128\n");
+        assert_eq!(
+            line,
+            "snpanel-webmail:{SHA512-CRYPT}$6$salt$hash::::::allow_nets=127.0.0.1/32,::1/128\n"
+        );
     }
 
     #[test]
     fn the_webmail_talks_to_the_local_servers() {
         let env = render_webmail_env("a", "b", "c");
-        for line in ["IMAP_HOST=127.0.0.1", "SMTP_HOST=127.0.0.1", "SSO_MASTER_USER=snpanel-webmail", "ENABLE_CADDY_AUTOMATION=false"] {
+        for line in [
+            "IMAP_HOST=127.0.0.1",
+            "SMTP_HOST=127.0.0.1",
+            "SSO_MASTER_USER=snpanel-webmail",
+            "ENABLE_CADDY_AUTOMATION=false",
+        ] {
             assert!(env.contains(&format!("{line}\n")), "{line}");
         }
         let unit = render_webmail_unit("::");
