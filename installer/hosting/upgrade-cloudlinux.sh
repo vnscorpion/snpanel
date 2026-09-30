@@ -330,23 +330,17 @@ apache_run() {
 # =============================================================================
 # 7. CloudLinux integration: CPAPI, CageFS config, D-Bus, CloudLinux Manager UI
 # =============================================================================
-integration_done() {
+cagefs_done() {
   same_file snpanel-cpapi /usr/local/lib/snpanel/snpanel-cpapi || return 1
-  same_file snpanel-ui-user-info /usr/local/lib/snpanel/snpanel-ui-user-info || return 1
-  same_file cloudlinux-ui-router.php /usr/local/lib/snpanel/cloudlinux-ui-router.php || return 1
-  same_file snpanel-lvemanager.sudoers /etc/sudoers.d/snpanel-lvemanager || return 1
-  same_file snpanel-systemd-read.conf /etc/dbus-1/system.d/snpanel-systemd-read.conf || return 1
-  grep -q '^\[lvemanager_config\]' /opt/cpvendor/etc/integration.ini 2>/dev/null || return 1
-  grep -qx '!/var/lib/snpanel-cpapi' /etc/cagefs/cagefs.mp 2>/dev/null || return 1
-  [[ -f /var/lib/snpanel-lvemanager/index.php || -d /var/lib/snpanel-lvemanager/assets ]] || return 1
-  systemctl is-active --quiet snpanel-cloudlinux-ui
+  same_file snpanel.cagefs.cfg /etc/cagefs/conf.d/snpanel.cfg || return 1
+  grep -q '^\[integration_scripts\]' /opt/cpvendor/etc/integration.ini 2>/dev/null || return 1
+  grep -qx '!/var/lib/snpanel-cpapi' /etc/cagefs/cagefs.mp 2>/dev/null
 }
-integration_run() {
+cagefs_run() {
+  local remount=0
   install_file snpanel-cpapi /usr/local/lib/snpanel/snpanel-cpapi 0755
-  install_file snpanel-ui-user-info /usr/local/lib/snpanel/snpanel-ui-user-info 0755
-  install_file cloudlinux-ui-router.php /usr/local/lib/snpanel/cloudlinux-ui-router.php 0644
   install -d -m 0755 /opt/cpvendor/etc
-  cat >/opt/cpvendor/etc/integration.ini <<'EOF'
+  cat >/opt/cpvendor/etc/integration.ini <<'EOF2'
 ; SNPANEL MANAGED - CloudLinux control panel integration
 [integration_scripts]
 panel_info = /usr/local/lib/snpanel/snpanel-cpapi panel_info
@@ -363,19 +357,45 @@ ui_user_info = /usr/local/lib/snpanel/snpanel-ui-user-info
 base_path = /var/lib/snpanel-lvemanager
 base_uri = /cloudlinux/
 run_service = 0
-EOF
+EOF2
   chmod 644 /opt/cpvendor/etc/integration.ini
   # The CPAPI script runs inside every customer's cage; its snapshot is
   # mounted read-only there (F11).
   install_file snpanel.cagefs.cfg /etc/cagefs/conf.d/snpanel.cfg 0644
-  grep -qx '!/var/lib/snpanel-cpapi' /etc/cagefs/cagefs.mp || echo '!/var/lib/snpanel-cpapi' >>/etc/cagefs/cagefs.mp
+  if ! grep -qx '!/var/lib/snpanel-cpapi' /etc/cagefs/cagefs.mp; then
+    echo '!/var/lib/snpanel-cpapi' >>/etc/cagefs/cagefs.mp
+    remount=1
+  fi
   install -d -m 0755 /var/lib/snpanel-cpapi
   # CLOS-5813: isolatectl is missing from the CageFS skeleton.
   echo /usr/sbin/isolatectl | run cagefsctl --wait-lock --update-list || true
+  # The Resource Usage charts are drawn in the cage: a stale font cache
+  # puts fontconfig warnings into the JSON CloudLinux Manager parses.
+  fc-cache -f >/dev/null 2>&1 || true
+  run cagefsctl --force-update
+  # A remount kills every caged process; only a new mount point needs it.
+  # (Re-running it on a busy server once left one account's LVE unable to
+  # start until a reboot.)
+  [[ "$remount" == 1 ]] && run cagefsctl --remount-all
+  run systemctl restart snpanel-api
+}
+
+integration_done() {
+  same_file snpanel-ui-user-info /usr/local/lib/snpanel/snpanel-ui-user-info || return 1
+  same_file cloudlinux-ui-router.php /usr/local/lib/snpanel/cloudlinux-ui-router.php || return 1
+  same_file snpanel-lvemanager.sudoers /etc/sudoers.d/snpanel-lvemanager || return 1
+  same_file snpanel-systemd-read.conf /etc/dbus-1/system.d/snpanel-systemd-read.conf || return 1
+  same_file snpanel-cloudlinux-ui.service /etc/systemd/system/snpanel-cloudlinux-ui.service || return 1
+  [[ -f /var/lib/snpanel-lvemanager/index.php ]] || return 1
+  systemctl is-active --quiet snpanel-cloudlinux-ui
+}
+integration_run() {
+  install_file snpanel-ui-user-info /usr/local/lib/snpanel/snpanel-ui-user-info 0755
+  install_file cloudlinux-ui-router.php /usr/local/lib/snpanel/cloudlinux-ui-router.php 0644
   # CageFS's D-Bus hardening hides systemd from every non-root account; the
   # panel reads service state as "snpanel".
   install_file snpanel-systemd-read.conf /etc/dbus-1/system.d/snpanel-systemd-read.conf 0644
-  busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || systemctl reload dbus-broker 2>/dev/null || true
+  busctl call org.freedesktop.DBus / org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
   # CloudLinux Manager's own UI, served on the loopback outside LVE and
   # proxied by the panel at /cloudlinux/.
   id -u snpanel-lvem >/dev/null 2>&1 \
@@ -383,17 +403,11 @@ EOF
   install -d -o root -g snpanel-lvem -m 0755 /var/lib/snpanel-lvemanager
   visudo -cf "$FILES/snpanel-lvemanager.sudoers" >/dev/null
   install_file snpanel-lvemanager.sudoers /etc/sudoers.d/snpanel-lvemanager 0440
-  run /usr/share/l.v.e-manager/install-lvemanager-plugin.py --install
+  [[ -f /var/lib/snpanel-lvemanager/index.php ]] || run /usr/share/l.v.e-manager/install-lvemanager-plugin.py --install
   install_file snpanel-cloudlinux-ui.service /etc/systemd/system/snpanel-cloudlinux-ui.service 0644
   systemctl daemon-reload
-  run systemctl enable --now snpanel-cloudlinux-ui
-  # The Resource Usage charts are drawn in the cage: a stale font cache
-  # puts fontconfig warnings into the JSON CloudLinux Manager parses.
-  fc-cache -f >/dev/null 2>&1 || true
-  run cagefsctl --force-update
-  run cagefsctl --remount-all
-  # The panel starts its CloudLinux side (CPAPI snapshot, LVE) at start-up.
-  run systemctl restart snpanel-api
+  run systemctl enable snpanel-cloudlinux-ui
+  run systemctl restart snpanel-cloudlinux-ui
 }
 
 # =============================================================================
@@ -453,8 +467,13 @@ webscripts_run() {
   systemctl daemon-reload
   # The timer re-fires only while the oneshot is not left "active".
   if [[ -s /var/lib/snpanel/webserver ]]; then
+    # A oneshot left "active" by the old unit (RemainAfterExit) keeps the
+    # timer from ever firing again; it has no ExecStop, so this only
+    # changes its state.
+    systemctl stop snpanel-webswitch-restore.service >/dev/null 2>&1 || true
     systemctl enable snpanel-webswitch-restore.service >/dev/null 2>&1 || true
-    run systemctl enable --now snpanel-webswitch-restore.timer
+    run systemctl enable snpanel-webswitch-restore.timer
+    run systemctl restart snpanel-webswitch-restore.timer
   fi
 }
 
@@ -552,7 +571,8 @@ PY
     got="$(api PATCH "/websites/$id" "{\"php_version\": \"$target\"}" | python3 -c 'import json,sys
 try: d=json.load(sys.stdin); print(d.get("php_version", d.get("detail","?")))
 except Exception: print("?")')"
-    info "$domain ($user): $target -> ${got:-?}"
+    [[ "$target" == inherit ]] && target="theo tài khoản"
+    info "$domain ($user): PHP ${target}${got:+ (lưu: $got)}"
   done
   rm -f "$sites"
   touch "$STATE_DIR/site-php.done"
@@ -595,6 +615,17 @@ governor_run() {
 }
 
 # =============================================================================
+# A kernel that could not (re)build an account's LVE while this ran: that
+# account's PHP then gets 508 until the server is rebooted.
+lve_health() {
+  local bad
+  bad="$(journalctl -k --since "@$STARTED" --no-pager 2>/dev/null | grep -oE "Can.t alloc ve #[0-9]+" | sort -u || true)"
+  [[ -z "$bad" ]] && return 0
+  warn "Kernel không dựng lại được LVE cho: $(grep -oE '[0-9]+$' <<<"$bad" | tr '\n' ' ')(uid)."
+  warn "Site của các tài khoản đó sẽ trả 508. Khởi động lại máy (systemctl reboot) để sửa."
+}
+STARTED="$(date +%s)"
+
 main() {
   log "${C_B}SNPanel Hosting Edition - bước 1: CloudLinux$([[ "$CHECK" == 1 ]] && echo ' (chỉ kiểm tra)')${C_0}"
   preflight
@@ -606,7 +637,8 @@ main() {
   step packages    "Cài Apache, mod_lsapi, ModSecurity, CageFS, alt-php $(php_versions | tr '\n' ' ')"
   step php         "PHP Selector, CageFS và PHP native $DEFAULT_PHP"
   step apache      "Apache trên 8080/8443 (chạy song song nginx)"
-  step integration "Tích hợp CloudLinux: CPAPI, D-Bus, CloudLinux Manager trong panel"
+  step cagefs      "Tích hợp CloudLinux: CPAPI và cấu hình CageFS"
+  step integration "CloudLinux Manager trong panel, D-Bus cho user snpanel"
   step accounts    "Đưa tài khoản vào CageFS, đặt phiên bản PHP cho từng tài khoản"
   step webscripts  "Script chuyển web server (snpanel-webswitch) và timer giữ chuyển hướng 80/443"
   step cutover     "Chuyển web từ nginx sang Apache (80/443)"
@@ -617,6 +649,7 @@ main() {
     [[ "$PENDING" == 0 ]] && log "${C_OK}Máy đã ở bước 1 (CloudLinux) đầy đủ.${C_0}" || log "Còn $PENDING bước chưa làm."
     return 0
   fi
+  lve_health
   log ""
   log "${C_OK}${C_B}Xong bước 1.${C_0} Máy chạy CloudLinux + Apache; nginx và PHP-FPM đã tắt."
   log "  - Vào panel: Services, Websites, Settings > CloudLinux Manager."

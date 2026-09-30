@@ -118,12 +118,22 @@ Quay lại chỉ Apache (bước 1): `bash $H/install-litespeed.sh --remove`.
 | `snpanel-webwatch`(`.service`) | như trên | watchdog LiteSpeed |
 | `snpanel-dbuser-map`(`.service`, `.timer`) | như trên | map database user sang tài khoản cho MySQL Governor |
 
-## Còn mở
+## Đã kiểm chứng và còn mở
 
-- **Chưa chạy trọn trên một máy AlmaLinux 10 mới.**
-  - Các script được viết từ đúng những lệnh đã chạy tay trên máy thử.
-  - Trên máy thử đã kiểm chứng `--check` và việc chạy lại (các bước đã xong được bỏ qua).
-  - Lần chạy đầu trên máy mới nên có người theo dõi.
+**Đã chạy trên máy thử** (máy đã nâng cấp tay trong buổi CL-0, 14 site):
+- `apply-bundle.sh` thay binary và frontend.
+- `--check` của cả hai script nhận đúng các bước đã làm.
+- Chạy thật lại cả hai script: bước đã xong được bỏ qua, file lệch được cài lại.
+- `install-litespeed.sh --remove` rồi chạy lại: mã HTTP của mọi site không đổi.
+
+**Một sự cố khi chạy lại trên máy đang có khách:**
+- `cagefsctl --remount-all` giết mọi tiến trình trong cage. Sau đó kernel không dựng lại được LVE của một tài khoản (`Can't alloc ve #1001` trong `dmesg`), và site của tài khoản đó trả 508 cho tới khi reboot.
+- Bây giờ script chỉ remount khi thêm mount point mới. Trên máy mới, việc đó xảy ra trước khi có tài khoản nào vào cage.
+- Cuối lần chạy, script đọc log kernel và **nhắc reboot** nếu thấy lỗi này.
+
+**Còn mở:**
+- **Chưa chạy trọn trên một máy AlmaLinux 10 mới:** từ 1.1.0, qua convert, tới LiteSpeed. Lần đầu nên có người theo dõi, và nên làm trên snapshot.
 - **License LiteSpeed hết hạn** (F23) chưa thử được. Trial trên máy thử hết hạn khoảng 12/10.
 - **phpMyAdmin vẫn là RPM của EPEL.** Gói này kéo theo `nginx-filesystem` và `php8.4-fpm` (đã mask). Nên chuyển sang tarball upstream.
 - **Giới hạn số kết nối** (connection limit) của chống flood chưa có tương đương trên ModSecurity. Giới hạn theo số request thì có.
+- **`update.sh` chưa dùng được trên máy đã nâng cấp,** vì nó vẫn giả định có nginx. Dùng `apply-bundle.sh` để cập nhật.
