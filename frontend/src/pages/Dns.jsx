@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Boxes, CircleCheckBig, Globe, Network, OctagonAlert, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Boxes, Copy, Globe, Lock, Network, OctagonAlert, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, Trash2, X } from 'lucide-react';
 import { usePanel } from '../lib/panel-context.jsx';
 import { msg, useT } from '../i18n/index.jsx';
 import './Dns.css';
@@ -42,6 +42,14 @@ function ttlLabel(seconds, t) {
   return preset ? t(preset[1]) : t('{count} seconds', { count: seconds });
 }
 
+// "1 h", "1 d", "5 m", as OPanel's record list writes a TTL.
+function ttlShort(seconds) {
+  if (seconds % 86400 === 0) return `${seconds / 86400} d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600} h`;
+  if (seconds % 60 === 0) return `${seconds / 60} m`;
+  return `${seconds} s`;
+}
+
 // The content as the table shows it: a name without its final dot.
 const shown = (type, content) => (['CNAME', 'NS', 'MX', 'SRV'].includes(type) ? content.replace(/\.$/, '') : content);
 
@@ -55,25 +63,36 @@ export default function DnsPage() {
   const [filter, setFilter] = useState('');
   const [form, setForm] = useState(blankRecord(3600));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [recordFilter, setRecordFilter] = useState('');
   const busy = !!loading;
 
-  async function load(keep = selected) {
+  async function load() {
     const data = await request('/dns', {}, t('Loading DNS...'));
-    if (!data) return;
-    setOverview(data);
-    const next = data.zones.includes(keep) ? keep : data.zones[0] || '';
-    setSelected(next);
-    if (next) openZone(next); else setZone(null);
+    if (data) setOverview(data);
+    return data;
   }
 
   async function openZone(name) {
     setSelected(name);
+    setRecordFilter('');
     setForm(blankRecord(overview?.settings?.default_ttl || 3600));
-    const data = await request(`/dns/zones/${encodeURIComponent(name)}`, { silent: true });
+    const data = await request(`/dns/zones/${encodeURIComponent(name)}`, {}, t('Loading records...'));
     setZone(data);
   }
 
-  useEffect(() => { if (installed) load(''); }, [installed]);
+  function closeZone() {
+    setSelected('');
+    setZone(null);
+  }
+
+  // Opened from elsewhere (the Email page's DNS records) with ?zone=.
+  useEffect(() => {
+    if (!installed) return;
+    load().then((data) => {
+      const wanted = new URLSearchParams(window.location.search).get('zone');
+      if (data && wanted && data.zones.includes(wanted)) openZone(wanted);
+    });
+  }, [installed]);
 
   const zones = overview?.zones || [];
   const visibleZones = useMemo(() => zones.filter((z) => z.includes(filter.trim().toLowerCase())), [zones, filter]);
@@ -137,136 +156,137 @@ export default function DnsPage() {
   }
   if (!overview) return <div className="dns-page"><section className="section"><p className="hint">{t('Loading DNS...')}</p></section></div>;
 
-  const rows = (zone?.rrsets || []).flatMap((set) => set.records.map((content) => ({ set, content })));
+  const needle = recordFilter.trim().toLowerCase();
+  const rows = (zone?.rrsets || [])
+    .flatMap((set) => set.records.map((content) => ({ set, content })))
+    .filter(({ set, content }) => !needle || set.name.includes(needle) || set.type.toLowerCase() === needle || content.toLowerCase().includes(needle));
   const types = overview.types || Object.keys(PLACEHOLDER);
   const service = overview.service;
+  const owners = overview.zone_owners || {};
+  const serverIp = overview.server_ip;
+
+  async function copyNameservers() {
+    try { await navigator.clipboard.writeText(overview.nameservers.join('\n')); setNotice(t('Copied')); } catch { /* the chips are there to read */ }
+  }
+
+  if (zone) {
+    return <div className="dns-page">
+      <section className="section dns-zone">
+        <div className="dns-zone-head">
+          <button type="button" className="secondary dns-back" onClick={closeZone}><ArrowLeft size={15} aria-hidden="true"/> {t('DNS Manager')}</button>
+          <div className="dns-zone-title">
+            <h2>{zone.name}</h2>
+            <p className="hint">{zone.owner ? `${t('Account: {name}', { name: zone.owner })} · ` : ''}{t('{count} records', { count: zone.records ?? rows.length })}</p>
+          </div>
+          <div className="dns-zone-actions">
+            <button type="button" className="secondary" disabled={busy} onClick={() => openZone(zone.name)}><RefreshCw size={14} aria-hidden="true"/> {t('Refresh')}</button>
+            <button type="button" className="secondary" disabled={busy} onClick={resetZone}><RotateCcw size={14} aria-hidden="true"/> {t('Reset from template')}</button>
+          </div>
+        </div>
+        {zone.delegated_here === false && <p className="dns-delegation-note">
+          <span className="badge warn">{t('Other nameservers')}</span>
+          {t('{zone} uses other nameservers now ({list}). Set {ours} at its registrar.', { zone: zone.name, list: (zone.public_nameservers || []).join(', '), ours: zone.nameservers.join(', ') })}
+        </p>}
+
+        <form className="dns-add" onSubmit={saveRecord} aria-label={form.editing ? t('Edit record') : t('Add a record')}>
+          <strong>{form.editing ? t('Edit record') : t('Add a record')}</strong>
+          <div className="dns-add-grid">
+            <label><span>{t('Type')}</span>
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                {types.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+            </label>
+            <label><span>{t('Name')}</span>
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="@" spellCheck="false" autoComplete="off" />
+            </label>
+            <label><span>{t('Value')}</span>
+              <input value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} placeholder={PLACEHOLDER[form.type]} spellCheck="false" autoComplete="off" />
+            </label>
+            <label><span>TTL</span>
+              <select value={form.ttl} onChange={(e) => setForm({ ...form, ttl: Number(e.target.value) })}>
+                {[...TTLS.map(([v]) => v), ...(TTLS.some(([v]) => v === form.ttl) ? [] : [form.ttl])].sort((x, y) => x - y)
+                  .map((value) => <option key={value} value={value}>{ttlLabel(value, t)}</option>)}
+              </select>
+            </label>
+          </div>
+          <p className="hint">{t(TYPE_HINT[form.type])}{form.type === 'A' && serverIp ? ` ${t('This server: {ip}.', { ip: serverIp })}` : ''} {t('Names are relative to {zone}: @ is the domain itself.', { zone: zone.name })}</p>
+          <div className="dns-add-buttons">
+            <button type="submit" className={form.editing ? '' : 'secondary'} disabled={busy || !form.content.trim()}>
+              {form.editing ? <><Save size={15} aria-hidden="true"/> {t('Save')}</> : <><Plus size={15} aria-hidden="true"/> {t('Add record')}</>}
+            </button>
+            {form.editing && <button type="button" className="secondary" onClick={() => setForm(blankRecord(form.ttl))}><X size={15} aria-hidden="true"/> {t('Cancel')}</button>}
+          </div>
+        </form>
+
+        <div className="dns-records-head">
+          <h3>{t('Records')}</h3>
+          <input value={recordFilter} onChange={(e) => setRecordFilter(e.target.value)} placeholder={t('Filter records')} aria-label={t('Filter records')} spellCheck="false" />
+        </div>
+        <div className="dns-record-list" role="table" aria-label={t('Records')}>
+          <div className="dns-record-row dns-record-labels" role="row">
+            <span role="columnheader">{t('Name')}</span><span role="columnheader">{t('Type')}</span><span role="columnheader">TTL</span><span role="columnheader">{t('Value')}</span><span role="columnheader"><span className="sr-only">{t('Actions')}</span></span>
+          </div>
+          {rows.map(({ set, content }) => {
+            const editing = form.editing && form.editing.name === set.name && form.editing.type === set.type && form.editing.content === content;
+            return <div key={`${set.name}|${set.type}|${content}`} className={`dns-record-row${editing ? ' editing' : ''}`} role="row">
+              <span className="dns-name" title={set.fqdn} role="cell">{set.name}</span>
+              <span role="cell"><span className="dns-type" data-type={set.type}>{set.type}</span></span>
+              <span className="dns-ttl" role="cell">{ttlShort(set.ttl)}</span>
+              <span className="dns-value" role="cell"><code>{shown(set.type, content)}</code></span>
+              <span className="dns-row-actions" role="cell">
+                {set.editable
+                  ? <>
+                    <button type="button" className="secondary icon-button" disabled={busy} onClick={() => editRecord(set, content)} aria-label={t('Edit')} title={t('Edit')}><Pencil size={14} aria-hidden="true"/></button>
+                    <button type="button" className="secondary icon-button dns-delete" disabled={busy} onClick={() => deleteRecord(set, content)} aria-label={t('Delete')} title={t('Delete')}><Trash2 size={14} aria-hidden="true"/></button>
+                  </>
+                  : <span className="dns-locked" title={set.type === 'SOA' ? t('Automatic') : t('Administrator')}><Lock size={14} aria-hidden="true"/></span>}
+              </span>
+            </div>;
+          })}
+          {rows.length === 0 && <p className="empty-note">{t('No records match.')}</p>}
+        </div>
+      </section>
+    </div>;
+  }
 
   return <div className="dns-page">
-    {overview.is_admin && <ServiceCard overview={overview} service={service} busy={busy} onRefresh={() => load()} onSettings={() => setSettingsOpen((open) => !open)} settingsOpen={settingsOpen} t={t} />}
+    <section className="section dns-home">
+      <div className="section-title">
+        <div>
+          <h2>{t('DNS Manager')}</h2>
+          <p className="hint">{overview.is_admin ? t('Every domain on the panel, answered by this server.') : t('The domains of your websites, answered by this server.')}</p>
+        </div>
+        <div className="dns-home-actions">
+          {overview.is_admin && <button type="button" className={settingsOpen ? '' : 'secondary'} onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}><Settings2 size={15} aria-hidden="true"/> {t('Settings')}</button>}
+          <button type="button" className="secondary" disabled={busy} onClick={load}><RefreshCw size={15} aria-hidden="true"/> {t('Refresh')}</button>
+        </div>
+      </div>
+      {overview.is_admin && service && !(service.running && service.listening && service.api) && <div className="dns-banner" data-tone="bad"><OctagonAlert size={18} aria-hidden="true"/><span>{t('PowerDNS is not answering')} · {t('Install the addon again from Addons to start it.')}</span></div>}
+      {overview.problem && <div className="dns-banner" data-tone="bad"><OctagonAlert size={18} aria-hidden="true"/><span>{overview.problem}</span></div>}
+      <div className="dns-ns-bar">
+        <span className="dns-ns-label"><Network size={15} aria-hidden="true"/> {t('Nameservers')}</span>
+        {overview.nameservers.map((ns) => <code key={ns}>{ns}</code>)}
+        <button type="button" className="secondary icon-button" onClick={copyNameservers} aria-label={t('Copy')} title={t('Copy')}><Copy size={14} aria-hidden="true"/></button>
+        {service?.version && <span className="dns-ns-version">PowerDNS {service.version}</span>}
+      </div>
+      <div className="dns-search-row">
+        <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={t('Search domains')} aria-label={t('Search domains')} spellCheck="false" />
+        <button type="button" className="secondary icon-button" aria-label={t('Search')} title={t('Search')}><Search size={15} aria-hidden="true"/></button>
+      </div>
+      {zones.length === 0
+        ? <EmptyState icon={Globe} message={t('No zones yet. Every website and alias gets one by itself.')} />
+        : <div className="dns-zone-rows">
+          {visibleZones.map((name) => <div className="dns-zone-row" key={name}>
+            <div><strong>{name}</strong>{owners[name] && <small>{t('Account: {name}', { name: owners[name] })}</small>}</div>
+            <button type="button" className="secondary" onClick={() => openZone(name)}><Pencil size={14} aria-hidden="true"/> {t('Records')}</button>
+          </div>)}
+        </div>}
+    </section>
     {overview.is_admin && settingsOpen && <SettingsCard overview={overview} busy={busy} request={request} setNotice={setNotice}
       onSaved={(settings) => setOverview((prev) => ({ ...prev, settings, nameservers: settings.nameservers }))} t={t} />}
     {overview.is_reseller && <ResellerNameservers overview={overview} busy={busy} request={request} setNotice={setNotice}
       onSaved={() => load()} t={t} />}
-    {overview.problem && <div className="dns-banner" data-tone="bad"><OctagonAlert size={18} aria-hidden="true"/><span>{overview.problem}</span></div>}
-
-    <div className="dns-layout">
-      <section className="section dns-zones">
-        <div className="dns-section-head">
-          <h2>{t('Zones')}</h2>
-          <p className="hint">{overview.is_admin ? t('Every website and alias gets its zone by itself.') : t('Each of your websites and aliases gets its zone by itself.')}</p>
-        </div>
-        {zones.length > 6 && <label className="dns-search"><Search size={14} aria-hidden="true"/>
-          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={t('Find a zone')} aria-label={t('Find a zone')} /></label>}
-        {zones.length === 0
-          ? <p className="empty-note">{t('No zones yet. Every website and alias gets one by itself.')}</p>
-          : <ul className="dns-zone-list">
-            {visibleZones.map((name) => <li key={name}>
-              <button type="button" className={name === selected ? 'active' : ''} aria-current={name === selected ? 'true' : undefined} onClick={() => openZone(name)}>
-                <Globe size={14} aria-hidden="true"/> <span>{name}</span>
-              </button>
-            </li>)}
-          </ul>}
-      </section>
-
-      <section className="section dns-records">
-        {!zone
-          ? <p className="empty-note">{zones.length ? t('Choose a zone.') : t('Zones appear here as websites are added.')}</p>
-          : <>
-            <div className="dns-zone-head">
-              <div>
-                <h2>{zone.name}</h2>
-                <p className="hint">{t('Serial {serial}', { serial: zone.serial })} · {t('Nameservers: {list}', { list: zone.nameservers.join(', ') })}</p>
-              </div>
-              <div className="dns-zone-actions">
-                <button type="button" className="secondary" disabled={busy} onClick={resetZone}><RotateCcw size={14} aria-hidden="true"/> {t('Reset from template')}</button>
-              </div>
-            </div>
-
-            <form className="dns-record-form" onSubmit={saveRecord} aria-label={form.editing ? t('Edit record') : t('Add record')}>
-              <label><span>{t('Name')}</span>
-                <div className="dns-name-input">
-                  <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="@" spellCheck="false" autoComplete="off" />
-                  <span className="dns-suffix" title={zone.name}>.{zone.name}</span>
-                </div>
-              </label>
-              <label><span>{t('Type')}</span>
-                <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                  {types.map((type) => <option key={type} value={type}>{type}</option>)}
-                </select>
-              </label>
-              <label><span>TTL</span>
-                <select value={form.ttl} onChange={(e) => setForm({ ...form, ttl: Number(e.target.value) })}>
-                  {[...TTLS.map(([v]) => v), ...(TTLS.some(([v]) => v === form.ttl) ? [] : [form.ttl])].sort((a, b) => a - b)
-                    .map((value) => <option key={value} value={value}>{ttlLabel(value, t)}</option>)}
-                </select>
-              </label>
-              <label className="dns-content"><span>{t('Value')}</span>
-                <input value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} placeholder={PLACEHOLDER[form.type]} spellCheck="false" autoComplete="off" />
-              </label>
-              <div className="dns-form-buttons">
-                <button type="submit" disabled={busy || !form.content.trim()}>
-                  {form.editing ? <><Save size={15} aria-hidden="true"/> {t('Save')}</> : <><Plus size={15} aria-hidden="true"/> {t('Add')}</>}
-                </button>
-                {form.editing && <button type="button" className="secondary" onClick={() => setForm(blankRecord(form.ttl))}><X size={15} aria-hidden="true"/> {t('Cancel')}</button>}
-              </div>
-            </form>
-            <p className="hint dns-type-hint">{t(TYPE_HINT[form.type])} {t('@ is the domain itself.')}</p>
-
-            <div className="data-table-wrap">
-              <table className="data-table dns-table">
-                <thead><tr>
-                  <th scope="col">{t('Name')}</th><th scope="col">{t('Type')}</th><th scope="col">TTL</th><th scope="col">{t('Value')}</th><th scope="col"><span className="sr-only">{t('Actions')}</span></th>
-                </tr></thead>
-                <tbody>
-                  {rows.map(({ set, content }) => {
-                    const editing = form.editing && form.editing.name === set.name && form.editing.type === set.type && form.editing.content === content;
-                    return <tr key={`${set.name}|${set.type}|${content}`} className={editing ? 'editing' : ''}>
-                      <td className="dns-name" title={set.fqdn}>{set.name}</td>
-                      <td><span className="dns-type" data-type={set.type}>{set.type}</span></td>
-                      <td className="data-table-muted dns-ttl">{ttlLabel(set.ttl, t)}</td>
-                      <td className="dns-value"><code>{shown(set.type, content)}</code></td>
-                      <td className="dns-row-actions">
-                        {set.editable
-                          ? <>
-                            <button type="button" className="secondary icon-button" disabled={busy} onClick={() => editRecord(set, content)} aria-label={t('Edit')} title={t('Edit')}><Pencil size={14} aria-hidden="true"/></button>
-                            <button type="button" className="secondary icon-button danger-hover" disabled={busy} onClick={() => deleteRecord(set, content)} aria-label={t('Delete')} title={t('Delete')}><Trash2 size={14} aria-hidden="true"/></button>
-                          </>
-                          : <span className="data-table-muted dns-locked">{set.type === 'SOA' ? t('Automatic') : t('Administrator')}</span>}
-                      </td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </>}
-      </section>
-    </div>
   </div>;
-}
-
-function ServiceCard({ overview, service, busy, onRefresh, onSettings, settingsOpen, t }) {
-  const up = service?.running && service?.listening && service?.api;
-  return <section className="section dns-status" data-state={up ? 'on' : 'off'}>
-    <div className="dns-status-head">
-      <span className="dns-status-icon">{up ? <CircleCheckBig size={22} aria-hidden="true"/> : <OctagonAlert size={22} aria-hidden="true"/>}</span>
-      <div className="dns-status-text">
-        <h2>{up ? t('PowerDNS is answering on port 53') : t('PowerDNS is not answering')}</h2>
-        <p className="hint">{service?.version ? t('PowerDNS Authoritative {version}', { version: service.version }) : t('PowerDNS Authoritative')}
-          {!up && ` · ${t('Install the addon again from Addons to start it.')}`}</p>
-      </div>
-      <div className="dns-status-actions">
-        <button type="button" className="secondary icon-button" disabled={busy} onClick={onRefresh} aria-label={t('Refresh')} title={t('Refresh')}><RefreshCw size={16} aria-hidden="true"/></button>
-        <button type="button" className={settingsOpen ? '' : 'secondary'} onClick={onSettings} aria-expanded={settingsOpen}><Settings2 size={15} aria-hidden="true"/> {t('Settings')}</button>
-      </div>
-    </div>
-    <div className="dns-delegation">
-      <Network size={16} aria-hidden="true"/>
-      <div>
-        <p>{t('At each domain\'s registrar, set the nameservers to:')} {overview.nameservers.map((ns) => <code key={ns}>{ns}</code>)}</p>
-        {overview.server_ip && <p className="hint">{t('Where the nameservers are under a domain of yours, register them at its registrar as glue (child nameservers) with this server\'s address {ip}.', { ip: overview.server_ip })}</p>}
-      </div>
-    </div>
-  </section>;
 }
 
 function SettingsCard({ overview, busy, request, setNotice, onSaved, t }) {

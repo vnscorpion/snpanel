@@ -62,6 +62,28 @@ fn now() -> chrono::NaiveDateTime {
     chrono::Utc::now().naive_utc()
 }
 
+/// An expired token is deleted, not listed: it can never work again.
+async fn forget_expired<T>(
+    state: &AppState,
+    rows: Vec<T>,
+    token: impl Fn(&T) -> &McpToken,
+    at: chrono::NaiveDateTime,
+) -> Vec<T> {
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        let t = token(&row);
+        if mcp::expired(&t.expires_at, at) {
+            if let Err(e) = state.db.mcp_tokens().delete(t.id).await {
+                tracing::warn!("deleting expired MCP token {} failed: {e}", t.id);
+                kept.push(row);
+            }
+        } else {
+            kept.push(row);
+        }
+    }
+    kept
+}
+
 fn token_json(token: &McpToken, at: chrono::NaiveDateTime) -> Value {
     json!({
         "id": token.id,
@@ -111,6 +133,7 @@ async fn list_tokens(
         }
         return match state.db.mcp_tokens().all().await {
             Ok(rows) => {
+                let rows = forget_expired(&state, rows, |r| &r.token, at).await;
                 let items: Vec<Value> = rows
                     .iter()
                     .map(|row| {
@@ -130,6 +153,7 @@ async fn list_tokens(
     }
     match state.db.mcp_tokens().for_user(current.user.id).await {
         Ok(rows) => {
+            let rows = forget_expired(&state, rows, |t| t, at).await;
             let items: Vec<Value> = rows.iter().map(|t| token_json(t, at)).collect();
             Json(json!({ "items": items })).into_response()
         }

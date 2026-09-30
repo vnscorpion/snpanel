@@ -2029,6 +2029,10 @@ async fn list_tokens(State(state): State<AppState>, current: CurrentUser) -> Res
     };
     let owners: std::collections::HashMap<i64, i64> =
         state.db.resellers().all_token_owners().await.unwrap_or_default().into_iter().collect();
+    // Revoked tokens left from before revoking deleted them go now.
+    if let Err(e) = state.db.api_tokens().purge_revoked().await {
+        tracing::warn!("purging revoked API tokens failed: {e}");
+    }
     match state.db.api_tokens().all().await {
         Ok(tokens) => {
             // A reseller sees its own tokens; the administrator every one.

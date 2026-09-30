@@ -675,6 +675,93 @@ pub async fn create_from_template(zone: &str, settings: &DnsSettings) -> Result<
 }
 
 // ---------------------------------------------------------------------------
+// Where the world is told to ask
+// ---------------------------------------------------------------------------
+
+/// The nameservers a public resolver (1.1.1.1, then 8.8.8.8) gives for
+/// `zone`, lower case without the final dot; `None` when neither answered.
+/// A plain NS query over UDP, two seconds each.
+pub async fn public_nameservers(zone: &str) -> Option<Vec<String>> {
+    for resolver in ["1.1.1.1:53", "8.8.8.8:53"] {
+        if let Some(found) = ns_query(resolver, zone).await {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn ns_packet(zone: &str, id: u16) -> Vec<u8> {
+    let mut q = Vec::with_capacity(32 + zone.len());
+    q.extend_from_slice(&id.to_be_bytes());
+    q.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in zone.trim_end_matches('.').split('.') {
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.extend_from_slice(&[0, 0, 2, 0, 1]);
+    q
+}
+
+/// A name at `pos`, following compression pointers; the position after it.
+fn read_name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
+    let mut labels = Vec::new();
+    let mut end = None;
+    for _ in 0..64 {
+        let len = *msg.get(pos)? as usize;
+        if len == 0 {
+            return Some((labels.join("."), end.unwrap_or(pos + 1)));
+        }
+        if len & 0xc0 == 0xc0 {
+            let target = ((len & 0x3f) << 8) | *msg.get(pos + 1)? as usize;
+            end.get_or_insert(pos + 2);
+            pos = target;
+            continue;
+        }
+        labels.push(String::from_utf8_lossy(msg.get(pos + 1..pos + 1 + len)?).to_ascii_lowercase());
+        pos += 1 + len;
+    }
+    None
+}
+
+fn parse_ns_answer(msg: &[u8], id: u16) -> Option<Vec<String>> {
+    if msg.len() < 12 || u16::from_be_bytes([msg[0], msg[1]]) != id || msg[2] & 0x80 == 0 {
+        return None;
+    }
+    let rcode = msg[3] & 0x0f;
+    if rcode != 0 && rcode != 3 {
+        return None;
+    }
+    let qd = u16::from_be_bytes([msg[4], msg[5]]) as usize;
+    let an = u16::from_be_bytes([msg[6], msg[7]]) as usize;
+    let mut pos = 12;
+    for _ in 0..qd {
+        pos = read_name(msg, pos)?.1 + 4;
+    }
+    let mut out = Vec::new();
+    for _ in 0..an {
+        let (_, after) = read_name(msg, pos)?;
+        let rtype = u16::from_be_bytes([*msg.get(after)?, *msg.get(after + 1)?]);
+        let rdlen = u16::from_be_bytes([*msg.get(after + 8)?, *msg.get(after + 9)?]) as usize;
+        let data = after + 10;
+        if rtype == 2 {
+            out.push(read_name(msg, data)?.0);
+        }
+        pos = data + rdlen;
+    }
+    out.sort();
+    Some(out)
+}
+
+async fn ns_query(resolver: &str, zone: &str) -> Option<Vec<String>> {
+    let id: u16 = rand::random();
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    socket.send_to(&ns_packet(zone, id), resolver).await.ok()?;
+    let mut buf = [0u8; 1500];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut buf)).await.ok()?.ok()?;
+    parse_ns_answer(&buf[..n], id)
+}
+
+// ---------------------------------------------------------------------------
 // Resellers' nameservers
 // ---------------------------------------------------------------------------
 
@@ -1052,6 +1139,23 @@ async fn website_deleted_inner(domain: &str) -> Result<(), PdnsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ns_answer_is_read_with_its_compressed_names() {
+        // example.com NS -> ns1.example.net, ns2.example.com (compressed).
+        let mut m = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0];
+        m.extend_from_slice(&ns_packet("example.com", 0)[12..]);
+        // answer 1: name pointer to 12, type NS, class IN, ttl, rdata ns1.example.net
+        let rdata1: Vec<u8> = [&[3u8][..], b"ns1", &[7], b"example", &[3], b"net", &[0]].concat();
+        m.extend_from_slice(&[0xc0, 12, 0, 2, 0, 1, 0, 0, 0x0e, 0x10, 0, rdata1.len() as u8]);
+        m.extend_from_slice(&rdata1);
+        // answer 2: rdata "ns2" + pointer to example.com at 12
+        let rdata2: Vec<u8> = [&[3u8][..], b"ns2", &[0xc0, 12]].concat();
+        m.extend_from_slice(&[0xc0, 12, 0, 2, 0, 1, 0, 0, 0x0e, 0x10, 0, rdata2.len() as u8]);
+        m.extend_from_slice(&rdata2);
+        assert_eq!(parse_ns_answer(&m, 0x1234).unwrap(), ["ns1.example.net", "ns2.example.com"]);
+        assert!(parse_ns_answer(&m, 0x9999).is_none(), "another query's answer is not ours");
+    }
 
     #[test]
     fn record_names_are_made_absolute_in_the_zone() {
