@@ -175,7 +175,10 @@ fn render_conf(db: &str, key: &str, local: &str) -> String {
 fn ensure_database(l: &Layout) -> Result<(), HelperResponse> {
     let db = db_path(l);
     std::fs::create_dir_all(l.db_dir).map_err(|e| {
-        failed(HelperErrorKind::Internal, format!("creating {}: {e}", l.db_dir))
+        failed(
+            HelperErrorKind::Internal,
+            format!("creating {}: {e}", l.db_dir),
+        )
     })?;
     if !Path::new(&db).exists() {
         let result = exec::run_with_stdin(&["sqlite3", &db], Some(SCHEMA.as_bytes()));
@@ -198,8 +201,12 @@ fn write_key(key: &str) -> Result<(), HelperResponse> {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    super::nginx::write_atomic(path, format!("{key}\n").as_bytes(), 0o640)
-        .map_err(|e| failed(HelperErrorKind::Internal, format!("writing {API_KEY_FILE}: {e}")))?;
+    super::nginx::write_atomic(path, format!("{key}\n").as_bytes(), 0o640).map_err(|e| {
+        failed(
+            HelperErrorKind::Internal,
+            format!("writing {API_KEY_FILE}: {e}"),
+        )
+    })?;
     let owner = format!("root:{}", crate::peercred::PANEL_USER);
     step(&["chown", &owner, API_KEY_FILE])
 }
@@ -213,9 +220,22 @@ fn write_conf(l: &Layout, key: &str) -> Result<(), HelperResponse> {
             let _ = std::fs::write(&backup, existing);
         }
     }
-    let local = local_addresses(port_53_taken_by_other(), ipv6_enabled(), &global_addresses());
-    super::nginx::write_atomic(conf, render_conf(&db_path(l), key, &local).as_bytes(), 0o640)
-        .map_err(|e| failed(HelperErrorKind::Internal, format!("writing {}: {e}", l.conf)))?;
+    let local = local_addresses(
+        port_53_taken_by_other(),
+        ipv6_enabled(),
+        &global_addresses(),
+    );
+    super::nginx::write_atomic(
+        conf,
+        render_conf(&db_path(l), key, &local).as_bytes(),
+        0o640,
+    )
+    .map_err(|e| {
+        failed(
+            HelperErrorKind::Internal,
+            format!("writing {}: {e}", l.conf),
+        )
+    })?;
     let owner = format!("root:{}", l.user);
     step(&["chown", &owner, l.conf])
 }
@@ -254,7 +274,12 @@ pub fn install(ctx: &Context) -> HelperResponse {
     }
     let key = match api_key() {
         Ok(k) => k,
-        Err(e) => return failed(HelperErrorKind::Internal, format!("making the API key: {e}")),
+        Err(e) => {
+            return failed(
+                HelperErrorKind::Internal,
+                format!("making the API key: {e}"),
+            )
+        }
     };
     if let Err(r) = ensure_database(&l)
         .and_then(|()| write_key(&key))
@@ -373,8 +398,17 @@ mod tests {
 
     #[test]
     fn the_schema_makes_the_tables_powerdns_reads() {
-        for table in ["domains", "records", "domainmetadata", "cryptokeys", "comments"] {
-            assert!(SCHEMA.contains(&format!("CREATE TABLE {table} (")), "{table}");
+        for table in [
+            "domains",
+            "records",
+            "domainmetadata",
+            "cryptokeys",
+            "comments",
+        ] {
+            assert!(
+                SCHEMA.contains(&format!("CREATE TABLE {table} (")),
+                "{table}"
+            );
         }
     }
 }

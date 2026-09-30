@@ -26,7 +26,10 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/mail", get(overview).fallback(crate::fallback))
-        .route("/mail/mailboxes", post(create_mailbox).fallback(crate::fallback))
+        .route(
+            "/mail/mailboxes",
+            post(create_mailbox).fallback(crate::fallback),
+        )
         .route(
             "/mail/mailboxes/{address}",
             axum::routing::patch(update_mailbox)
@@ -37,12 +40,18 @@ pub fn router() -> Router<AppState> {
             "/mail/mailboxes/{address}/webmail",
             post(open_webmail).fallback(crate::fallback),
         )
-        .route("/mail/forwarders", post(create_forwarder).fallback(crate::fallback))
+        .route(
+            "/mail/forwarders",
+            post(create_forwarder).fallback(crate::fallback),
+        )
         .route(
             "/mail/forwarders/{source}",
             axum::routing::delete(delete_forwarder).fallback(crate::fallback),
         )
-        .route("/mail/domains/{domain}", put(set_domain).fallback(crate::fallback))
+        .route(
+            "/mail/domains/{domain}",
+            put(set_domain).fallback(crate::fallback),
+        )
 }
 
 async fn admit(state: &AppState, parts: &mut Parts) -> Result<CurrentUser, Response> {
@@ -64,7 +73,10 @@ fn unprocessable(message: &str) -> Response {
 }
 
 /// The mail domains the caller may manage.
-async fn visible_domains(state: &AppState, current: &CurrentUser) -> Result<Vec<mail::Domain>, Response> {
+async fn visible_domains(
+    state: &AppState,
+    current: &CurrentUser,
+) -> Result<Vec<mail::Domain>, Response> {
     let all = mail::domains(state).await.map_err(|e| {
         tracing::error!("listing mail domains failed: {e}");
         crate::errors::internal_error()
@@ -72,12 +84,18 @@ async fn visible_domains(state: &AppState, current: &CurrentUser) -> Result<Vec<
     Ok(if is_admin(current) {
         all
     } else {
-        all.into_iter().filter(|d| d.owner_id == current.user.id).collect()
+        all.into_iter()
+            .filter(|d| d.owner_id == current.user.id)
+            .collect()
     })
 }
 
 /// The domain of `address`, when the caller may manage it.
-async fn domain_for(state: &AppState, current: &CurrentUser, address: &str) -> Result<mail::Domain, Response> {
+async fn domain_for(
+    state: &AppState,
+    current: &CurrentUser,
+    address: &str,
+) -> Result<mail::Domain, Response> {
     let domain = address.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
     visible_domains(state, current)
         .await?
@@ -95,7 +113,10 @@ fn host_of(parts: &Parts) -> String {
         .and_then(|h| h.to_str().ok())
         .map(|h| {
             if h.starts_with('[') {
-                h.split(']').next().map(|v| format!("{v}]")).unwrap_or_default()
+                h.split(']')
+                    .next()
+                    .map(|v| format!("{v}]"))
+                    .unwrap_or_default()
             } else {
                 h.split(':').next().unwrap_or("").to_string()
             }
@@ -116,7 +137,14 @@ fn mail_host(state: &AppState, parts: &Parts) -> String {
 }
 
 async fn status(state: &AppState) -> Value {
-    let result = crate::shell::privileged(state.settings.command_dry_run, "mail-status", &[], None, None).await;
+    let result = crate::shell::privileged(
+        state.settings.command_dry_run,
+        "mail-status",
+        &[],
+        None,
+        None,
+    )
+    .await;
     serde_json::from_str(result.stdout.trim()).unwrap_or(Value::Null)
 }
 
@@ -125,10 +153,14 @@ async fn page(state: &AppState, current: &CurrentUser, parts: &Parts) -> Result<
     let store = mail::load();
     let service = status(state).await;
     let names: Vec<&str> = domains.iter().map(|d| d.name.as_str()).collect();
-    let on = |address: &str| names.contains(&address.rsplit_once('@').map(|(_, d)| d).unwrap_or(""));
+    let on =
+        |address: &str| names.contains(&address.rsplit_once('@').map(|(_, d)| d).unwrap_or(""));
     let owner_of = |address: &str| {
         let domain = address.rsplit_once('@').map(|(_, d)| d).unwrap_or("");
-        domains.iter().find(|d| d.name == domain).map(|d| d.linux_user.clone())
+        domains
+            .iter()
+            .find(|d| d.name == domain)
+            .map(|d| d.linux_user.clone())
     };
     let mailboxes: Vec<Value> = store
         .mailboxes
@@ -191,7 +223,10 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
 }
 
 /// The request's body, with the caller admitted.
-async fn admitted_body(state: &AppState, req: axum::extract::Request) -> Result<(Parts, CurrentUser, Value), Response> {
+async fn admitted_body(
+    state: &AppState,
+    req: axum::extract::Request,
+) -> Result<(Parts, CurrentUser, Value), Response> {
     let (mut parts, body) = req.into_parts();
     let current = admit(state, &mut parts).await?;
     let body = super::auth::read_json_body(body).await?;
@@ -232,25 +267,44 @@ async fn create_mailbox(State(state): State<AppState>, req: axum::extract::Reque
         Ok(d) => d,
         Err(r) => return r,
     };
-    if let Err(m) = crate::resellers::check_room(&state, domain.owner_id, crate::resellers::Resource::Mailbox).await {
+    if let Err(m) =
+        crate::resellers::check_room(&state, domain.owner_id, crate::resellers::Resource::Mailbox)
+            .await
+    {
         return error(StatusCode::FORBIDDEN, &m);
     }
     // The owner's package decides how many mailboxes it may have.
     if let Ok(Some(owner)) = state.db.users().by_id(domain.owner_id).await {
         if let Some(package) = owner.package_id {
-            let limit = state.db.resellers().mailbox_limit(package).await.unwrap_or(0);
+            let limit = state
+                .db
+                .resellers()
+                .mailbox_limit(package)
+                .await
+                .unwrap_or(0);
             if limit > 0 {
                 let owned: Vec<String> = match mail::domains(&state).await {
-                    Ok(d) => d.into_iter().filter(|d| d.owner_id == owner.id).map(|d| d.name).collect(),
+                    Ok(d) => d
+                        .into_iter()
+                        .filter(|d| d.owner_id == owner.id)
+                        .map(|d| d.name)
+                        .collect(),
                     Err(_) => Vec::new(),
                 };
                 let used = mail::load()
                     .mailboxes
                     .iter()
-                    .filter(|b| b.address.rsplit_once('@').is_some_and(|(_, d)| owned.iter().any(|o| o == d)))
+                    .filter(|b| {
+                        b.address
+                            .rsplit_once('@')
+                            .is_some_and(|(_, d)| owned.iter().any(|o| o == d))
+                    })
                     .count() as i64;
                 if used >= limit {
-                    return error(StatusCode::FORBIDDEN, &format!("The package allows {limit} mailbox(es)"));
+                    return error(
+                        StatusCode::FORBIDDEN,
+                        &format!("The package allows {limit} mailbox(es)"),
+                    );
                 }
             }
         }
@@ -282,8 +336,15 @@ async fn create_mailbox(State(state): State<AppState>, req: axum::extract::Reque
     if let Err(m) = created {
         return bad_request(&m);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_mailbox_create", &address, &format!("quota={quota}"))
-        .await;
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_mailbox_create",
+        &address,
+        &format!("quota={quota}"),
+    )
+    .await;
     respond(&state, &current, &parts, &format!("{address} is ready.")).await
 }
 
@@ -332,12 +393,28 @@ async fn update_mailbox(
     if let Err(m) = changed {
         return bad_request(&m);
     }
-    let detail = format!("password={} quota={}", !passwords.is_empty(), quota.map(|q| q.to_string()).unwrap_or_default());
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_mailbox_update", &address, &detail).await;
+    let detail = format!(
+        "password={} quota={}",
+        !passwords.is_empty(),
+        quota.map(|q| q.to_string()).unwrap_or_default()
+    );
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_mailbox_update",
+        &address,
+        &detail,
+    )
+    .await;
     respond(&state, &current, &parts, &format!("{address} is saved.")).await
 }
 
-async fn delete_mailbox(State(state): State<AppState>, Path(address): Path<String>, mut parts: Parts) -> Response {
+async fn delete_mailbox(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    mut parts: Parts,
+) -> Response {
     let current = match admit(&state, &mut parts).await {
         Ok(c) => c,
         Err(r) => return r,
@@ -361,11 +438,29 @@ async fn delete_mailbox(State(state): State<AppState>, Path(address): Path<Strin
     if let Err(m) = removed {
         return bad_request(&m);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_mailbox_delete", &address, "").await;
-    respond(&state, &current, &parts, &format!("{address} and its mail are deleted.")).await
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_mailbox_delete",
+        &address,
+        "",
+    )
+    .await;
+    respond(
+        &state,
+        &current,
+        &parts,
+        &format!("{address} and its mail are deleted."),
+    )
+    .await
 }
 
-async fn open_webmail(State(state): State<AppState>, Path(address): Path<String>, mut parts: Parts) -> Response {
+async fn open_webmail(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+    mut parts: Parts,
+) -> Response {
     let current = match admit(&state, &mut parts).await {
         Ok(c) => c,
         Err(r) => return r,
@@ -382,7 +477,15 @@ async fn open_webmail(State(state): State<AppState>, Path(address): Path<String>
     }
     match mail::webmail_link(&mail_host(&state, &parts), &address) {
         Ok(url) => {
-            super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_webmail_open", &address, "").await;
+            super::packages::audit_action_detail(
+                &state,
+                &parts,
+                current.user.id,
+                "mail_webmail_open",
+                &address,
+                "",
+            )
+            .await;
             axum::Json(json!({ "url": url })).into_response()
         }
         Err(m) => bad_request(&m),
@@ -402,8 +505,17 @@ async fn create_forwarder(State(state): State<AppState>, req: axum::extract::Req
         return r;
     }
     let destinations: Vec<String> = match &body["destinations"] {
-        Value::Array(items) => items.iter().filter_map(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-        Value::String(s) => s.split([',', '\n', ' ']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Value::String(s) => s
+            .split([',', '\n', ' '])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         _ => Vec::new(),
     };
     let destinations: Vec<String> = destinations
@@ -416,13 +528,19 @@ async fn create_forwarder(State(state): State<AppState>, req: axum::extract::Req
     if destinations.is_empty() || destinations.len() > snpanel_ipc::MAIL_MAX_DESTINATIONS {
         return unprocessable("Give between 1 and 20 destination addresses");
     }
-    if let Some(bad) = destinations.iter().find(|d| !snpanel_ipc::destination_valid(d) || **d == source) {
+    if let Some(bad) = destinations
+        .iter()
+        .find(|d| !snpanel_ipc::destination_valid(d) || **d == source)
+    {
         return unprocessable(&format!("{bad} is not a valid destination"));
     }
     let created = mail::update(&state, BTreeMap::new(), Vec::new(), |store| {
         match store.forwarders.iter_mut().find(|f| f.source == source) {
             Some(f) => f.destinations = destinations.clone(),
-            None => store.forwarders.push(StoredForwarder { source: source.clone(), destinations: destinations.clone() }),
+            None => store.forwarders.push(StoredForwarder {
+                source: source.clone(),
+                destinations: destinations.clone(),
+            }),
         }
         Ok(())
     })
@@ -430,11 +548,29 @@ async fn create_forwarder(State(state): State<AppState>, req: axum::extract::Req
     if let Err(m) = created {
         return bad_request(&m);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_forwarder_save", &source, &destinations.join(",")).await;
-    respond(&state, &current, &parts, &format!("Mail to {source} is forwarded.")).await
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_forwarder_save",
+        &source,
+        &destinations.join(","),
+    )
+    .await;
+    respond(
+        &state,
+        &current,
+        &parts,
+        &format!("Mail to {source} is forwarded."),
+    )
+    .await
 }
 
-async fn delete_forwarder(State(state): State<AppState>, Path(source): Path<String>, mut parts: Parts) -> Response {
+async fn delete_forwarder(
+    State(state): State<AppState>,
+    Path(source): Path<String>,
+    mut parts: Parts,
+) -> Response {
     let current = match admit(&state, &mut parts).await {
         Ok(c) => c,
         Err(r) => return r,
@@ -458,8 +594,22 @@ async fn delete_forwarder(State(state): State<AppState>, Path(source): Path<Stri
     if let Err(m) = removed {
         return bad_request(&m);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_forwarder_delete", &source, "").await;
-    respond(&state, &current, &parts, &format!("Mail to {source} is no longer forwarded.")).await
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_forwarder_delete",
+        &source,
+        "",
+    )
+    .await;
+    respond(
+        &state,
+        &current,
+        &parts,
+        &format!("Mail to {source} is no longer forwarded."),
+    )
+    .await
 }
 
 /// Whether a domain's mail is delivered here, or where its MX says.
@@ -473,7 +623,11 @@ async fn set_domain(
         Err(r) => return r,
     };
     let domain = domain.trim().to_ascii_lowercase();
-    if !visible_domains(&state, &current).await.map(|d| d.iter().any(|x| x.name == domain)).unwrap_or(false) {
+    if !visible_domains(&state, &current)
+        .await
+        .map(|d| d.iter().any(|x| x.name == domain))
+        .unwrap_or(false)
+    {
         return not_found("No such mail domain");
     }
     let Some(local) = body["local"].as_bool() else {
@@ -491,7 +645,15 @@ async fn set_domain(
     if let Err(m) = changed {
         return bad_request(&m);
     }
-    super::packages::audit_action_detail(&state, &parts, current.user.id, "mail_domain_routing", &domain, if local { "local" } else { "remote" }).await;
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "mail_domain_routing",
+        &domain,
+        if local { "local" } else { "remote" },
+    )
+    .await;
     respond(
         &state,
         &current,

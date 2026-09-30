@@ -1627,12 +1627,21 @@ mod tests {
         ));
         assert!(map(&["web-switch", "nginx"]).is_err());
         assert!(matches!(map(&["web-status"]), Ok(HelperRequest::WebStatus)));
-        assert!(matches!(map(&["dns-install"]), Ok(HelperRequest::DnsInstall)));
+        assert!(matches!(
+            map(&["dns-install"]),
+            Ok(HelperRequest::DnsInstall)
+        ));
         assert!(matches!(map(&["dns-stop"]), Ok(HelperRequest::DnsStop)));
         assert!(matches!(map(&["dns-status"]), Ok(HelperRequest::DnsStatus)));
         assert!(map(&["dns-install", "extra"]).is_err());
-        assert!(matches!(map(&["mail-install"]), Ok(HelperRequest::MailInstall)));
-        assert!(matches!(map(&["mail-status"]), Ok(HelperRequest::MailStatus)));
+        assert!(matches!(
+            map(&["mail-install"]),
+            Ok(HelperRequest::MailInstall)
+        ));
+        assert!(matches!(
+            map(&["mail-status"]),
+            Ok(HelperRequest::MailStatus)
+        ));
         assert!(matches!(map(&["mail-stop"]), Ok(HelperRequest::MailStop)));
         // WP-CLI's prompt gets stdin; nothing else does.
         match HelperRequest::from_argv(

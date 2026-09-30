@@ -536,7 +536,10 @@ async fn public(State(state): State<AppState>, headers: axum::http::HeaderMap) -
     }
     // Not in the Python: on a reseller's own panel hostname the sign-in
     // page carries the reseller's name and logo, not the server's.
-    if let Some(host) = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()) {
+    if let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    {
         if let Some(brand) = crate::resellers::brand_for_host(&state, host).await {
             if let Value::Object(fields) = crate::resellers::brand_fields(&brand) {
                 let has_logo = fields.contains_key("logo_url");

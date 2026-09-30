@@ -274,7 +274,10 @@ mod tests {
         assert_eq!(p.database_limit, 5);
         assert_eq!(p.alias_limit, 0);
         assert_eq!(p.backup_retention_days, 7);
-        assert!(p.terminal_enabled, "every account has the terminal unless its package says otherwise");
+        assert!(
+            p.terminal_enabled,
+            "every account has the terminal unless its package says otherwise"
+        );
         assert!(p.waf_enabled);
         assert!(p.wordpress_enabled);
         assert_eq!(p.node_apps_limit, 0);

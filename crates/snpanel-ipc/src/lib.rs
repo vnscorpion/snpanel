@@ -24,8 +24,11 @@ mod mail;
 pub use cpapi::{CpapiDomain, CpapiPackageOwner, CpapiSnapshot, CpapiUser};
 pub use fail2ban::{Fail2banConfig, Fail2banJail};
 pub use lve::{LveLimits, LvePackageName, WebServer};
+pub use mail::{
+    destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder,
+    MailState,
+};
 pub use mail::{MAX_DESTINATIONS as MAIL_MAX_DESTINATIONS, MAX_QUOTA_MB as MAIL_MAX_QUOTA_MB};
-pub use mail::{destination_valid, local_part_valid, split_address, MailBox, MailDomain, MailForwarder, MailState};
 
 use serde::{Deserialize, Serialize};
 use snpanel_core::{

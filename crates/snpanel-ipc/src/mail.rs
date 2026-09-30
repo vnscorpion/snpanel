@@ -73,7 +73,11 @@ pub fn local_part_valid(local: &str) -> bool {
 /// `local@domain`, lower case, with a local part [`local_part_valid`] accepts.
 pub fn split_address(address: &str) -> Option<(&str, &str)> {
     let (local, domain) = address.rsplit_once('@')?;
-    if !local_part_valid(local) || Domain::parse(domain).map(|d| d.as_str() != domain).unwrap_or(true) {
+    if !local_part_valid(local)
+        || Domain::parse(domain)
+            .map(|d| d.as_str() != domain)
+            .unwrap_or(true)
+    {
         return None;
     }
     Some((local, domain))
@@ -114,8 +118,8 @@ impl MailState {
         }
         let mut boxes = std::collections::HashSet::new();
         for b in &self.mailboxes {
-            let (_, domain) =
-                split_address(&b.address).ok_or_else(|| format!("{} is not a valid mailbox", b.address))?;
+            let (_, domain) = split_address(&b.address)
+                .ok_or_else(|| format!("{} is not a valid mailbox", b.address))?;
             if !domains.contains(domain) {
                 return Err(format!("{} is not on a mail domain", b.address));
             }
@@ -143,7 +147,10 @@ impl MailState {
                 return Err(format!("{} is listed twice", f.source));
             }
             if f.destinations.is_empty() || f.destinations.len() > MAX_DESTINATIONS {
-                return Err(format!("{}: between 1 and {MAX_DESTINATIONS} destinations", f.source));
+                return Err(format!(
+                    "{}: between 1 and {MAX_DESTINATIONS} destinations",
+                    f.source
+                ));
             }
             for d in &f.destinations {
                 if !destination_valid(d) {
@@ -171,7 +178,11 @@ mod tests {
                 owner: PanelUsername::parse("alice").unwrap(),
                 local: true,
             }],
-            mailboxes: vec![MailBox { address: "info@example.com".into(), quota_mb: 1024, password: None }],
+            mailboxes: vec![MailBox {
+                address: "info@example.com".into(),
+                quota_mb: 1024,
+                password: None,
+            }],
             forwarders: vec![MailForwarder {
                 source: "sales@example.com".into(),
                 destinations: vec!["info@example.com".into(), "Boss@gmail.com".into()],
@@ -187,7 +198,15 @@ mod tests {
 
     #[test]
     fn addresses_are_checked() {
-        for bad in ["Info@example.com", ".a@example.com", "a..b@example.com", "a b@example.com", "a@other.com", "a:b@example.com", "@example.com"] {
+        for bad in [
+            "Info@example.com",
+            ".a@example.com",
+            "a..b@example.com",
+            "a b@example.com",
+            "a@other.com",
+            "a:b@example.com",
+            "@example.com",
+        ] {
             let mut s = state();
             s.mailboxes[0].address = bad.into();
             assert!(s.validate().is_err(), "{bad}");

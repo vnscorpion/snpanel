@@ -117,8 +117,14 @@ pub async fn build(state: &AppState) -> Result<CpapiSnapshot, String> {
     // helper, which resolves the uids.
     // Resellers: whose accounts and packages are whose.
     let resellers = state.db.resellers();
-    let parents: BTreeMap<i64, i64> = resellers.all_parents().await.map_err(|e| e.to_string())?.into_iter().collect();
-    let username_of: BTreeMap<i64, &str> = users.iter().map(|u| (u.id, u.username.as_str())).collect();
+    let parents: BTreeMap<i64, i64> = resellers
+        .all_parents()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    let username_of: BTreeMap<i64, &str> =
+        users.iter().map(|u| (u.id, u.username.as_str())).collect();
     let cl_users: Vec<CpapiUser> = users
         .iter()
         .filter_map(|u| {

@@ -222,7 +222,10 @@ async fn token_reseller(
     // A token whose reseller is no longer one opens nothing.
     match limits {
         Some(l) => Ok(Some((owner, l))),
-        None => Err(error(axum::http::StatusCode::FORBIDDEN, "This token's reseller is gone")),
+        None => Err(error(
+            axum::http::StatusCode::FORBIDDEN,
+            "This token's reseller is gone",
+        )),
     }
 }
 
@@ -258,12 +261,21 @@ async fn list_plans(State(state): State<AppState>, req: axum::extract::Request) 
         Ok(r) => r.map(|(id, _)| id),
         Err(r) => return r,
     };
-    let owners: std::collections::HashMap<i64, i64> =
-        state.db.resellers().all_package_owners().await.unwrap_or_default().into_iter().collect();
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_package_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let packages = match state.db.packages().list().await {
         // A reseller's token sees its packages; the administrator's the
         // administrator's own.
-        Ok(p) => p.into_iter().filter(|p| owners.get(&p.id).copied() == reseller).collect::<Vec<_>>(),
+        Ok(p) => p
+            .into_iter()
+            .filter(|p| owners.get(&p.id).copied() == reseller)
+            .collect::<Vec<_>>(),
         Err(e) => {
             tracing::error!("package listing failed: {e}");
             return crate::errors::internal_error();
@@ -723,16 +735,31 @@ async fn create_account(State(state): State<AppState>, req: axum::extract::Reque
     };
     let reseller_id = reseller.as_ref().map(|(id, _)| *id);
     fields.external_id = scope_id(reseller_id, &fields.external_id);
-    let owners: std::collections::HashMap<i64, i64> =
-        state.db.resellers().all_package_owners().await.unwrap_or_default().into_iter().collect();
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_package_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     if owners.get(&fields.package_id).copied() != reseller_id {
         return not_found("Package not found");
     }
     let sells_reseller = match payload.get("reseller").filter(|v| !v.is_null()) {
         Some(body) => match crate::resellers::limits_from(body, None) {
             Ok(l) => {
-                if state.db.resellers().prefix_taken(&l.prefix, None).await.unwrap_or(true) {
-                    return error(axum::http::StatusCode::CONFLICT, "Another reseller has this prefix");
+                if state
+                    .db
+                    .resellers()
+                    .prefix_taken(&l.prefix, None)
+                    .await
+                    .unwrap_or(true)
+                {
+                    return error(
+                        axum::http::StatusCode::CONFLICT,
+                        "Another reseller has this prefix",
+                    );
                 }
                 Some(l)
             }
@@ -741,10 +768,12 @@ async fn create_account(State(state): State<AppState>, req: axum::extract::Reque
         None => None,
     };
     if let Some(id) = reseller_id {
-        for resource in [crate::resellers::Resource::Account]
-            .into_iter()
-            .chain(fields.domain.is_some().then_some(crate::resellers::Resource::Website))
-        {
+        for resource in [crate::resellers::Resource::Account].into_iter().chain(
+            fields
+                .domain
+                .is_some()
+                .then_some(crate::resellers::Resource::Website),
+        ) {
             if let Err(m) = crate::resellers::check_room(&state, id, resource).await {
                 return bad_request(&m);
             }
@@ -887,7 +916,11 @@ async fn create_account(State(state): State<AppState>, req: axum::extract::Reque
             username: &fields.username,
             email: &account_email,
             hashed_password: &hashed,
-            role: if sells_reseller.is_some() { "reseller" } else { "end_user" },
+            role: if sells_reseller.is_some() {
+                "reseller"
+            } else {
+                "end_user"
+            },
             package_id: Some(package.id),
             website_limit: package.website_limit,
             storage_limit_mb: package.storage_limit_mb,
@@ -1904,7 +1937,14 @@ async fn change_package(
     };
     // Not in the Python: a token puts accounts on its own packages only.
     let reseller_id = reseller.as_ref().map(|(id, _)| *id);
-    if state.db.resellers().package_owner(package.id).await.unwrap_or(None) != reseller_id {
+    if state
+        .db
+        .resellers()
+        .package_owner(package.id)
+        .await
+        .unwrap_or(None)
+        != reseller_id
+    {
         return not_found("Package not found");
     }
     // A reseller account sold by the administrator: its limits change with
@@ -2027,8 +2067,14 @@ async fn list_tokens(State(state): State<AppState>, current: CurrentUser) -> Res
         Ok(m) => m,
         Err(r) => return r,
     };
-    let owners: std::collections::HashMap<i64, i64> =
-        state.db.resellers().all_token_owners().await.unwrap_or_default().into_iter().collect();
+    let owners: std::collections::HashMap<i64, i64> = state
+        .db
+        .resellers()
+        .all_token_owners()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     // Revoked tokens left from before revoking deleted them go now.
     if let Err(e) = state.db.api_tokens().purge_revoked().await {
         tracing::warn!("purging revoked API tokens failed: {e}");
@@ -2117,7 +2163,11 @@ async fn create_token(State(state): State<AppState>, req: axum::extract::Request
     if let Some(owner) = manager.reseller_id() {
         if let Err(e) = state.db.resellers().set_token_owner(token.id, owner).await {
             tracing::error!("recording the token's reseller failed: {e}");
-            let _ = state.db.api_tokens().revoke(token.id, &snpanel_db::sqlalchemy_now()).await;
+            let _ = state
+                .db
+                .api_tokens()
+                .revoke(token.id, &snpanel_db::sqlalchemy_now())
+                .await;
             return crate::errors::internal_error();
         }
     }
@@ -2141,7 +2191,14 @@ async fn revoke_token(
         Err(r) => return r,
     };
     if let Some(owner) = manager.reseller_id() {
-        if state.db.resellers().token_owner(token_id).await.unwrap_or(None) != Some(owner) {
+        if state
+            .db
+            .resellers()
+            .token_owner(token_id)
+            .await
+            .unwrap_or(None)
+            != Some(owner)
+        {
             return not_found("Token not found");
         }
     }
