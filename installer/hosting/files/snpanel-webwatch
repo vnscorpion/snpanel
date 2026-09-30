@@ -1,5 +1,5 @@
 #!/bin/bash
-# snpanel-webwatch  (CL-0 prototype of snpanel-webwatch.service)
+# snpanel-webwatch
 #
 # While LiteSpeed is live: probe it directly on its own port (not through 80,
 # which would stop telling us anything once we have failed over). Three

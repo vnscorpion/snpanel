@@ -1,5 +1,5 @@
 #!/bin/bash
-# snpanel-webswitch lsws|apache  (CL-0 prototype of `snpanel web switch`)
+# snpanel-webswitch lsws|apache
 #
 # Both web servers always run and read the same vhosts:
 #   Apache    Listen 8080/8443            (hot standby, never exposed)

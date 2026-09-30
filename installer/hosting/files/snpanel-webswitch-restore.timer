@@ -1,0 +1,9 @@
+[Unit]
+Description=SNPanel: keep the 80/443 redirect and its firewall rule in place
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,5 @@
 [Unit]
-Description=SNPanel: LiteSpeed watchdog, fails over to Apache (CL-0 prototype)
+Description=SNPanel: LiteSpeed watchdog, fails over to Apache
 After=snpanel-webswitch-restore.service
 
 [Service]

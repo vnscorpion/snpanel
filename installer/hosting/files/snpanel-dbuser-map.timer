@@ -1,0 +1,9 @@
+[Unit]
+Description=SNPanel: keep MySQL Governor's database-user map current
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
