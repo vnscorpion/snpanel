@@ -16,7 +16,7 @@ const PLACEHOLDER = {
   AAAA: '2001:db8::10',
   CNAME: 'example.com',
   MX: '10 mail.example.com',
-  TXT: 'v=spf1 a mx ~all',
+  TXT: 'v=spf1 a mx ip4:203.0.113.10 ~all',
   SRV: '10 5 5060 sip.example.com',
   CAA: '0 issue "letsencrypt.org"',
   NS: 'ns1.example.net',
