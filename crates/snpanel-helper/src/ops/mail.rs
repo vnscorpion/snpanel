@@ -927,8 +927,8 @@ fn install_inner(ctx: &Context) -> Result<String, HelperResponse> {
             ))
         }
     }
-    // The package's own owners on its spool and logs: on CloudLinux they
-    // have been seen left to root, and Exim then cannot queue a message.
+    // The package's own owners on its spool and logs: they have been seen
+    // left to root, and Exim then cannot queue a message.
     if packages::family() == Family::Rhel {
         let _ = exec::run(&["rpm", "--setugids", "exim"]);
         let _ = exec::run(&["rpm", "--setperms", "exim"]);
@@ -981,17 +981,6 @@ fn install_inner(ctx: &Context) -> Result<String, HelperResponse> {
         write(path, &text, 0o644, "root:root")?;
     }
     super::panel::install_hook("snpanel-mail-cert", MAIL_CERT_HOOK);
-
-    // PHP in CageFS sends through sendmail, which is Exim's.
-    if Path::new("/usr/sbin/cagefsctl").exists() {
-        let pkg = if packages::family() == Family::Rhel {
-            "exim"
-        } else {
-            "exim4-daemon-heavy"
-        };
-        let _ = exec::run(&["cagefsctl", "--addrpm", pkg]);
-        let _ = exec::run(&["cagefsctl", "--force-update"]);
-    }
 
     // Exim writes its logs as its own user.
     let _ = std::fs::create_dir_all(l.log_dir);
