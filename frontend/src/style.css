@@ -726,11 +726,12 @@ button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .user-main strong{font-size:var(--text-md)}
 .user-main small{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .package-list{display:grid;gap:8px;margin-top:10px}
-.package-row{display:grid;grid-template-columns:minmax(170px,1.5fr) auto auto auto;gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);min-width:0;transition:var(--transition)}
+.package-row{display:grid;grid-template-columns:minmax(170px,1.5fr) repeat(4,auto);gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);min-width:0;transition:var(--transition)}
 .package-row:hover{border-color:var(--border-hover);background:var(--surface-alt)}
 .package-row label{display:grid;gap:6px;min-width:0;font-weight:600;color:var(--text-secondary)}
 .package-row label span{font-size:var(--text-sm);color:var(--text-muted)}
 .package-row input{width:100%;min-width:0}
+.package-create-card{grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr)) auto}
 .row-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .website-search-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg);padding:8px 10px;min-width:0}
 .website-search-bar svg{color:var(--text-muted)}

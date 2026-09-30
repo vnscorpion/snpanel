@@ -1617,4 +1617,6 @@ export default {
   "The prefix is 2 to 8 lower-case letters and digits, starting with a letter": "Tiền tố gồm 2 đến 8 chữ thường và số, bắt đầu bằng chữ",
   "This token's reseller is gone": "Reseller của token này không còn",
   "This account is not a reseller": "Tài khoản này không phải reseller",
+  "The package allows {limit} mailbox(es)": "Gói chỉ cho phép {limit} hộp thư",
+  "Nameservers saved; {changed} zone(s) updated.": "Đã lưu nameserver; {changed} zone được cập nhật.",
 };

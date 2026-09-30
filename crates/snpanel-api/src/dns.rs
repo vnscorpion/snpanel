@@ -666,12 +666,161 @@ pub async fn delete_zone(zone: &str) -> Result<(), PdnsError> {
     checked("DELETE", &zone_path(zone), None).await.map(drop)
 }
 
-/// The zone made from the template.
-pub async fn create_from_template(zone: &str) -> Result<(), PdnsError> {
-    let settings = settings();
-    let ip = server_ip(&settings).unwrap_or_default();
-    let rrsets = zone_rrsets(zone, &settings, &ip).map_err(PdnsError)?;
+/// The zone made from the template, with `settings` (the nameservers of
+/// the domain's reseller, when it has one - see [`settings_for`]).
+pub async fn create_from_template(zone: &str, settings: &DnsSettings) -> Result<(), PdnsError> {
+    let ip = server_ip(settings).unwrap_or_default();
+    let rrsets = zone_rrsets(zone, settings, &ip).map_err(PdnsError)?;
     create_zone(zone, rrsets).await
+}
+
+// ---------------------------------------------------------------------------
+// Resellers' nameservers
+// ---------------------------------------------------------------------------
+
+fn reseller_ns_file() -> PathBuf {
+    data_dir().join("dns-resellers.json")
+}
+
+fn reseller_ns_all() -> std::collections::BTreeMap<String, Vec<String>> {
+    std::fs::read_to_string(reseller_ns_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// A reseller's own nameservers, when it set them.
+pub fn reseller_nameservers(reseller_id: i64) -> Option<Vec<String>> {
+    reseller_ns_all().remove(&reseller_id.to_string()).filter(|n| !n.is_empty())
+}
+
+/// Checked names, or `None` for the server's defaults.
+pub fn save_reseller_nameservers(reseller_id: i64, names: Option<Vec<String>>) -> Result<(), String> {
+    let mut all = reseller_ns_all();
+    match names {
+        Some(names) => {
+            all.insert(reseller_id.to_string(), names);
+        }
+        None => {
+            all.remove(&reseller_id.to_string());
+        }
+    }
+    let path = reseller_ns_file();
+    let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| ".".into());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let temp = dir.join(format!(".dns-resellers.json.{}", std::process::id()));
+    std::fs::write(&temp, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())? + "\n")
+        .and_then(|()| std::fs::rename(&temp, &path))
+        .map_err(|e| e.to_string())
+}
+
+/// One to six host names, lower case, without the final dot.
+pub fn nameservers_valid(raw: &[String]) -> Result<Vec<String>, String> {
+    let names: Vec<String> = raw
+        .iter()
+        .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() || names.len() > 6 {
+        return Err("Give between one and six nameservers".into());
+    }
+    if let Some(bad) = names.iter().find(|n| !hostname_valid(n)) {
+        return Err(format!("{bad} is not a host name"));
+    }
+    Ok(names)
+}
+
+/// The reseller whose nameservers an account's zones get, if any.
+pub async fn reseller_for_owner(state: &crate::state::AppState, owner_id: i64) -> Option<i64> {
+    crate::resellers::reseller_of(state, owner_id).await.ok().flatten().map(|(id, _)| id)
+}
+
+/// The settings a zone of `owner_id`'s is made with: the server's, with its
+/// reseller's nameservers when it has set them.
+pub async fn settings_for_owner(state: &crate::state::AppState, owner_id: Option<i64>) -> DnsSettings {
+    let mut s = settings();
+    if let Some(owner) = owner_id {
+        if let Some(reseller) = reseller_for_owner(state, owner).await {
+            if let Some(ns) = reseller_nameservers(reseller) {
+                s.nameservers = ns;
+            }
+        }
+    }
+    s
+}
+
+/// Who owns each website domain and alias.
+async fn owners(state: &crate::state::AppState) -> std::collections::BTreeMap<String, i64> {
+    crate::mail::domains(state)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| (d.name, d.owner_id))
+        .collect()
+}
+
+/// [`settings_for_owner`] for the owner of `domain`.
+pub async fn settings_for(state: &crate::state::AppState, domain: &str) -> DnsSettings {
+    let owner = owners(state).await.get(domain).copied();
+    settings_for_owner(state, owner).await
+}
+
+/// A zone's NS and SOA pointed at `settings`' nameservers, with a glue
+/// address for a nameserver inside the zone.
+pub async fn apply_nameservers(zone: &str, settings: &DnsSettings) -> Result<(), PdnsError> {
+    let Some(existing) = self::zone(zone).await? else {
+        return Ok(());
+    };
+    let apex = format!("{zone}.");
+    let soa = existing["rrsets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["name"] == apex.as_str() && s["type"] == "SOA")
+        .and_then(|s| s["records"][0]["content"].as_str())
+        .map(str::to_string);
+    let primary = settings.nameservers.first().ok_or_else(|| PdnsError("No nameservers are set".into()))?;
+    let mut rrsets = vec![json!({
+        "name": apex, "type": "NS", "ttl": settings.default_ttl, "changetype": "REPLACE",
+        "records": settings.nameservers.iter().map(|n| json!({"content": format!("{n}."), "disabled": false})).collect::<Vec<_>>(),
+    })];
+    if let Some(soa) = soa {
+        let mut fields: Vec<&str> = soa.split_whitespace().collect();
+        let mname = format!("{primary}.");
+        if fields.len() == 7 && fields[0] != mname {
+            fields[0] = &mname;
+            rrsets.push(single(&apex, "SOA", settings.default_ttl, &fields.join(" ")));
+        }
+    }
+    if let Some(ip) = server_ip(settings) {
+        for ns in settings.nameservers.iter().filter(|n| n.ends_with(&format!(".{zone}"))) {
+            let fqdn = format!("{ns}.");
+            let has = existing["rrsets"].as_array().is_some_and(|sets| sets.iter().any(|s| s["name"] == fqdn.as_str() && s["type"] == "A"));
+            if !has {
+                rrsets.push(single(&fqdn, "A", settings.default_ttl, &ip));
+            }
+        }
+    }
+    patch_zone(zone, rrsets).await
+}
+
+/// Every zone of a reseller's (its own domains' and its accounts') given
+/// its nameservers now. The number changed.
+pub async fn apply_reseller_nameservers(state: &crate::state::AppState, reseller_id: i64) -> usize {
+    let settings = settings_for_owner(state, Some(reseller_id)).await;
+    let Ok(hosted) = zones().await else { return 0 };
+    let mut members = state.db.resellers().children(reseller_id).await.unwrap_or_default();
+    members.push(reseller_id);
+    let mut changed = 0;
+    for (domain, owner) in owners(state).await {
+        if members.contains(&owner) && hosted.contains(&domain) {
+            match apply_nameservers(&domain, &settings).await {
+                Ok(()) => changed += 1,
+                Err(e) => tracing::warn!("nameservers of {domain}: {e}"),
+            }
+        }
+    }
+    changed
 }
 
 /// The longest hosted zone `name` is under, other than `name` itself.
@@ -693,11 +842,12 @@ pub fn parent_zone<'a>(name: &str, zones: &'a [String]) -> Option<&'a String> {
 /// Every domain gets one: zones are not made by hand. [`ensure_all`] makes
 /// the ones missing - websites from before the addon, or a create that
 /// failed while PowerDNS was down.
-pub async fn website_created(domain: &str) {
+pub async fn website_created(state: &crate::state::AppState, domain: &str) {
     if !crate::routes::addons::dns_installed() {
         return;
     }
-    if let Err(e) = website_created_inner(domain).await {
+    let settings = settings_for(state, &domain.to_ascii_lowercase()).await;
+    if let Err(e) = website_created_inner(domain, &settings).await {
         tracing::warn!("DNS zone for {domain}: {e}");
     }
 }
@@ -733,7 +883,7 @@ fn covered(domain: &str, hosted: &[String], parents_with_name: &[String]) -> boo
 
 /// A zone (or parent-zone records) for every domain that has none. Returns
 /// how many were made. Cheap when there is nothing to do: one listing.
-pub async fn ensure_domains(domains: Vec<String>) -> Result<usize, PdnsError> {
+pub async fn ensure_domains(state: &crate::state::AppState, domains: Vec<String>) -> Result<usize, PdnsError> {
     let hosted = zones().await?;
     let missing: Vec<String> = domains
         .into_iter()
@@ -760,12 +910,14 @@ pub async fn ensure_domains(domains: Vec<String>) -> Result<usize, PdnsError> {
             }
         }
     }
+    let owners = owners(state).await;
     let mut made = 0;
     for d in by_depth(missing) {
         if covered(&d, &hosted, &inside) {
             continue;
         }
-        match website_created_inner(&d).await {
+        let settings = settings_for_owner(state, owners.get(&d).copied()).await;
+        match website_created_inner(&d, &settings).await {
             Ok(()) => made += 1,
             Err(e) => tracing::warn!("DNS zone for {d}: {e}"),
         }
@@ -785,7 +937,7 @@ pub async fn ensure_all(state: &crate::state::AppState) -> usize {
             return 0;
         }
     };
-    match ensure_domains(domains).await {
+    match ensure_domains(state, domains).await {
         Ok(n) => {
             if n > 0 {
                 tracing::info!("DNS: made {n} missing zone(s)");
@@ -812,16 +964,15 @@ pub fn start(state: &crate::state::AppState) {
     });
 }
 
-async fn website_created_inner(domain: &str) -> Result<(), PdnsError> {
+async fn website_created_inner(domain: &str, settings: &DnsSettings) -> Result<(), PdnsError> {
     let domain = zone_name(domain).map_err(PdnsError)?;
     let hosted = zones().await?;
     if hosted.contains(&domain) {
         return Ok(());
     }
     let Some(parent) = parent_zone(&domain, &hosted) else {
-        return create_from_template(&domain).await;
+        return create_from_template(&domain, settings).await;
     };
-    let settings = settings();
     let existing = zone(parent).await?.unwrap_or(Value::Null);
     let fqdn = format!("{domain}.");
     let taken = existing["rrsets"]
@@ -831,7 +982,7 @@ async fn website_created_inner(domain: &str) -> Result<(), PdnsError> {
         return Ok(());
     }
     let mut rrsets = Vec::new();
-    if let Some(ip) = server_ip(&settings) {
+    if let Some(ip) = server_ip(settings) {
         rrsets.push(single(&fqdn, "A", settings.default_ttl, &ip));
     }
     if !settings.server_ipv6.is_empty() {

@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/dns", get(overview).fallback(crate::fallback))
         .route("/dns/settings", put(save_settings).fallback(crate::fallback))
+        .route("/dns/nameservers", put(save_nameservers).fallback(crate::fallback))
         .route(
             "/dns/zones/{zone}",
             get(read_zone)
@@ -108,7 +109,7 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
     };
     // Zones are never made by hand: whatever is missing is made now, so the
     // page always shows every domain.
-    if let Err(e) = dns::ensure_domains(domains.iter().cloned().collect()).await {
+    if let Err(e) = dns::ensure_domains(&state, domains.iter().cloned().collect()).await {
         tracing::warn!("DNS zones not checked: {e}");
     }
     let (hosted, problem) = match dns::zones().await {
@@ -119,10 +120,17 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
         .iter()
         .filter(|z| admin || domains.contains(*z))
         .collect();
+    // The nameservers the caller's domains are delegated to: a reseller's
+    // own (and so its customers'), or the server's.
+    let effective = dns::settings_for_owner(&state, Some(current.user.id)).await;
+    let reseller = permissions::is_reseller_role(&current.user.role);
     let mut body = json!({
         "is_admin": admin,
+        "is_reseller": reseller,
         "zones": zones,
-        "nameservers": settings.nameservers,
+        "nameservers": effective.nameservers,
+        "default_nameservers": settings.nameservers,
+        "reseller_nameservers": if reseller { json!(dns::reseller_nameservers(current.user.id)) } else { Value::Null },
         "server_ip": dns::server_ip(&settings),
         "types": dns::TYPES,
         "problem": problem,
@@ -142,6 +150,56 @@ async fn overview(State(state): State<AppState>, mut parts: Parts) -> Response {
             serde_json::to_value(dns::default_template()).unwrap_or(Value::Null);
     }
     axum::Json(body).into_response()
+}
+
+/// `PUT /dns/nameservers` - a reseller's own nameservers, for its zones and
+/// its customers'; an empty list goes back to the server's. The zones there
+/// are are changed now.
+async fn save_nameservers(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    let current = match admit(&state, &mut parts).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !permissions::is_reseller_role(&current.user.role) {
+        return crate::errors::not_enough_permissions();
+    }
+    let body = match super::auth::read_json_body(body).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let raw: Vec<String> = body["nameservers"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let names = if raw.iter().all(|n| n.trim().is_empty()) {
+        None
+    } else {
+        match dns::nameservers_valid(&raw) {
+            Ok(n) => Some(n),
+            Err(m) => return error(StatusCode::UNPROCESSABLE_ENTITY, &m),
+        }
+    };
+    if let Err(e) = dns::save_reseller_nameservers(current.user.id, names.clone()) {
+        tracing::error!("saving a reseller's nameservers failed: {e}");
+        return crate::errors::internal_error();
+    }
+    let changed = dns::apply_reseller_nameservers(&state, current.user.id).await;
+    super::packages::audit_action_detail(
+        &state,
+        &parts,
+        current.user.id,
+        "dns_reseller_nameservers",
+        &current.user.username,
+        &names.clone().unwrap_or_default().join(","),
+    )
+    .await;
+    axum::Json(json!({
+        "nameservers": names,
+        "zones_changed": changed,
+        "message": format!("Nameservers saved; {changed} zone(s) updated."),
+    }))
+    .into_response()
 }
 
 async fn save_settings(State(state): State<AppState>, req: axum::extract::Request) -> Response {
@@ -185,7 +243,7 @@ async fn save_settings(State(state): State<AppState>, req: axum::extract::Reques
 }
 
 /// The zone as the page shows it: names relative, one RRset per row.
-async fn zone_response(current: &CurrentUser, zone: &str) -> Response {
+async fn zone_response(state: &AppState, current: &CurrentUser, zone: &str) -> Response {
     let found = match dns::zone(zone).await {
         Ok(Some(z)) => z,
         Ok(None) => return not_found("No such zone"),
@@ -233,7 +291,7 @@ async fn zone_response(current: &CurrentUser, zone: &str) -> Response {
         "name": zone,
         "serial": found["serial"],
         "rrsets": rrsets,
-        "nameservers": dns::settings().nameservers,
+        "nameservers": dns::settings_for(state, zone).await.nameservers,
     }))
     .into_response()
 }
@@ -251,7 +309,7 @@ async fn read_zone(
         Ok(z) => z,
         Err(r) => return r,
     };
-    zone_response(&current, &zone).await
+    zone_response(&state, &current, &zone).await
 }
 
 /// One change from the page: the RRset `name`/`type` becomes `records`
@@ -371,7 +429,7 @@ async fn patch_zone(
         &summary.join("; "),
     )
     .await;
-    zone_response(&current, &zone).await
+    zone_response(&state, &current, &zone).await
 }
 
 /// The zone made again from the template: every record in it replaced.
@@ -388,7 +446,7 @@ async fn reset_zone(
         Ok(z) => z,
         Err(r) => return r,
     };
-    let settings = dns::settings();
+    let settings = dns::settings_for(&state, &zone).await;
     let ip = dns::server_ip(&settings).unwrap_or_default();
     let fresh = match dns::zone_rrsets(&zone, &settings, &ip) {
         Ok(r) => r,
@@ -419,7 +477,7 @@ async fn reset_zone(
     }
     super::packages::audit_action_detail(&state, &parts, current.user.id, "dns_zone_reset", &zone, "")
         .await;
-    zone_response(&current, &zone).await
+    zone_response(&state, &current, &zone).await
 }
 
 #[cfg(test)]

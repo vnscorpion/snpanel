@@ -194,9 +194,9 @@ function App() {
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, parent_id: '', reseller: { prefix: '', max_accounts: 0, max_websites: 0, max_databases: 0, max_mailboxes: 0, max_disk_mb: 0 } });
   const [editingUser, setEditingUser] = useState(null);
   const [editingUserForm, setEditingUserForm] = useState({ email: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, new_password: '', confirm_password: '' });
-  const [newPackage, setNewPackage] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [newPackage, setNewPackage] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   const [editingPackageId, setEditingPackageId] = useState('');
-  const [editingPackageForm, setEditingPackageForm] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+  const [editingPackageForm, setEditingPackageForm] = useState({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   const [phpConfig, setPhpConfig] = useState({ php_version: '8.4', display_errors: 'Off', max_execution_time: 300, max_input_time: 600, max_input_vars: 10000, memory_limit: '1024M', post_max_size: '1024M', upload_max_filesize: '1024M' });
   const [phpVersions, setPhpVersions] = useState({ installed: ['8.4'], supported: ['5.6', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5'] });
   // One PHP version's extensions: the panel's catalogue, each installed or
@@ -1034,9 +1034,9 @@ function App() {
   function cancelEditingUser() {
     setEditingUser(null);
     setEditingUserForm({ email: '', role: 'end_user', package_id: '', website_limit: 5, storage_limit_mb: 1024, new_password: '', confirm_password: '' });
-    setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
     setEditingPackageId('');
-    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   }
 
   async function updatePanelUser() {
@@ -1117,11 +1117,11 @@ function App() {
     }
     const data = await request('/packages', {
       method: 'POST',
-      body: JSON.stringify({ name: newPackage.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
+      body: JSON.stringify({ name: newPackage.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb, mailbox_limit: Math.max(0, Number(newPackage.mailbox_limit) || 0) }),
     }, t('Creating package...'));
     if (data) {
       setNotice(t('Created package {name}.', { name: data.name }));
-      setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+      setNewPackage({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
       await loadPackages();
     }
   }
@@ -1132,12 +1132,13 @@ function App() {
       name: item.name || '',
       website_limit: item.website_limit ?? 5,
       storage_limit_mb: item.storage_limit_mb ?? 1024,
+      mailbox_limit: item.mailbox_limit ?? 0,
     });
   }
 
   function cancelEditingPackage() {
     setEditingPackageId('');
-    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024 });
+    setEditingPackageForm({ name: '', website_limit: 5, storage_limit_mb: 1024, mailbox_limit: 0 });
   }
 
   async function updatePackage(packageId) {
@@ -1154,7 +1155,7 @@ function App() {
     }
     const data = await request(`/packages/${packageId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: editingPackageForm.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb }),
+      body: JSON.stringify({ name: editingPackageForm.name.trim(), website_limit: websiteLimit, storage_limit_mb: storageLimitMb, mailbox_limit: Math.max(0, Number(editingPackageForm.mailbox_limit) || 0) }),
     }, t('Updating package...'));
     if (data) {
       setNotice(t('Updated package {name}.', { name: data.name }));

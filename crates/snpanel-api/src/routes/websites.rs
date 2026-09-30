@@ -1307,7 +1307,7 @@ async fn create_alias(
         &website.domain,
     )
     .await;
-    crate::dns::website_created(&created.domain).await;
+    crate::dns::website_created(&state, &created.domain).await;
     crate::mail::refresh(&state).await;
     axum::Json(alias_json(&created)).into_response()
 }
@@ -4033,7 +4033,7 @@ async fn create_site_from(
         &request.domain,
     )
     .await;
-    crate::dns::website_created(&request.domain).await;
+    crate::dns::website_created(&state, &request.domain).await;
     crate::mail::refresh(&state).await;
     // The WordPress jail reads every site's access log, and fail2ban finds
     // log files only when it reads its settings.

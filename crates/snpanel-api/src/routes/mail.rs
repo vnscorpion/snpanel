@@ -223,6 +223,26 @@ async fn create_mailbox(State(state): State<AppState>, req: axum::extract::Reque
     if let Err(m) = crate::resellers::check_room(&state, domain.owner_id, crate::resellers::Resource::Mailbox).await {
         return error(StatusCode::FORBIDDEN, &m);
     }
+    // The owner's package decides how many mailboxes it may have.
+    if let Ok(Some(owner)) = state.db.users().by_id(domain.owner_id).await {
+        if let Some(package) = owner.package_id {
+            let limit = state.db.resellers().mailbox_limit(package).await.unwrap_or(0);
+            if limit > 0 {
+                let owned: Vec<String> = match mail::domains(&state).await {
+                    Ok(d) => d.into_iter().filter(|d| d.owner_id == owner.id).map(|d| d.name).collect(),
+                    Err(_) => Vec::new(),
+                };
+                let used = mail::load()
+                    .mailboxes
+                    .iter()
+                    .filter(|b| b.address.rsplit_once('@').is_some_and(|(_, d)| owned.iter().any(|o| o == d)))
+                    .count() as i64;
+                if used >= limit {
+                    return error(StatusCode::FORBIDDEN, &format!("The package allows {limit} mailbox(es)"));
+                }
+            }
+        }
+    }
     let password = body["password"].as_str().unwrap_or("");
     if let Err(m) = mail::password_valid(password) {
         return unprocessable(&m);

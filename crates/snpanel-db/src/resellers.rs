@@ -226,6 +226,34 @@ impl<'a> ResellerRepo<'a> {
         Ok(())
     }
 
+    /// The mailboxes a package allows; zero is no limit.
+    pub async fn mailbox_limit(&self, package_id: i64) -> Result<i64, DbError> {
+        Ok(sqlx::query_scalar("SELECT mailbox_limit FROM package_mail_limits WHERE package_id = ?")
+            .bind(package_id)
+            .fetch_optional(self.pool)
+            .await?
+            .unwrap_or(0))
+    }
+
+    pub async fn all_mailbox_limits(&self) -> Result<Vec<(i64, i64)>, DbError> {
+        let rows = sqlx::query("SELECT package_id, mailbox_limit FROM package_mail_limits")
+            .fetch_all(self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    pub async fn set_mailbox_limit(&self, package_id: i64, limit: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO package_mail_limits (package_id, mailbox_limit) VALUES (?, ?) \
+             ON CONFLICT(package_id) DO UPDATE SET mailbox_limit = excluded.mailbox_limit",
+        )
+        .bind(package_id)
+        .bind(limit)
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Websites owned by any of `users`.
     pub async fn count_websites(&self, users: &[i64]) -> Result<i64, DbError> {
         self.count_in("SELECT COUNT(*) FROM websites WHERE owner_id IN", users).await

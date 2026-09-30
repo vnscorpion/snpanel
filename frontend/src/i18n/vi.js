@@ -1867,4 +1867,11 @@ export default {
   "via {name}": "thuộc {name}",
   "Make a token for your own WHMCS and paste it into its server’s Access Hash field. It reaches your customers and packages only.": "Tạo token cho WHMCS của bạn rồi dán vào ô Access Hash của server trong WHMCS. Token chỉ truy cập được khách hàng và gói của bạn.",
   "WHMCS": "WHMCS",
+  "0 = no limit": "0 = không giới hạn",
+  "{count} mailboxes": "{count} hộp thư",
+  "Your nameservers": "Nameserver của bạn",
+  "Your domains and your customers' are delegated to these. Leave empty to use the server's: {list}.": "Tên miền của bạn và của khách hàng được trỏ về các nameserver này. Để trống để dùng nameserver của máy chủ: {list}.",
+  "Save nameservers": "Lưu nameserver",
+  "Saving the nameservers...": "Đang lưu nameserver...",
+  "Nameservers saved; {count} zone(s) updated.": "Đã lưu nameserver; {count} zone được cập nhật.",
 };
