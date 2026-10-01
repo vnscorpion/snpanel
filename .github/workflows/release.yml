@@ -85,7 +85,7 @@ jobs:
       # tag. Renaming either of these breaks a fresh install silently - the
       # installer falls back to the bash helper and says so only in its log.
       - name: Attach to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
